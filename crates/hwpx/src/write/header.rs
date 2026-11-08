@@ -637,7 +637,10 @@ fn write_styles(out: &mut String, header: &DocHeader) {
     for (i, s) in header.styles.iter().enumerate() {
         let _ = write!(
             out,
-            r##"<hh:style id="{i}" type="PARA" name="{}" engName="{}" paraPrIDRef="{}" charPrIDRef="{}" nextStyleIDRef="{}" langID="{}" lockForm="0"/>"##,
+            r##"<hh:style id="{i}" type="{}" name="{}" engName="{}" paraPrIDRef="{}" charPrIDRef="{}" nextStyleIDRef="{}" langID="{}" lockForm="0"/>"##,
+            // The kind is the low three bits of the HWP5 STYLE.attr the IR carries; 1 is a
+            // character style, everything else (0, and reserved values) is written as PARA.
+            if s.attr & 0x7 == 1 { "CHAR" } else { "PARA" },
             esc(&s.name),
             esc(&s.english_name),
             (s.para_shape.0 as usize).min(para_count - 1),

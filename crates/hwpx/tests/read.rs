@@ -167,6 +167,29 @@ fn 합성_헤더_굵게_기울임() {
     assert_eq!(header.styles[0].name, "개요 1");
 }
 
+/// `hh:style@type` is the style kind, carried into the IR the way HWP5 stores it (low bits of
+/// `STYLE.attr`: 0 paragraph, 1 character). The reader used to drop it, so every HWPX style read
+/// as a paragraph style (GE-13). `쪽 번호` is the `CHAR` style genuine Hangul files carry.
+#[test]
+fn style_type_char_reads_as_a_character_style() {
+    let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" version="1.4">
+  <hh:refList>
+    <hh:styles itemCnt="4">
+      <hh:style id="0" type="PARA" name="바탕글" engName="Normal" paraPrIDRef="0" charPrIDRef="0"/>
+      <hh:style id="1" type="CHAR" name="쪽 번호" engName="Page Number" paraPrIDRef="0" charPrIDRef="1"/>
+      <hh:style id="2" name="type 없음" engName="" paraPrIDRef="0" charPrIDRef="0"/>
+      <hh:style id="3" type="SOMETHING_NEW" name="미지" engName="" paraPrIDRef="0" charPrIDRef="0"/>
+    </hh:styles>
+  </hh:refList>
+</hh:head>"##;
+    let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
+    let attrs: Vec<u8> = header.styles.iter().map(|s| s.attr).collect();
+    // An absent or unknown type stays 0, the value the reader produced before: a reserved value
+    // must never reach an HWP5 STYLE record.
+    assert_eq!(attrs, [0, 1, 0, 0]);
+}
+
 /// 취소선 shape 매핑: SOLID는 취소선, NONE/3D는 비취소선.
 /// "3D" 취소선은 한글에서 보이지 않게 렌더되는데(정품 한라대 실측·사용자 확인),
 /// 비트18(실선)로 매핑하면 인라인 표 폭에 걸친 가로선이 합성돼 목차에 취소선이 보였다.

@@ -59,7 +59,7 @@
             "character",
             null
           ],
-          "description": "`null` means THE DOCUMENT DOES NOT ANSWER, never 'paragraph'. HWP5 states the kind in the low three bits of the style record. The HWPX reader does not read the `type` attribute yet (gap GE-13), so every style of a document read from HWPX has `null`, and a reserved HWP5 value is `null` too."
+          "description": "`null` means THE DOCUMENT DOES NOT ANSWER, never 'paragraph'. The kind is the low three bits of the style record: HWP5 stores it there, and the HWPX reader maps `hh:style@type` `PARA` and `CHAR` onto the same bits. A reserved value is `null`."
         },
         "next_style": {
           "type": "integer",

@@ -690,6 +690,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         header.styles.push(Style {
                             name: attr(e, "name").unwrap_or_default(),
                             english_name: attr(e, "engName").unwrap_or_default(),
+                            attr: style_kind_attr(attr(e, "type").as_deref()),
                             para_shape: ParaShapeId(attr_u16(e, "paraPrIDRef").unwrap_or(0)),
                             char_shape: CharShapeId(attr_u16(e, "charPrIDRef").unwrap_or(0)),
                             next_style: attr_u32(e, "nextStyleIDRef").unwrap_or(0) as u8,
@@ -796,4 +797,20 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
     }
 
     Ok((header, warnings))
+}
+
+/// The HWP5 `STYLE.attr` value for `hh:style@type`: 0 for `PARA`, 1 for `CHAR`.
+///
+/// The IR carries the style kind the way the HWP5 reader does (low three bits of `attr`, 한글문서
+/// 파일 형식 5.0 §4.2.11 table 48), so one reader-independent rule serves both formats. Genuine
+/// Hangul-saved HWPX states `type` on every style: `fixtures/hwpx/minimal.hwpx` (Hangul 13,
+/// Windows) has `쪽 번호` and `줄 번호` as `CHAR`, and `fixtures/hwpx/seal-groundtruth.hwpx`
+/// (Hangul 12.30, macOS) has `쪽 번호` as `CHAR`, which is the style the genuine HWP5 files carry at
+/// attr 1. Anything else, or no `type`, stays 0, the value the reader produced before this rule;
+/// writing a reserved value into an HWP5 record would be worse than reading the kind as `PARA`.
+fn style_kind_attr(value: Option<&str>) -> u8 {
+    match value {
+        Some("CHAR") => 1,
+        _ => 0,
+    }
 }

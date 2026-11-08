@@ -214,7 +214,7 @@ fn attrs_are_the_envelopes_style_level_for_a_paragraph_of_that_style() {
 }
 
 #[test]
-fn kind_is_stated_for_hwp5_and_unknown_for_hwpx() {
+fn kind_is_stated_for_both_formats() {
     let hwp5 = styles(&repo(
         "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwp",
     ));
@@ -225,15 +225,24 @@ fn kind_is_stated_for_hwp5_and_unknown_for_hwpx() {
             .iter()
             .all(|s| s["kind"] == "paragraph")
     );
-    // The HWPX reader never reads `hh:style@type` (GE-13): null, not a guessed "paragraph".
+    // The committed sample's header has one `type="CHAR"` style (`쪽 번호`, id 12) among 29
+    // `type="PARA"` ones; the HWPX reader maps `hh:style@type` onto the style kind (GE-13).
     let hwpx = styles(&sample());
-    assert!(
-        hwpx["styles"]
-            .as_array()
-            .unwrap()
+    let rows = hwpx["styles"].as_array().unwrap();
+    let kinds: Vec<(u64, &str)> = rows
+        .iter()
+        .map(|s| (s["id"].as_u64().unwrap(), s["kind"].as_str().unwrap()))
+        .collect();
+    assert_eq!(rows.len(), 30);
+    assert_eq!(
+        kinds
             .iter()
-            .all(|s| s["kind"].is_null())
+            .filter(|(_, k)| *k == "character")
+            .collect::<Vec<_>>(),
+        vec![&(12, "character")],
+        "{kinds:?}"
     );
+    assert_eq!(kinds.iter().filter(|(_, k)| *k == "paragraph").count(), 29);
 }
 
 /// A genuine file saved by Hangul has one character style, `쪽 번호`.

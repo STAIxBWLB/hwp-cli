@@ -16,9 +16,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   styles with their resolved character and paragraph attributes and `used_by`, the `para`
   segment ids that `hwp cat --with-segments --segments v2` publishes. The JSON form is the new
   `hwp-styles-v1` contract (`schemas/styles-v1.schema.json`), whose `attrs` reuse the segment
-  envelope's `style` level. `kind` is `null` when the document does not state it: always for
-  HWPX, whose reader does not read `hh:style@type` yet (GE-13)
+  envelope's `style` level. `kind` is `null` when the document does not state it
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
+
+**Fixed**
+
+- The HWPX reader now reads `hh:style@type` (`PARA`/`CHAR`) into the style kind that HWP5 stores in
+  the low bits of `STYLE.attr`, and the HWPX writer writes `CHAR` back for a character style
+  instead of always `PARA`. Character styles such as `쪽 번호` therefore survive an HWPX to HWPX
+  round trip, and `hwp styles` reports a `kind` for HWPX documents too (gap GE-13,
+  [#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 
 **Changed**
 
