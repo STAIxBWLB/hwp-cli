@@ -733,22 +733,46 @@ mod tests {
             data: b"someone else's bytes".to_vec(),
         });
         doc.hwpx_bin_manifest = vec![(name.clone(), "BinData/other.png".into())];
-        apply(&mut doc, &at, &request("assets/logo.png"), false, &ctx).unwrap();
+        // One picture at the top level and one inside a table cell: the rename reaches both.
+        let nested: InsertBlocks = serde_json::from_value(serde_json::json!({
+            "position": "after",
+            "blocks": [
+                {"type": "image", "path": "assets/logo.png", "width_mm": 10},
+                {"type": "table", "columns": [{"width_mm": 30}], "rows": [{"cells": [
+                    {"blocks": [{"type": "image", "path": "assets/logo.png", "width_mm": 10}]}
+                ]}]}
+            ]
+        }))
+        .unwrap();
+        apply(&mut doc, &at, &nested, false, &ctx).unwrap();
 
-        let picture = doc.sections[0]
-            .paragraphs
-            .iter()
-            .flat_map(|p| &p.controls)
-            .find_map(|c| match c {
-                Control::Picture(p) => Some(p),
-                _ => None,
-            })
-            .expect("inserted picture");
-        assert_eq!(
-            doc.resolve_bin(&picture.bin_ref),
-            Some(PNG),
-            "the picture must resolve to the inserted PNG, not the stream the manifest maps {name} to"
-        );
+        let mut pictures = Vec::new();
+        for paragraph in &doc.sections[0].paragraphs {
+            for control in &paragraph.controls {
+                match control {
+                    Control::Picture(p) => pictures.push(p),
+                    Control::Table(t) => pictures.extend(
+                        t.cells
+                            .iter()
+                            .flat_map(|c| &c.paragraphs)
+                            .flat_map(|p| &p.controls)
+                            .filter_map(|c| match c {
+                                Control::Picture(p) => Some(p),
+                                _ => None,
+                            }),
+                    ),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(pictures.len(), 2, "top-level and in-cell picture");
+        for picture in pictures {
+            assert_eq!(
+                doc.resolve_bin(&picture.bin_ref),
+                Some(PNG),
+                "the picture must resolve to the inserted PNG, not the stream the manifest maps {name} to"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
