@@ -73,7 +73,7 @@ impl Fixture {
 }
 
 /// A bounded stdio exchange through the actual MCP authority and edit boundary.
-fn mcp_tool(name: &str, arguments: Value) -> Value {
+fn mcp_tool(name: &str, arguments: Value, expect_schema_valid: bool) -> Value {
     let mut child = hwp()
         .arg("mcp")
         .stdin(Stdio::piped())
@@ -111,8 +111,24 @@ fn mcp_tool(name: &str, arguments: Value) -> Value {
     );
     let _ = receive();
     send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+    send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
+    let tools = receive();
+    let schema = &tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == name)
+        .expect("called tool must be advertised")["inputSchema"];
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(schema)
+        .expect("advertised MCP input schema must compile");
+    let errors: Vec<_> = validator
+        .iter_errors(&arguments)
+        .map(|error| error.to_string())
+        .collect();
     send(
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":name,"arguments":arguments}}),
     );
     let result = receive();
     drop(input);
@@ -127,6 +143,11 @@ fn mcp_tool(name: &str, arguments: Value) -> Value {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    assert_eq!(
+        errors.is_empty(),
+        expect_schema_valid,
+        "MCP {name} request must satisfy its advertised-schema expectation: {errors:?}"
+    );
     result
 }
 
@@ -189,7 +210,7 @@ fn compare_channels(fixture: &Fixture, source: &Path, operations: Vec<Value>) {
         }
         arguments[op].as_array_mut().unwrap().push(item);
     }
-    let response = mcp_tool("hwp_edit", arguments);
+    let response = mcp_tool("hwp_edit", arguments, true);
     assert!(
         response.get("error").is_none() && response["result"]["isError"] != true,
         "MCP must execute the same request as --ops: {response}"
@@ -212,7 +233,7 @@ fn compare_channels(fixture: &Fixture, source: &Path, operations: Vec<Value>) {
         "styles CLI must list the edited output"
     );
     let listing: Value = serde_json::from_slice(&cli.stdout).unwrap();
-    let response = mcp_tool("hwp_styles", json!({"path":output}));
+    let response = mcp_tool("hwp_styles", json!({"path":output}), true);
     assert!(
         response.get("error").is_none() && response["result"]["isError"] != true,
         "hwp_styles must list the edited output: {response}"
@@ -513,7 +534,7 @@ fn malformed_mcp_style_items_refuse_with_cause_and_remedy_before_publication() {
         std::fs::write(&output, b"prior output").unwrap();
         let mut arguments = json!({"input":fixture.source,"output":output});
         arguments[operation] = json!([item]);
-        let response = mcp_tool("hwp_edit", arguments);
+        let response = mcp_tool("hwp_edit", arguments, false);
         assert_eq!(response["result"]["isError"], true, "{response}");
         let error = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(

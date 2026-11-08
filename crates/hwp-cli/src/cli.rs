@@ -47,14 +47,14 @@ pub struct Cli {
     pub cmd: Cmd,
 }
 
-/// Values for `--lang`. Detection lives in [`crate::i18n::Lang`].
+/// `--lang` 값. 감지 로직은 [`crate::i18n::Lang`]에 있다.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum LangArg {
     En,
     Ko,
 }
 
-/// Values for `hwp lint --profile`: the clap mirror of `hwp_convert::lint::LintProfile`.
+/// `hwp lint --profile` 값. `hwp_convert::lint::LintProfile`의 clap 미러.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum LintProfileArg {
     Gongmun,
@@ -62,8 +62,8 @@ pub enum LintProfileArg {
 }
 
 #[derive(Subcommand)]
-// The Edit variant is much larger than the others because it holds many Vec<String> flags.
-// The command enum is parsed once at startup, so allow the size difference instead of boxing.
+// Edit 변형이 편집 플래그(Vec<String> 다수)로 커서 다른 변형과 크기차가 크다.
+// CLI 명령 enum은 시작 시 한 번만 파싱되므로 크기차는 무의미 — 박싱 대신 허용.
 #[allow(clippy::large_enum_variant)]
 pub enum Cmd {
     /// Show file information: format, version, properties and stream list
@@ -263,7 +263,7 @@ pub enum Cmd {
         #[arg(long)]
         from: Option<PathBuf>,
         /// Use an embedded document template by English slug or Korean alias (see
-        /// --list-templates). Brings its own profile and native header/footer frames, whose values
+        /// --list-templates). Brings its own profile and native 두문/결문 frames, whose values
         /// default to the template's own {{slots}}. Mutually exclusive with --from; --preset and
         /// the frame flags override one template default each
         #[arg(long)]
@@ -296,26 +296,26 @@ pub enum Cmd {
         /// violates the import contract. Default: warn and continue (exit 0)
         #[arg(long)]
         strict: bool,
-        /// Document header block "key=value" (keys: 기관명|수신|경유; repeatable)
+        /// Document header block (두문) "key=value" (keys: 기관명|수신|경유; repeatable)
         #[arg(long = "doc-head")]
         doc_head: Vec<String>,
-        /// Document footer block "key=value" (keys: 발신명의|기안자|검토자|결재자|협조자|
+        /// Document footer block (결문) "key=value" (keys: 발신명의|기안자|검토자|결재자|협조자|
         /// 시행번호|시행일자|접수번호|접수일자|주소|홈페이지|전화|팩스|이메일|공개구분|수신자; repeatable.
-        /// 수신자 is the recipient-list key for a document whose header reads "수신자 참조", and is the
-        /// only footer row emitted only when supplied)
+        /// 수신자 is the recipient list of a document whose 두문 reads "수신자 참조", and is the
+        /// one 결문 row emitted only when supplied)
         #[arg(long = "doc-foot")]
         doc_foot: Vec<String>,
-        /// Notice header block "key=value" (keys: 기관명|공고번호; repeatable)
+        /// Notice (공고문) header block "key=value" (keys: 기관명|공고번호; repeatable)
         #[arg(long = "notice-head")]
         notice_head: Vec<String>,
-        /// Notice footer block "key=value" (keys: 공고일자|발신명의; repeatable)
+        /// Notice (공고문) footer block "key=value" (keys: 공고일자|발신명의; repeatable)
         #[arg(long = "notice-foot")]
         notice_foot: Vec<String>,
-        /// Press release header block "key=value" (keys: 기관명|보도시점|배포일|
+        /// Press release (보도자료) header block "key=value" (keys: 기관명|보도시점|배포일|
         /// 담당부서|담당자|연락처; repeatable)
         #[arg(long = "press-head")]
         press_head: Vec<String>,
-        /// Table placement: inline keeps "treat as character", floating anchors
+        /// Table placement: inline keeps "treat as character" (글자처럼 취급), floating anchors
         /// each table to its paragraph so a long table can split across pages. Applies to every
         /// table the input produces; pictures are unaffected. Omit to keep the historical
         /// default (no explicit placement)
@@ -607,7 +607,7 @@ pub struct PasswordArgs {
     pub password_stdin: bool,
 }
 
-/// `hwp edit` input, normalized into the typed operations in an `EditPlan` before execution.
+/// `hwp edit` 입력. 편집 실행 전에 `EditPlan`의 타입화된 작업 목록으로 정규화한다.
 #[derive(Args)]
 pub struct EditArgs {
     /// Input HWP/HWPX file
@@ -731,7 +731,7 @@ pub struct EditArgs {
     /// single-column tables (frame blocks); byte-stable when applied twice
     #[arg(long = "style-tables", value_parser = parse_preset_arg)]
     pub style_tables: Option<PresetArg>,
-    /// Set table placement: inline restores "treat as character", floating anchors
+    /// Set table placement: inline restores "treat as character" (글자처럼 취급), floating anchors
     /// the table to its paragraph so it can split across pages. Applies to every table, or to
     /// one table with --table. Byte-stable when applied twice
     #[arg(long = "table-placement")]
@@ -830,7 +830,7 @@ pub enum ConvertFormat {
 }
 
 /// Table object placement for `--table-placement` (#296). `inline` keeps the historical
-/// "treat as character" behaviour; `floating` anchors the table to its paragraph so it can
+/// "글자처럼 취급" behaviour; `floating` anchors the table to its paragraph so it can
 /// split across pages.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TablePlacementArg {
