@@ -19,7 +19,8 @@ hwp-render = { path = "crates/hwp-render" }
 # Shared external dependencies
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+# Maintained serde_yaml-compatible fork; preserve the crate alias at existing call sites.
+serde_yaml = { package = "serde_norway", version = "0.9.42" }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
@@ -29,16 +30,16 @@ quick-xml = "0.41"
 libc = "0.2"
 resvg = { version = "=0.47.0", default-features = false }
 regex = "1.11"
-zip = "8"
+zip = "9"
 # Checksum verification for self-update (hwp update) release archives — already
 # pulled in via zip, so the dependency graph does not grow.
 sha2 = "0.11"
-# AES-128-ECB decryption for Hancom distribution documents (배포용문서/ViewText,
+# AES-128-ECB decryption for Hancom distribution documents (ViewText,
 # GATE-01) — already pulled in via zip's AES-encrypted-archive support, so the
 # dependency graph does not grow.
 aes = "0.9.1"
 getrandom = "0.3"
-pulldown-cmark = { version = "0.13", default-features = false }
+pulldown-cmark = { version = "0.13.6", default-features = false }
 # `hwp serve` HTTP adapter (issue #312, decision record in doc 22 §4) — a
 # synchronous thread model, so no tokio. httparse owns request-head parsing
 # only; the adapter owns close-per-request framing. tiny_http 0.12 was replaced
@@ -52,14 +53,14 @@ tiny-skia = "0.12"
 rustybuzz = "0.20"
 fontdb = "0.23"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp"] }
-# WMF 텍스트(CP949 바이트 문자열) 디코딩 — 순수 Rust, HWP 비의존.
+# WMF text (CP949 bytes) decoding: pure Rust, independent of HWP.
 encoding_rs = "0.8"
 
 # PDF backend
 pdf-writer = "0.15"
 subsetter = "0.2"
 
-# Test-only. jsonschema는 예외 — hwp-cli edit-ops-v1 검증기(D-10)가 런타임에도 쓴다.
+# Test-only except jsonschema, also used by the runtime edit-ops-v1 validator (D-10).
 insta = { version = "1", features = ["json"] }
 proptest = "1"
 jsonschema = { version = "0.33", default-features = false }

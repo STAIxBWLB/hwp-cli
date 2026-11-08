@@ -14,7 +14,7 @@ pub fn write_nested_tables(flat: &Path, depth: usize, out: &Path) {
     let mut writer = zip::ZipWriter::new(std::fs::File::create(out).unwrap());
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
-        let name = entry.name().to_string();
+        let name = entry.name().unwrap().into_owned();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
         if name == "Contents/section0.xml" {
