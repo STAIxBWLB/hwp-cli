@@ -1,0 +1,47 @@
+# cargo-deny policy (advisories, bans, licenses, sources), run by .github/workflows/deny.yml.
+# That workflow blocks releases only (release.yml calls it); it never gates a pull request.
+# Existing findings are reported, not silenced: an entry added to an ignore or exception list
+# below must name the advisory or crate, the reason, and the condition for removing it.
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "MIT-0",         # borrow-or-share, constant_time_eq, ppmd-rust (zip 8 dependencies)
+    "CC0-1.0",       # constant_time_eq, ppmd-rust
+    "bzip2-1.0.6",   # libbz2-rs-sys (zip 8 bzip2 support)
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+# The workspace crates depend on each other by path without a version requirement, and
+# cargo-deny only exempts path dependencies for crates that cannot be published. Until the
+# workspace crates get `publish = false` or versioned path dependencies, "deny" would fail on
+# those internal edges alone, so this is "warn". Registry wildcards still show up as warnings.
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
