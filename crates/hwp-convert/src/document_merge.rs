@@ -2631,4 +2631,133 @@ mod tests {
         c.sections[0].paragraphs[0].para_shape = hwp_model::ParaShapeId(u16::MAX);
         assert!(merge_documents(&[a, b, c]).is_err());
     }
+
+    // ── #428 T3: renumber_inserted_objects ──────────────────────────────────
+
+    fn placement_table(z_order: i32) -> Control {
+        let mut table = match table_with_common_id(0) {
+            Control::Table(t) => t,
+            _ => unreachable!(),
+        };
+        table.common_data.clear();
+        table.placement = Some(hwp_model::GsoPlacement {
+            z_order,
+            ..Default::default()
+        });
+        Control::Table(table)
+    }
+
+    fn field_control(id: u32, name: &str) -> Control {
+        let mut data = crate::field::make_field_command_data(b"%clk", name);
+        let range = field_id_range(&data).expect("field id range");
+        data[range].copy_from_slice(&id.to_le_bytes());
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"%clk",
+            data,
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    fn stored_field_id(control: &Control) -> u32 {
+        let Control::Generic(g) = control else {
+            panic!("field control expected")
+        };
+        let range = field_id_range(&g.data).expect("field id range");
+        u32::from_le_bytes(g.data[range].try_into().unwrap())
+    }
+
+    fn placement_z(control: &Control) -> i32 {
+        let Control::Table(t) = control else {
+            panic!("table expected")
+        };
+        t.placement.as_ref().expect("placement").z_order
+    }
+
+    #[test]
+    fn inserted_placement_tables_get_synthesized_ids_unused_by_target_or_each_other() {
+        let mut target = from_markdown("target\n");
+        // A placement table at z-order 2 makes the allocator start at 3. Raw-id tables sit on
+        // 0x5000_0003 and 0x5000_0004, exactly the synthesized ids z-orders 3 and 4 would take.
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![
+                    placement_table(2),
+                    table_with_common_id(0x5000_0003),
+                    table_with_common_id(0x5000_0004),
+                ],
+                ..Default::default()
+            },
+        );
+        // Compose gives every compiled table z-order 0; three of them must not share an id.
+        let mut inserted: Vec<Paragraph> = (0..3)
+            .map(|_| Paragraph {
+                controls: vec![placement_table(0)],
+                ..Default::default()
+            })
+            .collect();
+        let renumbered = renumber_inserted_objects(&target, &mut inserted).unwrap();
+        assert_eq!(renumbered, 3);
+        let ids: Vec<u32> = inserted
+            .iter()
+            .map(|p| crate::edit::synthesized_table_object_id(placement_z(&p.controls[0])))
+            .collect();
+        let existing = crate::edit::doc_object_ids(&target);
+        for id in &ids {
+            assert!(!existing.contains(id), "{id:x} collides with the target");
+        }
+        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), 3, "inserted tables share an id: {ids:x?}");
+    }
+
+    #[test]
+    fn inserted_fields_get_nonzero_ids_distinct_from_target_and_each_other() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![field_control(41, "existing")],
+                ..Default::default()
+            },
+        );
+        let mut inserted = vec![
+            Paragraph {
+                controls: vec![field_control(0, "a")],
+                ..Default::default()
+            },
+            Paragraph {
+                controls: vec![placement_table(0)],
+                ..Default::default()
+            },
+        ];
+        // A field nested in a cell of an inserted table is renumbered too.
+        let Control::Table(table) = &mut inserted[1].controls[0] else {
+            unreachable!()
+        };
+        table.cells[0].paragraphs[0].controls.push(field_control(0, "b"));
+        renumber_inserted_objects(&target, &mut inserted).unwrap();
+        let first = stored_field_id(&inserted[0].controls[0]);
+        let Control::Table(table) = &inserted[1].controls[0] else {
+            unreachable!()
+        };
+        let nested = stored_field_id(&table.cells[0].paragraphs[0].controls[0]);
+        assert!(first > 41 && nested > 41, "ids must clear the target's 41");
+        assert_ne!(first, nested);
+    }
+
+    #[test]
+    fn renumbering_nothing_changes_nothing() {
+        let target = from_markdown("target\n");
+        let mut inserted = vec![Paragraph::default()];
+        assert_eq!(renumber_inserted_objects(&target, &mut inserted).unwrap(), 0);
+        assert_eq!(inserted, vec![Paragraph::default()]);
+    }
 }
