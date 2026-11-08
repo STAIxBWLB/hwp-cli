@@ -1,5 +1,8 @@
 //! Cache synthesis and temporary table-cell geometry must share stable flow contracts.
 
+#[path = "../../hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
 use hwp_model::{
     BorderFill, BorderFillId, Cell, Control, Document, GsoPlacement, HwpUnit, Paragraph, Table,
 };
@@ -311,8 +314,9 @@ fn first_line_pushed_after_floating_table_uses_resolved_page_anchor() {
     if !shaped.iter().any(
         |item| matches!(item, hwp_render::shape::InlineItem::Run(run) if !run.glyphs.is_empty()),
     ) {
-        eprintln!(
-            "SKIP first-line pagination precondition: no host font shapes ASCII; install a system font with ASCII glyphs"
+        fixture_skip::resource_unavailable(
+            "host ASCII font for first-line pagination precondition",
+            "install a system font with ASCII glyphs",
         );
         return;
     }
@@ -422,4 +426,51 @@ fn floating_section_first_paragraph_omits_only_its_space_before() {
             );
         }
     }
+}
+
+#[test]
+fn native_floating_edit_keeps_base_cursor_at_an_explicit_break() {
+    let mut doc = hwp_convert::from_markdown("First\n\nEdited\n");
+    doc.meta.source_format = "hwp5".into();
+    for shape in &mut doc.header.char_shapes {
+        shape.base_size = 1000;
+    }
+    for shape in &mut doc.header.para_shapes {
+        shape.spacing_top = 0;
+        shape.spacing_bottom = 0;
+        shape.line_spacing_type = 0;
+        shape.line_spacing = 160;
+        shape.line_spacing_old = 160;
+    }
+    for (index, para) in doc.sections[0].paragraphs.iter_mut().enumerate() {
+        para.line_segs = vec![hwp_model::LineSeg {
+            text_start: 0,
+            v_pos: if index == 0 { 0 } else { 1766 },
+            line_height: 1000,
+            text_height: 1000,
+            baseline_gap: 850,
+            line_spacing: 600,
+            col_start: 0,
+            seg_width: 20000,
+            flags: 0x0006_0000,
+        }];
+    }
+    let fill = add_fill(&mut doc, 0x0004_5678);
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(table(
+            vec![Paragraph::default()],
+            fill,
+            1200,
+        )));
+    let changed = &mut doc.sections[0].paragraphs[1];
+    changed.chars.insert(0, hwp_model::HwpChar::Text('X'));
+    changed.header.break_type |= 0x04;
+    changed.line_segs.clear();
+    synthesize(&mut doc);
+    assert_eq!(
+        doc.sections[0].paragraphs[1].line_segs[0].v_pos, 1766,
+        "native edits retain base cursor synthesis even at an explicit break"
+    );
+    assert_eq!(doc.sections[0].paragraphs[1].line_segs[0].flags & 1, 0);
 }

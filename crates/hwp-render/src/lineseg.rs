@@ -24,6 +24,8 @@ use crate::shape::{InlineItem, glyph_source_sequences, shape_range, source_has_n
 const TABLE_BLOCK_PADDING: i32 = 566;
 
 /// Synthesize line layout for the whole authored document, including body and table-cell paragraphs.
+/// Native HWP5 sources keep the base cursor path, so native edits do not mix
+/// cacheless fragment anchors/page-start flags with restored genuine caches.
 /// To match Hangul's line breaks, store must have HCR Batang loaded.
 pub fn synthesize_linesegs(
     doc: &mut Document,
@@ -31,6 +33,7 @@ pub fn synthesize_linesegs(
     warnings: &mut RenderIssueAccumulator,
 ) {
     let snap = doc.clone();
+    let use_fragment_flow = doc.meta.source_format != "hwp5";
     let floating_sections: Vec<bool> = doc
         .sections
         .iter()
@@ -47,7 +50,7 @@ pub fn synthesize_linesegs(
         .collect();
     // Floating-table sections reuse the renderer's legal row/cell fragment flow.
     // Other sections keep their measured Hancom inline-table advance.
-    let flow_anchors = if floating_sections.iter().any(|floating| *floating) {
+    let flow_anchors = if use_fragment_flow && floating_sections.iter().any(|floating| *floating) {
         for (si, section) in doc.sections.iter_mut().enumerate() {
             if !floating_sections[si] {
                 continue;
@@ -97,14 +100,15 @@ pub fn synthesize_linesegs(
             // together and loses heading space-before, causing vertical displacement.
             // Paragraph gaps add the preceding space-after and current space-before. Omit
             // space-before at a section's first paragraph (genuine v_pos=0).
-            // An explicit break resets the page cursor but retains the existing space-before.
+            // Cacheless-origin conversion resets an explicit-break cursor. Native HWP5
+            // edits retain the base cursor behavior, including existing space-before.
             let (sp_top, sp_bottom) = snap
                 .header
                 .para_shapes
                 .get(snap.sections[si].paragraphs[pi].para_shape.0 as usize)
                 .map_or((0, 0), |ps| (ps.spacing_top, ps.spacing_bottom));
             let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
-            if explicit_break {
+            if use_fragment_flow && explicit_break {
                 v_pos = 0;
             }
             if pi > 0 {
@@ -195,22 +199,13 @@ fn fill_nested(
                         warnings,
                     );
                 }
-                let table_margins = t.inner_margins;
                 for cell in &mut t.cells {
-                    // Native caches inherit only an explicit 0xffff sentinel.
-                    // Zero is authored padding, including an all-zero margin array.
-                    let [ml, mr]: [u16; 2] =
-                        std::array::from_fn(|i| match (cell.margins[i], table_margins[i]) {
-                            (u16::MAX, u16::MAX) => crate::layout::DEFAULT_CELL_MARGINS[i],
-                            (u16::MAX, inherited) => inherited,
-                            (explicit, _) => explicit,
-                        });
-                    let w = cell
-                        .width
-                        .0
-                        .saturating_sub(i32::from(ml))
-                        .saturating_sub(i32::from(mr))
-                        .max(1);
+                    // Retain base native-cache arithmetic, including raw sentinels.
+                    // Width/height sentinel interpretation requires genuine-byte
+                    // evidence before changing written geometry (#425).
+                    let w =
+                        (cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]))
+                            .max(1);
                     // Always recompute cells, as before: their line counts determine table height,
                     // and stale pre-edit caches would misalign the table.
                     fill_list(

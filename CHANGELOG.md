@@ -12,24 +12,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
-- Floating-table body anchors now follow the renderer's fragment planner and resolved first-line
-  page boundaries; explicit page breaks reset the body cursor while retaining prior space-before.
-  Cacheless body line advance follows declared spacing instead of a fixed 1.6x multiplier.
-  Nonempty cacheless cells reuse the existing line metrics with render-only widths narrowed by
-  left/right paragraph margins. Native nested caches retain their prior full-width convention
-  without added body paragraph gaps. Native cell width resolves only explicit `0xffff` margin
-  sentinels through table margins (using the existing default only for a table sentinel too),
-  fixing the width-of-1 fallback while preserving explicit zero padding. The floating anchor
-  prepass follows B5 by omitting space-before for each section's first paragraph only. Stored cell minima and
-  saved-cache row floors remain unchanged. Nested-cache preparation also covers table/picture
-  captions and text-box lists. Unchanged native HWP5 paragraphs retain their source representation;
-  edited floating-section paragraphs can receive new positions and page-start flags.
-  Empty-paragraph advancement and header/footer bounds remain separate follow-ups
-  ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422),
-  [#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)). Genuine floating-section edit coverage
-  and raw sentinel row margins are tracked in [#424](https://github.com/STAIxBWLB/hwp-cli/issues/424)
-  and [#425](https://github.com/STAIxBWLB/hwp-cli/issues/425). Hancom Office verification remains
-  pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
+- For HWPX/Markdown/JSON synthesis, floating-table body anchors now follow the renderer's
+  fragment planner and resolved first-line page boundaries; explicit page breaks reset the body
+  cursor while retaining prior space-before. Native HWP5 sources keep the base cursor path,
+  without the new fragment-anchor override or planner page-start bit, so native edits do not mix
+  approximate anchors with restored genuine caches. The anchor prepass follows B5 by omitting
+  space-before for each section's first paragraph only. Cacheless body line advance follows
+  declared spacing instead of a fixed 1.6x multiplier. Nonempty cacheless cells reuse the existing
+  line metrics with render-only widths narrowed by left/right paragraph margins. Native nested
+  caches keep base raw margin arithmetic, including sentinels, and no added body paragraph gaps.
+  Stored cell minima and saved-cache row floors remain unchanged. Nested-cache preparation also
+  covers table/picture captions and text-box lists. Remaining investigations are tracked in
+  [#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) and
+  [#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)-[#426](https://github.com/STAIxBWLB/hwp-cli/issues/426),
+  including native width/height sentinel interpretation and multiline body bounds. Hancom Office
+  verification remains pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
 
 ## [1.3.1]
 

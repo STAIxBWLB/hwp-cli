@@ -1927,7 +1927,7 @@ impl TableSplitCtx<'_, '_> {
 }
 
 /// Default inner cell margins (HWPUNIT; Hangul defaults).
-pub(crate) const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
+const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
 
 /// One cached page-sized run of a cell.  The selections retain paragraph
 /// boundaries, while `first_v_pos` translates Hancom's page-relative cache to
@@ -3257,7 +3257,7 @@ fn layout_para_objects(
 }
 
 /// Cell margins in pt (left/right/top/bottom): cell override, table default, then Hangul default.
-pub(crate) fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
+fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
     // HWP5 uses 0xffff in a cell LIST_HEADER to mean "use the table
     // default".  It is important that the sentinel remains in the IR for a
     // lossless hwp5 -> hwp5 round trip, so resolve it only at render time.
@@ -4668,10 +4668,10 @@ fn layout_box_paragraphs(
         page_number,
         0,
         None,
-        // This wrapper serves headers, footers, notes, captions and the cell measurement pass.
-        // The first four have no segment in the envelope `--segments v2` emits by default
+        // This wrapper serves headers, footers, notes and captions.
+        // These lists have no segment in the envelope `--segments v2` emits by default
         // (notes and captions never, headers and footers unless asked for), so a row would join
-        // to nothing, and a measurement page is scratch that no page ever receives.
+        // to nothing. Cell measurement calls layout_box_para_iter directly with no recorder.
         None,
         None,
         false,
