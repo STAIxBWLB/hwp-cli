@@ -35,6 +35,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["index", "op", "status", "pieces_touched", "changed", "reason"],
+      "allOf": [{
+        "if": {
+          "properties": {"op": {"const": "insert_blocks"}, "status": {"const": "applied"}},
+          "required": ["op", "status"]
+        },
+        "then": {"required": ["missing_style"], "properties": {"reason": {"type": "null"}}},
+        "else": {"not": {"required": ["missing_style"]}}
+      }],
       "properties": {
         "index": {
           "type": "integer",
@@ -57,6 +65,10 @@
           "maxItems": 10000,
           "items": { "$ref": "#/$defs/idPair" },
           "description": "Before/after segment id pairs this op changed (D-13). Empty for an op with no address (a text-anchor/pattern match, which has no segment id to report) or one that changed nothing identifiable. A run-range char-format op that splits a run reports the touched paragraph's OWN id change AND the id change of every LATER run in that paragraph, not only the run it targeted — splitting a run shifts every later run's canonical index and therefore its id, even though that run's own text and shape are untouched; reporting only the targeted run's pair would leave a consumer re-keying against ids that no longer exist."
+        },
+        "missing_style": {
+          "enum": ["create", "refuse"],
+          "description": "Selected missing-style policy for applied insert_blocks only; omitted for every other outcome. The request defaults to create. This is policy metadata, not a failure reason."
         },
         "reason": {
           "type": ["string", "null"],

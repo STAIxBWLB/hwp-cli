@@ -95,6 +95,15 @@ fn assert_policy_report(report: &Value, expected: &str) {
         "applied insert_blocks needs its policy"
     );
     let mut broken = report.clone();
+    broken["ops"][0]["missing_style"] = json!("fallback");
+    assert!(!validator.is_valid(&broken), "unknown policies are refused");
+    let mut broken = report.clone();
+    broken["ops"][0]["op"] = json!("create_style");
+    assert!(
+        !validator.is_valid(&broken),
+        "legacy outcomes cannot carry this policy field"
+    );
+    let mut broken = report.clone();
     broken["ops"][0]["reason"] = json!("applied policy cannot overload the failure reason");
     assert!(
         !validator.is_valid(&broken),

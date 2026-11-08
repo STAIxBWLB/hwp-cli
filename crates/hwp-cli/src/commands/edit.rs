@@ -465,6 +465,8 @@ pub struct OpOutcome {
     pieces_touched: usize,
     changed: Vec<IdPair>,
     reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing_style: Option<hwp_cli::insert_blocks::MissingStylePolicy>,
 }
 
 /// `edit-report-v1`'s wire shape (schema_version/contract first, D-15's house convention) — a
@@ -1738,6 +1740,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Failed,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                missing_style: None,
                 reason: Some(failure_reason(operation)),
             });
             continue;
@@ -1759,6 +1762,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Applied,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                missing_style: None,
                 reason: None,
             });
             continue;
@@ -1777,6 +1781,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Failed,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                missing_style: None,
                 reason: Some("적용되지 않음 (사전 검증 단계에서 이미 확인됨)".to_string()),
             });
             continue;
@@ -1799,11 +1804,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             status: OpStatus::Applied,
             pieces_touched,
             changed,
-            reason: match operation {
-                TypedEditOperation::InsertBlocks { request, .. } => Some(format!(
-                    "insert_blocks: missing_style={}",
-                    request.missing_style.as_str()
-                )),
+            reason: None,
+            missing_style: match operation {
+                TypedEditOperation::InsertBlocks { request, .. } => Some(request.missing_style),
                 _ => None,
             },
         });
@@ -2904,6 +2907,7 @@ fn fast_path_outcomes(plan: &EditPlan, matched: &[bool]) -> Vec<OpOutcome> {
             },
             pieces_touched: usize::from(matched),
             changed: Vec::new(),
+            missing_style: None,
             reason: (!matched).then(|| failure_reason(operation)),
         })
         .collect()

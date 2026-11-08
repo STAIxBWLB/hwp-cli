@@ -12,7 +12,7 @@ use crate::document_spec::{
     PageSpec, RunSpec, SectionSpec, SpecVersion, StyleSpec, validate_spec,
 };
 
-#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Default, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MissingStylePolicy {
     #[default]
