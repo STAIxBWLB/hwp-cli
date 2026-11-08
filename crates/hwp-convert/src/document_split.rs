@@ -24,12 +24,17 @@
 //! the section setup of the source section (page, columns, header and footer), the whole
 //! `DocHeader` (D-06, no id remapping), and a resource closure computed by ONE walk over the
 //! fragment as built: its body, the setup controls carried in front, every caption and
-//! paragraph list, and the whole header. A stream is *reported* as excluded only when that
-//! walk proves nothing in the fragment uses it. A reference the IR does not model (a
-//! border-fill image fill, a raw HWP5 shape, OLE or picture record, raw XML that does not
-//! parse) is never read by guessing at bytes: the fragment keeps every stream it cannot prove
-//! unused and the report names the site. A reference to a stream the source does not carry is
-//! a refusal, so a deliberate exclusion can never be confused with a lost asset. Every kept
+//! paragraph list, the whole header and the package parts the HWPX writer copies back
+//! verbatim. A stream is *reported* as excluded only when that walk proves nothing in the
+//! fragment uses it. A reference the IR does not model (a border-fill image fill, a raw HWP5
+//! shape, OLE or picture record, raw XML that does not parse, a carried part that is not
+//! readable XML) is never read by guessing at bytes: the fragment keeps every stream it cannot
+//! prove unused and the report names the site. A picture reference resolves through the OPF
+//! manifest first, so an item id that differs from its file name still finds its stream. A
+//! reference to a stream the source does not carry is a refusal, so a deliberate exclusion can
+//! never be confused with a lost asset. What the OUTPUT format then writes can still be
+//! narrower (HWP5 emits only streams its BIN_DATA table names), so the CLI reconciles the
+//! report with the published file and lists such streams as dropped by the format. Every kept
 //! body paragraph and table gets a source-to-output address so a later binding does not guess
 //! shifted indices.
 //!
@@ -319,6 +324,16 @@ pub enum RangeAnchor {
 }
 
 impl RangeAnchor {
+    /// The anchor's kind as the range report states it: `heading`, `bookmark` or `address`.
+    /// The report never carries the anchor's text, which can be document text.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            RangeAnchor::Heading(_) => "heading",
+            RangeAnchor::Bookmark(_) => "bookmark",
+            RangeAnchor::Address { .. } => "address",
+        }
+    }
+
     fn describe(&self) -> String {
         match self {
             RangeAnchor::Heading(text) => format!("제목 {text:?}"),
@@ -406,7 +421,10 @@ impl std::fmt::Display for RangeError {
                 f,
                 "선택한 범위가 원본에 없는 바이너리({reference})를 참조합니다. 원본이 불완전합니다. `hwp convert --to json --embed-bin`으로 내보낸 자급식 JSON인지 확인하세요"
             ),
-            RangeError::EmptyDocument => write!(f, "문서에 구역이 없어 범위를 추출할 수 없습니다"),
+            RangeError::EmptyDocument => write!(
+                f,
+                "문서에 구역이 없어 범위를 추출할 수 없습니다. 본문이 있는 문서인지 `hwp cat`으로 확인하고, 비어 있다면 다른 파일을 지정하세요"
+            ),
         }
     }
 }
@@ -435,10 +453,12 @@ pub enum AddressKind {
 
 /// A place in the fragment that may reference a binary stream but whose reference the IR does
 /// not model, so the closure cannot resolve it. Content-free: a stable cause code and an
-/// address in the FRAGMENT (`header/border_fills/N` or `sS/pP`, the top-level body paragraph).
+/// address in the FRAGMENT (`header/border_fills/N`, `sS/pP` for the top-level body paragraph,
+/// or `package/NAME` for a package part carried verbatim).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnverifiedSite {
-    /// `border_fill_image`, `raw_shape`, `raw_ole`, `raw_picture` or `raw_xml_unparsed`.
+    /// `border_fill_image`, `raw_shape`, `raw_ole`, `raw_picture`, `raw_xml_unparsed` or
+    /// `carried_part_unread`.
     pub code: &'static str,
     pub at: String,
 }
@@ -461,6 +481,47 @@ pub struct ResourceClosureReport {
     /// Streams the fragment provably does not reference. The fragment does not carry them,
     /// and this is a deliberate exclusion, not a loss.
     pub excluded: Vec<String>,
+    /// Streams the closure decided to carry that the output FORMAT's writer did not emit (an
+    /// HWP5 `/BinData` stream no `BIN_DATA` table row names). Filled by
+    /// [`ResourceClosureReport::reconcile_with_output`] after the output is built, so that
+    /// `kept` and `kept_unverified` only ever list streams the published file really holds.
+    pub dropped_by_format: Vec<String>,
+}
+
+impl ResourceClosureReport {
+    /// Moves every carried stream the published output does not hold from `kept` /
+    /// `kept_unverified` to `dropped_by_format`. `fragment` is the stream list the writer was
+    /// given, `output` the streams read back from what it wrote. A stream is held when the
+    /// output has a stream with the same bytes that no earlier stream has already claimed.
+    pub fn reconcile_with_output(
+        &mut self,
+        fragment: &[hwp_model::BinStream],
+        output: &[hwp_model::BinStream],
+    ) {
+        let mut unclaimed: Vec<&hwp_model::BinStream> = output.iter().collect();
+        let mut dropped = BTreeSet::new();
+        for stream in fragment {
+            match unclaimed.iter().position(|held| held.data == stream.data) {
+                Some(position) => {
+                    unclaimed.remove(position);
+                }
+                None => {
+                    dropped.insert(stream.name.clone());
+                }
+            }
+        }
+        if dropped.is_empty() {
+            return;
+        }
+        self.kept.retain(|name| !dropped.contains(name));
+        self.kept_unverified.retain(|name| !dropped.contains(name));
+        // Source order, as the other lists.
+        self.dropped_by_format = fragment
+            .iter()
+            .filter(|stream| dropped.contains(&stream.name))
+            .map(|stream| stream.name.clone())
+            .collect();
+    }
 }
 
 /// The extracted fragment and the evidence about it.
@@ -538,7 +599,7 @@ fn resolve_anchor(doc: &Document, anchor: &RangeAnchor) -> Result<(usize, usize)
                 .collect()
         }
         RangeAnchor::Bookmark(name) => body_paragraphs(doc)
-            .filter(|(_, _, paragraph)| holds_bookmark(paragraph, name))
+            .filter(|(_, _, paragraph)| !name.is_empty() && holds_bookmark(paragraph, name))
             .map(|(section, index, _)| (section, index))
             .collect(),
     };
@@ -569,6 +630,35 @@ pub const TAG_SHAPE_COMPONENT: u16 = 0x10 + 60;
 pub const TAG_SHAPE_COMPONENT_OLE: u16 = 0x10 + 68;
 pub const TAG_SHAPE_COMPONENT_PICTURE: u16 = 0x10 + 69;
 
+/// Whether a SHAPE_COMPONENT record is long enough to hold a fill block and that block's fill
+/// type has the image bit. Only the record layout and the one flag are read, never the BinData
+/// id that follows. The offsets are the ones `hwp-render` reads the same block with
+/// (`shape_draw.rs::parse_style`, its "Table 28" fill): the object id is stored once (4 bytes)
+/// or twice (8 bytes, when the two copies are equal), the transform count is the `u16` at +42,
+/// the border starts after that many 96-byte matrix pairs, and the fill type is the `u32` 13
+/// bytes into the border block. Measured on the three pictures of the genuine
+/// `annual_report.hwp` and `work_report.hwp`: 196 bytes, one transform pair, so the record ends
+/// exactly where the border block would begin.
+fn shape_component_has_image_fill(data: &[u8]) -> bool {
+    let read_u16 = |offset: usize| {
+        data.get(offset..offset + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
+    let read_u32 = |offset: usize| {
+        data.get(offset..offset + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    if data.len() < 8 {
+        return false;
+    }
+    let base = if data[0..4] == data[4..8] { 8 } else { 4 };
+    let Some(count) = read_u16(base + 42) else {
+        return false;
+    };
+    let border = base + 92 + usize::from(count) * 96;
+    read_u32(border + 13).is_some_and(|fill_type| fill_type & 0x2 != 0)
+}
+
 /// Every binary reference of a document, and every place whose reference could not be read.
 #[derive(Default)]
 struct ReferenceScan {
@@ -597,6 +687,15 @@ impl ReferenceScan {
         for record in records {
             match record.tag {
                 TAG_SHAPE_COMPONENT if !modeled_picture => self.unverified("raw_shape", at),
+                // A modeled picture's shape component is its frame. The genuine pictures
+                // measured end it before the border and fill block (see
+                // `shape_component_has_image_fill`), so there is nothing to read there. A
+                // record that does reach a fill block with the image bit could name a BinData
+                // id of its own, which the picture's `bin_ref` does not cover, so it is an
+                // unverified site just like a raw shape's.
+                TAG_SHAPE_COMPONENT if shape_component_has_image_fill(&record.data) => {
+                    self.unverified("raw_shape", at);
+                }
                 TAG_SHAPE_COMPONENT_OLE => self.unverified("raw_ole", at),
                 TAG_SHAPE_COMPONENT_PICTURE if !modeled_picture => {
                     self.unverified("raw_picture", at);
@@ -699,6 +798,21 @@ fn scan_references(fragment: &Document) -> ReferenceScan {
         // Fill-type bit 1 is an image fill; its BinData id sits unparsed in `tail`.
         if fill.fill_type & 0x2 != 0 {
             scan.unverified("border_fill_image", &format!("header/border_fills/{index}"));
+        }
+    }
+    // Package parts the HWPX writer copies back unchanged (`hwpx_extra_entries`: META-INF/*,
+    // DocOptions, scripts, master pages). They are parts of the fragment as much as a section
+    // is, so a `binaryItemIDRef` in one counts. A part that is not UTF-8 XML cannot be read and
+    // is an unverified site rather than a part assumed to be free of references.
+    for (name, bytes) in &fragment.hwpx_extra_entries {
+        let at = format!("package/{name}");
+        let is_xml = {
+            let lower = name.to_ascii_lowercase();
+            lower.ends_with(".xml") || lower.ends_with(".rdf") || lower.ends_with(".hpf")
+        };
+        match std::str::from_utf8(bytes) {
+            Ok(text) if is_xml => scan.xml(text, &at),
+            _ => scan.unverified("carried_part_unread", &at),
         }
     }
     for (section_index, section) in fragment.sections.iter().enumerate() {
@@ -1563,12 +1677,16 @@ mod tests {
 
     /// Appends `control` to `paragraph` with the extended-control char that places it.
     fn attach(paragraph: &mut Paragraph, ctrl_id: [u8; 4], control: Control) {
+        attach_with_code(paragraph, 11, ctrl_id, control);
+    }
+
+    fn attach_with_code(paragraph: &mut Paragraph, code: u16, ctrl_id: [u8; 4], control: Control) {
         let index = paragraph.controls.len() as u32;
         paragraph.controls.push(control);
         paragraph.chars.insert(
             0,
             HwpChar::ExtCtrl {
-                code: 11,
+                code,
                 ctrl_id,
                 payload: Vec::new(),
                 ctrl_index: Some(index),
@@ -1778,6 +1896,283 @@ mod tests {
         });
         assert!(outcome.resources.unverified.is_empty());
         assert_eq!(outcome.resources.kept, vec!["BinData/b.png"]);
+    }
+
+    // ───────────── T9-F8..F12, nits ─────────────
+
+    /// A shape component record: `count` transform pairs, then a border block whose fill type
+    /// is `fill_type`, laid out the way `shape_component_has_image_fill` reads it.
+    fn shape_component(fill_type: Option<u32>) -> hwp_model::OpaqueRecord {
+        let mut data = vec![0u8; 8 + 42];
+        data[0..4].copy_from_slice(b"cip$");
+        data[4..8].copy_from_slice(b"cip$");
+        data.extend_from_slice(&1u16.to_le_bytes()); // one transform pair, at +42 from base 8
+        data.resize(8 + 92 + 96, 0); // the matrices end where the border block begins
+        if let Some(fill_type) = fill_type {
+            data.resize(8 + 92 + 96 + 13, 0);
+            data.extend_from_slice(&fill_type.to_le_bytes());
+        }
+        hwp_model::OpaqueRecord {
+            tag: TAG_SHAPE_COMPONENT,
+            data,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn 범위_안_그림의_도형_레코드가_그림_채움을_가리키면_미검증으로_남긴다() {
+        let outcome = extract_b_with(|doc| {
+            if let Control::Picture(picture) = &mut doc.sections[0].paragraphs[4].controls[0] {
+                picture.extras = vec![shape_component(Some(0x2))];
+            }
+        });
+        assert!(outcome.resources.excluded.is_empty());
+        assert_eq!(outcome.resources.unverified[0].code, "raw_shape");
+        assert_eq!(outcome.fragment.bin_streams.len(), 3);
+    }
+
+    #[test]
+    fn 범위_안_그림의_도형_레코드가_채움_블록에_닿지_않거나_채움이_그림이_아니면_불확실하지_않다() {
+        for record in [
+            shape_component(None),      // ends at the border block, like the genuine files
+            shape_component(Some(0x1)), // solid fill
+            shape_component(Some(0x4)), // gradient
+        ] {
+            let outcome = extract_b_with(|doc| {
+                if let Control::Picture(picture) = &mut doc.sections[0].paragraphs[4].controls[0] {
+                    picture.extras = vec![record.clone()];
+                }
+            });
+            assert!(
+                outcome.resources.unverified.is_empty(),
+                "{:?}",
+                record.data.len()
+            );
+            assert_eq!(
+                outcome.resources.excluded,
+                vec!["BinData/c.png", "BinData/unused.png"]
+            );
+        }
+    }
+
+    #[test]
+    fn 모양_레코드_판독은_짧거나_이상한_레코드에서_멈추고_패닉하지_않는다() {
+        for data in [vec![], vec![1, 2, 3], vec![0; 7], vec![0; 8], vec![0; 49]] {
+            assert!(!shape_component_has_image_fill(&data));
+        }
+        // A transform count that would put the border block past the end of the record.
+        let mut huge = vec![0u8; 8 + 44];
+        huge[8 + 42..8 + 44].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(!shape_component_has_image_fill(&huge));
+    }
+
+    #[test]
+    fn 조각이_그대로_싣는_패키지_부품의_바이너리_참조도_센다() {
+        let outcome = extract_b_with(|doc| {
+            doc.hwpx_extra_entries.push((
+                "Contents/masterpage0.xml".into(),
+                br#"<masterPage><hc:img binaryItemIDRef="c.png"/></masterPage>"#.to_vec(),
+            ));
+        });
+        assert_eq!(
+            outcome.resources.kept,
+            vec!["BinData/b.png", "BinData/c.png"]
+        );
+        assert_eq!(outcome.resources.excluded, vec!["BinData/unused.png"]);
+    }
+
+    #[test]
+    fn 읽을_수_없는_패키지_부품은_모든_바이너리를_남기고_자리를_보고한다() {
+        for (name, bytes) in [
+            ("Scripts/macro.bin", vec![0xff, 0xfe, 0x00]),
+            ("Contents/masterpage0.xml", b"<masterPage><hc:img".to_vec()),
+        ] {
+            let outcome = extract_b_with(|doc| {
+                doc.hwpx_extra_entries.push((name.into(), bytes.clone()));
+            });
+            assert!(outcome.resources.excluded.is_empty(), "{name}");
+            assert_eq!(outcome.resources.unverified.len(), 1, "{name}");
+            assert_eq!(
+                outcome.resources.unverified[0].at,
+                format!("package/{name}")
+            );
+        }
+    }
+
+    #[test]
+    fn 읽을_수_있는_정상_패키지_부품은_영향이_없다() {
+        // The container and manifest parts every genuine package carries hold no reference.
+        let outcome = extract_b_with(|doc| {
+            for name in [
+                "META-INF/container.xml",
+                "META-INF/manifest.xml",
+                "META-INF/container.rdf",
+            ] {
+                doc.hwpx_extra_entries
+                    .push((name.into(), b"<container><rootfiles/></container>".to_vec()));
+            }
+        });
+        assert!(outcome.resources.unverified.is_empty());
+        assert_eq!(
+            outcome.resources.excluded,
+            vec!["BinData/c.png", "BinData/unused.png"]
+        );
+    }
+
+    #[test]
+    fn 매니페스트_id가_파일명과_달라도_그림의_바이너리를_찾는다() {
+        let mut doc = range_doc();
+        doc.bin_streams[0].name = "BinData/p1.png".into();
+        doc.hwpx_bin_manifest = vec![("b.png".into(), "BinData/p1.png".into())];
+        let outcome = extract_range(
+            &doc,
+            "h",
+            &selector(heading("B"), Some(heading("C")), false),
+        )
+        .unwrap();
+        assert_eq!(outcome.resources.kept, vec!["BinData/p1.png"]);
+    }
+
+    #[test]
+    fn 출력에_실리지_않은_스트림은_보고서의_유지_목록에서_빠진다() {
+        let mut report = ResourceClosureReport {
+            kept: vec!["BinData/b.png".into()],
+            kept_unverified: vec!["BinData/c.png".into(), "BinData/unused.png".into()],
+            ..Default::default()
+        };
+        let fragment: Vec<_> = ["b.png", "c.png", "unused.png"]
+            .iter()
+            .map(|name| hwp_model::BinStream {
+                name: format!("BinData/{name}"),
+                data: name.as_bytes().to_vec(),
+            })
+            .collect();
+        // The output format wrote only b.png; the others were orphans.
+        let output = vec![hwp_model::BinStream {
+            name: "BIN0001.png".into(),
+            data: b"b.png".to_vec(),
+        }];
+        report.reconcile_with_output(&fragment, &output);
+        assert_eq!(report.kept, vec!["BinData/b.png"]);
+        assert!(report.kept_unverified.is_empty());
+        assert_eq!(
+            report.dropped_by_format,
+            vec!["BinData/c.png", "BinData/unused.png"]
+        );
+    }
+
+    #[test]
+    fn 출력이_모두_싣고_있으면_보고서는_그대로다() {
+        let fragment = vec![hwp_model::BinStream {
+            name: "BinData/b.png".into(),
+            data: b"b".to_vec(),
+        }];
+        let mut report = ResourceClosureReport {
+            kept: vec!["BinData/b.png".into()],
+            ..Default::default()
+        };
+        let before = report.clone();
+        report.reconcile_with_output(&fragment, &fragment.clone());
+        assert_eq!(report, before);
+    }
+
+    #[test]
+    fn 같은_바이트의_스트림_둘은_출력에_하나뿐이면_하나만_빠진다() {
+        let fragment: Vec<_> = ["a.png", "b.png"]
+            .iter()
+            .map(|name| hwp_model::BinStream {
+                name: format!("BinData/{name}"),
+                data: b"same".to_vec(),
+            })
+            .collect();
+        let mut report = ResourceClosureReport {
+            kept: vec!["BinData/a.png".into(), "BinData/b.png".into()],
+            ..Default::default()
+        };
+        report.reconcile_with_output(&fragment, &fragment[..1]);
+        assert_eq!(report.kept, vec!["BinData/a.png"]);
+        assert_eq!(report.dropped_by_format, vec!["BinData/b.png"]);
+    }
+
+    #[test]
+    fn 빈_책갈피_이름은_이름_없는_책갈피와도_맞지_않고_앵커로_거부한다() {
+        let mut doc = range_doc();
+        // A bookmark whose name decodes to the empty string, placed in the paragraph of "B".
+        let mut bookmark = generic(b"bokm");
+        bookmark.raw_children.push(hwp_model::OpaqueRecord {
+            tag: crate::bookmark::CTRL_DATA_TAG,
+            data: crate::bookmark::make_bokm_ctrl_data(""),
+            children: Vec::new(),
+        });
+        attach_with_code(
+            &mut doc.sections[0].paragraphs[3],
+            hwp_model::ctrl_char::BOOKMARK,
+            *b"bokm",
+            Control::Generic(bookmark),
+        );
+        // Sanity: the empty name is what the document holds, and `holds_bookmark` finds it
+        // when asked for the empty name directly (the guard is in anchor resolution).
+        let holder = &doc.sections[0].paragraphs[3];
+        assert_eq!(
+            holder
+                .controls
+                .iter()
+                .filter_map(crate::bookmark::bookmark_name)
+                .collect::<Vec<_>>(),
+            vec![String::new()]
+        );
+        assert!(holds_bookmark(holder, ""));
+        let result = extract_range(
+            &doc,
+            "h",
+            &selector(RangeAnchor::Bookmark(String::new()), None, true),
+        );
+        assert!(matches!(result, Err(RangeError::AnchorMissing { .. })));
+    }
+
+    #[test]
+    fn 이름이_xml이_아닌_부품은_내용이_xml_같아도_읽지_않고_불확실로_둔다() {
+        // `.bin` is not an XML part name, so its bytes are not interpreted even though they
+        // happen to be valid UTF-8 with a reference inside.
+        let outcome = extract_b_with(|doc| {
+            doc.hwpx_extra_entries.push((
+                "Scripts/looks-like-xml.bin".into(),
+                br#"<a><hc:img binaryItemIDRef="c.png"/></a>"#.to_vec(),
+            ));
+        });
+        assert!(outcome.resources.excluded.is_empty());
+        assert_eq!(outcome.resources.unverified[0].code, "carried_part_unread");
+        assert!(
+            outcome
+                .resources
+                .kept_unverified
+                .contains(&"BinData/c.png".to_string()),
+            "{:?}",
+            outcome.resources
+        );
+    }
+
+    #[test]
+    fn 앵커_종류는_본문_텍스트_없이_말한다() {
+        assert_eq!(heading("비밀 제목").kind(), "heading");
+        assert_eq!(RangeAnchor::Bookmark("비밀".into()).kind(), "bookmark");
+        assert_eq!(
+            RangeAnchor::Address {
+                section: 0,
+                paragraph: 1
+            }
+            .kind(),
+            "address"
+        );
+    }
+
+    #[test]
+    fn 구역_없는_문서_거부는_다음_행동을_말한다() {
+        let mut doc = range_doc();
+        doc.sections.clear();
+        let error = extract_range(&doc, "h", &selector(heading("A"), None, true)).unwrap_err();
+        assert_eq!(error, RangeError::EmptyDocument);
+        assert!(error.to_string().contains("hwp cat"), "{error}");
     }
 
     #[test]

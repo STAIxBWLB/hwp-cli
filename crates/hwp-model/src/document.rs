@@ -133,15 +133,28 @@ impl Document {
                     .iter()
                     .position(|s| s.name.eq_ignore_ascii_case(&name))
             }
-            BinRef::ItemRef(item) => self.bin_streams.iter().position(|s| {
-                s.name == *item
-                    || s.name.ends_with(&format!("/{item}"))
-                    || s.name
-                        .rsplit('/')
-                        .next()
-                        .and_then(|f| f.split('.').next())
-                        .is_some_and(|stem| stem == item)
-            }),
+            BinRef::ItemRef(item) => {
+                // The package manifest is authoritative: an item id need not equal the file
+                // name (`id="logo" href="BinData/p1.png"`). Names are the fallback for
+                // documents without a manifest map (synthesized, or read from HWP5).
+                if let Some(index) = self
+                    .hwpx_bin_manifest
+                    .iter()
+                    .find(|(id, _)| id == item)
+                    .and_then(|(_, href)| self.bin_streams.iter().position(|s| s.name == *href))
+                {
+                    return Some(index);
+                }
+                self.bin_streams.iter().position(|s| {
+                    s.name == *item
+                        || s.name.ends_with(&format!("/{item}"))
+                        || s.name
+                            .rsplit('/')
+                            .next()
+                            .and_then(|f| f.split('.').next())
+                            .is_some_and(|stem| stem == item)
+                })
+            }
         }
     }
 
@@ -177,5 +190,76 @@ impl Section {
                 Control::SectionDef(sd) => Some(sd),
                 _ => None,
             })
+    }
+}
+
+#[cfg(test)]
+mod bin_stream_index_tests {
+    use super::*;
+
+    fn stream(name: &str, data: &[u8]) -> BinStream {
+        BinStream {
+            name: name.to_string(),
+            data: data.to_vec(),
+        }
+    }
+
+    #[test]
+    fn manifest_id_that_differs_from_the_file_stem_resolves_through_the_manifest() {
+        let doc = Document {
+            bin_streams: vec![
+                stream("BinData/p1.png", b"one"),
+                stream("BinData/p2.png", b"two"),
+            ],
+            hwpx_bin_manifest: vec![
+                ("logo".into(), "BinData/p1.png".into()),
+                ("seal".into(), "BinData/p2.png".into()),
+            ],
+            ..Document::default()
+        };
+        assert_eq!(
+            doc.bin_stream_index(&BinRef::ItemRef("logo".into())),
+            Some(0)
+        );
+        assert_eq!(
+            doc.bin_stream_index(&BinRef::ItemRef("seal".into())),
+            Some(1)
+        );
+        assert_eq!(
+            doc.resolve_bin(&BinRef::ItemRef("seal".into())),
+            Some(&b"two"[..])
+        );
+    }
+
+    #[test]
+    fn the_manifest_wins_over_a_name_that_happens_to_match_another_stream() {
+        // `id="p2"` points at p1.png even though a stream is named p2.png.
+        let doc = Document {
+            bin_streams: vec![
+                stream("BinData/p1.png", b"one"),
+                stream("BinData/p2.png", b"two"),
+            ],
+            hwpx_bin_manifest: vec![("p2".into(), "BinData/p1.png".into())],
+            ..Document::default()
+        };
+        assert_eq!(doc.bin_stream_index(&BinRef::ItemRef("p2".into())), Some(0));
+    }
+
+    #[test]
+    fn without_a_manifest_entry_the_name_heuristics_still_apply() {
+        let doc = Document {
+            bin_streams: vec![stream("BinData/image1.png", b"one")],
+            hwpx_bin_manifest: vec![("other".into(), "BinData/missing.png".into())],
+            ..Document::default()
+        };
+        assert_eq!(
+            doc.bin_stream_index(&BinRef::ItemRef("image1".into())),
+            Some(0)
+        );
+        assert_eq!(doc.bin_stream_index(&BinRef::ItemRef("other".into())), None);
+        assert_eq!(
+            doc.bin_stream_index(&BinRef::ItemRef("nothing".into())),
+            None
+        );
     }
 }

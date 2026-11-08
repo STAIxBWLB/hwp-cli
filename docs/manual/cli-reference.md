@@ -132,7 +132,7 @@ Divide one document into several outputs, one per section by default (page range
 | `--to` | `<TO>` |  | Where the range ends, same syntax as --from (default: the end of the start's section) |
 | `--end-exclusive` |  |  | Leave the --to paragraph out of the range (it is included by default) |
 | `--source-sha256` | `<SOURCE_SHA256>` |  | SHA-256 (hex) of the source file the selection was made against; a different file is refused before anything is written |
-| `--range-report` | `<RANGE_REPORT>` |  | Write the range report (hwp-range-extraction-v1: source hash, selection, source-to-output addresses, the kept, kept-unverified and excluded binaries and the unreadable reference sites) as JSON to this path, published together with the fragment. Not written unless given; it may not be the same file as --loss-report |
+| `--range-report` | `<RANGE_REPORT>` |  | Write the range report (hwp-range-extraction-v1: source hash, selection by anchor kind and address, never anchor text, source-to-output addresses, the kept, kept-unverified, excluded and dropped-by-format binaries and the unreadable reference sites) as JSON to this path, published together with the fragment. Not written unless given; it may not be the same file as --loss-report |
 | `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found while splitting |
 | `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the split succeeds without loss |
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |

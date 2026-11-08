@@ -132,7 +132,7 @@
 | `--to` | `<TO>` |  | 범위 끝 지점, --from과 같은 문법 (기본: 시작 지점이 속한 구역의 끝) |
 | `--end-exclusive` |  |  | --to 문단을 범위에서 제외 (기본은 포함) |
 | `--source-sha256` | `<SOURCE_SHA256>` |  | 선택을 만든 원본 파일의 SHA-256(16진수) — 다른 파일이면 아무것도 쓰기 전에 거부 |
-| `--range-report` | `<RANGE_REPORT>` |  | 범위 보고서(hwp-range-extraction-v1: 원본 해시, 선택, 원본→출력 주소, 유지·미검증 유지·제외된 바이너리, 읽을 수 없는 참조 자리)를 JSON으로 기록 — 조각과 함께 게시. 지정하지 않으면 기록하지 않으며 --loss-report와 같은 파일일 수 없습니다 |
+| `--range-report` | `<RANGE_REPORT>` |  | 범위 보고서(hwp-range-extraction-v1: 원본 해시, 지점 종류와 주소(지점 텍스트는 담지 않음), 원본→출력 주소, 유지·미검증 유지·제외·형식이 버린 바이너리, 읽을 수 없는 참조 자리)를 JSON으로 기록 — 조각과 함께 게시. 지정하지 않으면 기록하지 않으며 --loss-report와 같은 파일일 수 없습니다 |
 | `--strict` |  |  | 분할 중 보존 불가능한(opaque) 데이터 발견 시 실패 처리 |
 | `--loss-report` | `<LOSS_REPORT>` |  | typed 보존 ledger(hwp-preservation-report-v1)를 JSON으로 기록 — 무손실 성공 시에도 작성 |
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |

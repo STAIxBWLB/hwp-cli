@@ -193,9 +193,12 @@ pub(crate) struct SplitSummary {
 
 /// The `hwp-range-extraction-v1` report: what was selected, against which source, where each
 /// kept object went, and what happened to every binary stream. Closed and content-free: it
-/// carries addresses, hashes and stream names, never document text.
+/// carries addresses, hashes, stream names and the KIND of each anchor, never document text. An
+/// anchor's own text (`heading:` text, a bookmark name) is not echoed, so what the caller typed
+/// to find a paragraph cannot leak the paragraph's content into a file or an MCP reply; the
+/// anchor is identified by its kind and by the address it resolved to.
 fn range_report_json(
-    request: &RangeRequest,
+    selector: &hwp_convert::document_split::RangeSelector,
     source_sha256: &str,
     fragment_sha256: &str,
     extracted: &hwp_convert::document_split::RangeOutcome,
@@ -231,9 +234,9 @@ fn range_report_json(
         "source_sha256": source_sha256,
         "fragment_sha256": fragment_sha256,
         "selection": {
-            "from": request.from,
-            "to": request.to,
-            "end_inclusive": !request.end_exclusive,
+            "from_kind": selector.start.kind(),
+            "to_kind": selector.end.as_ref().map(|anchor| anchor.kind()),
+            "end_inclusive": selector.end_inclusive,
             "section": extracted.section,
             "first_paragraph": extracted.start,
             "end_paragraph": extracted.end,
@@ -243,6 +246,7 @@ fn range_report_json(
             "kept": extracted.resources.kept,
             "kept_unverified": extracted.resources.kept_unverified,
             "excluded": extracted.resources.excluded,
+            "dropped_by_format": extracted.resources.dropped_by_format,
             "unverified_sites": extracted
                 .resources
                 .unverified
@@ -440,6 +444,14 @@ pub(crate) fn execute(
                 fragment,
                 &output_document,
             ));
+        // The closure decided which streams to carry, but the output format's writer decides
+        // which it emits (HWP5 writes only streams its BIN_DATA table names). Compare with what
+        // the published bytes read back as, so the report never lists a stream the file lacks.
+        if let Some((_, _, extracted)) = range_extraction.as_mut() {
+            extracted
+                .resources
+                .reconcile_with_output(&fragment.bin_streams, &output_document.bin_streams);
+        }
         fragment_bytes.push((destination.clone(), bytes));
     }
 
@@ -475,9 +487,10 @@ pub(crate) fn execute(
     // A range report is published in the SAME transaction as the fragment: a reader that finds
     // the fragment finds the addresses that explain it, and a failed publish leaves neither.
     let mut range_summary = None;
-    if let (Some(request), Some((_, source_sha256, extracted))) = (range, &range_extraction) {
+    if let (Some(request), Some((selector, source_sha256, extracted))) = (range, &range_extraction)
+    {
         let fragment_sha256 = hwp_convert::document_split::source_sha256(&fragment_bytes[0].1);
-        let report_json = range_report_json(request, source_sha256, &fragment_sha256, extracted);
+        let report_json = range_report_json(selector, source_sha256, &fragment_sha256, extracted);
         if let Some(report_path) = &request.report {
             let mut text = serde_json::to_string_pretty(&report_json)?;
             text.push('\n');

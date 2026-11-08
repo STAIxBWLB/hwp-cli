@@ -35,24 +35,31 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "from",
-        "to",
+        "from_kind",
+        "to_kind",
         "end_inclusive",
         "section",
         "first_paragraph",
         "end_paragraph"
       ],
+      "description": "Content-free: the anchors are identified by kind and by the address they resolved to, never by their text, because a heading or bookmark name is document text.",
       "properties": {
-        "from": {
-          "type": "string",
-          "description": "The start anchor exactly as given."
-        },
-        "to": {
-          "type": [
-            "string",
-            "null"
+        "from_kind": {
+          "enum": [
+            "heading",
+            "bookmark",
+            "address"
           ],
-          "description": "The end anchor exactly as given, or null when the range ran to the end of the start's section."
+          "description": "How the start anchor was given."
+        },
+        "to_kind": {
+          "enum": [
+            "heading",
+            "bookmark",
+            "address",
+            null
+          ],
+          "description": "How the end anchor was given, or null when the range ran to the end of the start's section."
         },
         "end_inclusive": {
           "type": "boolean",
@@ -96,6 +103,7 @@
         "kept",
         "kept_unverified",
         "excluded",
+        "dropped_by_format",
         "unverified_sites"
       ],
       "description": "The closure is conservative: a binary stream is excluded only when the whole fragment, header included, provably does not reference it. A stream is never dropped because a reference to it could not be read.",
@@ -121,6 +129,13 @@
           },
           "description": "Binary streams of the source the fragment provably does not reference and does not carry, in source order. A deliberate exclusion, never a loss."
         },
+        "dropped_by_format": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Binary streams the closure decided to carry that the output format's writer did not emit (for HWP5, a stream no BIN_DATA table row names). They are not in `kept` or `kept_unverified`, which list only streams the published file holds."
+        },
         "unverified_sites": {
           "type": "array",
           "description": "Places in the fragment that may reference a binary stream whose reference is not modeled, so it was not read. The bytes are never parsed or guessed.",
@@ -138,13 +153,14 @@
                   "raw_shape",
                   "raw_ole",
                   "raw_picture",
-                  "raw_xml_unparsed"
+                  "raw_xml_unparsed",
+                  "carried_part_unread"
                 ],
-                "description": "Why the site is unresolved: an image fill in a border fill, a raw HWP5 shape component, OLE object or picture component, or raw XML that does not parse."
+                "description": "Why the site is unresolved: an image fill in a border fill, a raw HWP5 shape component, OLE object or picture component, raw XML that does not parse, or a package part carried verbatim that is not readable XML."
               },
               "at": {
                 "type": "string",
-                "description": "Address in the FRAGMENT: `header/border_fills/N` or `sS/pP` (section and top-level body paragraph)."
+                "description": "Address in the FRAGMENT: `header/border_fills/N`, `sS/pP` (section and top-level body paragraph) or `package/NAME` (a package part carried verbatim)."
               }
             }
           }

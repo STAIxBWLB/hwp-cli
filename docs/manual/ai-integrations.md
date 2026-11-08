@@ -30,11 +30,14 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
   recomputed, so it may not match Hancom's own pagination. `--from`/`--to` (`from`/`to` in
   `hwp_split`) extract one typed range instead, anchored on a heading, a bookmark or a
   `section.paragraph` address, with the binaries the range uses. The `hwp-range-extraction-v1`
-  report of where each paragraph and table went and which binaries were kept, kept unverified or
-  excluded is written only when you pass `--range-report {file.json}`; `hwp_split` always returns
+  report of where each paragraph and table went and which binaries were kept, kept unverified,
+  excluded or dropped by the output format (HWP5 writes only the binaries its BIN_DATA table
+  names) is written only when you pass `--range-report {file.json}`; `hwp_split` always returns
   it in its `range` field. A binary is excluded only when the whole fragment provably does not use
   it: when the fragment holds a reference the tool cannot read (an image fill, a raw shape or OLE
-  object), every binary travels and the report lists those sites.
+  object, a carried package part that is not readable XML), every binary travels and the report
+  lists those sites. The report is content-free: anchors appear as a kind and a resolved address,
+  never as the heading or bookmark text.
 - `hwp compare {a} {b}` / `hwp_compare` — paragraph and structural differences between two
   documents, leaving both untouched. This is not `hwp diff`, which compares a render against a
   Hancom reference PNG.

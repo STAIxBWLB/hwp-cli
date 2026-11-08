@@ -40,13 +40,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   top-level body paragraphs of one section, so a table is taken whole and never cut. The fragment
   keeps the section setup and the whole header. Its binaries come from one closure pass over the
   built fragment: a binary is dropped only when nothing in the fragment (pictures, captions,
-  carried header and footer, raw-preserved objects) provably uses it. When the fragment holds a
-  reference the tool cannot read, such as a border-fill image fill or a raw HWP5 shape or OLE
-  record, every binary is kept and the report lists the sites. `--range-report` publishes
-  `hwp-range-extraction-v1` (source hash, fragment hash, source-to-output paragraph and table
-  addresses, kept, kept-unverified and excluded binaries, unverified sites) in the same
-  transaction as the fragment, and `hwp_split` returns it inline. `--range-report` and
-  `--loss-report` may not name the same file. A mismatching `--source-sha256`, a missing or
+  carried header and footer, raw-preserved objects, the package parts copied back verbatim)
+  provably uses it. A picture's item id resolves through the package manifest, so an id that
+  differs from its file name still finds its stream. When the fragment holds a reference the
+  tool cannot read, such as a border-fill image fill, a raw HWP5 shape or OLE record or a
+  carried part that is not readable XML, every binary is kept and the report lists the sites.
+  `--range-report` publishes `hwp-range-extraction-v1` (source hash, fragment hash,
+  source-to-output paragraph and table addresses, kept, kept-unverified, excluded and
+  dropped-by-format binaries, unverified sites) in the same transaction as the fragment, and
+  `hwp_split` returns it inline. The report is content-free: it names each anchor by kind and
+  by the address it resolved to, never by its text, and `kept` / `kept-unverified` list only
+  binaries the published file holds (HWP5 writes just the binaries its BIN_DATA table names, so
+  the others are listed as dropped by the format). `--range-report` and `--loss-report` may not
+  name the same file. A mismatching `--source-sha256`, a missing or
   ambiguous anchor, a range across sections, a reversed or empty range and a picture whose binary
   the source lacks are each refused before anything is written. Tested against every form of the generated P0 form set, from HWPX and from its HWP5
   conversion ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).

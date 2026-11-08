@@ -232,8 +232,9 @@ pub enum Cmd {
         #[arg(long, requires = "from")]
         source_sha256: Option<String>,
         /// Write the range report (hwp-range-extraction-v1: source hash,
-        /// selection, source-to-output addresses, the kept, kept-unverified and
-        /// excluded binaries and the unreadable reference sites) as JSON to this
+        /// selection by anchor kind and address, never anchor text,
+        /// source-to-output addresses, the kept, kept-unverified, excluded and
+        /// dropped-by-format binaries and the unreadable reference sites) as JSON to this
         /// path, published together with the fragment. Not written unless given;
         /// it may not be the same file as --loss-report
         #[arg(long, requires = "from")]

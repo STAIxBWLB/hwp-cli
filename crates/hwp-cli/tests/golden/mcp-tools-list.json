@@ -2125,7 +2125,7 @@
           "type": "string"
         },
         "range_report": {
-          "description": "hwp-range-extraction-v1 JSON(원본 해시, 원본→출력 주소, 유지·미검증 유지·제외 바이너리, 읽을 수 없는 참조 자리)을 조각과 함께 게시할 경로(선택, 응답의 range 필드에는 항상 들어 있다). loss_report와 같은 파일일 수 없다",
+          "description": "hwp-range-extraction-v1 JSON(원본 해시, 원본→출력 주소, 유지·미검증 유지·제외·형식이 버린 바이너리, 읽을 수 없는 참조 자리; 지점은 텍스트 없이 종류와 주소로만 기록)을 조각과 함께 게시할 경로(선택, 응답의 range 필드에는 항상 들어 있다). loss_report와 같은 파일일 수 없다",
           "type": "string"
         },
         "source_sha256": {

@@ -647,6 +647,13 @@ fn the_schema_rejects_a_drifted_report() {
     let mut renamed = good.clone();
     renamed["resources"]["dropped"] = renamed["resources"]["excluded"].take();
     cases.push(("renamed resource list", renamed));
+    let mut echoed = good.clone();
+    echoed["selection"]["from"] = Value::from("heading:FORM_START_APPLICATION");
+    cases.push(("anchor text echoed into the selection", echoed));
+    let mut unknown_site = good.clone();
+    unknown_site["resources"]["unverified_sites"] =
+        serde_json::json!([{"code": "guess", "at": "s0/p0"}]);
+    cases.push(("unknown unverified-site code", unknown_site));
     let mut wrong_kind = good.clone();
     wrong_kind["addresses"][0]["kind"] = Value::from("cell");
     cases.push(("unknown address kind", wrong_kind));
@@ -728,4 +735,316 @@ fn an_unreadable_reference_site_keeps_every_stream_and_is_reported() {
         format!("header/border_fills/{site}").as_str()
     );
     assert_eq!(ws.read("u/filled-001.hwp").bin_streams.len(), total);
+}
+
+/// The report is declared content-free. A heading is document text and a bookmark name is
+/// author text, so neither may be echoed into the published file or the MCP reply: the report
+/// names each anchor by kind and resolved address only.
+#[test]
+fn the_report_never_echoes_anchor_text() {
+    let Some(ws) = Workspace::new("content-free") else {
+        return;
+    };
+    let report = extract(
+        &ws,
+        "source.hwpx",
+        "cf",
+        "FORM_START_PROFILE_1",
+        Some("FORM_START_PROFILE_3"),
+        &[],
+    );
+    let on_disk = std::fs::read_to_string(ws.dir.join("cf.json")).unwrap();
+    for anchor_text in ["FORM_START_PROFILE_1", "FORM_START_PROFILE_3", "heading:"] {
+        assert!(
+            !on_disk.contains(anchor_text),
+            "the range report carries anchor text {anchor_text:?}"
+        );
+    }
+    assert_eq!(report["selection"]["from_kind"], "heading");
+    assert_eq!(report["selection"]["to_kind"], "heading");
+    // The anchors are still pinned down, by the address they resolved to.
+    assert_eq!(report["selection"]["first_paragraph"], 10);
+    assert_eq!(report["selection"]["end_paragraph"], 16);
+    // An address anchor and an open end are reported as such.
+    hwp_ok(
+        &ws.dir,
+        &[
+            "split",
+            "source.hwpx",
+            "--out-dir",
+            "cf2",
+            "--from",
+            "at:0.10",
+            "--range-report",
+            "cf2.json",
+        ],
+    );
+    let open: Value =
+        serde_json::from_slice(&std::fs::read(ws.dir.join("cf2.json")).unwrap()).unwrap();
+    assert_report_valid(&open);
+    assert_eq!(open["selection"]["from_kind"], "address");
+    assert!(open["selection"]["to_kind"].is_null());
+}
+
+/// An HWPX whose manifest id is not the file stem (`id="logo" href="BinData/p1.png"`) is a
+/// valid document: its picture must resolve through the manifest, not be refused as lost.
+#[test]
+fn a_manifest_id_that_differs_from_the_file_name_extracts() {
+    let Some(ws) = Workspace::new("manifest-id") else {
+        return;
+    };
+    rewrite_zip(
+        &ws.dir.join("source.hwpx"),
+        &ws.dir.join("odd.hwpx"),
+        |name, data| match name {
+            "BinData/image2.png" => Some(("BinData/p1.png".to_string(), data)),
+            "Contents/content.hpf" => Some((
+                name.to_string(),
+                swap_text(
+                    data,
+                    &[
+                        ("id=\"image2\"", "id=\"logo\""),
+                        ("BinData/image2.png", "BinData/p1.png"),
+                    ],
+                ),
+            )),
+            _ if name.starts_with("Contents/section") && name.ends_with(".xml") => Some((
+                name.to_string(),
+                swap_text(
+                    data,
+                    &[("binaryItemIDRef=\"image2\"", "binaryItemIDRef=\"logo\"")],
+                ),
+            )),
+            _ => Some((name.to_string(), data)),
+        },
+    );
+    let report = extract(
+        &ws,
+        "odd.hwpx",
+        "odd-out",
+        "FORM_START_APPLICATION",
+        Some("FORM_START_DEVELOPMENT"),
+        &[],
+    );
+    assert_eq!(
+        report["resources"]["kept"],
+        serde_json::json!(["BinData/p1.png"])
+    );
+}
+
+/// A package part the HWPX writer copies back verbatim is part of the fragment: a reference in
+/// it keeps the stream, and a part that cannot be read keeps every stream and is reported.
+#[test]
+fn a_carried_package_part_is_part_of_the_closure() {
+    let Some(ws) = Workspace::new("carried") else {
+        return;
+    };
+    // Add a master page that references the picture no form uses (`image1`, the manifest's
+    // "excluded" one). The range below (profile-1) contains no picture, so only the carried
+    // part can keep that stream.
+    let outside = ws.expected["images"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|image| image["role"] == "excluded")
+        .unwrap()["sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    add_zip_entry(
+        &ws.dir.join("source.hwpx"),
+        &ws.dir.join("carried.hwpx"),
+        "Contents/masterpage0.xml",
+        br#"<masterPage><hc:img binaryItemIDRef="image1"/></masterPage>"#,
+    );
+    let report = extract(
+        &ws,
+        "carried.hwpx",
+        "carried-out",
+        "FORM_START_PROFILE_1",
+        Some("FORM_START_PROFILE_2"),
+        &[],
+    );
+    let kept = report["resources"]["kept"].as_array().unwrap();
+    assert_eq!(kept.len(), 1, "{report}");
+    let fragment = ws.read("carried-out/carried-001.hwpx");
+    assert_eq!(
+        fragment
+            .bin_streams
+            .iter()
+            .map(|b| contract::digest(&b.data))
+            .collect::<Vec<_>>(),
+        vec![outside],
+        "the picture only the carried part references travels with the fragment"
+    );
+    assert!(
+        report["resources"]["unverified_sites"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // The same part, unreadable: nothing is excluded and the part is named.
+    add_zip_entry(
+        &ws.dir.join("source.hwpx"),
+        &ws.dir.join("unread.hwpx"),
+        "Scripts/macro.bin",
+        &[0xff, 0xfe, 0x00, 0x01],
+    );
+    let report = extract(
+        &ws,
+        "unread.hwpx",
+        "unread-out",
+        "FORM_START_PROFILE_1",
+        Some("FORM_START_PROFILE_2"),
+        &[],
+    );
+    assert!(
+        report["resources"]["excluded"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        report["resources"]["unverified_sites"][0]["code"],
+        "carried_part_unread"
+    );
+    assert_eq!(
+        report["resources"]["unverified_sites"][0]["at"],
+        "package/Scripts/macro.bin"
+    );
+}
+
+/// HWP5 writes only streams its BIN_DATA table names, so a stream the closure keeps on
+/// suspicion can still be dropped by the format. The report must say what the published file
+/// holds, not what the closure intended.
+#[test]
+fn the_report_lists_only_streams_the_published_hwp5_holds() {
+    let Some(ws) = Workspace::new("orphan") else {
+        return;
+    };
+    let mut doc = ws.read("source.hwp");
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        fill_type: 0x2,
+        ..Default::default()
+    });
+    hwp5::write_document(
+        &doc,
+        &ws.dir.join("filled.hwp"),
+        &hwp5::WriteOptions::default(),
+    )
+    .unwrap();
+    // An orphan stream: present in the container, named by no BIN_DATA row.
+    {
+        use std::io::Write as _;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(ws.dir.join("filled.hwp"))
+            .unwrap();
+        let mut cfb = cfb::CompoundFile::open(file).unwrap();
+        cfb.create_new_stream("/BinData/BIN0099.png")
+            .unwrap()
+            .write_all(b"orphan payload no table row names")
+            .unwrap();
+        cfb.flush().unwrap();
+    }
+    let loaded = ws.read("filled.hwp");
+    assert!(
+        loaded.bin_streams.iter().any(|b| b.name == "BIN0099.png"),
+        "the reader loads the orphan"
+    );
+    let report = extract(
+        &ws,
+        "filled.hwp",
+        "orphan-out",
+        "FORM_START_PROFILE_1",
+        None,
+        &[],
+    );
+    let resources = &report["resources"];
+    let fragment = ws.read("orphan-out/filled-001.hwp");
+    // Everything the report calls kept is really in the file...
+    let held: Vec<String> = fragment
+        .bin_streams
+        .iter()
+        .map(|b| b.name.clone())
+        .collect();
+    for list in ["kept", "kept_unverified"] {
+        for name in resources[list].as_array().unwrap() {
+            assert!(
+                held.contains(&name.as_str().unwrap().to_string()),
+                "{list} names {name} but the published file holds {held:?}"
+            );
+        }
+    }
+    // ...and the orphan the format dropped is reported as such, not as kept.
+    assert_eq!(
+        resources["dropped_by_format"],
+        serde_json::json!(["BIN0099.png"])
+    );
+    assert!(!held.contains(&"BIN0099.png".to_string()));
+    assert_report_valid(&report);
+}
+
+/// Rewrites `from` into `to`, passing every entry through `edit`, which returns the (possibly
+/// renamed) entry or `None` to drop it.
+fn rewrite_zip(
+    from: &Path,
+    to: &Path,
+    mut edit: impl FnMut(&str, Vec<u8>) -> Option<(String, Vec<u8>)>,
+) {
+    use std::io::{Read as _, Write as _};
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(from).unwrap()).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(to).unwrap());
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().unwrap().into_owned();
+        // `mimetype` must stay stored for a valid HWPX package.
+        let method = if name == "mimetype" {
+            zip::CompressionMethod::Stored
+        } else {
+            entry.compression()
+        };
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        if name.ends_with('/') {
+            continue;
+        }
+        if let Some((new_name, new_data)) = edit(&name, data) {
+            writer
+                .start_file(
+                    new_name,
+                    zip::write::SimpleFileOptions::default().compression_method(method),
+                )
+                .unwrap();
+            writer.write_all(&new_data).unwrap();
+        }
+    }
+    writer.finish().unwrap();
+}
+
+fn add_zip_entry(from: &Path, to: &Path, name: &str, data: &[u8]) {
+    use std::io::Write as _;
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(from).unwrap()).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(to).unwrap());
+    for index in 0..archive.len() {
+        writer
+            .raw_copy_file(archive.by_index_raw(index).unwrap())
+            .unwrap();
+    }
+    writer
+        .start_file(name, zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(data).unwrap();
+    writer.finish().unwrap();
+}
+
+fn swap_text(data: Vec<u8>, replacements: &[(&str, &str)]) -> Vec<u8> {
+    let mut text = String::from_utf8(data).unwrap();
+    for (from, to) in replacements {
+        assert!(text.contains(from), "expected {from:?} in the part");
+        text = text.replace(from, to);
+    }
+    text.into_bytes()
 }
