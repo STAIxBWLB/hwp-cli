@@ -116,7 +116,7 @@ fn assert_no_missing_substring(doc: &Document) {
         );
     }
 }
-fn later_input_collision_case(general: bool, force_stream_collision: bool) {
+fn later_input_collision_case(general: bool, force_stream_collision: bool, prefix_boundary: bool) {
     let mut a = input("BinData/p1.png", Some(b"owner-authored A bytes"));
     let mut b = input("BinData/missing.png", None);
     if general {
@@ -130,7 +130,13 @@ fn later_input_collision_case(general: bool, force_stream_collision: bool) {
     assert!(b.resolve_bin(&picture(&b, 0).bin_ref).is_none());
     let probe = merge_documents(&[a.clone(), b.clone()]).unwrap();
     let spelling = missing_spelling(&probe.document).to_owned();
-    let name = format!("BinData/{spelling}.png");
+    let name = if prefix_boundary {
+        // Removing one leading underscore makes the reserved spelling appear only after
+        // the graft's separating underscore is prepended to the colliding source name.
+        spelling.strip_prefix('_').unwrap_or(&spelling).to_string()
+    } else {
+        format!("BinData/{spelling}.png")
+    };
     if force_stream_collision {
         a.bin_streams.push(BinStream {
             name: name.clone(),
@@ -177,19 +183,19 @@ fn picture_ref(doc: &Document, section: usize) -> BinRef {
 }
 #[test]
 fn fast_tier_later_input_cannot_resolve_previous_missing_target() {
-    later_input_collision_case(false, false);
+    later_input_collision_case(false, false, false);
 }
 #[test]
 fn general_tier_later_input_cannot_resolve_previous_missing_target() {
-    later_input_collision_case(true, false);
+    later_input_collision_case(true, false, false);
 }
 #[test]
 fn fast_tier_later_prefixed_stream_cannot_alias_missing_substring() {
-    later_input_collision_case(false, true);
+    later_input_collision_case(false, true, false);
 }
 #[test]
 fn general_tier_later_prefixed_stream_cannot_alias_missing_substring() {
-    later_input_collision_case(true, true);
+    later_input_collision_case(true, true, false);
 }
 
 #[derive(Clone, Copy)]
@@ -487,4 +493,180 @@ fn fast_valid_multicomponent_suffix_reference_retains_own_bytes() {
 #[test]
 fn general_valid_multicomponent_suffix_reference_retains_own_bytes() {
     valid_suffix_case(true);
+}
+
+#[test]
+fn fast_tier_missing_token_cannot_form_at_graft_prefix_boundary() {
+    later_input_collision_case(false, true, true);
+}
+#[test]
+fn general_tier_missing_token_cannot_form_at_graft_prefix_boundary() {
+    later_input_collision_case(true, true, true);
+}
+
+#[test]
+fn primary_manifest_missing_target_cannot_gain_later_inputs_payload() {
+    let a = input("BinData/missing.png", None);
+    let b = input("BinData/missing.png", Some(b"owner-authored later B bytes"));
+    assert!(a.resolve_bin(&picture_ref(&a, 0)).is_none());
+    assert_eq!(
+        b.resolve_bin(&picture_ref(&b, 0)),
+        Some(b"owner-authored later B bytes".as_slice())
+    );
+    let merged = merge_documents(&[a, b]).unwrap();
+    assert!(!merged.general_path_used);
+    assert!(
+        merged
+            .document
+            .resolve_bin(&picture_ref(&merged.document, 0))
+            .is_none(),
+        "a manifest-listed missing primary reference must not acquire later B's payload"
+    );
+    assert_eq!(
+        merged
+            .document
+            .resolve_bin(&picture_ref(&merged.document, 1)),
+        Some(b"owner-authored later B bytes".as_slice()),
+        "B's valid source reference must keep its own payload"
+    );
+}
+
+#[test]
+fn accepted_ir_primary_alias_cannot_capture_valid_later_physical_name_rewrite() {
+    let mut a = input("BinData/alias-a.png", Some(b"owner-authored alias A bytes"));
+    // Public IR accepts this namespace. This is not a claim that slash-containing manifest
+    // IDs are valid in Hancom or established by genuine format bytes.
+    a.hwpx_bin_manifest
+        .push(("BinData/alias-b.png".into(), "BinData/alias-a.png".into()));
+    let b = input("BinData/alias-b.png", Some(b"owner-authored alias B bytes"));
+    assert_eq!(
+        a.resolve_bin(&BinRef::ItemRef("BinData/alias-b.png".into())),
+        Some(b"owner-authored alias A bytes".as_slice())
+    );
+    assert_eq!(
+        b.resolve_bin(&picture_ref(&b, 0)),
+        Some(b"owner-authored alias B bytes".as_slice())
+    );
+    let merged = merge_documents(&[a, b]).unwrap();
+    assert!(!merged.general_path_used);
+    assert_eq!(
+        merged
+            .document
+            .resolve_bin(&picture_ref(&merged.document, 1)),
+        Some(b"owner-authored alias B bytes".as_slice()),
+        "rewriting B's valid reference to a physical name must not let A's same-spelling manifest ID capture it"
+    );
+    assert_eq!(
+        merged
+            .document
+            .resolve_bin(&picture_ref(&merged.document, 0)),
+        Some(b"owner-authored alias A bytes".as_slice())
+    );
+}
+
+fn canonical_bin_remint_case(general: bool, orphan_first: bool) {
+    let a = input("BIN0001.png", None);
+    assert!(a.header.bin_data.is_empty());
+    let first_manifest = a.hwpx_bin_manifest.clone();
+    let primary_ref = picture_ref(&a, 0);
+    assert!(a.resolve_bin(&primary_ref).is_none());
+    let mut b = input(
+        "BIN0001.png",
+        Some(b"owner-authored registered native B bytes"),
+    );
+    b.hwpx_bin_manifest.clear();
+    b.header.bin_data = vec![hwp_model::BinDataItem {
+        attr: 1,
+        storage_id: Some(1),
+        extension: Some("png".into()),
+        ..Default::default()
+    }];
+    let Control::Picture(picture) = b.sections[0].paragraphs[0]
+        .controls
+        .iter_mut()
+        .find(|control| matches!(control, Control::Picture(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    picture.bin_ref = BinRef::Id(hwp_model::BinDataId(1));
+    if orphan_first {
+        b.bin_streams.insert(
+            0,
+            BinStream {
+                name: "BIN0002.png".into(),
+                data: b"owner-authored unreferenced native orphan".to_vec(),
+            },
+        );
+    }
+    if general {
+        b.header.styles.push(hwp_model::Style {
+            name: "ExtraStyle".into(),
+            english_name: "ExtraStyle".into(),
+            ..Default::default()
+        });
+        b.header.border_fills.push(Default::default());
+    }
+    assert_eq!(
+        b.resolve_bin(&picture_ref(&b, 0)),
+        Some(b"owner-authored registered native B bytes".as_slice())
+    );
+    let outcome = merge_documents(&[a, b]).unwrap();
+    assert_eq!(outcome.general_path_used, general);
+    let merged = &outcome.document;
+    assert_eq!(
+        merged.hwpx_bin_manifest, first_manifest,
+        "the first manifest is preserved, not repaired to hide a namespace collision"
+    );
+    assert_eq!(picture_ref(merged, 0), primary_ref);
+    assert!(
+        merged.resolve_bin(&picture_ref(merged, 0)).is_none(),
+        "canonical BIN remint must not supply A's missing manifest target"
+    );
+    assert!(
+        matches!(picture_ref(merged, 1), BinRef::Id(_)),
+        "registered B reference remains numeric"
+    );
+    assert_eq!(
+        merged.resolve_bin(&picture_ref(merged, 1)),
+        Some(b"owner-authored registered native B bytes".as_slice()),
+        "B's reminted canonical carrier must resolve its own bytes"
+    );
+    let names: std::collections::BTreeSet<_> = merged
+        .bin_streams
+        .iter()
+        .map(|stream| stream.name.to_ascii_lowercase())
+        .collect();
+    assert_eq!(
+        names.len(),
+        merged.bin_streams.len(),
+        "remint must not collide with another carried stream"
+    );
+    if orphan_first {
+        assert_eq!(
+            merged
+                .bin_streams
+                .iter()
+                .filter(|stream| stream.data == b"owner-authored unreferenced native orphan")
+                .count(),
+            1,
+            "unreferenced orphan remains a distinct carried stream"
+        );
+    }
+}
+#[test]
+fn fast_canonical_bin_remint_preserves_primary_missing_manifest() {
+    canonical_bin_remint_case(false, false);
+}
+#[test]
+fn general_canonical_bin_remint_preserves_primary_missing_manifest() {
+    canonical_bin_remint_case(true, false);
+}
+#[test]
+fn fast_canonical_bin_remint_avoids_preceding_orphan_carrier() {
+    canonical_bin_remint_case(false, true);
+}
+#[test]
+fn general_canonical_bin_remint_avoids_preceding_orphan_carrier() {
+    canonical_bin_remint_case(true, true);
 }
