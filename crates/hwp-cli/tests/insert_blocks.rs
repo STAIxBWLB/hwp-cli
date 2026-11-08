@@ -2154,6 +2154,34 @@ fn content_inside_an_inserted_table_cell_is_measured_against_that_cell() {
     }
 }
 
+/// A cell's content width is its width minus the left and right inner margin (510 HWPUNIT
+/// each, about 3.6 mm together), not the cell width: 28 mm sits between 26.4 mm and 30 mm.
+#[test]
+fn a_cell_loses_its_side_margins_before_content_is_measured() {
+    let fixture = Fixture::new("cell-margin", "hwpx");
+    write_png(&fixture.dir, "logo.png");
+    let before = read(&fixture.base);
+    let table = |image_mm: u32| {
+        json!([{"type":"table","columns":[{"width_mm":30}],
+            "rows":[{"cells":[{"blocks":[{"type":"image","path":"logo.png","width_mm":image_mm}]}]}]}])
+    };
+    let diagnostic = fixture.refuse(
+        &fixture.base.clone(),
+        "margin-over",
+        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), table(28))]),
+        false,
+    );
+    assert!(diagnostic.contains("layout_overflow"), "{diagnostic}");
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "margin-under",
+        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), table(26))]),
+        false,
+    );
+    success(run, "an image inside the cell's usable width");
+    validates(&output);
+}
+
 #[test]
 fn spanned_cells_are_measured_by_their_column_span() {
     let fixture = Fixture::new("cell-span", "hwpx");
