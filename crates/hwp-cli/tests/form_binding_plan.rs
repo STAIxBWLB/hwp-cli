@@ -560,6 +560,147 @@ fn binding_artifact_aliases_and_legacy_report_refuse_before_any_publish() {
     assert!(!workspace.0.join("receipt.json").exists());
 }
 
+fn immutable_source_alias_case(field: &str, spelling: u8, extension: &str) {
+    let workspace = Workspace::new(&format!("immutable-{field}-{spelling}-{extension}"));
+    let source = workspace.source(extension);
+    let original = std::fs::read(&source).unwrap();
+    let name = source.file_name().unwrap().to_str().unwrap();
+    let absolute = source.canonicalize().unwrap();
+    let (input, alias) = match spelling {
+        0 => (PathBuf::from(name), absolute),
+        1 => (absolute, PathBuf::from(name)),
+        _ => (PathBuf::from(name), PathBuf::from(format!("./{name}"))),
+    };
+    let mut operation = binding_operation(&workspace, &source, "700");
+    operation[field] = json!(alias);
+    let ops = workspace.0.join("alias.ops.json");
+    std::fs::write(&ops, serde_json::to_vec(&json!([operation])).unwrap()).unwrap();
+    let counterpart = workspace.0.join(if field == "receipt" {
+        "preview.json"
+    } else {
+        "receipt.json"
+    });
+    std::fs::write(&counterpart, b"unchanged artifact").unwrap();
+    let output = workspace.0.join(format!("bound.{extension}"));
+    let result = hwp()
+        .current_dir(&workspace.0)
+        .arg("edit")
+        .arg(input)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(ops)
+        .arg("--verify")
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "an immutable source alias must refuse {field}/{spelling}/{extension}"
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        original,
+        "source bytes must survive an artifact alias"
+    );
+    assert_eq!(std::fs::read(counterpart).unwrap(), b"unchanged artifact");
+    assert!(
+        !output.exists(),
+        "no native output may be published on refusal"
+    );
+}
+
+macro_rules! immutable_source_alias_test {
+    ($name:ident, $field:literal, $spelling:literal, $extension:literal) => {
+        #[test]
+        fn $name() {
+            immutable_source_alias_case($field, $spelling, $extension);
+        }
+    };
+}
+immutable_source_alias_test!(
+    immutable_source_alias_receipt_absolute_hwp,
+    "receipt",
+    0,
+    "hwp"
+);
+immutable_source_alias_test!(
+    immutable_source_alias_receipt_relative_hwp,
+    "receipt",
+    1,
+    "hwp"
+);
+immutable_source_alias_test!(immutable_source_alias_receipt_dot_hwp, "receipt", 2, "hwp");
+immutable_source_alias_test!(
+    immutable_source_alias_preview_absolute_hwp,
+    "preview",
+    0,
+    "hwp"
+);
+immutable_source_alias_test!(
+    immutable_source_alias_preview_relative_hwp,
+    "preview",
+    1,
+    "hwp"
+);
+immutable_source_alias_test!(immutable_source_alias_preview_dot_hwp, "preview", 2, "hwp");
+immutable_source_alias_test!(
+    immutable_source_alias_receipt_absolute_hwpx,
+    "receipt",
+    0,
+    "hwpx"
+);
+immutable_source_alias_test!(
+    immutable_source_alias_receipt_relative_hwpx,
+    "receipt",
+    1,
+    "hwpx"
+);
+immutable_source_alias_test!(
+    immutable_source_alias_receipt_dot_hwpx,
+    "receipt",
+    2,
+    "hwpx"
+);
+immutable_source_alias_test!(
+    immutable_source_alias_preview_absolute_hwpx,
+    "preview",
+    0,
+    "hwpx"
+);
+immutable_source_alias_test!(
+    immutable_source_alias_preview_relative_hwpx,
+    "preview",
+    1,
+    "hwpx"
+);
+immutable_source_alias_test!(
+    immutable_source_alias_preview_dot_hwpx,
+    "preview",
+    2,
+    "hwpx"
+);
+
+#[test]
+fn immutable_source_alias_merge_output_cannot_replace_an_input() {
+    let workspace = Workspace::new("immutable-merge");
+    let source = workspace.source("hwpx");
+    let original = std::fs::read(&source).unwrap();
+    let second = workspace.0.join("second.hwpx");
+    std::fs::copy(&source, &second).unwrap();
+    let result = hwp()
+        .current_dir(&workspace.0)
+        .args(["merge", "source.hwpx", "second.hwpx", "-o"])
+        .arg(source.canonicalize().unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "merge must refuse a differently spelled immutable input"
+    );
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert_eq!(std::fs::read(second).unwrap(), original);
+}
+
 #[test]
 fn binding_values_are_literal_text_in_both_native_formats() {
     for extension in ["hwp", "hwpx"] {
