@@ -260,7 +260,8 @@ convert first and discover that converted source afresh. Revised values may repl
 same original bytes and reviewed plan; do not feed earlier output to an old plan or repeat clones
 on earlier output. Changed source requires fresh discovery and review.
 
-Each target explicitly chooses `copies`, `max_chars` and `allow_reflow`. `max_chars` is a Unicode
+Each target requires `max_chars` and an explicit `allow_reflow`; `copies` defaults to `[0]`
+(the original), and additional copies must be selected explicitly. `max_chars` is a Unicode
 scalar budget. Without reflow permission, replacement WCHAR length must not exceed the prior
 claim, and LF/TAB are refused. Reviewed permission allows bounded text growth, not font shrinking,
 grid/style changes or proof that the result fits a page. Render/font/Hancom evidence remains a
