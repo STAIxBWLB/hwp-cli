@@ -1456,3 +1456,136 @@ fn own_style_empty_runs_preserve_model_caches_and_both_writer_bytes() {
         }
     }
 }
+
+/// Preserve the existing package/header fixture, replacing only its section with
+/// authored hp:container XML so the reader, not a hand-built Generic, captures it.
+fn captured_container_style_source(fixture: &Fixture) -> PathBuf {
+    use std::io::Write as _;
+    let doc = read(&fixture.base);
+    let (body_id, body) = named(&doc, "body");
+    let (note_id, note) = named(&doc, "note");
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p id="0" paraPrIDRef="{note_ps}" styleIDRef="{note_id}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="{note_cs}"><hp:t>PRIVATE_CONTAINER_ANCESTOR</hp:t><hp:container id="78" zOrder="3"><hp:sz width="2000" height="1000"/><hp:subList><hp:p id="0" paraPrIDRef="{body_ps}" styleIDRef="{body_id}" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="{body_cs}"><hp:t>PRIVATE_CONTAINER_STYLE_USER</hp:t></hp:run></hp:p></hp:subList></hp:container></hp:run></hp:p></hs:sec>"#,
+        note_ps = note.para_shape.0,
+        note_cs = note.char_shape.0,
+        body_ps = body.para_shape.0,
+        body_cs = body.char_shape.0
+    );
+    let output = fixture.path("captured-container-source");
+    let mut source = zip::ZipArchive::new(std::fs::File::open(&fixture.base).unwrap()).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&output).unwrap());
+    for index in 0..source.len() {
+        let entry = source.by_index(index).unwrap();
+        let name = entry.name().unwrap().into_owned();
+        if name == "Contents/section0.xml" {
+            writer
+                .start_file(
+                    name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated)
+                        .last_modified_time(zip::DateTime::default()),
+                )
+                .unwrap();
+            writer.write_all(xml.as_bytes()).unwrap();
+        } else {
+            writer.raw_copy_file(entry).unwrap();
+        }
+    }
+    writer.finish().unwrap();
+    output
+}
+
+#[test]
+fn update_style_inside_real_captured_hwpx_container_refuses_with_style_locations_before_write() {
+    let fixture = Fixture::new("captured-container-refusal", "hwpx");
+    let source = captured_container_style_source(&fixture);
+    let original_bytes = std::fs::read(&source).unwrap();
+    let before = read(&source);
+    let (paragraph_index, control_index, object) = before.sections[0]
+        .paragraphs
+        .iter()
+        .enumerate()
+        .flat_map(|(paragraph, contents)| {
+            contents
+                .controls
+                .iter()
+                .enumerate()
+                .map(move |(control, value)| (paragraph, control, value))
+        })
+        .find_map(|(paragraph, control, value)| {
+            if let Control::Generic(object) = value {
+                object
+                    .container_box
+                    .as_ref()
+                    .map(|_| (paragraph, control, object))
+            } else {
+                None
+            }
+        })
+        .expect("real hp:container must be captured by the HWPX reader");
+    assert!(object.hwpx_raw_xml.is_some() && object.raw_children.is_empty());
+    assert_eq!(
+        object.paragraph_lists[0].paragraphs[0].plain_text(),
+        "PRIVATE_CONTAINER_STYLE_USER"
+    );
+    let (body_id, body) = named(&before, "body");
+    assert_eq!(
+        object.paragraph_lists[0].paragraphs[0].style.0 as usize,
+        body_id
+    );
+    assert_eq!(
+        object.paragraph_lists[0].paragraphs[0].char_shape_runs[0].1,
+        body.char_shape
+    );
+    let ancestor = hwp_convert::paragraph_id(
+        &hwp_convert::SegmentPath {
+            section: 0,
+            indices: vec![paragraph_index],
+        },
+        &before.sections[0].paragraphs[paragraph_index],
+    );
+    let (output, run) = fixture.edit(
+        &source,
+        "captured-update-refused",
+        json!([
+            {"op":"update_style","style":"body","size":"13pt"}
+        ]),
+    );
+    assert!(
+        !run.status.success(),
+        "captured container cannot publish a modeled style update"
+    );
+    let error = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        error.contains("문단 1개"),
+        "style preflight must count the blocked user rather than relying on a late writer loss: {error}"
+    );
+    assert!(error.contains(&format!("sections[0].paragraphs[{paragraph_index}].controls[{control_index}].paragraph_lists[0].paragraphs[0]")), "style preflight must identify the blocked model route: {error}");
+    assert!(error.contains(&ancestor));
+    assert!(
+        error.contains("거부")
+            && (error.contains("원본 레코드") || error.contains("XML"))
+            && error.contains("재생성"),
+        "style refusal must explain the original-record/XML resynthesis boundary: {error}"
+    );
+    assert!(
+        error.contains("hwp styles") && error.contains("다른 스타일"),
+        "style refusal needs a cause and next step: {error}"
+    );
+    assert!(
+        !error.contains("opaque_control_unrepresentable"),
+        "refusal must happen in style preflight before captured XML is removed"
+    );
+    assert!(
+        !error.contains("PRIVATE_CONTAINER_STYLE_USER")
+            && !error.contains("PRIVATE_CONTAINER_ANCESTOR")
+    );
+    assert!(
+        !output.exists(),
+        "refused captured-container edit cannot publish output"
+    );
+    assert!(
+        std::fs::read(source).unwrap() == original_bytes,
+        "refusal must preserve source package bytes"
+    );
+}

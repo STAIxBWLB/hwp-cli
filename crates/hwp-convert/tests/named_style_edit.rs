@@ -1327,3 +1327,217 @@ fn raw_style_refusal_counts_all_users_and_bounds_sampled_locations() {
         "bounded diagnostic collection must remain atomic"
     );
 }
+
+#[test]
+fn update_refuses_captured_container_and_unsupported_xml_users_before_mutation() {
+    for container in [true, false] {
+        let mut doc = valid_font_fixture();
+        let mut object = generic(vec![para("PRIVATE_CAPTURED_STYLE_USER", 0, 0, &[(0, 0)])]);
+        object.ctrl_id = if container { *b"cont" } else { *b"zzzz" };
+        object.hwpx_raw_xml = Some("<captured-object/>".into());
+        if container {
+            object.gso_shapes = vec![typed_shape_fixture()];
+            object.container_box = Some(hwp_model::ContainerBox {
+                x: 0,
+                y: 0,
+                w: 2000,
+                h: 1000,
+                anchored: false,
+                skipped_objects: 0,
+                text_boxes: vec![None],
+            });
+        }
+        let mut ancestor = para("PRIVATE_CAPTURED_ANCESTOR", 1, 0, &[(0, 0)]);
+        ancestor.controls.push(Control::Generic(object));
+        let index = doc.sections[0].paragraphs.len();
+        let ancestor_id = hwp_convert::paragraph_id(&path(&[index]), &ancestor);
+        doc.sections[0].paragraphs.push(ancestor);
+        let before = doc.clone();
+        let message = update_style(&mut doc, &update_request())
+            .expect_err(
+                "captured XML without a resynthesis path must refuse before changing the style",
+            )
+            .to_string();
+        assert!(
+            message.contains("문단 1개"),
+            "captured XML user count missing: {message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "sections[0].paragraphs[{index}].controls[0].paragraph_lists[0].paragraphs[0]"
+            )),
+            "captured XML user's model location missing: {message}"
+        );
+        assert!(message.contains(&ancestor_id));
+        assert!(
+            message.contains("거부")
+                && (message.contains("원본 레코드") || message.contains("XML"))
+                && message.contains("재생성"),
+            "refusal must name the original-record/XML resynthesis boundary: {message}"
+        );
+        assert!(
+            message.contains("hwp styles") && message.contains("다른 스타일"),
+            "refusal needs an actionable style remedy: {message}"
+        );
+        assert!(
+            !message.contains("PRIVATE_CAPTURED_STYLE_USER")
+                && !message.contains("PRIVATE_CAPTURED_ANCESTOR")
+        );
+        assert!(
+            doc == before,
+            "captured XML refusal cannot change headers, users, caches or original XML"
+        );
+    }
+}
+
+#[test]
+fn update_keeps_supported_generic_typed_mutation_paths_available() {
+    for ctrl_id in [*b"gso ", *b"head", *b"foot", *b"fn  ", *b"en  "] {
+        let mut doc = valid_font_fixture();
+        let mut object = generic(vec![para("supported modeled user", 0, 0, &[(0, 0)])]);
+        object.ctrl_id = ctrl_id;
+        let mut ancestor = para("supported note ancestor", 1, 0, &[(0, 0)]);
+        ancestor.controls.push(Control::Generic(object));
+        doc.sections[0].paragraphs.push(ancestor);
+        assert!(
+            update_style(&mut doc, &update_request())
+                .expect("known Generic arms retain their typed mutation path")
+        );
+        let Control::Generic(object) = &doc.sections[0].paragraphs.last().unwrap().controls[0]
+        else {
+            panic!("fixture generic");
+        };
+        assert!(object.hwpx_raw_xml.is_none());
+        assert_eq!(
+            object.paragraph_lists[0].paragraphs[0].char_shape_runs,
+            vec![(0, doc.header.styles[0].char_shape)]
+        );
+    }
+}
+
+fn assert_dangling_style_diagnostic(message: &str, owner: &str, table: &str, id: u16) {
+    assert!(
+        message.contains(owner),
+        "dangling reference diagnostic must identify its real owner {owner}: {message}"
+    );
+    assert!(
+        message.contains(table) && message.contains(&format!("참조 {id}")),
+        "dangling reference table/index missing: {message}"
+    );
+    assert!(
+        message.contains("추가") && message.contains("의미"),
+        "diagnostic must explain that appending definitions can assign meaning to a dangling reference: {message}"
+    );
+    assert!(
+        message.contains("원본 문서") && message.contains("복구") && message.contains("다시"),
+        "diagnostic must give a concrete repair/retry step: {message}"
+    );
+    assert!(!message.contains("PRIVATE_DANGLING_OWNER"));
+}
+
+#[test]
+fn update_dangling_paragraph_shape_diagnostics_identify_owner_and_append_alias_cause() {
+    for character in [false, true] {
+        let mut doc = valid_font_fixture();
+        doc.sections[0].paragraphs[4].chars = "PRIVATE_DANGLING_OWNER"
+            .chars()
+            .map(HwpChar::Text)
+            .collect();
+        let (owner, table, id) = if character {
+            let id = u16::try_from(doc.header.char_shapes.len()).unwrap();
+            doc.sections[0].paragraphs[4].char_shape_runs = vec![(0, CharShapeId(id))];
+            (
+                "sections[0].paragraphs[4].char_shape_runs[0]",
+                "char_shapes",
+                id,
+            )
+        } else {
+            let id = u16::try_from(doc.header.para_shapes.len()).unwrap();
+            doc.sections[0].paragraphs[4].para_shape = ParaShapeId(id);
+            ("sections[0].paragraphs[4].para_shape", "para_shapes", id)
+        };
+        let before = doc.clone();
+        let message = update_style(&mut doc, &update_request())
+            .expect_err("new shapes cannot bind a dangling paragraph reference")
+            .to_string();
+        assert_dangling_style_diagnostic(&message, owner, table, id);
+        assert!(
+            doc == before,
+            "owner diagnostic preflight must remain atomic"
+        );
+    }
+}
+
+#[test]
+fn update_dangling_font_diagnostic_identifies_shape_slot_and_append_alias_cause() {
+    let mut doc = valid_font_fixture();
+    doc.header.char_shapes[2].face_ids[6] = 1;
+    let before = doc.clone();
+    let operation = UpdateStyle {
+        character: CharFormat {
+            font: Some("Replacement face".into()),
+            ..CharFormat::default()
+        },
+        ..update_request()
+    };
+    let message = update_style(&mut doc, &operation)
+        .expect_err("font append cannot bind an unrelated dangling reference")
+        .to_string();
+    assert_dangling_style_diagnostic(&message, "header.char_shapes[2].face_ids[6]", "fonts[6]", 1);
+    assert!(doc == before);
+}
+
+#[test]
+fn update_dangling_unrelated_style_diagnostic_identifies_definition_owner() {
+    for character in [false, true] {
+        let mut doc = valid_font_fixture();
+        let (owner, table, id) = if character {
+            let id = u16::try_from(doc.header.char_shapes.len()).unwrap();
+            doc.header.styles[1].char_shape = CharShapeId(id);
+            ("header.styles[1].char_shape", "char_shapes", id)
+        } else {
+            let id = u16::try_from(doc.header.para_shapes.len()).unwrap();
+            doc.header.styles[1].para_shape = ParaShapeId(id);
+            ("header.styles[1].para_shape", "para_shapes", id)
+        };
+        let before = doc.clone();
+        let message = update_style(&mut doc, &update_request())
+            .expect_err("unrelated style references cannot acquire new shape meanings")
+            .to_string();
+        assert_dangling_style_diagnostic(&message, owner, table, id);
+        assert!(doc == before);
+    }
+}
+
+fn typed_shape_fixture() -> hwp_model::control::ShapeGeom {
+    serde_json::from_value(serde_json::json!({
+        "kind":"Rect", "x":0, "y":0, "w":2000, "h":1000,
+        "fill":4294967295u32, "border_color":4294967295u32, "border_width":0
+    }))
+    .unwrap()
+}
+
+#[test]
+fn update_typed_shape_with_captured_xml_keeps_modeled_mutation_path() {
+    let mut doc = valid_font_fixture();
+    let mut object = generic(vec![para("supported typed shape user", 0, 0, &[(0, 0)])]);
+    object.ctrl_id = *b"zzzz";
+    object.gso_shapes = vec![typed_shape_fixture()];
+    let original_geometry = object.gso_shapes.clone();
+    let mut ancestor = para("typed shape note ancestor", 1, 0, &[(0, 0)]);
+    ancestor.controls.push(Control::Generic(object));
+    doc.sections[0].paragraphs.push(ancestor);
+    assert!(
+        update_style(&mut doc, &update_request())
+            .expect("typed shapes without a container box retain their modeled mutation path")
+    );
+    let Control::Generic(object) = &doc.sections[0].paragraphs.last().unwrap().controls[0] else {
+        panic!("fixture generic");
+    };
+    assert!(object.hwpx_raw_xml.is_none());
+    assert_eq!(object.gso_shapes, original_geometry);
+    assert_eq!(
+        object.paragraph_lists[0].paragraphs[0].char_shape_runs,
+        vec![(0, doc.header.styles[0].char_shape)]
+    );
+}
