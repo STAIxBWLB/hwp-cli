@@ -3375,9 +3375,7 @@ mod tests {
         compiler.compile_styles(&styles).expect("styles register");
         let document = compiler.into_document();
 
-        for (style_name, font, existed) in
-            [("기존", "휴먼고딕", true), ("새것", "나눔손글씨", false)]
-        {
+        for (style_name, font) in [("기존", "휴먼고딕"), ("새것", "나눔손글씨")] {
             let style = document
                 .header
                 .styles
