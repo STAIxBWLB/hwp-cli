@@ -15,11 +15,11 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-# Proposed maintenance-risk exceptions; the person must accept these before merge.
-# These are not findings of unreachable vulnerabilities or agent-accepted risks.
+# Maintenance-risk exceptions accepted by the owner on 2026-11-08.
+# Acceptance is the owner's decision, not an agent finding that vulnerabilities are unreachable.
 ignore = [
-    { id = "RUSTSEC-2026-0206", reason = "PROPOSED, pending person acceptance: rustybuzz has no patched maintained release. Replacing it with HarfRust changes shaping metrics and glyph/cluster mapping, so it is not a drop-in dependency fix. Remove when a validated shaping migration eliminates rustybuzz, or a maintained fixed release is adopted." },
-    { id = "RUSTSEC-2026-0192", reason = "PROPOSED, pending person acceptance: ttf-parser has no patched maintained release and is also retained through fontdb. A Skrifa migration changes font parsing/outline/advance APIs across rendering, so it is not a drop-in dependency fix. Remove when validated font parsing and fontdb migrations eliminate ttf-parser, or a maintained fixed release is adopted." },
+    { id = "RUSTSEC-2026-0206", reason = "Accepted by the owner 2026-11-08: rustybuzz has no patched maintained release. Replacing it with HarfRust changes shaping metrics and glyph/cluster mapping, so it is not a drop-in dependency fix. Remove when a validated shaping migration eliminates rustybuzz, or a maintained fixed release is adopted." },
+    { id = "RUSTSEC-2026-0192", reason = "Accepted by the owner 2026-11-08: ttf-parser has no patched maintained release and is also retained through fontdb. A Skrifa migration changes font parsing/outline/advance APIs across rendering, so it is not a drop-in dependency fix. Remove when validated font parsing and fontdb migrations eliminate ttf-parser, or a maintained fixed release is adopted." },
 ]
 
 [licenses]

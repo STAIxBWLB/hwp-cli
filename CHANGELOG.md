@@ -28,7 +28,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   pulldown-cmark 0.13.6, ctutils 0.4.8 and the patched zstd stack. The YAML dependency now
   uses the maintained serde_norway fork under the existing serde_yaml crate alias.
   ZIP entry-name failures propagate through the existing archive error path. Two advisory-specific
-  font-crate maintenance exceptions are proposed for person acceptance before merge; the font
+  font-crate maintenance exceptions were accepted by the owner on 2026-11-08; the font
   shaping/parser implementation is unchanged ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
 
 **Fixed**
