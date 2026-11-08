@@ -59,6 +59,25 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   including native width/height sentinel interpretation and multiline body bounds. Hancom Office
   verification remains pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
 
+**Added**
+
+- A reproducible owner-authored original-form fixture set and layered test contract cover
+  repeated labels, merged/signature cells, four profile tables and retained/outside images.
+  Shared helpers compare expected cells, grid/width/style/resource projections, relative anchors
+  and observed font identities; corruption self-checks exercise their failure boundaries.
+  Semantic control atoms distinguish character/inline controls and preserve extended-control
+  codes, IDs and anchor indices. Invalid tab references, including index 0, and incomplete font
+  resolution collections are rejected rather than accepted as equal observations.
+  Named-style references are validated and compared by resolved names; formatting runs after
+  interior paragraph-break controls remain in the WCHAR-bounded style projection. Table styles
+  include semantic page-break policy. Anchor collection requires document-derived table IDs to
+  match observed table rows, with at least one row per expected table; relative geometry remains
+  font-environment evidence. Retained-image checks resolve the authored table identity and cell,
+  rejecting an identical image moved to the same coordinates in another table. These bounded
+  checks do not prove complete table-fragment rendering or Hancom pagination.
+  This adds regression evidence and a bilingual design contract, not production extraction,
+  binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
+
 ## [1.3.1]
 
 **Fixed**
