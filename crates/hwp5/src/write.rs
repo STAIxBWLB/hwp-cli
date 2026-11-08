@@ -5224,6 +5224,58 @@ mod tests {
         );
     }
 
+    /// With the synthesized range used up a picture must be left exactly as it was: no
+    /// BinData item, no renamed stream and no records, so the strip step that follows removes
+    /// it and reports the loss instead of the writer inventing an id another object holds.
+    #[test]
+    fn an_exhausted_range_leaves_the_picture_and_the_bin_tables_untouched() {
+        let mut doc = Document::default();
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: "image.png".to_string(),
+            data: vec![1, 2, 3],
+        });
+        let mut picture = match picture_with_instance_id(0) {
+            Control::Picture(p) => p,
+            _ => unreachable!(),
+        };
+        picture.common_data.clear();
+        picture.bin_ref = hwp_model::BinRef::ItemRef("image.png".to_string());
+        let mut paragraph = Paragraph {
+            controls: vec![Control::Picture(picture)],
+            ..Paragraph::default()
+        };
+        let bin_names = vec!["image.png".to_string()];
+        let bin_dims = vec![None];
+        let bin_index = |_: &hwp_model::BinRef| Some(0usize);
+        let mut assigned: Vec<Option<u16>> = vec![None];
+        let mut next_id = 1u16;
+        let mut new_items = Vec::new();
+        let mut renames = Vec::new();
+        let mut report = WriteReport::new();
+        let mut inst = InstanceIds::with_range(&doc, 0x3000_0000, 0x3000_0000);
+        synth_pictures_para(
+            &mut paragraph,
+            &bin_names,
+            &bin_dims,
+            &bin_index,
+            &mut assigned,
+            &mut next_id,
+            &mut inst,
+            &mut new_items,
+            &mut renames,
+            &mut report,
+        );
+        let Control::Picture(picture) = &paragraph.controls[0] else {
+            unreachable!()
+        };
+        assert!(picture.extras.is_empty() && picture.common_data.is_empty());
+        assert!(
+            new_items.is_empty(),
+            "a BinData item was minted for a picture that stays unwritten"
+        );
+        assert!(renames.is_empty() && assigned == vec![None] && next_id == 1);
+    }
+
     #[test]
     fn an_exhausted_synthesized_range_is_reported_not_wrapped() {
         let doc = doc_with_picture_ids(&[0x3000_0002]);
