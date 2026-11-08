@@ -345,17 +345,24 @@ fn explicit_break_space_before_agrees_in_inline_and_floating_sections() {
     // This is an internal consistency rule, not Hangul-open evidence.
     for floating in [false, true] {
         let mut source = hwp_convert::from_markdown("Anchor\n\nHeading\n");
-        let mut heading_shape = source.header.para_shapes[source.sections[0].paragraphs[1].para_shape.0 as usize].clone();
+        let mut heading_shape = source.header.para_shapes
+            [source.sections[0].paragraphs[1].para_shape.0 as usize]
+            .clone();
         heading_shape.spacing_top = 2400;
         source.header.para_shapes.push(heading_shape);
-        source.sections[0].paragraphs[1].para_shape = hwp_model::ParaShapeId((source.header.para_shapes.len() - 1) as u16);
+        source.sections[0].paragraphs[1].para_shape =
+            hwp_model::ParaShapeId((source.header.para_shapes.len() - 1) as u16);
         source.sections[0].paragraphs[1].header.break_type |= 0x04;
         let fill = add_fill(&mut source, 0x0002_3456);
         let mut object = table(Vec::new(), fill, 1200);
         object.placement.as_mut().unwrap().treat_as_char = !floating;
-        source.sections[0].paragraphs[0].controls.push(Control::Table(object));
+        source.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Table(object));
         synthesize(&mut source);
-        assert_eq!(source.sections[0].paragraphs[1].line_segs[0].v_pos, 0,
-            "explicit-break space-before must be omitted in both section paths (floating={floating})");
+        assert_eq!(
+            source.sections[0].paragraphs[1].line_segs[0].v_pos, 0,
+            "explicit-break space-before must be omitted in both section paths (floating={floating})"
+        );
     }
 }
