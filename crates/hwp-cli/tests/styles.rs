@@ -213,27 +213,200 @@ fn attrs_are_the_envelopes_style_level_for_a_paragraph_of_that_style() {
     assert!(checked > 0);
 }
 
+/// The `kind` of every row as the JSON value the listing published, `id` first.
+fn kinds(listing: &Value) -> Vec<(u64, Value)> {
+    listing["styles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["id"].as_u64().unwrap(), s["kind"].clone()))
+        .collect()
+}
+
 #[test]
-fn kind_is_stated_for_hwp5_and_unknown_for_hwpx() {
-    let hwp5 = styles(&repo(
+fn kind_is_stated_for_both_formats() {
+    let hwp5 = kinds(&styles(&repo(
         "fixtures/pdf-parity/public/source/public-safety-rfp-p1.hwp",
-    ));
-    assert!(
-        hwp5["styles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|s| s["kind"] == "paragraph")
+    )));
+    assert!(!hwp5.is_empty());
+    assert!(hwp5.iter().all(|(_, kind)| kind == "paragraph"), "{hwp5:?}");
+    // The committed sample's header has one `type="CHAR"` style (`쪽 번호`, id 12) among 29
+    // `type="PARA"` ones; the HWPX reader maps `hh:style@type` onto the style kind (GE-13).
+    // The JSON values are compared directly: on a reader that drops the type they are all null.
+    let hwpx = kinds(&styles(&sample()));
+    assert_eq!(hwpx.len(), 30);
+    let characters: Vec<u64> = hwpx
+        .iter()
+        .filter(|(_, kind)| kind == "character")
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(characters, [12], "{hwpx:?}");
+    assert_eq!(
+        hwpx.iter().filter(|(_, kind)| kind == "paragraph").count(),
+        29,
+        "{hwpx:?}"
     );
-    // The HWPX reader never reads `hh:style@type` (GE-13): null, not a guessed "paragraph".
-    let hwpx = styles(&sample());
+}
+
+/// Rewrites the sample's `Contents/header.xml` styles into `dest` and returns the path: every
+/// entry of the package is copied unchanged and in order (the stored `mimetype` stays first),
+/// except the header, which `edit` transforms.
+fn sample_with_edited_header(name: &str, edit: impl Fn(&str) -> String) -> PathBuf {
+    use std::io::{Read as _, Write as _};
+
+    let dir = std::env::temp_dir().join(format!("hwp-styles-kind-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join(name);
+    let mut source = zip::ZipArchive::new(std::fs::File::open(sample()).unwrap()).unwrap();
+    let mut out = zip::ZipWriter::new(std::fs::File::create(&dest).unwrap());
+    for index in 0..source.len() {
+        let mut entry = source.by_index(index).unwrap();
+        if entry.name().expect("a readable entry name") == "Contents/header.xml" {
+            let mut xml = String::new();
+            entry.read_to_string(&mut xml).unwrap();
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            out.start_file("Contents/header.xml", options).unwrap();
+            out.write_all(edit(&xml).as_bytes()).unwrap();
+        } else {
+            out.raw_copy_file(entry).unwrap();
+        }
+    }
+    out.finish().unwrap();
+    dest
+}
+
+/// A style whose `type` is absent or not a value this reader knows is NOT reported as a
+/// paragraph style (T27-F1). The OWPML schema default for the attribute is not something this
+/// repository can cite, so the listing answers `null`, "the document does not say", exactly as
+/// `kind` is documented, while the stated styles around it keep their kinds. The attr the HWP5
+/// path would write stays 0 for these, so no reserved value reaches an HWP5 record.
+#[test]
+fn an_absent_or_unrecognized_hwpx_style_type_is_reported_as_unknown() {
+    let edited = sample_with_edited_header("absent-and-unknown.hwpx", |xml| {
+        let xml = xml.replacen(r#"<hh:style id="1" type="PARA""#, r#"<hh:style id="1""#, 1);
+        let xml = xml.replacen(
+            r#"<hh:style id="2" type="PARA""#,
+            r#"<hh:style id="2" type="BOGUS""#,
+            1,
+        );
+        assert!(
+            !xml.contains(r#"<hh:style id="1" type"#),
+            "style 1 lost its type"
+        );
+        assert!(
+            xml.contains(r#"<hh:style id="2" type="BOGUS""#),
+            "style 2 is unrecognized"
+        );
+        xml
+    });
+    let listed = kinds(&styles(&edited));
+    let kind_of = |id: u64| listed.iter().find(|(i, _)| *i == id).unwrap().1.clone();
+    assert!(kind_of(1).is_null(), "absent type: {:?}", kind_of(1));
+    assert!(kind_of(2).is_null(), "unrecognized type: {:?}", kind_of(2));
+    // Neighbours that state their type are untouched by the edit.
+    assert_eq!(kind_of(0), "paragraph");
+    assert_eq!(kind_of(3), "paragraph");
+    assert_eq!(kind_of(12), "character");
+
+    // Converting to HWP5 writes attr 0 for the unknown ones (nothing reserved) and keeps the
+    // stated kinds; read back from HWP5 they are stated paragraph styles, since HWP5 has no
+    // way to say "unknown" and attr 0 is its paragraph style.
+    let out = std::env::temp_dir()
+        .join(format!("hwp-styles-kind-{}", std::process::id()))
+        .join("absent-and-unknown.hwp");
+    let convert = hwp()
+        .arg("convert")
+        .arg(&edited)
+        .args(["--to", "hwp", "-o"])
+        .arg(&out)
+        .output()
+        .expect("run hwp convert");
     assert!(
-        hwpx["styles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|s| s["kind"].is_null())
+        convert.status.success(),
+        "{}",
+        String::from_utf8_lossy(&convert.stderr)
     );
+    let hwp5 = kinds(&styles(&out));
+    assert_eq!(
+        hwp5.iter().find(|(i, _)| *i == 12).unwrap().1,
+        "character",
+        "a stated CHAR style survives the conversion"
+    );
+    assert_eq!(hwp5.iter().find(|(i, _)| *i == 1).unwrap().1, "paragraph");
+}
+
+/// An HWPX whose styles have no usable `type` keeps them unknown through both HWPX routes, and
+/// `edit --verify` accepts the result (T27-F4, the HWPX side).
+///
+/// `edit` to `.hwpx` copies an unchanged header from the source package, so by itself it never
+/// asks the writer anything; `convert --to hwpx` re-serializes the header and is the route that
+/// does. A writer that gave an unstated style a `type="PARA"` would make the converted document
+/// read back as a stated paragraph style.
+///
+/// The HWP5 side of this finding is covered at the signature level in `commands::edit::tests`:
+/// an HWPX to `.hwp` `edit --verify` fails today for every HWPX (the released 1.3.1 binary too)
+/// on header and package differences that have nothing to do with styles, so a CLI test cannot
+/// isolate the flag on that route.
+#[test]
+fn typeless_hwpx_styles_stay_unknown_through_edit_verify_and_convert() {
+    let source = sample_with_edited_header("verify-typeless.hwpx", |xml| {
+        let xml = xml.replacen(r#"<hh:style id="1" type="PARA""#, r#"<hh:style id="1""#, 1);
+        xml.replacen(
+            r#"<hh:style id="2" type="PARA""#,
+            r#"<hh:style id="2" type="BOGUS""#,
+            1,
+        )
+    });
+    let expect_unknown = |file: &PathBuf, route: &str| {
+        let listed = kinds(&styles(file));
+        let kind_of = |id: u64| listed.iter().find(|(i, _)| *i == id).unwrap().1.clone();
+        assert!(
+            kind_of(1).is_null(),
+            "{route}: absent type: {:?}",
+            kind_of(1)
+        );
+        assert!(
+            kind_of(2).is_null(),
+            "{route}: unrecognized type: {:?}",
+            kind_of(2)
+        );
+        assert_eq!(kind_of(0), "paragraph", "{route}");
+        assert_eq!(kind_of(12), "character", "{route}");
+    };
+
+    // edit --verify to .hwpx: accepted, and the kinds are as they were.
+    let edited = source.with_file_name("verify-typeless-edited.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&edited)
+        .args(["--set-meta", "title=검증", "--verify"])
+        .output()
+        .expect("run hwp edit");
+    assert!(
+        run.status.success(),
+        "--verify must accept a faithful HWPX write: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    expect_unknown(&edited, "edit --verify");
+
+    // convert --to hwpx re-serializes the header through the HWPX writer.
+    let converted = source.with_file_name("verify-typeless-converted.hwpx");
+    let run = hwp()
+        .arg("convert")
+        .arg(&source)
+        .args(["--to", "hwpx", "-o"])
+        .arg(&converted)
+        .output()
+        .expect("run hwp convert");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    expect_unknown(&converted, "convert --to hwpx");
 }
 
 /// A genuine file saved by Hangul has one character style, `쪽 번호`.

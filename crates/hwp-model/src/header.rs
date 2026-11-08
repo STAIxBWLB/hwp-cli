@@ -394,7 +394,16 @@ pub enum NumFmt {
 pub struct Style {
     pub name: String,
     pub english_name: String,
+    /// HWP5 `STYLE.attr`; the low three bits are the style kind (0 paragraph, 1 character).
     pub attr: u8,
+    /// The source did not state the kind: an HWPX `hh:style` with no `type`, or one this reader
+    /// does not recognize. `attr` is then 0 only so that an HWP5 record never carries a reserved
+    /// value, and 0 must not be read as "paragraph". The flag is not part of the HWP5 record,
+    /// which has no way to say it: after a write to HWP5 it reads back as attr 0, a paragraph
+    /// style, and the `--verify` projection for an HWP5 target drops it for that reason. The HWPX
+    /// writer writes the style back without a `type`, and the HWPX reader restores the flag.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub kind_unknown: bool,
     pub next_style: u8,
     pub lang_id: i16,
     pub para_shape: ParaShapeId,
@@ -683,4 +692,10 @@ mod para_shape_tests {
         assert_eq!(ps.head_level(), 4);
         assert_eq!(ps.list_level, Some(4), "list_level도 함께 갱신되어야 함");
     }
+}
+
+/// `skip_serializing_if` predicate: leaves a `false` flag out of the JSON IR so documents that
+/// state every style's kind serialize exactly as before the flag existed.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
