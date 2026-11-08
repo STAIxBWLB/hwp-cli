@@ -290,3 +290,53 @@ fn picture_caption_nested_in_table_caption_keeps_its_own_cursor() {
         "nested picture caption",
     );
 }
+
+fn assert_native_cell_width(cell_margins: [u16; 4], table_margins: [u16; 4], expected: i32) {
+    let mut doc = document();
+    let mut object = table(paragraphs(&doc));
+    object.inner_margins = table_margins;
+    object.cells[0].margins = cell_margins;
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(object));
+    synthesize(&mut doc);
+    let Control::Table(object) = last_control(&doc) else {
+        panic!("table")
+    };
+    assert_eq!(
+        object.cells[0].margins, cell_margins,
+        "preserve raw cell margin bytes"
+    );
+    assert_eq!(
+        object.inner_margins, table_margins,
+        "preserve raw table margin bytes"
+    );
+    assert_eq!(
+        object.cells[0].paragraphs[0].line_segs[0].seg_width, expected,
+        "native width resolves sentinels only; explicit zero padding is not inherited"
+    );
+}
+
+#[test]
+fn native_all_zero_cell_margins_keep_full_width() {
+    assert_native_cell_width([0; 4], [100; 4], CELL_WIDTH);
+}
+
+#[test]
+fn native_cell_margin_sentinel_uses_explicit_table_margins() {
+    assert_native_cell_width(
+        [u16::MAX, u16::MAX, 100, 100],
+        [100, 200, 100, 100],
+        CELL_WIDTH - 300,
+    );
+}
+
+#[test]
+fn native_cell_margin_sentinel_keeps_zero_table_margins() {
+    assert_native_cell_width([u16::MAX, u16::MAX, 100, 100], [0; 4], CELL_WIDTH);
+}
+
+#[test]
+fn native_cell_and_table_margin_sentinels_use_existing_default() {
+    assert_native_cell_width([0, u16::MAX, 100, 100], [u16::MAX; 4], CELL_WIDTH - 510);
+}

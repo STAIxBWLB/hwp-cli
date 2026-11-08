@@ -380,3 +380,30 @@ fn explicit_break_keeps_prior_space_before_in_both_section_paths() {
         );
     }
 }
+
+#[test]
+fn floating_section_first_paragraph_omits_only_its_space_before() {
+    let mut source = hwp_convert::from_markdown("First\n\nFollowing\n");
+    let mut first_shape =
+        source.header.para_shapes[source.sections[0].paragraphs[0].para_shape.0 as usize].clone();
+    first_shape.spacing_top = 2400;
+    source.header.para_shapes.push(first_shape);
+    source.sections[0].paragraphs[0].para_shape =
+        hwp_model::ParaShapeId((source.header.para_shapes.len() - 1) as u16);
+    let fill = add_fill(&mut source, 0x0003_4567);
+    source.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(table(Vec::new(), fill, 1200)));
+    source.sections.push(source.sections[0].clone());
+    for mut store in [FontStore::new_isolated(), FontStore::new()] {
+        let mut cached = source.clone();
+        let mut issues = RenderIssueAccumulator::new();
+        hwp_render::lineseg::synthesize_linesegs(&mut cached, &mut store, &mut issues);
+        for section in &cached.sections {
+            assert_eq!(
+                section.paragraphs[0].line_segs[0].v_pos, 0,
+                "B5: every section's first body paragraph starts at zero despite space-before"
+            );
+        }
+    }
+}
