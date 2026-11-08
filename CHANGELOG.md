@@ -12,6 +12,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Changed**
 
+- Update the archive/Markdown/crypto dependency chain to fixed versions: zip 9.1.2,
+  pulldown-cmark 0.13.6, ctutils 0.4.8 and the patched zstd stack. The YAML dependency now
+  uses the maintained serde_norway fork under the existing serde_yaml crate alias.
+  ZIP entry-name failures propagate through the existing archive error path. Two advisory-specific
+  font-crate maintenance exceptions are proposed for person acceptance before merge; the font
+  shaping/parser implementation is unchanged ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+
 - Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)
   and `--locked`, with `cargo-zigbuild` 0.23.4 and zig 0.16.0 pinned. The release `verify-ci`
   gate now waits (up to 45 minutes) for a tag commit's still-running CI instead of failing, and
