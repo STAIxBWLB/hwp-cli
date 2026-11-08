@@ -1,4 +1,4 @@
-//! Copy-on-write named-style creation and paragraph-scoped application (#427 T3).
+//! Copy-on-write named-style creation, paragraph application and document-wide updates (#427 T3/T4).
 //! Native publication guards and format-specific style limits belong to callers.
 use hwp_model::{
     CharShapeId, Control, DocHeader, Document, LANG_COUNT, ParaShapeId, Paragraph, StyleId,
@@ -40,6 +40,11 @@ pub enum StyleEditError {
         table: &'static str,
         id: u16,
     },
+    DanglingReference {
+        owner: String,
+        table: String,
+        id: u16,
+    },
     Capacity {
         table: &'static str,
     },
@@ -77,6 +82,10 @@ impl std::fmt::Display for StyleEditError {
                 f,
                 "스타일의 {table} 참조 {id}를 찾을 수 없습니다. 원본 문서의 서식 참조를 확인해 보세요"
             ),
+            Self::DanglingReference { owner, table, id } => write!(
+                f,
+                "{owner}의 {table} 참조 {id}가 원본 정의 표에 없습니다. 새 정의 추가로 이 참조에 다른 의미가 생길 수 있어 스타일 변경을 거부했습니다. 원본 문서의 해당 서식 참조를 복구한 뒤 다시 시도하세요"
+            ),
             Self::Capacity { table } => write!(
                 f,
                 "{table} 표가 스타일 편집의 번호 범위를 넘습니다. 문서의 서식 정의 수를 확인해 보세요"
@@ -100,7 +109,7 @@ impl std::fmt::Display for StyleEditError {
             Self::UnwritableStyleUser { count, locations } => {
                 write!(
                     f,
-                    "원본 레코드 보존 개체 안에서 변경이 필요한 문단 {count}개를 찾았습니다. 위치: {}",
+                    "보존 개체는 원본 레코드/XML을 그대로 다시 내보내며 내부 문단을 재생성할 수 없어 스타일 변경을 거부했습니다. 변경이 필요한 문단 {count}개. 위치: {}",
                     locations.join("; ")
                 )?;
                 if *count > locations.len() {
@@ -108,7 +117,7 @@ impl std::fmt::Display for StyleEditError {
                 }
                 write!(
                     f,
-                    ". hwp styles로 확인한 다른 스타일을 선택하거나 원본 편집기에서 해당 개체를 일반 문단으로 바꾼 뒤 다시 시도하세요"
+                    ". hwp styles로 문서의 스타일을 확인하고 해당 보존 개체에 사용되지 않는 다른 스타일(문단 스타일)을 선택하세요"
                 )
             }
             Self::InvalidCharacterProperties => write!(
@@ -448,25 +457,65 @@ impl RepointStyle {
     }
 }
 
+fn check_existing_ref(
+    owner: String,
+    table: &str,
+    id: u16,
+    rows: usize,
+) -> Result<(), StyleEditError> {
+    if usize::from(id) >= rows {
+        return Err(StyleEditError::DanglingReference {
+            owner,
+            table: table.to_owned(),
+            id,
+        });
+    }
+    Ok(())
+}
+
 fn check_paragraph_shape_refs(
     paragraph: &Paragraph,
     header: &DocHeader,
+    route: &str,
 ) -> Result<(), StyleEditError> {
-    if usize::from(paragraph.para_shape.0) >= header.para_shapes.len() {
-        return Err(StyleEditError::MissingShape {
-            table: "para_shapes",
-            id: paragraph.para_shape.0,
-        });
-    }
-    for (_, id) in &paragraph.char_shape_runs {
-        if usize::from(id.0) >= header.char_shapes.len() {
-            return Err(StyleEditError::MissingShape {
-                table: "char_shapes",
-                id: id.0,
-            });
-        }
+    check_existing_ref(
+        format!("{route}.para_shape"),
+        "para_shapes",
+        paragraph.para_shape.0,
+        header.para_shapes.len(),
+    )?;
+    for (index, (_, id)) in paragraph.char_shape_runs.iter().enumerate() {
+        check_existing_ref(
+            format!("{route}.char_shape_runs[{index}]"),
+            "char_shapes",
+            id.0,
+            header.char_shapes.len(),
+        )?;
     }
     Ok(())
+}
+
+/// Mirror the typed Generic arms in hwpx::write::section after captured XML is removed.
+/// Containers cannot use write_ir_shapes: their child coordinates are container-relative.
+/// Native raw_children are separately preserved verbatim by the HWP5 writer.
+fn preserves_original_children(generic: &hwp_model::GenericControl) -> bool {
+    if !generic.raw_children.is_empty() {
+        return true;
+    }
+    if generic.hwpx_raw_xml.is_none() {
+        return false;
+    }
+    let id = &generic.ctrl_id;
+    let can_regenerate = matches!(
+        id,
+        b"cold" | b"head" | b"foot" | b"bokm" | b"atno" | b"gso " | b"fn  " | b"en  "
+    ) || crate::field::is_field_ctrl_id(id)
+        || (id == b"pgnp" && generic.data.len() >= 12)
+        || (id == b"pghd" && generic.data.len() >= 4)
+        || (id == b"nwno" && generic.data.len() >= 6)
+        || (!generic.gso_shapes.is_empty() && generic.container_box.is_none())
+        || generic.equation.is_some();
+    !can_regenerate
 }
 
 /// A model route plus the closest paragraph that the existing address resolver can reach.
@@ -573,8 +622,8 @@ fn preflight_style_users(
 ) -> Result<(), StyleEditError> {
     for (index, paragraph) in paragraphs.iter().enumerate() {
         // New definitions must not give an unrelated dangling reference a new meaning.
-        check_paragraph_shape_refs(paragraph, &doc.header)?;
         let at = scope.paragraph(index);
+        check_paragraph_shape_refs(paragraph, &doc.header, &at.route)?;
         if at.inside_raw && rule.affects(paragraph) {
             raw_users.record(doc, &at);
         }
@@ -606,7 +655,7 @@ fn preflight_style_users(
                     }
                 }
                 Control::Generic(generic) => {
-                    let raw = !generic.raw_children.is_empty();
+                    let raw = preserves_original_children(generic);
                     let mut offset = 0;
                     for (list_index, list) in generic.paragraph_lists.iter().enumerate() {
                         let child = at.child(
@@ -651,9 +700,9 @@ fn repoint_style_users(paragraphs: &mut [Paragraph], rule: RepointStyle) -> bool
                         here |= repoint_style_users(&mut caption.paragraphs, rule);
                     }
                 }
-                // structure::walk_para_lists uses the same boundary: native emit_control
-                // re-emits raw_children and cannot publish edits to their modeled paragraphs.
-                Control::Generic(generic) if generic.raw_children.is_empty() => {
+                // Preflight refuses affected descendants whose preserved records/XML cannot
+                // publish modeled edits; never invalidate their pass-through source.
+                Control::Generic(generic) if !preserves_original_children(generic) => {
                     let mut inner = false;
                     for list in &mut generic.paragraph_lists {
                         inner |= repoint_style_users(&mut list.paragraphs, rule);
@@ -702,14 +751,14 @@ pub fn update_style(doc: &mut Document, request: &UpdateStyle) -> Result<bool, S
     }
     if header.fonts != doc.header.fonts {
         // Appending a face must not fill a previously dangling face index used elsewhere.
-        for shape in &doc.header.char_shapes {
+        for (index, shape) in doc.header.char_shapes.iter().enumerate() {
             for (slot, face) in shape.face_ids.iter().enumerate() {
-                if usize::from(*face) >= doc.header.fonts[slot].len() {
-                    return Err(StyleEditError::MissingShape {
-                        table: "fonts",
-                        id: *face,
-                    });
-                }
+                check_existing_ref(
+                    format!("header.char_shapes[{index}].face_ids[{slot}]"),
+                    &format!("fonts[{slot}]"),
+                    *face,
+                    doc.header.fonts[slot].len(),
+                )?;
             }
         }
     }
@@ -741,8 +790,19 @@ pub fn update_style(doc: &mut Document, request: &UpdateStyle) -> Result<bool, S
         old_para: old.para_shape,
         new_para,
     };
-    for style in &doc.header.styles {
-        check_shapes(doc, style)?;
+    for (index, style) in doc.header.styles.iter().enumerate() {
+        check_existing_ref(
+            format!("header.styles[{index}].char_shape"),
+            "char_shapes",
+            style.char_shape.0,
+            doc.header.char_shapes.len(),
+        )?;
+        check_existing_ref(
+            format!("header.styles[{index}].para_shape"),
+            "para_shapes",
+            style.para_shape.0,
+            doc.header.para_shapes.len(),
+        )?;
     }
     let mut raw_users = RawStyleUsers::default();
     for (index, section) in doc.sections.iter().enumerate() {

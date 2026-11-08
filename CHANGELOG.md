@@ -15,8 +15,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - `hwp edit --ops` accepts `update_style` for named paragraph styles. Changed character and
   paragraph shapes receive fresh IDs, preserving unrelated users and direct formatting even
   when existing definitions have identical values. Inheriting users in modeled body, cell and
-  caption/control lists follow independently. Affected raw-backed users refuse atomically
-  with an affected count and bounded model locations plus addressable ancestor IDs.
+  caption/control lists follow independently. Affected users in raw-record-backed or
+  non-regenerable captured-XML objects refuse atomically with an affected count and bounded
+  model locations plus addressable ancestor IDs. Dangling-reference refusals identify the
+  owning paragraph or header definition and explain the append-alias risk and repair step.
   Unchanged requests retain model caches; HWP no-ops preserve original bytes, while generated
   HWPX fixtures are byte-stable on repetition
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).

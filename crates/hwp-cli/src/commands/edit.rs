@@ -1041,8 +1041,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // output is EXPECTED to equal its input byte-for-byte. The generic "no visible effect"
     // publish guard below must not treat that as an error the way it does for a --replace/
     // --set-* request that silently matched nothing. `--table-placement` (#296) follows the
-    // same contract. Named apply_style (#427) likewise succeeds without rewriting when
-    // the paragraph already has the requested style and direct-format policy.
+    // same contract. Named apply_style and update_style (#427) likewise succeed
+    // when the requested style/direct-format policy or style definition is unchanged.
     let requested_idempotent_op = plan.operations.iter().any(|op| {
         matches!(
             op,
