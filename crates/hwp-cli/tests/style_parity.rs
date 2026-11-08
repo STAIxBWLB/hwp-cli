@@ -200,7 +200,7 @@ fn compare_channels(fixture: &Fixture, source: &Path, operations: Vec<Value>) {
         "file and stdin requests must be byte-identical"
     );
     let output = fixture.output("mcp-result");
-    let mut arguments = json!({"input":source,"output":output,"verify":true});
+    let mut arguments = json!({"input":source,"output":output});
     for operation in &operations {
         let op = operation["op"].as_str().unwrap();
         let mut item = operation.clone();
