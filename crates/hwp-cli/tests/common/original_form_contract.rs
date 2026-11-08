@@ -19,30 +19,34 @@ pub enum Atom {
     },
 }
 
+/// Normalize only the optional final terminator; interior controls retain their WCHAR width.
+fn content_chars(para: &Paragraph) -> &[HwpChar] {
+    match para.chars.last() {
+        Some(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK)) => {
+            &para.chars[..para.chars.len() - 1]
+        }
+        _ => &para.chars,
+    }
+}
+
 /// Own paragraph atoms retain control kind and anchor association; object payloads are separate.
 fn atoms(para: &Paragraph) -> Vec<Atom> {
-    para.chars
+    content_chars(para)
         .iter()
-        .enumerate()
-        .filter_map(|(index, ch)| match ch {
-            HwpChar::Text(ch) => Some(Atom::Text(*ch)),
-            HwpChar::CharCtrl(code)
-                if *code != hwp_model::ctrl_char::PARA_BREAK || index + 1 != para.chars.len() =>
-            {
-                Some(Atom::CharControl(*code))
-            }
-            HwpChar::InlineCtrl { code, .. } => Some(Atom::InlineControl(*code)),
+        .map(|ch| match ch {
+            HwpChar::Text(ch) => Atom::Text(*ch),
+            HwpChar::CharCtrl(code) => Atom::CharControl(*code),
+            HwpChar::InlineCtrl { code, .. } => Atom::InlineControl(*code),
             HwpChar::ExtCtrl {
                 code,
                 ctrl_id,
                 ctrl_index,
                 ..
-            } => Some(Atom::ExtendedControl {
+            } => Atom::ExtendedControl {
                 code: *code,
                 ctrl_id: *ctrl_id,
                 ctrl_index: *ctrl_index,
-            }),
-            _ => None,
+            },
         })
         .collect()
 }
@@ -200,6 +204,11 @@ fn border(doc: &Document, id: u16) -> Value {
     json!({"attr":fill.attr,"sides":sides,"diagonal":diagonal,"bg":bg,"hatch":hatch,"gradient":gradient})
 }
 fn paragraph_style(doc: &Document, para: &Paragraph) -> Value {
+    let named_style = doc
+        .header
+        .styles
+        .get(para.style.0 as usize)
+        .map(|style| json!({"name":style.name,"english_name":style.english_name}));
     let paragraph = doc.header.para_shapes.get(para.para_shape.0 as usize).map(|ps| {
         let tab = doc.header.tab_stops.get(ps.tab_def_id as usize).filter(|tab| tab.attr != 0 || !tab.items.is_empty());
         let numbering = match ps.head_type() {
@@ -227,12 +236,7 @@ fn paragraph_style(doc: &Document, para: &Paragraph) -> Value {
         });
         json!({"at":at,"shape":shape})
     }).collect();
-    let content_end: u32 = para
-        .chars
-        .iter()
-        .filter(|ch| !matches!(ch, HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK)))
-        .map(HwpChar::wchar_width)
-        .sum();
+    let content_end: u32 = content_chars(para).iter().map(HwpChar::wchar_width).sum();
     let mut canonical: Vec<Value> = Vec::new();
     for run in runs {
         let at = run["at"].as_u64().unwrap();
@@ -247,7 +251,7 @@ fn paragraph_style(doc: &Document, para: &Paragraph) -> Value {
         }
         canonical.push(run);
     }
-    json!({"paragraph":paragraph,"runs":canonical})
+    json!({"named_style":named_style,"paragraph":paragraph,"runs":canonical})
 }
 
 pub fn project_form(doc: &Document) -> FormProjection {
@@ -283,7 +287,7 @@ fn invalid_border(doc: &Document, id: u16) -> bool {
     id != 0 && id as usize > doc.header.border_fills.len()
 }
 fn check_references(doc: &Document, para: &Paragraph, key: &str, result: &mut FormProjection) {
-    let mut invalid = false;
+    let mut invalid = doc.header.styles.get(para.style.0 as usize).is_none();
     if let Some(ps) = doc.header.para_shapes.get(para.para_shape.0 as usize) {
         invalid |= invalid_border(doc, ps.border_fill_id);
         invalid |= doc.header.tab_stops.get(ps.tab_def_id as usize).is_none();

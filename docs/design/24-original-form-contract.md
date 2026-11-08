@@ -99,8 +99,15 @@ Source/output address mapping after extraction or cloning is a later package's r
 Resolve references through each document's own header and compare values, not numeric palette IDs.
 The common subset comprises paragraph alignment, indent, left/right margins and before/after/line
 spacing; each character run's requested face names, size, bold/italic state and text color; resolved
-border/fill values; and cell vertical-alignment attributes. Canonical run boundaries must preserve
-actual format changes without treating redundant adjacent equal runs as a change.
+border/fill values; and cell vertical-alignment attributes. Named-style assignments resolve through
+`header.styles` and compare their name/English-name identity, even when direct formatting is equal;
+a dangling `StyleId` is an unresolved reference, not an unnamed default. This is a bounded named-style
+identity check, not a universal comparison of every native style payload.
+
+Canonical run boundaries must preserve actual format changes without treating redundant adjacent
+equal runs as a change. Their WCHAR content extent counts interior paragraph-break controls; only
+an optional final `CharCtrl(PARA_BREAK)` terminator is normalized away. A formatting run after an
+interior break remains part of the projection.
 
 Do not normalize different field meanings merely to obtain equality. A cross-format distinction
 that the shared IR cannot express or a writer changes must remain an explicit limitation or a

@@ -46,6 +46,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Semantic control atoms distinguish character/inline controls and preserve extended-control
   codes, IDs and anchor indices. Invalid tab references, including index 0, and incomplete font
   resolution collections are rejected rather than accepted as equal observations.
+  Named-style references are validated and compared by resolved names; formatting runs after
+  interior paragraph-break controls remain in the WCHAR-bounded style projection.
   This adds regression evidence and a bilingual design contract, not production extraction,
   binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
 

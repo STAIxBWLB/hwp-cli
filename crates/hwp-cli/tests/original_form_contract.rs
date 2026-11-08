@@ -775,3 +775,74 @@ fn contract_keeps_interior_paragraph_break_control() {
         "cell_values"
     );
 }
+
+#[test]
+fn contract_rejects_dangling_named_style_reference() {
+    let Some(fixture) = Fixture::new("dangling-style") else {
+        return;
+    };
+    let mut broken = fixture.doc.clone();
+    cell_mut(&mut broken, 0, 1, 1).paragraphs[0].style = hwp_model::StyleId(u16::MAX);
+    let broken = contract::project_form(&broken);
+    let error = contract::compare_form_contract(&broken, &broken)
+        .expect_err("a dangling named-style reference must fail even in a self-comparison");
+    assert_eq!(error.layer, "references");
+}
+
+#[test]
+fn contract_rejects_changed_named_style_assignment() {
+    let Some(fixture) = Fixture::new("changed-style") else {
+        return;
+    };
+    let baseline = assert_manifest(&fixture.doc, &fixture.expected);
+    let mut broken = fixture.doc.clone();
+    let old_id = cell_mut(&mut broken, 0, 1, 1).paragraphs[0].style;
+    let mut distinct = broken.header.styles[old_id.0 as usize].clone();
+    distinct.name = "Distinct synthetic named style".into();
+    distinct.english_name = "Distinct synthetic named style".into();
+    assert_eq!(
+        distinct.para_shape, broken.header.styles[old_id.0 as usize].para_shape,
+        "named-style identity is independent of underlying paragraph formatting"
+    );
+    assert_eq!(
+        distinct.char_shape, broken.header.styles[old_id.0 as usize].char_shape,
+        "keep the underlying character formatting unchanged"
+    );
+    let new_id = hwp_model::StyleId(broken.header.styles.len() as u16);
+    broken.header.styles.push(distinct);
+    cell_mut(&mut broken, 0, 1, 1).paragraphs[0].style = new_id;
+    let error = contract::compare_form_contract(&baseline, &contract::project_form(&broken))
+        .expect_err(
+            "a different named-style assignment must not hide behind equal direct formatting",
+        );
+    assert_eq!(error.layer, "style");
+}
+
+#[test]
+fn contract_rejects_style_change_after_interior_paragraph_break() {
+    let Some(fixture) = Fixture::new("run-after-break") else {
+        return;
+    };
+    let mut source = fixture.doc.clone();
+    let base_id = cell_mut(&mut source, 0, 1, 1).paragraphs[0].char_shape_runs[0].1;
+    let mut colored = source.header.char_shapes[base_id.0 as usize].clone();
+    colored.text_color ^= 0x0011_0000;
+    let colored_id = hwp_model::CharShapeId(source.header.char_shapes.len() as u16);
+    source.header.char_shapes.push(colored);
+    let para = &mut cell_mut(&mut source, 0, 1, 1).paragraphs[0];
+    para.chars = vec![
+        HwpChar::Text('a'),
+        HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK),
+        HwpChar::Text('b'),
+        HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK),
+    ];
+    para.char_shape_runs = vec![(0, base_id), (2, base_id)];
+    let baseline = contract::project_form(&source);
+    contract::compare_form_contract(&baseline, &baseline).unwrap();
+    cell_mut(&mut source, 0, 1, 1).paragraphs[0].char_shape_runs[1].1 = colored_id;
+    let error = contract::compare_form_contract(&baseline, &contract::project_form(&source))
+        .expect_err(
+            "the run at WCHAR 2 belongs to b and must not be discarded at an interior break",
+        );
+    assert_eq!(error.layer, "style");
+}
