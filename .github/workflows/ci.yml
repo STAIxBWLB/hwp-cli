@@ -1,8 +1,10 @@
 name: CI
 
 # Always publish ci-ok, including documentation/formula-only PRs. The decision job applies
-# the former path policy to immutable event trees, keeping these runs free of Rust builds.
+# path policy to immutable event trees. Bundled skills/corpus always require full gates;
+# unrelated docs/formula-only runs remain free of Rust builds.
 on:
+  # Ordinary workflow_dispatch is full: docs/formula-only main commits need it before readiness.
   workflow_dispatch:
     inputs:
       formula_pr:
@@ -72,15 +74,17 @@ jobs:
               "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100"); then
               echo "::warning::Could not resolve associated pull requests; running full CI."
             else
-              pr=$(jq -c --arg sha "$GITHUB_SHA" \
+              if ! pr=$(jq -c --arg sha "$GITHUB_SHA" \
                 '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | sort_by(.number) | last // empty' \
-                <<<"$pulls")
+                <<<"$pulls"); then
+                echo "::warning::Could not parse associated pull requests; running full CI."
+                pr=""
+              fi
 
               if [ -n "$pr" ]; then
-                pr_number=$(jq -r .number <<<"$pr")
-                head_sha=$(jq -r .head.sha <<<"$pr")
-
-                if push_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha) \
+                if pr_number=$(jq -er .number <<<"$pr") \
+                  && head_sha=$(jq -er .head.sha <<<"$pr") \
+                  && push_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha) \
                   && head_tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$head_sha" --jq .tree.sha) \
                   && runs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head_sha/check-runs?filter=latest&per_page=100"); then
                   if [ "$push_tree" != "$head_tree" ]; then
@@ -88,9 +92,13 @@ jobs:
                   else
                     all_green=true
                     for name in "${expected[@]}"; do
-                      state="$(jq -r --arg n "$name" \
+                      if ! state="$(jq -r --arg n "$name" \
                         '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
-                        <<<"$runs")"
+                        <<<"$runs")"; then
+                        echo "::warning::Could not parse PR gate check states; running full CI."
+                        all_green=false
+                        break
+                      fi
                       echo "$name: $state"
                       [ "$state" = "completed/success" ] || all_green=false
                     done

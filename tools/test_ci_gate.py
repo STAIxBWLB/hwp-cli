@@ -103,6 +103,13 @@ class PathPolicyTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(gate.requires_full(["Formula/hwp.rb", name]))
 
+    def test_all_skill_and_corpus_markdown_are_gate_inputs(self):
+        for name in ["skills/hwp/official-documents.md", "skills/hwp/official-documents.ko.md", "skills/hwp/references/guide.md",
+                     "skills/hwp/templates/form.md", "skills/hwp/other.md",
+                     "corpus/README.md", "corpus/nested/probe.md"]:
+            with self.subTest(name=name):
+                self.assertTrue(gate.requires_full([name]), "gate input Markdown must not take the docs-only path")
+
     def test_changed_paths_uses_immutable_refs_without_rename_hiding(self):
         with patch.object(gate, "command", return_value="crates/old.rs\0docs/new.md\0") as command:
             self.assertEqual(gate.changed_paths(BASE, HEAD), ["crates/old.rs", "docs/new.md"])
@@ -176,6 +183,78 @@ class PathPolicyTests(unittest.TestCase):
                     result = gate.main()
                 self.assertEqual(result, 1 if formula else 0)
                 self.assertEqual(out.getvalue().strip(), "" if formula else "full")
+
+
+class DiagnosticsTests(unittest.TestCase):
+    def test_command_failure_keeps_trimmed_cause_and_operation_specific_next_action(self):
+        cases = [
+            (("gh", "workflow", "run", "ci.yml"), "dispatch rejected", r"(?i)(dispatch|workflow).*(permission|input|ref|inspect|rerun)"),
+            (("gh", "pr", "merge", "17"), "merge rejected", r"(?i)(merge|PR|pull request).*(check|inspect|rerun)"),
+            (("git", "diff", BASE, HEAD), "bad revision", r"(?i)(git|diff|revision|checkout).*(fetch|history|base|inspect|rerun)"),
+        ]
+        for args, cause, action in cases:
+            with self.subTest(args=args):
+                failure = subprocess.CalledProcessError(1, args, stderr=f"  {cause}  ")
+                with patch.object(gate.subprocess, "run", side_effect=failure):
+                    with self.assertRaises(gate.GateError) as caught:
+                        gate.command(*args)
+                message = str(caught.exception)
+                self.assertIn(cause, message, "the actual command rejection must remain diagnosable")
+                self.assertNotIn(f"  {cause}  ", message)
+                self.assertRegex(message, action)
+                self.assertIs(caught.exception.__cause__, failure)
+
+    def test_long_command_error_keeps_cause_bound_and_merge_remedy(self):
+        failure = subprocess.CalledProcessError(1, ["gh", "pr", "merge"], stderr="rejected " + "X" * 5000)
+        with patch.object(gate.subprocess, "run", side_effect=failure):
+            with self.assertRaises(gate.GateError) as caught:
+                gate.command("gh", "pr", "merge", "17")
+        message = str(caught.exception)
+        self.assertLess(len(message), 1000)
+        self.assertIn("rejected", message)
+        self.assertIn("inspect PR checks", message)
+        self.assertIn("rerun release", message)
+
+    def test_command_failure_does_not_emit_multiline_workflow_commands_or_secrets(self):
+        secret = "ghp_" + "A" * 36
+        for stderr in [f"permission denied\n::error::forged\nAuthorization: Bearer {secret}",
+                       f"authentication rejected: {secret}",
+                       "Authorization: Bearer confidential-value"]:
+            with self.subTest(stderr=stderr):
+                failure = subprocess.CalledProcessError(1, ["gh", "api"], stderr=stderr)
+                with patch.object(gate.subprocess, "run", side_effect=failure):
+                    with self.assertRaises(gate.GateError) as caught:
+                        gate.command("gh", "api", "private-argument")
+                message = str(caught.exception)
+                self.assertNotIn("\n", message)
+                self.assertNotIn("\r", message)
+                self.assertNotIn("::error::forged", message)
+                self.assertNotIn(secret, message)
+                self.assertNotIn("confidential-value", message)
+                self.assertNotIn("private-argument", message)
+
+    def test_main_preserves_path_proof_cause_for_formula_and_full_fallback(self):
+        for formula in [False, True]:
+            with self.subTest(formula=formula), tempfile.TemporaryDirectory() as tmp:
+                event = Path(tmp) / "event.json"
+                event.write_text(json.dumps({"inputs": {"formula_pr": "17"} if formula else {}}))
+                out, err = io.StringIO(), io.StringIO()
+                env = {"GITHUB_EVENT_PATH": str(event), "GITHUB_EVENT_NAME": "workflow_dispatch",
+                       "GITHUB_SHA": HEAD, "GITHUB_REF": f"refs/heads/{BRANCH}"}
+                with patch.dict(os.environ, env), patch.object(gate, "path_decision", side_effect=gate.GateError("immutable merge-base unavailable; fetch history")), patch("sys.argv", ["ci_gate.py", "paths", "--repo", REPO]), redirect_stdout(out), redirect_stderr(err):
+                    result = gate.main()
+                self.assertEqual(result, 1 if formula else 0)
+                self.assertEqual(out.getvalue().strip(), "" if formula else "full")
+                self.assertIn("immutable merge-base unavailable", err.getvalue())
+                self.assertIn("fetch history", err.getvalue())
+
+    def test_main_formula_failure_preserves_actual_dispatch_rejection(self):
+        out, err = io.StringIO(), io.StringIO()
+        failure = subprocess.CalledProcessError(1, ["gh", "workflow", "run"], stderr="workflow dispatch forbidden")
+        with patch.object(gate, "api", side_effect=FormulaHarness().api), patch.object(gate.subprocess, "run", side_effect=failure), patch("sys.argv", ["ci_gate.py", "formula", "--repo", REPO, "--branch", BRANCH, "--head", HEAD]), redirect_stdout(out), redirect_stderr(err):
+            result = gate.main()
+        self.assertEqual(result, 1)
+        self.assertIn("workflow dispatch forbidden", err.getvalue())
 
 
 class AggregateTests(unittest.TestCase):
@@ -558,6 +637,85 @@ class WorkflowTests(unittest.TestCase):
                 result = subprocess.run(["bash", "-c", script, "verify-ci-state", state],
                                         capture_output=True, text=True, check=True, timeout=3)
                 self.assertEqual(tuple(result.stdout.strip().split()), expected)
+
+    def test_release_identical_tree_fallback_requires_same_six_green_checks_as_ci(self):
+        release = (ROOT / ".github/workflows/release.yml").read_text()
+        prefix = release.split("          set -euo pipefail\n", 1)[1].split("          # Poll until", 1)[0]
+        self.assertIn("check_green()", prefix, "exercise the real fallback function and its arrays")
+        required = {"lint", "pdf-parity", "test (ubuntu-latest)", "test (macos-latest)", "test (windows-latest)", "ci-ok"}
+        _, jobs = self.jobs()
+        decision = jobs["decision"]
+        expected = re.search(r'expected=\(([^\n]+)\)', decision)
+        self.assertIsNotNone(expected)
+        self.assertEqual(set(re.findall(r'"([^"\n]+)"', expected.group(1))), required)
+        # This shim returns the requested named state directly, without jq or a live API.
+        shim = r'''
+          gh() { printf '{}\n'; }
+          jq() {
+            local n=""
+            while [ "$#" -gt 0 ]; do
+              if [ "$1" = "--arg" ] && [ "$2" = "n" ]; then n="$3"; break; fi
+              shift
+            done
+            printf '%s\n' "$n" >> "$CHECK_NAMES"
+            if [ "$n" = "$FAILED_NAME" ]; then printf '%s\n' "$FAILED_STATE";
+            else printf 'completed/success\n'; fi
+          }
+'''
+        cases = [("", "", True)] + [(name, state, False) for name in sorted(required)
+                                                    for state in ["absent", "completed/skipped", "completed/failure"]]
+        for failed_name, failed_state, green in cases:
+            with self.subTest(name=failed_name, state=failed_state), tempfile.TemporaryDirectory() as tmp:
+                log = Path(tmp) / "checks"
+                env = {**os.environ, "CHECK_NAMES": str(log), "FAILED_NAME": failed_name,
+                       "FAILED_STATE": failed_state, "GITHUB_REPOSITORY": REPO}
+                script = "set -euo pipefail\n" + shim + prefix + '\ncheck_green "' + HEAD + '"\n'
+                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=3)
+                self.assertEqual(result.returncode == 0, green, result.stdout + result.stderr)
+                self.assertEqual(set(log.read_text().splitlines()), required,
+                                 "an aggregate alone cannot prove that the identical tree ran the heavy checks")
+
+    def test_decision_malformed_jq_falls_back_to_full_without_aborting(self):
+        _, jobs = self.jobs()
+        run_block = jobs["decision"].split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] if line.startswith("          ") else line for line in run_block.splitlines())
+        # Execute the actual decision shell with PATH shims; no Python policy, git or gh is real.
+        for stage in ["selection", "number", "head", "state"]:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                shims = {
+                    "python3": "printf 'full\\n'\n",
+                    "git": "printf 'unneeded git shim called\\n' >&2; exit 90\n",
+                    "gh": "case \"$*\" in *'/pulls?'*) printf '[]\\n';; *'/git/commits/'*) printf 'tree\\n';; *'/check-runs?'*) printf '{}\\n';; *) exit 91;; esac\n",
+                    "jq": r'''
+case "$*" in
+  *'sort_by(.number)'*) key=selection; output='{"number":17,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}';;
+  *'.check_runs'*) key=state; output=completed/success;;
+  *'.head.sha'*) key=head; output=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;;
+  *'.number'*) key=number; output=17;;
+  *) exit 92;;
+esac
+if [ "$FAIL_JQ_STAGE" = "$key" ]; then printf 'malformed JSON fixture\n' >&2; exit 7; fi
+printf '%s\n' "$output"
+''',
+                }
+                for name, body in shims.items():
+                    executable = directory / name
+                    executable.write_text("#!/bin/bash\n" + body)
+                    executable.chmod(0o700)
+                output, summary = directory / "output", directory / "summary"
+                env = {**os.environ, "PATH": str(directory) + os.pathsep + os.environ.get("PATH", ""),
+                       "FAIL_JQ_STAGE": stage, "GITHUB_EVENT_NAME": "push", "GITHUB_SHA": HEAD,
+                       "GITHUB_REPOSITORY": REPO, "GITHUB_OUTPUT": str(output),
+                       "GITHUB_STEP_SUMMARY": str(summary)}
+                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=3)
+                self.assertEqual(result.returncode, 0, "malformed API proof must run full CI: " + result.stderr)
+                self.assertEqual(output.read_text().splitlines(), ["run_full=true", "skip_kind=none"])
+
+    def test_readiness_notes_distinguish_manual_full_ci_from_lightweight_aggregate(self):
+        readiness = (ROOT / ".github/workflows/release-readiness.yml").read_text()
+        self.assertRegex(readiness, r"(?is)#.*ordinary.*workflow_dispatch.*full")
+        self.assertRegex(readiness, r"(?is)#.*ci-ok.*(?:lightweight|skip)")
 
     def test_release_formula_calls_gate_without_unchecked_merge(self):
         release = (ROOT / ".github/workflows/release.yml").read_text()

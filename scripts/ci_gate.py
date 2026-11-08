@@ -17,11 +17,39 @@ class GateError(RuntimeError):
     pass
 
 
+def diagnostic_cause(value, limit=1200):
+    """Bound public diagnostics; never replay workflow commands or credential material."""
+    detail = " ".join(str(value).split())
+    detail = "".join(ch for ch in detail if ch.isprintable()).replace("::", ": :")
+    detail = re.sub(r"(?i)(authorization\s*:\s*)(?:bearer\s+|token\s+)?\S+", r"\1[redacted]", detail)
+    detail = re.sub(r"(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)", "[redacted]", detail)
+    detail = re.sub(r"(https?://)[^/\s]+@", r"\1[redacted]@", detail)
+    return detail[:limit]
+
+
 def command(*args):
+    if args[:3] == ("gh", "workflow", "run"):
+        operation = "workflow dispatch"
+        action = "inspect the workflow/ref and Actions write permission, then rerun release"
+    elif args[:3] == ("gh", "pr", "merge"):
+        operation = "PR merge"
+        action = "inspect PR checks, head identity and repository auto-merge policy, then rerun release"
+    elif args[0] == "git":
+        operation = "git checkout/history proof"
+        action = "fetch the event commits and full checkout history, then rerun CI"
+    else:
+        operation = f"{args[0]} API request"
+        action = "inspect API authentication and permissions, then rerun CI"
     try:
         return subprocess.run(args, check=True, capture_output=True, text=True, timeout=30).stdout
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
-        raise GateError(f"{args[0]} command failed; inspect authentication/network and rerun CI") from error
+        if isinstance(error, subprocess.CalledProcessError):
+            cause = error.stderr or error.stdout or f"exit status {error.returncode}"
+        elif isinstance(error, subprocess.TimeoutExpired):
+            cause = f"timed out after {error.timeout} seconds"
+        else:
+            cause = str(error)
+        raise GateError(f"{operation} failed: {diagnostic_cause(cause, 600)}; {action}") from error
 
 
 def git(*args):
@@ -37,13 +65,12 @@ def api(endpoint):
 
 
 def requires_full(paths):
-    """Former workflow path policy, now inside decision so ci-ok is always reported."""
+    """Skip only non-gate docs/formulas; bundled skills and corpus are build/test inputs."""
     for name in paths:
         if name.startswith("Formula/"):
             continue
-        gate_input = (name in {"README.md", "README.ko.md", "CHANGELOG.md",
-                               "skills/hwp/SKILL.md", "skills/hwp/SKILL.ko.md"}
-                      or name.startswith(("docs/manual/", "scripts/")))
+        gate_input = (name in {"README.md", "README.ko.md", "CHANGELOG.md"}
+                      or name.startswith(("docs/manual/", "scripts/", "skills/hwp/", "corpus/")))
         if gate_input or not name.endswith(".md"):
             return True
     return False
@@ -193,8 +220,8 @@ def main():
                                        os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], args.repo)
             except (GateError, KeyError, ValueError) as error:
                 if event.get("inputs", {}).get("formula_pr"):
-                    raise GateError("formula identity/path proof failed; inspect dispatch and rerun release") from error
-                print("::warning::Path proof unavailable; running full CI", file=sys.stderr)
+                    raise GateError(f"formula identity/path proof failed: {diagnostic_cause(error)}; inspect the formula PR identity and dispatch inputs, then rerun release") from error
+                print(f"::warning::Path proof unavailable: {diagnostic_cause(error)}; running full CI", file=sys.stderr)
                 result = "full"
             print(result)
         elif args.mode == "aggregate":
@@ -203,10 +230,10 @@ def main():
         else:
             formula_gate(args.repo, args.branch, args.head)
     except GateError as error:
-        print(f"::error::{error}", file=sys.stderr)
+        print(f"::error::{diagnostic_cause(error, 2000)}", file=sys.stderr)
         return 1
-    except (KeyError, ValueError, TypeError, OSError):
-        print("::error::CI gate inputs/API response are missing or malformed; inspect event data and authentication, then rerun CI", file=sys.stderr)
+    except (KeyError, ValueError, TypeError, OSError) as error:
+        print(f"::error::CI gate inputs/API response are missing or malformed: {diagnostic_cause(error)}; inspect event data and authentication, then rerun CI", file=sys.stderr)
         return 1
     return 0
 

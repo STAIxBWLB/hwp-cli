@@ -1,10 +1,9 @@
 name: Release
 
-# Pushing a vX.Y.Z tag publishes platform `hwp` binaries to a GitHub Release (archive +
-# sha256) only after (1) the tagged commit already has a green CI run — its own, or the green
-# run of a merged PR head whose tree is identical (ci.yml deduplicates such main pushes, so
-# the tagged commit can legitimately have no own check runs) — and (2) the tag
-# matches the Cargo.toml version.
+# Pushing a vX.Y.Z tag publishes archives only after its ci-ok aggregate succeeds (or
+# an absent aggregate is backed by an identical-tree PR with all five heavy checks plus
+# ci-ok successful), and the tag matches Cargo.toml. Deduplicated main pushes now report
+# their own ci-ok; only their heavy jobs are skipped.
 # Release flow (main is protected, so the version bump cannot be pushed to it directly):
 # close the CHANGELOG section and run scripts/release.sh X.Y.Z on a branch, discard the tag
 # it creates there (`git tag -d vX.Y.Z`), open a PR, squash merge it, then tag the merge
@@ -57,11 +56,12 @@ jobs:
         run: |
           set -euo pipefail
           expected=("ci-ok")
-          # Prints the required aggregate state for $1 and succeeds only if all are completed/success.
+          fallback_expected=("lint" "pdf-parity" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)" "ci-ok")
+          # PR fallback requires the full six-check proof, not a lightweight aggregate alone.
           check_green() {
             local sha="$1" runs state name failed=0
             runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?filter=latest&per_page=100")" || return 1
-            for name in "${expected[@]}"; do
+            for name in "${fallback_expected[@]}"; do
               state="$(jq -r --arg n "$name" \
                 '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
                 <<<"$runs")"
@@ -124,7 +124,7 @@ jobs:
             exit 1
           fi
           # Legacy absent-aggregate fallback accepts only an identical-tree merged PR
-          # whose ci-ok succeeded. New lightweight runs publish their own ci-ok.
+          # whose five heavy checks and ci-ok succeeded. Lightweight runs publish their own ci-ok.
           pulls="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100")"
           pr="$(jq -c --arg sha "$GITHUB_SHA" \
             '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | sort_by(.number) | last // empty' \
