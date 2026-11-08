@@ -791,7 +791,7 @@ fn character_style_requests_refuse_and_existing_character_styles_are_preserved_i
             !run.status.success(),
             "T3 supports paragraph styles only, for {extension}"
         );
-        assert!(String::from_utf8_lossy(&run.stderr).contains("#27"));
+        assert!(String::from_utf8_lossy(&run.stderr).contains("#427"));
         assert_eq!(std::fs::read(destination).unwrap(), b"sentinel");
 
         // A pre-existing character style is source data, not a request to create one.
@@ -811,7 +811,7 @@ fn character_style_requests_refuse_and_existing_character_styles_are_preserved_i
         assert_eq!(
             named(&before, "Existing character accent").1.attr & 7,
             1,
-            "{extension}: existing source must retain character kind (#27 prerequisite)"
+            "{extension}: existing source must retain character kind (PR #442 prerequisite)"
         );
         let (output, run) = fixture.edit(
             &source,
@@ -842,7 +842,7 @@ fn character_style_requests_refuse_and_existing_character_styles_are_preserved_i
             !run.status.success(),
             "a paragraph address cannot apply a character style"
         );
-        assert!(String::from_utf8_lossy(&run.stderr).contains("#27"));
+        assert!(String::from_utf8_lossy(&run.stderr).contains("#427"));
         assert_eq!(std::fs::read(destination).unwrap(), b"sentinel");
     }
 }

@@ -182,7 +182,7 @@
             "name",
             "kind"
           ],
-          "description": "Create a named style from based_on (default style id 0), using the existing flat property vocabulary. Duplicate names and unresolved bases are refused. T3 supports paragraph kinds only; character requests receive an actionable runtime refusal pending the character-style follow-up after #27.",
+          "description": "Create a named style from based_on (default style id 0), using the existing flat property vocabulary. Duplicate names and unresolved bases are refused. T3 supports paragraph kinds only; character requests receive an actionable runtime refusal pending the character-style follow-up after PR #442.",
           "allOf": [
             {
               "$ref": "#/$defs/charPropsFields"

@@ -66,7 +66,7 @@ impl std::fmt::Display for StyleEditError {
             ),
             Self::CharacterStylesUnsupported => write!(
                 f,
-                "문자 스타일 편집은 현재 지원하지 않습니다. 문단 스타일을 사용하거나 #27의 HWPX 스타일 종류 지원 이후 문자 스타일 편집 후속 작업을 확인해 보세요"
+                "문자 스타일 편집은 현재 지원하지 않습니다. hwp styles에서 문단 스타일을 선택하세요. 문자 스타일 편집은 #427 후속 작업입니다(HWPX 스타일 종류 보존: PR #442)"
             ),
             Self::UnsupportedKind(kind) => write!(
                 f,
