@@ -1,15 +1,15 @@
-//! CLI 도움말 다국어.
+//! CLI help localization.
 //!
-//! 기본은 영문이고, 로케일이 한국어면 한국어로 표시한다. `--lang <en|ko>`나 `HWP_LANG`으로
-//! 명시 지정하면 로케일보다 우선한다.
+//! English is the default; Korean locales display Korean. Explicit `--lang <en|ko>` or
+//! `HWP_LANG` settings take precedence over the locale.
 //!
-//! 영문은 [`crate::cli`]의 doc comment(= clap help)가 정본이고, 한국어는 이 모듈의 오버레이
-//! 표가 정본이다. 표 항목이 없으면 조용히 영문으로 남으므로, `tests/cli_reference.rs`가
-//! **모든 명령·인자에 한국어 항목이 있는지**를 게이트로 강제한다.
+//! English doc comments in [`crate::cli`] (= clap help) are canonical; this module owns the
+//! canonical Korean overlay. Missing entries silently retain English, so `tests/cli_reference.rs`
+//! enforces **a Korean entry for every command and argument**.
 
 use clap::Command;
 
-/// 도움말 표시 언어.
+/// Help display language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
     En,
@@ -17,7 +17,7 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// `en`·`ko` 및 `ko_KR.UTF-8` 같은 로케일 문자열을 받는다. 모르는 값은 None.
+    /// Accepts `en`, `ko` and locale strings such as `ko_KR.UTF-8`; unknown values return None.
     pub fn parse(value: &str) -> Option<Self> {
         let head = value
             .split(['.', '_', '-', '@'])
@@ -31,16 +31,16 @@ impl Lang {
         }
     }
 
-    /// 실제 프로세스 환경에서 표시 언어를 정한다.
+    /// Determines the display language from the actual process environment.
     ///
-    /// 우선순위: `--lang <값>`(또는 `--lang=<값>`) → `HWP_LANG` → `LC_ALL` → `LC_MESSAGES`
-    /// → `LANG` → 영문. clap이 도움말을 출력하기 *전에* 정해야 하므로 argv를 직접 훑는다.
+    /// Precedence: `--lang <value>` (or `--lang=<value>`) -> `HWP_LANG` -> `LC_ALL` -> `LC_MESSAGES`
+    /// -> `LANG` -> English. Scan argv directly because this must run *before* clap prints help.
     pub fn detect() -> Self {
         let args: Vec<String> = std::env::args().collect();
         Self::resolve(&args, |key| std::env::var(key).ok())
     }
 
-    /// [`Lang::detect`]의 순수 함수 형태(테스트용).
+    /// Pure-function form of [`Lang::detect`] for tests.
     pub fn resolve<F>(args: &[String], env: F) -> Self
     where
         F: Fn(&str) -> Option<String>,
@@ -54,7 +54,7 @@ impl Lang {
             } else {
                 None
             };
-            // 잘못된 값은 여기서 조용히 넘기고 clap이 정식 오류를 내게 둔다.
+            // Ignore invalid values here and let clap report the formal error.
             if let Some(parsed) = value.as_deref().and_then(Self::parse) {
                 return parsed;
             }
@@ -68,7 +68,7 @@ impl Lang {
     }
 }
 
-/// 명령 트리의 도움말을 해당 언어로 바꾼다. 영문이면 그대로 둔다.
+/// Localizes help in the command tree; English leaves it unchanged.
 pub fn localize(command: Command, lang: Lang) -> Command {
     match lang {
         Lang::En => command,
@@ -103,8 +103,8 @@ fn lookup(path: &str, arg: &str) -> Option<&'static str> {
         .map(|(_, _, text)| *text)
 }
 
-/// 한국어 도움말 오버레이: `(서브커맨드, 인자 id, 텍스트)`.
-/// 서브커맨드가 빈 문자열이면 루트, 인자 id가 빈 문자열이면 그 명령의 about이다.
+/// Korean help overlay: `(subcommand, argument id, text)`.
+/// An empty subcommand means the root; an empty argument id means the command description.
 pub const KO: &[(&str, &str, &str)] = &[
     ("", "", "HWP/HWPX 문서 처리 도구"),
     (
@@ -955,7 +955,7 @@ mod tests {
             Lang::resolve(&args(&["hwp"]), with("LC_ALL", "ko_KR.UTF-8")),
             Lang::Ko
         );
-        // C 로케일과 미지원 로케일은 영문으로 떨어진다.
+        // The C locale and unsupported locales fall back to English.
         assert_eq!(Lang::resolve(&args(&["hwp"]), with("LANG", "C")), Lang::En);
         assert_eq!(
             Lang::resolve(&args(&["hwp"]), with("LANG", "fr_FR.UTF-8")),
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn unknown_flag_value_falls_through_to_environment() {
-        // 잘못된 --lang 값은 여기서 무시하고 clap이 정식 오류를 내게 둔다.
+        // Ignore invalid --lang values here and let clap report the formal error.
         assert_eq!(
             Lang::resolve(&args(&["hwp", "--lang", "de"]), |k| (k == "LANG")
                 .then(|| "ko_KR.UTF-8".to_string())),

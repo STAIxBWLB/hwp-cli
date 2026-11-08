@@ -1,10 +1,10 @@
-//! `hwp mcp` — MCP(Model Context Protocol) 서버의 transport 독립 코어.
+//! `hwp mcp`: transport-independent core of the MCP (Model Context Protocol) server.
 //!
-//! tokio/SDK 없이 serde_json만으로 동기 JSON-RPC 2.0을 구현한다.
-//! 에이전트(Claude 등)가 도구 호출로 HWP를 **읽고·렌더해서 보고·편집·변환**하게 한다.
-//! 이 모듈은 요청 처리·도구 레지스트리·디스패치를 담고, framing은 adapter가 맡는다.
+//! Implements synchronous JSON-RPC 2.0 with serde_json, without tokio or an SDK.
+//! Lets agents (such as Claude) **read, render, inspect, edit and convert** HWP through tools.
+//! This module handles requests, the tool registry and dispatch; adapters handle framing.
 //!
-//! 도구는 라이브러리 계층을 직접 감싼다(commands/*::run 아님 — 그건 stdout 출력).
+//! Tools wrap the library layer directly, not commands/*::run, which prints to stdout.
 
 mod authority;
 mod http;
@@ -16,7 +16,7 @@ pub use http::serve;
 pub use stdio::run;
 
 use authority::{checked_read_path, checked_write_path, font_dirs_for};
-// edit-ops 변환 계층(edit_ops.rs)이 insert_image/seal 경로 검사를 이 모듈과 공유한다 (D-10).
+// The edit-ops conversion layer (edit_ops.rs) shares insert_image/seal path checks here (D-10).
 pub(crate) use authority::checked_cli_read_path;
 
 use std::path::{Path, PathBuf};
@@ -35,17 +35,17 @@ const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
 const DEFAULT_READ_BYTES: usize = 256 * 1024;
 const MAX_READ_BYTES: usize = 1024 * 1024;
 
-/// 인라인 전송 한 건의 복호 후 상한 (doc 22 §3.3).
+/// Decoded byte limit for one inline transfer (doc 22 §3.3).
 ///
-/// base64는 3바이트를 4문자로 부풀리므로 512 KiB는 약 699 KB로 인코딩되고, 1 MiB인
-/// `MAX_REQUEST_LINE_BYTES` 안에 JSON-RPC 봉투가 들어갈 여유가 남는다. Tier A의
-/// `/files`는 64 MiB까지 받으므로, 이 상한은 사이드밴드가 없는 Tier B의 제약이다.
+/// Base64 expands three bytes to four characters, so 512 KiB becomes about 699 KB, leaving
+/// room for the JSON-RPC envelope within the 1 MiB `MAX_REQUEST_LINE_BYTES`. Tier A accepts
+/// up to 64 MiB through `/files`; this smaller bound applies to Tier B without a sideband.
 const MAX_INLINE_CONTENT_BYTES: usize = 512 * 1024;
-/// 복호 전에 거절하기 위한 인코딩 길이 상한. `decode`는 출력 전체를 할당하므로
-/// 먼저 막지 않으면 요청 하나로 상한을 훨씬 넘는 메모리를 잡을 수 있다.
+/// Encoded length bound for rejection before decoding. `decode` allocates the complete
+/// output, so an unchecked request could allocate far beyond the decoded limit.
 const MAX_INLINE_CONTENT_B64_CHARS: usize = MAX_INLINE_CONTENT_BYTES.div_ceil(3) * 4;
 
-/// 한 줄 JSON-RPC 요청 → 응답 JSON 문자열. 알림(id 없음)이면 None.
+/// One JSON-RPC request line to a JSON response string; notifications (no id) return None.
 pub fn handle_request(line: &str, ctx: &dyn FileAuthority) -> Option<String> {
     let mut req: Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -243,7 +243,7 @@ fn scrub_password_values(value: &mut Value) {
     }
 }
 
-/// 도구를 실행해 `tools/call` result를 만든다. 실행 오류는 isError=true content로.
+/// Runs a tool and builds a `tools/call` result; execution errors use isError=true content.
 fn call_tool(name: &str, args: &mut Value, ctx: &dyn FileAuthority) -> Value {
     let result: McpToolResult = match name {
         "hwp_read" => tool_read_scoped(args, ctx),
@@ -303,7 +303,7 @@ fn call_tool(name: &str, args: &mut Value, ctx: &dyn FileAuthority) -> Value {
     }
 }
 
-// ---- content/인자 헬퍼 ----
+// ---- Content and argument helpers ----
 
 fn text_content(s: &str) -> Value {
     json!({"type": "text", "text": s})
@@ -553,7 +553,7 @@ fn legacy_selector_item(
     Ok(selector.unwrap_or_default().to_string())
 }
 
-// ---- 도구 핸들러 ----
+// ---- Tool handlers ----
 
 fn tool_info(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
@@ -754,7 +754,7 @@ fn tool_fill(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             (k.clone(), s)
         })
         .collect();
-    // parts(선택): {앵커이름: 부분 파일 경로} — 부분(md+HTML) 블록을 앵커 문단에 이식.
+    // Optional parts: {anchor_name: part_file_path}; splice part (md+HTML) blocks into the anchor.
     let parts_obj = args.get("parts").and_then(Value::as_object);
     let forms = arg_bool(args, "forms", false)?;
     let report = if forms && parts_obj.is_some() {
@@ -857,7 +857,7 @@ fn tool_certify(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, Str
     Ok(vec![text_content(&summary)])
 }
 
-/// 워크스페이스 파일 하나의 SHA-256 16진 표기.
+/// SHA-256 hexadecimal digest of one workspace file.
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest as _, Sha256};
     let mut hasher = Sha256::new();
@@ -869,23 +869,23 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// base64 문자열의 구조를 검사한다.
+/// Checks the structure of a base64 string.
 ///
-/// 공유 디코더는 `=`와 공백을 건너뛰고 남는 비트를 버리므로 `"A"`나 `"===="` 같은
-/// 입력이 빈 벡터로 조용히 통과한다. 전송 도구에서 그것은 0바이트 파일을 업로드
-/// 성공으로 보고한다는 뜻이라 여기서 먼저 막는다.
+/// The shared decoder skips `=` and whitespace and discards leftover bits, so inputs such
+/// as `"A"` or `"===="` silently decode to an empty vector. A transfer tool would report that
+/// as a successful zero-byte upload, so reject it here first.
 ///
-/// 잡아내지 못하는 것도 적어 둔다. 4문자 경계에 딱 맞게 잘린 페이로드는 인코딩만
-/// 봐서는 온전한 것과 구분할 수 없다. 그래서 두 도구 모두 영수증에 sha256을 담는다.
+/// Known limitation: a payload truncated at a four-character boundary is indistinguishable
+/// from a complete encoding. Both tools therefore include sha256 in their receipts.
 fn validate_base64_structure(text: &str) -> Result<(), String> {
     let compact: Vec<u8> = text
         .bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
         .collect();
-    // 빈 입력은 0바이트 파일을 업로드 성공으로 보고하게 만든다. 문서를 옮기는
-    // 도구에서 그것은 거의 언제나 호출부의 인코딩이 조용히 실패한 흔적이고,
-    // 실제로 라이브 검증 중에 그렇게 물렸다. 다음 도구에서 이해하기 어려운
-    // 오류로 드러나느니 여기서 말하는 편이 낫다.
+    // Empty input would report a successful zero-byte upload. For a document transfer tool,
+    // this almost always indicates a silent encoding failure at the caller, as observed
+    // during live verification. Report it here rather than letting a later tool produce
+    // an error that is harder to understand.
     if compact.is_empty() {
         return Err("content가 비어 있습니다".to_string());
     }
@@ -903,18 +903,18 @@ fn validate_base64_structure(text: &str) -> Result<(), String> {
             compact.len()
         ));
     }
-    // 길이 %4 == 1 은 어떤 바이트열도 만들어낼 수 없는 형태다.
+    // A length congruent to 1 modulo 4 cannot encode any byte sequence.
     if payload.len() % 4 == 1 {
         return Err("잘못된 base64: 잘린 페이로드입니다".to_string());
     }
     Ok(())
 }
 
-/// 파일 경로를 `file://` URI로 만든다.
+/// Converts a file path to a `file://` URI.
 ///
-/// `format!("file://{}", path.display())`는 공백·`#`·비ASCII·윈도우 드라이브 경로에서
-/// 유효한 URI가 아니다. MCP 클라이언트가 resource `uri`를 URI로 파싱하면 멀쩡한 blob을
-/// 거절하거나 잘못 해석할 수 있다.
+/// `format!("file://{}", path.display())` is not a valid URI for spaces, `#`, non-ASCII
+/// characters or Windows drive paths. An MCP client parsing the resource `uri` could
+/// reject or misinterpret an otherwise valid blob.
 fn file_uri(path: &Path) -> String {
     const UNRESERVED_EXTRA: &[u8] = b"-._~/";
     let text = path.display().to_string().replace('\\', "/");
@@ -926,7 +926,7 @@ fn file_uri(path: &Path) -> String {
             encoded.push_str(&format!("%{byte:02X}"));
         }
     }
-    // 윈도우의 `C:/...`처럼 슬래시로 시작하지 않는 경로는 빈 authority 뒤에 루트가 온다.
+    // Paths without a leading slash, such as Windows `C:/...`, place the root after an empty authority.
     if encoded.starts_with('/') {
         format!("file://{encoded}")
     } else {
@@ -934,7 +934,7 @@ fn file_uri(path: &Path) -> String {
     }
 }
 
-/// 확장자로 추정한 MIME 타입. 모르면 octet-stream이다.
+/// Infers MIME type from the extension, falling back to octet-stream.
 fn mime_for(path: &Path) -> &'static str {
     match path
         .extension()
@@ -959,18 +959,18 @@ fn mime_for(path: &Path) -> &'static str {
     }
 }
 
-/// base64 콘텐츠를 워크스페이스 파일로 쓴다.
+/// Writes base64 content to a workspace file.
 ///
-/// Tier B(AgentCore)는 `/mcp` 외의 경로를 제공하지 않으므로 문서가 JSON-RPC 안으로
-/// 들어와야 한다. Tier A에도 필요한데, `/files`는 `Mcp-Session-Id`를 실은 별도 HTTP
-/// 요청이라 MCP 클라이언트가 호출할 수 없기 때문이다. 이 도구가 생기기 전까지 원격
-/// 서비스는 텍스트에서 문서를 **만들 수는** 있어도 기존 문서를 **받을 수는** 없었다.
+/// Tier B (AgentCore) exposes only `/mcp`, so documents must travel inside JSON-RPC. Tier A
+/// needs this too: `/files` requires a separate HTTP request carrying `Mcp-Session-Id`, which
+/// MCP clients cannot issue. Before this tool, the remote service could **create** documents
+/// from text but could not **receive** existing documents.
 ///
-/// 이름 검사는 `checked_write_path`에 맡긴다. `/files` 라우트의 `valid_file_name`을
-/// 재사용하지 않는데, 그 정규식은 URL 경로 조각이 canonicalize 검사 없이 root에
-/// 이어붙는 라우트에서 **그 자체가 봉쇄 수단**이라 존재한다. 여기서는
-/// `checked_write_path`가 더 강한 검사를 하며, ASCII 전용 문자셋을 씌우면 다른 모든
-/// 도구가 받는 한글 파일명을 이 도구만 거절하게 된다.
+/// Delegate name validation to `checked_write_path`, not the `/files` route's
+/// `valid_file_name`: that regex is the containment boundary for a URL path component joined
+/// to the root without canonicalization. Here `checked_write_path` applies stronger checks;
+/// imposing an ASCII-only character set would reject Korean file names accepted by all
+/// the other tools.
 fn tool_put_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
@@ -994,7 +994,7 @@ fn tool_put_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, St
     }
     validate_base64_structure(content)?;
     let bytes = hwp_convert::base64::decode(content)?;
-    // decode는 공백과 패딩을 무시하므로 위 검사만으로는 복호 크기를 보장하지 못한다.
+    // decode ignores whitespace and padding, so the check above alone cannot bound decoded size.
     if bytes.len() > MAX_INLINE_CONTENT_BYTES {
         return Err(format!(
             "content가 너무 큽니다: 복호 {}바이트 (상한 {}바이트)",
@@ -1002,7 +1002,7 @@ fn tool_put_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, St
             MAX_INLINE_CONTENT_BYTES
         ));
     }
-    // 스테이징·fsync·재읽기 검증은 다른 모든 출력 경로와 같은 헬퍼가 처리한다.
+    // The shared output helper handles staging, fsync and readback verification as on other paths.
     crate::commands::output::write_validated(
         &path,
         None,
@@ -1029,14 +1029,14 @@ fn tool_put_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, St
     Ok(vec![text_content(&summary)])
 }
 
-/// 워크스페이스 파일을 base64로 돌려준다.
+/// Returns a workspace file as base64.
 ///
-/// 반환은 두 블록이다. 영수증 역할의 텍스트 블록은 알 수 없는 블록 타입을 버리는
-/// 클라이언트에도 무엇이 생겼는지 남기고, embedded resource 블록이 실제 바이트를
-/// 나른다. `tool_read_scoped`·`tool_render_scoped`가 이미 쓰는 두 블록 관례와 같다.
+/// Returns two blocks. The receipt text tells clients that discard unknown block types what
+/// happened; the embedded resource carries the actual bytes. This follows the two-block
+/// convention already used by `tool_read_scoped` and `tool_render_scoped`.
 ///
-/// 상한을 넘으면 잘라내지 않고 거절한다. 반쪽 문서는 오류보다 나쁘고, 파일은 그대로
-/// 남으므로 더 작은 포맷으로 변환하거나 Tier A의 `/files`로 받으면 된다.
+/// Rejects oversized files rather than truncating them. A partial document is worse than an
+/// error; the file remains available for conversion to a smaller format or Tier A `/files`.
 fn tool_get_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let object = args
         .as_object()
@@ -1051,8 +1051,8 @@ fn tool_get_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, St
     let metadata = file
         .metadata()
         .map_err(|error| format!("{}: {error}", path.display()))?;
-    // 일반 파일만 받는다. 문자 장치는 metadata가 0바이트라고 보고하므로 크기 검사만
-    // 믿으면 /dev/zero 같은 경로에서 읽기가 끝나지 않는다(root 제한이 없는 stdio에서).
+    // Accept only regular files. Character devices report zero-byte metadata, so a size check
+    // alone would read forever from /dev/zero (reachable through stdio without root restrictions).
     if !metadata.is_file() {
         return Err(format!("일반 파일이 아닙니다: {}", path.display()));
     }
@@ -1065,7 +1065,7 @@ fn tool_get_file(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, St
     if metadata.len() > MAX_INLINE_CONTENT_BYTES as u64 {
         return Err(too_big);
     }
-    // 읽기 자체도 묶는다. metadata 이후에 파일이 자라도 상한을 넘길 수 없다.
+    // Bound the read itself too, so growth after metadata inspection cannot bypass the limit.
     let mut bytes = Vec::new();
     file.take(MAX_INLINE_CONTENT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
@@ -2010,7 +2010,7 @@ fn tool_new(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String>
 
     // `template` is refused together with `markdown`/`json` (both are the "document content"
     // argument, same as `--template`/`--from` on the CLI). Frame arguments do combine with it:
-    // the skeleton carries no native 두문/결문 table, so the frame arguments supply them (the
+    // the skeleton carries no native header/footer table, so the frame arguments supply them (the
     // D-05 exclusion was reverted once verification falsified its premise). Resolved through the
     // same fixed in-binary lookup `--list-templates` reads (T-02.4-13) — never a filesystem path
     // built from the name.
@@ -2353,7 +2353,7 @@ fn tool_diff(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     )])
 }
 
-// ---- 도구 정의 (tools/list) ----
+// ---- Tool definitions (tools/list) ----
 
 fn tool_defs() -> Vec<Value> {
     vec![
@@ -5998,8 +5998,8 @@ mod tests {
         let cli_out = temp_file("typed-ordering-cli.hwpx");
         create_hwpx(&source, "사과\n");
 
-        // The second replace only matches because the first one ran: 순서가 뒤집히면 "배상"이
-        // 아니라 "배"가 된다.
+        // The second replace only matches because the first one ran: reversing the order produces
+        // the intermediate replacement rather than the final replacement.
         tool_edit(
             &json!({
                 "input": source,
@@ -6351,7 +6351,7 @@ mod tests {
             "문단별 세그먼트: {full_segments:?}"
         );
 
-        // A 2-character window from the middle of the second paragraph ("바") — segment offsets must stay absolute against the full markdown.
+        // A two-character window from the second paragraph keeps segment offsets absolute against the full markdown.
         let offset = markdown.find("바").unwrap();
         let window = tool_read(
             &json!({
@@ -6653,8 +6653,8 @@ mod tests {
         assert_eq!(capped["matches"].as_array().unwrap().len(), 2);
     }
 
-    /// 인라인 전송 왕복. 이 흐름이 R3의 존재 이유다 — 이 도구들이 생기기 전에는
-    /// 원격 세션에 기존 문서를 넣을 방법이 프로토콜 안에 없었다.
+    /// Inline transfer round trip. This is why R3 exists: before these tools, the protocol had
+    /// no way to put an existing document into a remote session.
     #[test]
     fn 인라인_전송_왕복() {
         let root = temp_file("inline-roundtrip");
@@ -6675,7 +6675,7 @@ mod tests {
         let receipt: Value = serde_json::from_str(put[0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(receipt["bytes"], original.len());
 
-        // 올린 파일이 다른 도구에 그대로 보인다: 경로 인자를 유지한다는 doc 22 §7의 모델.
+        // Other tools see the uploaded file at the same path, following the model in doc 22 §7.
         let info = tool_info(
             &json!({"path": root.join("uploaded.hwpx").display().to_string()}),
             &ctx,
@@ -6701,8 +6701,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 상한 초과는 복호 **전에** 걸러야 한다. 걸러지지 않으면 요청 하나가 상한을
-    /// 훨씬 넘는 메모리를 잡으므로, 파일이 생기지 않았다는 것이 그 증거다.
+    /// Reject over-limit input **before** decoding to avoid allocating far beyond the bound.
+    /// The absence of a created file demonstrates that early rejection.
     #[test]
     fn 인라인_업로드_상한() {
         let root = temp_file("inline-cap");
@@ -6726,7 +6726,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 상한을 넘는 파일은 잘라내지 않고 거절하며, 파일 자체는 남는다.
+    /// Oversized files are rejected without truncation; the source file remains intact.
     #[test]
     fn 인라인_다운로드_상한() {
         let root = temp_file("inline-get-cap");
@@ -6744,7 +6744,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 잘못된 인자와 sandbox 이탈은 다른 도구와 같은 방식으로 거절한다.
+    /// Invalid arguments and sandbox escapes are rejected like other tools.
     #[test]
     fn 인라인_전송_인자와_sandbox_검사() {
         let root = temp_file("inline-guards");
@@ -6769,7 +6769,7 @@ mod tests {
         .expect_err("잘못된 base64를 통과시켰습니다");
         assert!(!bad_base64.is_empty());
 
-        // root 밖으로 나가는 이름은 checked_write_path 가 막는다.
+        // checked_write_path blocks names that escape the root.
         for escape in ["../escape.bin", "/tmp/escape.bin"] {
             assert!(
                 tool_put_file(&json!({"name": escape, "content": "QQ=="}), &ctx).is_err(),
@@ -6784,8 +6784,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 공유 디코더는 `"A"`와 `"===="`를 빈 벡터로 통과시킨다. 전송 도구에서 그것은
-    /// 0바이트 파일을 업로드 성공으로 보고한다는 뜻이므로 구조 검사가 먼저 막는다.
+    /// The shared decoder accepts `"A"` and `"===="` as an empty vector; a transfer tool would
+    /// report a successful zero-byte upload, so structural checks reject them first.
     #[test]
     fn 인라인_업로드_잘못된_base64_거절() {
         let root = temp_file("inline-b64");
@@ -6793,7 +6793,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let ctx = ctx_with_roots(vec![root.canonicalize().unwrap()]);
 
-        // 디코더 자체는 이것들을 조용히 통과시킨다는 사실을 먼저 고정한다.
+        // First pin the fact that the decoder itself silently accepts these inputs.
         assert_eq!(hwp_convert::base64::decode("A").unwrap(), Vec::<u8>::new());
         assert_eq!(
             hwp_convert::base64::decode("====").unwrap(),
@@ -6814,7 +6814,7 @@ mod tests {
             assert!(!destination.exists(), "{bad}: 파일이 생기면 안 됩니다");
         }
 
-        // 정상 입력은 그대로 통과한다.
+        // Valid input still passes through.
         assert!(validate_base64_structure("QUJD").is_ok());
         assert!(validate_base64_structure("QQ==").is_ok());
         assert!(validate_base64_structure("QUJ=").is_ok());
@@ -6823,21 +6823,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 문자 장치는 metadata가 0바이트라고 보고하므로, 크기 검사만 믿으면 읽기가
-    /// 끝나지 않는다. root 제한이 없는 stdio에서 실제로 도달 가능한 경로였다.
+    /// Character-device metadata reports zero bytes, so a size check alone cannot bound the read.
+    /// This was reachable through stdio without root restrictions.
     #[test]
     #[cfg(unix)]
     fn 인라인_다운로드_일반_파일만() {
-        // roots가 비어 있으면 checked_read_path가 아무 경로나 통과시킨다 — 이것이
-        // 이 검사가 필요한 조건 그대로다.
+        // Empty roots let checked_read_path accept any path, exactly the condition that requires
+        // this regular-file check.
         let ctx = ctx_with_roots(Vec::new());
         let error = tool_get_file(&json!({"path": "/dev/zero"}), &ctx)
             .expect_err("/dev/zero 를 읽으려 시도했습니다");
         assert!(error.contains("일반 파일이 아닙니다"), "{error}");
     }
 
-    /// resource uri는 클라이언트가 URI로 파싱하므로 공백·비ASCII·윈도우 경로에서도
-    /// 유효해야 한다.
+    /// Clients parse a resource uri as a URI, so it must remain valid for spaces, non-ASCII
+    /// characters and Windows paths.
     #[test]
     fn 인라인_다운로드_uri_인코딩() {
         assert_eq!(
@@ -6848,7 +6848,7 @@ mod tests {
             file_uri(Path::new("/work/a#b.pdf")),
             "file:///work/a%23b.pdf"
         );
-        // 슬래시로 시작하지 않는 경로는 빈 authority 뒤에 루트를 세운다.
+        // A path without a leading slash places the root after an empty authority.
         let windows = file_uri(Path::new(r"C:\work\out.hwpx"));
         assert!(
             windows == "file:///C%3A/work/out.hwpx",
