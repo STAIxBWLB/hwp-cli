@@ -362,6 +362,24 @@ fn contract_rejects_changed_values_grid_styles_resources_and_unknown_references(
             .layer,
         "style"
     );
+    let mut diagonal_source = fixture.doc.clone();
+    let mut fill = hwp_model::BorderFill::default();
+    fill.diagonal.line_type = 1;
+    fill.attr = 1 << 2; // The renderer's slash direction.
+    diagonal_source.header.border_fills.push(fill);
+    let border = hwp_model::BorderFillId(diagonal_source.header.border_fills.len() as u16);
+    cell_mut(&mut diagonal_source, 0, 1, 1).border_fill = border;
+    let diagonal_baseline = contract::project_form(&diagonal_source);
+    diagonal_source.header.border_fills.last_mut().unwrap().attr = 1 << 5; // Backslash.
+    assert_eq!(
+        contract::compare_form_contract(
+            &diagonal_baseline,
+            &contract::project_form(&diagonal_source)
+        )
+        .unwrap_err()
+        .layer,
+        "style"
+    );
     let mut broken = fixture.doc.clone();
     broken.bin_streams[0].data[0] ^= 1;
     assert_eq!(

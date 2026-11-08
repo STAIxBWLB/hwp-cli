@@ -23,6 +23,16 @@ and `compare_form_contract` under `crates/hwp-cli/tests/common/`. `AnchorPositio
 reusing the anchor comparison approach introduced by #410. The tests define exact signatures;
 these names do not advertise a shipped CLI or MCP command.
 
+`expect_cell_values` clones and adjusts only an expected projection; it never edits the source
+`Document`. Its closed replacement budget keeps the existing paragraph count and accepts only
+single-style paragraphs. Paragraph insertion or mixed-style replacement requires an explicit
+expected document/projection rather than a wider text allowance.
+
+The generated-source test compares full HWPX twin projections. Both formats independently check
+manifest cell values, grid widths/spans, form markers/breaks and resource roles. HWP5 then has its
+own full projection baseline and byte-identical native round-trip check. This does not assert
+universal cross-format style equality or normalize writer materialization differences away.
+
 ## Reproduce the synthetic source
 
 From the repository root:
@@ -64,7 +74,7 @@ with existing commands exercises a second format; it does not supply native-open
 | Layer | Checked contract | Evidence boundary |
 |---|---|---|
 | Cell values | Exact expected values at explicit table/grid coordinates, with paragraph boundaries and whitespace retained | Repeated labels are not unique addresses; plain-text totals alone cannot prove the right cell was filled |
-| Grid | Table/cell counts, row/column coordinates, merge spans, widths and occupancy | A missing/extra table or cell fails; positional `zip` must not discard unmatched entries |
+| Grid | Table/cell counts, row/column coordinates, merge spans, widths, stored minimum heights and the authored grid | A missing/extra table or cell fails; positional `zip` must not discard unmatched entries |
 | Semantic style | Resolved common properties described below | Palette indices and opaque serialization details are not formatting identities |
 | Resources | Resolved payload hashes and their referring locations; explicit retained/excluded roles | A filename or unresolved reference is not the asset bytes |
 | Pagination | Break/anchor constraints and same-environment relative observations | CI does not assert portable golden pages, glyphs or pixels |
@@ -125,9 +135,17 @@ body-cell marker coverage.
 
 CI comparisons are relative: the two artifacts use the same available font environment, and the
 checks compare their corresponding anchors rather than a hardcoded page count or pixel image.
-Any coordinate tolerance belongs to the stated comparison policy. If a host resource prevents an
+The current helper compares selected body paragraph page assignments and table-fragment page/box
+positions. Table-box coordinates must be finite and differ by **less than 0.05pt**, following the
+#410 helper; this is a relative tolerance, not a portable coordinate golden. If a host resource prevents an
 applicable observation, record the unavailable evidence through skip accounting or return a
 limited result; strict required-resource mode must fail rather than claim coverage.
+
+`FontIdentity` records actual requested family/bold state, resolved family, font-byte SHA-256,
+face index and matched/substituted/missing outcome from `FontStore` observations. Its repeatability
+comparison checks that observed identities agree; it neither pins a CI font nor turns matching
+fallback observations into a matched-font or native-compatibility verdict. CI font observations
+are explicitly labeled observed and externally unpinned.
 
 Page/pixel acceptance needs an external receipt recording the source/spec/output and render
 hashes, product head/version, original requested family, resolved font-byte SHA-256, face index

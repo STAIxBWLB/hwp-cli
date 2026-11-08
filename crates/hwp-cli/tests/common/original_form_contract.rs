@@ -166,7 +166,7 @@ fn border(doc: &Document, id: u16) -> Value {
     {
         return Value::Null;
     }
-    json!({"sides":sides,"diagonal":diagonal,"bg":bg,"hatch":hatch,"gradient":gradient})
+    json!({"attr":fill.attr,"sides":sides,"diagonal":diagonal,"bg":bg,"hatch":hatch,"gradient":gradient})
 }
 fn paragraph_style(doc: &Document, para: &Paragraph) -> Value {
     let paragraph = doc.header.para_shapes.get(para.para_shape.0 as usize).map(|ps| {

@@ -164,7 +164,6 @@ def generate() -> dict[str, bytes]:
             "path": "outside.png",
             "width_mm": 8,
             "height_mm": 8,
-            "alt": "Owner-authored outside-form orange checker",
             "placement": "inline",
         },
     ]
@@ -199,7 +198,6 @@ def generate() -> dict[str, bytes]:
             "path": "inside.png",
             "width_mm": 8,
             "height_mm": 8,
-            "alt": "Owner-authored retained blue checker",
             "placement": "inline",
         }
     )
