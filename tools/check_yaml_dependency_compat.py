@@ -69,7 +69,10 @@ def main():
             receipt["status"] = "prepared-not-run"
             print(json.dumps(receipt, sort_keys=True))
             return 0
-        env = {**os.environ, "CARGO_BUILD_JOBS": "2"}
+        target_dir = Path(os.environ.get("CARGO_TARGET_DIR", str(ROOT / "target")))
+        if not target_dir.is_absolute():
+            target_dir = ROOT / target_dir
+        env = {**os.environ, "CARGO_BUILD_JOBS": "2", "CARGO_TARGET_DIR": str(target_dir)}
         result = subprocess.run(["cargo", "run", "--offline", "--manifest-path", str(project / "Cargo.toml"),
                                  "--", str(project / "outputs")], cwd=project, env=env,
                                 capture_output=True, text=True, timeout=args.timeout)

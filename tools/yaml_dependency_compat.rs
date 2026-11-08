@@ -47,7 +47,6 @@ document:
   sections:
     - blocks:
         - type: paragraph
-          keep_with_next: true
           runs: [{type: text, text: "false / null / 007"}]
 visuals: []
 tables: {placement: inline}
@@ -248,6 +247,31 @@ fn execute() -> Result<()> {
         .expect_err("invalid template source must remain refused");
     if redacted.to_string().contains("NEVER_DISCLOSE_THIS_VALUE") {
         return Err("public template parse diagnostic disclosed authored sentinel value".into());
+    }
+    proof.refusal_cases += 1;
+    // This option is intentionally outside the v1 native compiler contract. Keep its
+    // rejection as a negative case rather than asking a positive fixture to emit it.
+    let unsupported = V2.replace(
+        "type: paragraph",
+        "type: paragraph\n          keep_with_next: true",
+    );
+    let old_unsupported: DocumentSpecV2 = yaml_legacy::from_str(&unsupported)?;
+    let new_unsupported: DocumentSpecV2 = yaml_candidate::from_str(&unsupported)?;
+    for extension in ["hwp", "hwpx"] {
+        let target = directory.join(format!("refused.{extension}"));
+        let before = compile_spec_v2(&old_unsupported, directory, &target, false, &[])
+            .err()
+            .ok_or("legacy keep_with_next unexpectedly compiled; inspect the refusal contract")?;
+        let after = compile_spec_v2(&new_unsupported, directory, &target, false, &[])
+            .err()
+            .ok_or(
+                "candidate keep_with_next unexpectedly compiled; inspect the refusal contract",
+            )?;
+        proof.bytes(
+            &format!("unsupported-keep-with-next/{extension}"),
+            before.to_string().as_bytes(),
+            after.to_string().as_bytes(),
+        )?;
     }
     proof.refusal_cases += 1;
     let old_expanded = expand_template(&old_template, &old_data, directory, &[])?;
