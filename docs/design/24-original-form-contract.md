@@ -30,7 +30,10 @@ expected document/projection rather than a wider text allowance.
 
 The string-valued cell budget supports ordinary text, tabs and line breaks. Control-rich cell
 values retain typed control atoms in the projection and require an explicit expected document;
-they cannot be flattened into a string match or silently replaced.
+they cannot be flattened into a string match or silently replaced. Character controls and inline
+controls remain distinct atom variants even when their numeric codes match. Extended-control atoms
+retain the code, `ctrl_id` and referenced control index; changing a field/object anchor cannot be
+hidden by unchanged visible text. Raw native payload tails remain outside this semantic projection.
 
 The generated-source test compares full HWPX twin projections. Both formats independently check
 manifest cell values, grid widths/spans, form markers/breaks and resource roles. HWP5 then has its
@@ -101,7 +104,8 @@ actual format changes without treating redundant adjacent equal runs as a change
 Do not normalize different field meanings merely to obtain equality. A cross-format distinction
 that the shared IR cannot express or a writer changes must remain an explicit limitation or a
 narrow, reviewed expected change. Unknown references are violations, not default styles silently
-substituted by the helper.
+substituted by the helper. Tab-definition index 0 is validated like every other index; zero does
+not exempt an absent tab-definition reference from the unresolved-reference check.
 
 Line caches, instance IDs, container metadata, raw opaque records and native field tails are not
 part of this semantic subset. They remain protected by the independent HWP5 byte-identity,
@@ -149,7 +153,9 @@ limited result; strict required-resource mode must fail rather than claim covera
 face index and matched/substituted/missing outcome from `FontStore` observations. Its repeatability
 comparison checks that observed identities agree; it neither pins a CI font nor turns matching
 fallback observations into a matched-font or native-compatibility verdict. CI font observations
-are explicitly labeled observed and externally unpinned.
+are explicitly labeled observed and externally unpinned. The identity also carries
+`resolutions_complete`. A truncated collection is unavailable evidence and is rejected even when
+the collected entries and completeness flags on both sides are equal.
 
 Missing font-byte hashes, face indices or resolution outcomes are unavailable evidence, not equal
 font identities. Required tests count that unavailable resource; strict mode fails it.

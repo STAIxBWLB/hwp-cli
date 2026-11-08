@@ -10,22 +10,45 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, PartialEq, Eq)]
 pub enum Atom {
     Text(char),
-    Control(u16),
+    CharControl(u16),
+    InlineControl(u16),
+    ExtendedControl {
+        code: u16,
+        ctrl_id: [u8; 4],
+        ctrl_index: Option<u32>,
+    },
 }
 
-/// Own paragraph content: boundaries/whitespace survive; object payloads are checked separately.
+/// Own paragraph atoms retain control kind and anchor association; object payloads are separate.
 fn atoms(para: &Paragraph) -> Vec<Atom> {
     para.chars
         .iter()
         .filter_map(|ch| match ch {
             HwpChar::Text(ch) => Some(Atom::Text(*ch)),
             HwpChar::CharCtrl(code) if *code != hwp_model::ctrl_char::PARA_BREAK => {
-                Some(Atom::Control(*code))
+                Some(Atom::CharControl(*code))
             }
-            HwpChar::InlineCtrl { code, .. } => Some(Atom::Control(*code)),
+            HwpChar::InlineCtrl { code, .. } => Some(Atom::InlineControl(*code)),
+            HwpChar::ExtCtrl {
+                code,
+                ctrl_id,
+                ctrl_index,
+                ..
+            } => Some(Atom::ExtendedControl {
+                code: *code,
+                ctrl_id: *ctrl_id,
+                ctrl_index: *ctrl_index,
+            }),
             _ => None,
         })
         .collect()
+}
+
+// Object/setup anchors do not create textual cell bindings or visible body selections.
+fn has_text_atoms(para: &Paragraph) -> bool {
+    atoms(para)
+        .iter()
+        .any(|atom| !matches!(atom, Atom::ExtendedControl { .. }))
 }
 
 pub fn direct_text(para: &Paragraph) -> String {
@@ -33,8 +56,8 @@ pub fn direct_text(para: &Paragraph) -> String {
         .into_iter()
         .filter_map(|atom| match atom {
             Atom::Text(ch) => Some(ch),
-            Atom::Control(hwp_model::ctrl_char::LINE_BREAK) => Some('\n'),
-            Atom::Control(hwp_model::ctrl_char::TAB) => Some('\t'),
+            Atom::CharControl(hwp_model::ctrl_char::LINE_BREAK) => Some('\n'),
+            Atom::InlineControl(hwp_model::ctrl_char::TAB) => Some('\t'),
             _ => None,
         })
         .collect()
@@ -260,7 +283,7 @@ fn check_references(doc: &Document, para: &Paragraph, key: &str, result: &mut Fo
     let mut invalid = false;
     if let Some(ps) = doc.header.para_shapes.get(para.para_shape.0 as usize) {
         invalid |= invalid_border(doc, ps.border_fill_id);
-        invalid |= ps.tab_def_id != 0 && doc.header.tab_stops.get(ps.tab_def_id as usize).is_none();
+        invalid |= doc.header.tab_stops.get(ps.tab_def_id as usize).is_none();
         invalid |= match ps.head_type() {
             2 => doc
                 .header
@@ -324,7 +347,7 @@ fn visit_paragraph(doc: &Document, para: &Paragraph, key: &str, result: &mut For
                 let projected_cells = cells.iter().map(|cell| {
                     // Picture-only paragraphs are resource references, not text bindings.
                     let values: Vec<_> = cell.paragraphs.iter().enumerate().filter(|(_,para)| {
-                        !(atoms(para).is_empty() && para.controls.iter().any(|c| matches!(c,Control::Picture(_))))
+                        has_text_atoms(para) || !para.controls.iter().any(|c| matches!(c,Control::Picture(_)))
                     }).collect();
                     CellProjection {
                         row:cell.row,col:cell.col,row_span:cell.row_span,col_span:cell.col_span,
@@ -521,7 +544,7 @@ pub fn body_paths(doc: &Document) -> Vec<(usize, usize)> {
                         }
                         Control::SectionDef(_) => false,
                     });
-                    (!atoms(para).is_empty() || object).then_some((s, p))
+                    (has_text_atoms(para) || object).then_some((s, p))
                 })
         })
         .collect()
@@ -626,11 +649,13 @@ pub struct FontResolutionIdentity {
 }
 #[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub struct FontIdentity {
+    pub resolutions_complete: bool,
     pub entries: Vec<FontResolutionIdentity>,
 }
 impl FontIdentity {
     pub fn from_store(store: &hwp_render::FontStore) -> Self {
         Self {
+            resolutions_complete: store.resolutions_complete,
             entries: store
                 .resolutions
                 .iter()
@@ -658,6 +683,9 @@ pub fn compare_font_identity(
     expected: &FontIdentity,
     actual: &FontIdentity,
 ) -> Result<(), ContractViolation> {
+    if !expected.resolutions_complete || !actual.resolutions_complete {
+        return Err(condition("fonts", "incomplete_collection", "identity"));
+    }
     if expected.entries.is_empty() || actual.entries.is_empty() {
         return Err(condition("fonts", "missing_observation", "identity"));
     }
@@ -690,8 +718,8 @@ pub fn compare_font_identity(
 fn string_atoms(text: &str) -> Vec<Atom> {
     text.chars()
         .map(|ch| match ch {
-            '\n' => Atom::Control(hwp_model::ctrl_char::LINE_BREAK),
-            '\t' => Atom::Control(hwp_model::ctrl_char::TAB),
+            '\n' => Atom::CharControl(hwp_model::ctrl_char::LINE_BREAK),
+            '\t' => Atom::InlineControl(hwp_model::ctrl_char::TAB),
             _ => Atom::Text(ch),
         })
         .collect()
@@ -729,8 +757,19 @@ pub fn expect_cell_values(
                 &format!("{key:?}"),
             ));
         };
-        if cell.values.iter().flatten().any(|atom|matches!(atom,Atom::Control(code) if *code!=hwp_model::ctrl_char::LINE_BREAK && *code!=hwp_model::ctrl_char::TAB)) {
-            return Err(condition("expected_cells","control_rich_requires_expected_document",&format!("{key:?}")));
+        if cell.values.iter().flatten().any(|atom| {
+            !matches!(
+                atom,
+                Atom::Text(_)
+                    | Atom::CharControl(hwp_model::ctrl_char::LINE_BREAK)
+                    | Atom::InlineControl(hwp_model::ctrl_char::TAB)
+            )
+        }) {
+            return Err(condition(
+                "expected_cells",
+                "control_rich_requires_expected_document",
+                &format!("{key:?}"),
+            ));
         }
         if cell.paragraph_keys.len() != change.paragraphs.len() {
             return Err(condition(

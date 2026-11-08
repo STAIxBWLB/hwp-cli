@@ -270,13 +270,19 @@ fn compare_observed_fonts(
                 entry.sha256.is_none() || entry.face_index.is_none() || entry.outcome == "missing"
             })
     };
-    if unavailable(before) && unavailable(after) {
+    let result = contract::compare_font_identity(before, after);
+    if result
+        .as_ref()
+        .is_err_and(|error| error.code == "incomplete_resolution")
+        && unavailable(before)
+        && unavailable(after)
+    {
         fixture_skip::resource_unavailable(
             label,
             "install the required fonts or set HWP_FONT_DIR, then collect fresh render observations",
         );
     } else {
-        contract::compare_font_identity(before, after).unwrap();
+        result.unwrap();
     }
 }
 
@@ -612,4 +618,142 @@ fn anchor_and_font_self_checks_reject_moved_starts_and_incomplete_evidence() {
     map.rows.clear();
     assert!(contract::anchor_positions(&fixture.doc, &map, &fixture.forms()).is_err());
     assert!(contract::anchor_positions(&fixture.doc, &map, &[]).is_err());
+}
+
+#[test]
+fn contract_rejects_removed_extended_control_anchor() {
+    let Some(fixture) = Fixture::new("extended-anchor") else {
+        return;
+    };
+    let baseline = assert_manifest(&fixture.doc, &fixture.expected);
+    let mut broken = fixture.doc.clone();
+    let para = &mut broken.sections[0].paragraphs[2];
+    assert!(
+        para.chars
+            .iter()
+            .any(|ch| matches!(ch, HwpChar::ExtCtrl { .. }))
+    );
+    para.chars
+        .retain(|ch| !matches!(ch, HwpChar::ExtCtrl { .. }));
+    let error = contract::compare_form_contract(&baseline, &contract::project_form(&broken))
+        .expect_err("removing an object anchor must fail even when the object control remains");
+    assert_eq!(error.layer, "paragraph_values");
+    for field in ["code", "id", "index"] {
+        let mut broken = fixture.doc.clone();
+        let anchor = broken.sections[0].paragraphs[2]
+            .chars
+            .iter_mut()
+            .find(|ch| matches!(ch, HwpChar::ExtCtrl { .. }))
+            .unwrap();
+        if let HwpChar::ExtCtrl {
+            code,
+            ctrl_id,
+            ctrl_index,
+            ..
+        } = anchor
+        {
+            match field {
+                "code" => *code ^= 1,
+                "id" => ctrl_id[0] ^= 1,
+                "index" => *ctrl_index = Some(ctrl_index.unwrap_or(0).wrapping_add(1)),
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(
+            contract::compare_form_contract(&baseline, &contract::project_form(&broken))
+                .expect_err("extended anchor identity must be preserved")
+                .layer,
+            "paragraph_values"
+        );
+    }
+    let mut broken = fixture.doc.clone();
+    let image_cell = cell_mut(&mut broken, 0, 3, 1);
+    let image_para = image_cell
+        .paragraphs
+        .iter_mut()
+        .find(|para| {
+            para.controls
+                .iter()
+                .any(|ctrl| matches!(ctrl, Control::Picture(_)))
+        })
+        .unwrap();
+    assert!(
+        image_para
+            .chars
+            .iter()
+            .any(|ch| matches!(ch, HwpChar::ExtCtrl { .. }))
+    );
+    image_para
+        .chars
+        .retain(|ch| !matches!(ch, HwpChar::ExtCtrl { .. }));
+    assert_eq!(
+        contract::compare_form_contract(&baseline, &contract::project_form(&broken))
+            .expect_err("picture-only cell anchors must remain in the full paragraph projection")
+            .layer,
+        "paragraph_values"
+    );
+}
+
+#[test]
+fn contract_rejects_inline_tab_changed_to_character_control() {
+    let Some(fixture) = Fixture::new("control-kind") else {
+        return;
+    };
+    let mut source = fixture.doc.clone();
+    cell_mut(&mut source, 0, 1, 1).paragraphs[0].chars.insert(
+        0,
+        HwpChar::InlineCtrl {
+            code: hwp_model::ctrl_char::TAB,
+            payload: vec![0; 12],
+        },
+    );
+    let baseline = contract::project_form(&source);
+    contract::compare_form_contract(&baseline, &baseline).unwrap();
+    cell_mut(&mut source, 0, 1, 1).paragraphs[0].chars[0] =
+        HwpChar::CharCtrl(hwp_model::ctrl_char::TAB);
+    let error = contract::compare_form_contract(&baseline, &contract::project_form(&source))
+        .expect_err("inline and character controls with the same code must stay distinct");
+    assert_eq!(error.layer, "cell_values");
+}
+
+#[test]
+fn contract_rejects_truncated_font_observation_collection() {
+    let mut store = hwp_render::FontStore::new_isolated();
+    store.resolutions.push(hwp_render::fonts::FontResolution {
+        requested: "Synthetic Font".into(),
+        requested_bold: false,
+        resolved: Some("Synthetic Font".into()),
+        resolved_sha256: Some("ab".repeat(32)),
+        resolved_face_index: Some(0),
+        outcome: hwp_render::fonts::FontResolutionOutcome::Matched,
+    });
+    let complete = contract::FontIdentity::from_store(&store);
+    contract::compare_font_identity(&complete, &complete).unwrap();
+    store.resolutions_complete = false;
+    let truncated = contract::FontIdentity::from_store(&store);
+    let error = contract::compare_font_identity(&truncated, &truncated)
+        .expect_err("equal truncated font observations cannot establish identity");
+    assert_eq!(error.code, "incomplete_collection");
+}
+
+#[test]
+fn contract_rejects_missing_default_tab_definition() {
+    let Some(fixture) = Fixture::new("tab-reference") else {
+        return;
+    };
+    assert!(!fixture.doc.header.tab_stops.is_empty());
+    assert!(
+        fixture
+            .doc
+            .header
+            .para_shapes
+            .iter()
+            .any(|ps| ps.tab_def_id == 0)
+    );
+    let mut broken = fixture.doc.clone();
+    broken.header.tab_stops.clear();
+    let broken = contract::project_form(&broken);
+    let error = contract::compare_form_contract(&broken, &broken)
+        .expect_err("tab definition zero is a real reference and must resolve");
+    assert_eq!(error.layer, "references");
 }

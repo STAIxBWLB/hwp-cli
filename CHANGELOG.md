@@ -43,6 +43,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   repeated labels, merged/signature cells, four profile tables and retained/outside images.
   Shared helpers compare expected cells, grid/width/style/resource projections, relative anchors
   and observed font identities; corruption self-checks exercise their failure boundaries.
+  Semantic control atoms distinguish character/inline controls and preserve extended-control
+  codes, IDs and anchor indices. Invalid tab references, including index 0, and incomplete font
+  resolution collections are rejected rather than accepted as equal observations.
   This adds regression evidence and a bilingual design contract, not production extraction,
   binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
 
