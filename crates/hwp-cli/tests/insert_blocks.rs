@@ -2387,3 +2387,98 @@ fn blocks_are_measured_against_the_target_column_of_a_multi_column_section() {
         success(run, "a 120 mm table in a single 170 mm column");
     }
 }
+
+/// The fixture with its page rotated the way genuine landscape forms store it: portrait
+/// dimensions and PAGE_DEF attr bit 0 set, which `hwp-render` reads as a 297 mm wide paper.
+fn landscape(fixture: &Fixture) -> PathBuf {
+    let mut doc = read(&fixture.base);
+    for control in doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|p| &mut p.controls)
+    {
+        if let Control::SectionDef(def) = control
+            && let Some(page) = &mut def.page
+        {
+            let (w, h) = (
+                page.width.0.min(page.height.0),
+                page.width.0.max(page.height.0),
+            );
+            page.width = hwp_model::HwpUnit(w);
+            page.height = hwp_model::HwpUnit(h);
+            page.attr |= 1;
+        }
+    }
+    let path = fixture.path("landscape");
+    if fixture.extension == "hwp" {
+        hwp5::write_document(&doc, &path, &hwp5::write::WriteOptions::default()).unwrap();
+    } else {
+        hwpx::write_document(&doc, &path).unwrap();
+    }
+    let page = read(&path).sections[0].section_def().unwrap().page.unwrap();
+    assert_eq!(
+        page.attr & 1,
+        1,
+        "{}: the landscape bit survives",
+        fixture.extension
+    );
+    path
+}
+
+#[test]
+fn landscape_pages_measure_against_the_rotated_paper() {
+    // Body widths: portrait 170 mm, landscape 297 - 40 = 257 mm.
+    let table = |mm: u32| {
+        json!([{"type":"table","columns":[{"width_mm":mm}],
+            "rows":[{"cells":[{"blocks":[block("body","Wide form table.")]}]}]}])
+    };
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("landscape", extension);
+        let source = landscape(&fixture);
+        let before = read(&source);
+        let (output, run) = fixture.edit(
+            &source,
+            "landscape-fits",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                table(240)
+            )]),
+            false,
+        );
+        success(run, "a 240 mm table on a landscape page");
+        validates(&output);
+        let diagnostic = fixture.refuse(
+            &source,
+            "landscape-wide",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                table(270)
+            )]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("layout_overflow") && diagnostic.contains("257"),
+            "{extension}: a 270 mm table must name the 257 mm landscape body: {diagnostic}"
+        );
+        // The same 240 mm table is too wide for the portrait original.
+        let portrait = read(&fixture.base);
+        fixture.refuse(
+            &fixture.base.clone(),
+            "portrait-wide",
+            json!([insert(
+                at(&portrait, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                table(240)
+            )]),
+            false,
+        );
+    }
+}
