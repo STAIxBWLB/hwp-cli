@@ -37,7 +37,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   target (placement-table z-orders, field instance ids and, in the HWP writer, picture
   instance ids now start past the ids a re-read document already holds; ids held by shape,
   table and picture captions count too). Tables and images
-  are measured against the text column or table cell they land in, and a table draws its
+  are measured against the text column (one column of a multi-column section) or table cell
+  they land in, and content inside an inserted table's cells against that cell's span less its
+  side margins, and a table draws its
   borders from a bordered fill the target header supplies or gains. Image paths resolve beside
   the `--ops` file and are bound to the MCP sandbox roots; reading `--ops` from stdin has no
   directory, so image blocks are refused there. Equations insert into HWPX only because the

@@ -2168,14 +2168,26 @@ fn a_cell_loses_its_side_margins_before_content_is_measured() {
     let diagnostic = fixture.refuse(
         &fixture.base.clone(),
         "margin-over",
-        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), table(28))]),
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table(28)
+        )]),
         false,
     );
     assert!(diagnostic.contains("layout_overflow"), "{diagnostic}");
     let (output, run) = fixture.edit(
         &fixture.base,
         "margin-under",
-        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), table(26))]),
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table(26)
+        )]),
         false,
     );
     success(run, "an image inside the cell's usable width");
