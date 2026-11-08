@@ -486,3 +486,126 @@ pub fn apply(
     }
     Ok(count)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R', 0,
+        0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, b'I', b'D',
+        b'A', b'T', 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff,
+        0x56, 0xc7, 0x2f, 0x0d, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn request(path: &str) -> InsertBlocks {
+        serde_json::from_value(serde_json::json!({
+            "position": "after",
+            "blocks": [{"type": "image", "path": path, "width_mm": 10}]
+        }))
+        .expect("insert_blocks request")
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-insert-blocks-unit-{}-{label}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/logo.png"), PNG).unwrap();
+        dir
+    }
+
+    fn target() -> (Document, SegmentPath) {
+        let doc = hwp_convert::from_markdown("anchor\n");
+        (
+            doc,
+            SegmentPath {
+                section: 0,
+                indices: vec![0],
+            },
+        )
+    }
+
+    #[test]
+    fn image_assets_resolve_below_the_base_dir_and_are_bound_to_the_sandbox_roots() {
+        let dir = scratch("roots");
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let other = scratch("roots-other");
+        let other_root = std::fs::canonicalize(&other).unwrap();
+
+        // Inside the allowed root: inserted, and the asset is grafted into the target.
+        let (mut doc, at) = target();
+        let streams = doc.bin_streams.len();
+        let roots = [canonical.clone()];
+        let inside = AssetContext {
+            base_dir: Some(&canonical),
+            roots: &roots,
+        };
+        apply(&mut doc, &at, &request("assets/logo.png"), false, &inside)
+            .expect("asset inside the sandbox root");
+        assert_eq!(doc.bin_streams.len(), streams + 1);
+
+        // Same base directory, but the sandbox allows another root only: refused, target intact.
+        let (mut doc, at) = target();
+        let before = doc.clone();
+        let roots = [other_root];
+        let outside = AssetContext {
+            base_dir: Some(&canonical),
+            roots: &roots,
+        };
+        let error = apply(&mut doc, &at, &request("assets/logo.png"), false, &outside)
+            .expect_err("asset outside the sandbox roots");
+        assert!(error.contains("outside_roots"), "{error}");
+        assert_eq!(doc, before, "a refused insertion must not touch the target");
+
+        // No asset directory (stdin ops, MCP before T4): image blocks are refused by name.
+        let (mut doc, at) = target();
+        let none = AssetContext {
+            base_dir: None,
+            roots: &[],
+        };
+        let error = apply(&mut doc, &at, &request("assets/logo.png"), false, &none)
+            .expect_err("no asset base directory");
+        assert!(error.contains("이미지"), "{error}");
+        assert_eq!(doc, before);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn a_same_named_asset_with_different_bytes_in_the_target_is_refused() {
+        let dir = scratch("clash");
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let ctx = AssetContext {
+            base_dir: Some(&canonical),
+            roots: &[],
+        };
+        let (mut first, at) = target();
+        apply(&mut first, &at, &request("assets/logo.png"), false, &ctx).unwrap();
+        let name = first.bin_streams.last().unwrap().name.clone();
+
+        // A target already holding that stream name with other bytes cannot share it.
+        let (mut doc, at) = target();
+        doc.bin_streams.push(hwp_model::BinStream {
+            name,
+            data: b"different".to_vec(),
+        });
+        let before = doc.clone();
+        let error = apply(&mut doc, &at, &request("assets/logo.png"), false, &ctx)
+            .expect_err("same name, different bytes");
+        assert!(error.contains("같은 이름"), "{error}");
+        assert_eq!(doc, before);
+
+        // Same name and the same bytes: shared, not duplicated.
+        let (mut doc, at) = target();
+        doc.bin_streams.push(first.bin_streams.last().unwrap().clone());
+        let streams = doc.bin_streams.len();
+        apply(&mut doc, &at, &request("assets/logo.png"), false, &ctx).unwrap();
+        assert_eq!(doc.bin_streams.len(), streams);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
