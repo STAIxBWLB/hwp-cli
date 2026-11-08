@@ -419,7 +419,7 @@ impl std::fmt::Display for RangeError {
             ),
             RangeError::LostResource { reference } => write!(
                 f,
-                "선택한 범위가 원본에 없는 바이너리({reference})를 참조합니다. 원본이 불완전합니다. `hwp convert --to json --embed-bin`으로 내보낸 자급식 JSON인지 확인하세요"
+                "선택한 범위가 원본에 들어 있지 않은 바이너리({reference})를 참조합니다. 원본 문서에서 그 바이너리(그림 파일)가 빠져 있으니, 원본 패키지에 그 파일을 되돌려 놓거나 그 바이너리를 쓰지 않는 다른 범위를 고르세요 (`hwp cat`으로 범위 안 그림을 확인할 수 있습니다)"
             ),
             RangeError::EmptyDocument => write!(
                 f,
@@ -679,6 +679,232 @@ pub const BINDATA_REFERENCE_SITES: &[(&str, &str, &str)] = &[
     ("§4.2.12", "DOC_DATA/CTRL_DATA", "parameter_set"),
 ];
 
+/// How the closure treats one IR field that a writer emits verbatim, as raw bytes or raw XML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerbatimField {
+    /// The scan visits it: XML is read for `binaryItemIDRef`, an opaque record list is checked
+    /// by tag.
+    Scanned,
+    /// The scan reads it where it can name a binary, and the reason says where that is and why
+    /// the rest cannot.
+    ScannedWhereItCanName(&'static str),
+    /// The scan does not read it, and cannot hold a BinData id for the reason given: the
+    /// specification's layout for it has no such field, or it is not a BinData carrier at all.
+    CannotNameABinary(&'static str),
+}
+
+/// EVERY field of the `hwp-model` IR that holds raw bytes, raw XML or opaque records, matched
+/// against what the closure does with it. The list is closed by `hwp-model`'s source, not by
+/// review: `crates/hwp-cli/tests/split_range.rs::every_verbatim_field_is_classified` extracts
+/// the same fields from the model's source text and fails when one appears that is not listed
+/// here, or when one listed here is gone. Adding a raw field to the IR therefore forces a
+/// decision about whether it can name a binary.
+///
+/// Entries are `("Type.field", handling)`. The specification section for a header record is
+/// the one in [`BINDATA_REFERENCE_SITES`] when it can name a binary; the "cannot" reasons cite
+/// the layout that has no BinData id field (한글문서파일형식 5.0 revision 1.3).
+pub const VERBATIM_FIELDS: &[(&str, VerbatimField)] = &[
+    // ── controls ──────────────────────────────────────────────────────────────
+    (
+        "Cell.header_tail",
+        VerbatimField::CannotNameABinary(
+            "LIST_HEADER tail after the cell fields, §4.3.9.1 table 79: address, spans, size, margins and a BORDER_FILL id",
+        ),
+    ),
+    ("Equation.raw_attrs", VerbatimField::Scanned),
+    ("Equation.raw_props", VerbatimField::Scanned),
+    (
+        "GenericControl.data",
+        VerbatimField::CannotNameABinary(
+            "CTRL_HEADER payload of a non-picture control, §4.3.6 table 64 and §4.3.9 tables 68 and 69: control id, object properties, sizes and offsets",
+        ),
+    ),
+    ("GenericControl.extras", VerbatimField::Scanned),
+    ("GenericControl.hwpx_raw_xml", VerbatimField::Scanned),
+    ("GenericControl.raw_children", VerbatimField::Scanned),
+    (
+        "ParagraphList.header_data",
+        VerbatimField::CannotNameABinary(
+            "LIST_HEADER payload, §4.3.7 table 65: paragraph count and list attributes",
+        ),
+    ),
+    (
+        "Picture.common_data",
+        VerbatimField::CannotNameABinary(
+            "CTRL_HEADER object common properties, §4.3.9 tables 68 and 69; the picture's BinData id is the modeled bin_ref",
+        ),
+    ),
+    (
+        "Picture.effects_raw",
+        VerbatimField::CannotNameABinary(
+            "picture effect records, §4.3.9.4 tables 108 to 113: shadow, glow, soft edge, reflection; no BinData id",
+        ),
+    ),
+    ("Picture.extras", VerbatimField::Scanned),
+    (
+        "SectionDef.data",
+        VerbatimField::CannotNameABinary(
+            "CTRL_HEADER payload of the section definition, §4.3.10.1 table 129: columns, grid, starting numbers",
+        ),
+    ),
+    (
+        "SectionDef.endnote_shape_raw",
+        VerbatimField::CannotNameABinary(
+            "FOOTNOTE_SHAPE, §4.3.10.1.2 table 133: note numbering and separators",
+        ),
+    ),
+    ("SectionDef.extras", VerbatimField::Scanned),
+    (
+        "SectionDef.footnote_shape_raw",
+        VerbatimField::CannotNameABinary(
+            "FOOTNOTE_SHAPE, §4.3.10.1.2 table 133: note numbering and separators",
+        ),
+    ),
+    (
+        "SectionDef.page_border_fills_raw",
+        VerbatimField::CannotNameABinary(
+            "PAGE_BORDER_FILL, §4.3.10.1.3 table 135: margins and a BORDER_FILL id, which border_fill_image covers",
+        ),
+    ),
+    ("SectionDef.secpr_raw_children", VerbatimField::Scanned),
+    (
+        "Table.common_data",
+        VerbatimField::CannotNameABinary(
+            "CTRL_HEADER object common properties, §4.3.9 tables 68 and 69",
+        ),
+    ),
+    ("Table.extras", VerbatimField::Scanned),
+    (
+        "Table.table_tail",
+        VerbatimField::CannotNameABinary(
+            "TABLE record tail after the row sizes, §4.3.9.1 table 74: a BORDER_FILL id and valid zones",
+        ),
+    ),
+    // ── document package ──────────────────────────────────────────────────────
+    (
+        "BinStream.data",
+        VerbatimField::CannotNameABinary("the binary itself, not a reference to one"),
+    ),
+    (
+        "Document.hwp5_doc_history",
+        VerbatimField::CannotNameABinary(
+            "DocHistory VersionLog streams, §3.2.11 and §4.4.2: history item records, compressed; the layouts have no BinData id",
+        ),
+    ),
+    (
+        "Document.hwp5_xml_template",
+        VerbatimField::CannotNameABinary(
+            "XMLTemplate schema name and schema, §3.2.10 tables 10 and 11: length-prefixed strings",
+        ),
+    ),
+    (
+        "Document.hwpx_bin_manifest",
+        VerbatimField::CannotNameABinary(
+            "the OPF id to href map that resolves references, not a reference",
+        ),
+    ),
+    ("Document.hwpx_extra_entries", VerbatimField::Scanned),
+    (
+        "Document.hwpx_opf_extra_items",
+        VerbatimField::CannotNameABinary(
+            "OPF manifest entries for non-BinData parts (BinData items are filtered out when read)",
+        ),
+    ),
+    (
+        "Document.hwpx_preview_image",
+        VerbatimField::CannotNameABinary(
+            "cleared by the extraction: a preview of the whole source would show content the fragment lacks",
+        ),
+    ),
+    (
+        "Document.hwpx_section_xmlns",
+        VerbatimField::CannotNameABinary("namespace declarations, not content"),
+    ),
+    (
+        "Document.hwpx_settings_xml",
+        VerbatimField::CannotNameABinary(
+            "settings.xml: application settings and caret, measured well formed with no binaryItemIDRef in every genuine HWPX fixture",
+        ),
+    ),
+    (
+        "Document.hwpx_version_xml",
+        VerbatimField::CannotNameABinary("version.xml: producer and version strings"),
+    ),
+    ("Section.extras", VerbatimField::Scanned),
+    // ── header ────────────────────────────────────────────────────────────────
+    (
+        "BinDataItem.tail",
+        VerbatimField::CannotNameABinary(
+            "BIN_DATA record tail, §4.2.3 tables 17 and 18: the item itself, which is how a reference is resolved",
+        ),
+    ),
+    ("BorderFill.tail", VerbatimField::Scanned),
+    (
+        "CharShape.tail",
+        VerbatimField::CannotNameABinary(
+            "CHAR_SHAPE tail, §4.2.6 table 33: border fill id and colors",
+        ),
+    ),
+    ("DocHeader.bullets", VerbatimField::Scanned),
+    ("DocHeader.extras", VerbatimField::Scanned),
+    ("DocHeader.id_extras", VerbatimField::Scanned),
+    (
+        "DocHeader.numberings",
+        VerbatimField::CannotNameABinary(
+            "NUMBERING, §4.2.8 tables 38 to 41: level formats and start numbers",
+        ),
+    ),
+    (
+        "DocHeader.tab_defs",
+        VerbatimField::CannotNameABinary("TAB_DEF, §4.2.7 tables 36 and 37: tab positions"),
+    ),
+    (
+        "FaceName.tail",
+        VerbatimField::CannotNameABinary(
+            "FACE_NAME tail, §4.2.4 tables 19 to 22: substitute font and font type information",
+        ),
+    ),
+    (
+        "ParaShape.tail",
+        VerbatimField::CannotNameABinary("PARA_SHAPE tail, §4.2.10 table 43: line spacing"),
+    ),
+    (
+        "NumLevel.template",
+        VerbatimField::CannotNameABinary(
+            "a paragraph number format text such as `^1.`, §4.2.8 table 41: a parsed string written as an attribute, not a raw record",
+        ),
+    ),
+    ("RawEntry.children", VerbatimField::Scanned),
+    (
+        "RawEntry.data",
+        VerbatimField::ScannedWhereItCanName(
+            "bullets are checked by shape (an image bullet is a site); numberings and tab definitions have no BinData id in their layouts, §4.2.8 and §4.2.7",
+        ),
+    ),
+    (
+        "Style.tail",
+        VerbatimField::CannotNameABinary(
+            "STYLE tail, §4.2.11 tables 47 and 48: style names and shape ids",
+        ),
+    ),
+    // ── records and paragraphs ────────────────────────────────────────────────
+    (
+        "HwpChar.payload",
+        VerbatimField::CannotNameABinary(
+            "extended control info of a PARA_TEXT character, §4.3.2 and table 6 (control characters): the control id",
+        ),
+    ),
+    ("OpaqueRecord.children", VerbatimField::Scanned),
+    ("OpaqueRecord.data", VerbatimField::Scanned),
+    (
+        "ParaHeaderInfo.tail",
+        VerbatimField::CannotNameABinary(
+            "PARA_HEADER tail, §4.3.1 table 58: range tag count, instance id and revision",
+        ),
+    ),
+    ("Paragraph.extras", VerbatimField::Scanned),
+];
+
 /// Whether a SHAPE_COMPONENT record is long enough to hold a fill block and that block's fill
 /// type has the image bit. Only the record layout and the one flag are read, never the BinData
 /// id that follows. The offsets are the ones `hwp-render` reads the same block with
@@ -871,6 +1097,19 @@ impl ReferenceScan {
                     if let Some(xml) = &generic.hwpx_raw_xml {
                         self.xml(xml, at);
                     }
+                    // An equation keeps its common children (size, position, margins, and a
+                    // caption that may hold a picture) as raw XML and the HWPX writer emits
+                    // them verbatim; its start-tag attributes are kept the same way.
+                    if let Some(equation) = &generic.equation {
+                        for property in &equation.raw_props {
+                            self.xml(property, at);
+                        }
+                        if let Some(attributes) = &equation.raw_attrs {
+                            // A bare attribute list is not a document, so it is read as the
+                            // attributes of one element.
+                            self.xml(&format!("<equation {attributes}/>"), at);
+                        }
+                    }
                 }
                 Control::SectionDef(def) => {
                     self.opaque(&def.extras, at, false);
@@ -911,6 +1150,18 @@ fn scan_references(fragment: &Document) -> ReferenceScan {
     for (index, bullet) in fragment.header.bullets.iter().enumerate() {
         if !is_plain_character_bullet(&bullet.data) || !bullet.children.is_empty() {
             scan.unverified("bullet_image", &format!("header/bullets/{index}"));
+        }
+    }
+    // The child records of every raw header entry go through the same tag check as any other
+    // opaque record, so a record kept under a numbering or tab definition is not skipped
+    // because of which table it hangs from.
+    for (kind, entries) in [
+        ("tab_defs", &fragment.header.tab_defs),
+        ("numberings", &fragment.header.numberings),
+        ("bullets", &fragment.header.bullets),
+    ] {
+        for (index, entry) in entries.iter().enumerate() {
+            scan.opaque(&entry.children, &format!("header/{kind}/{index}"), false);
         }
     }
     // Header records preserved raw: a document-data Parameter Set can hold a `PIT_BINDATA`.
@@ -2393,6 +2644,42 @@ mod tests {
     }
 
     #[test]
+    fn 번호와_탭_정의_밑에_달린_원본_레코드도_같은_태그_검사를_받는다() {
+        for kind in ["tab_defs", "numberings"] {
+            let mut index = 0;
+            let outcome = extract_b_with(|doc| {
+                let entry = hwp_model::RawEntry {
+                    data: vec![0; 8],
+                    children: vec![opaque(TAG_SHAPE_COMPONENT_OLE)],
+                };
+                // The default header already holds some entries, so the new one's index is the
+                // list's length before it was added.
+                let list = match kind {
+                    "tab_defs" => &mut doc.header.tab_defs,
+                    _ => &mut doc.header.numberings,
+                };
+                index = list.len();
+                list.push(entry);
+            });
+            assert!(outcome.resources.excluded.is_empty(), "{kind}");
+            assert_eq!(outcome.resources.unverified[0].code, "raw_ole", "{kind}");
+            assert_eq!(
+                outcome.resources.unverified[0].at,
+                format!("header/{kind}/{index}"),
+                "{kind}"
+            );
+        }
+        // Entries with no children, or children that name nothing, add no uncertainty.
+        let outcome = extract_b_with(|doc| {
+            doc.header.numberings.push(hwp_model::RawEntry {
+                data: vec![0; 8],
+                children: vec![opaque(0)],
+            });
+        });
+        assert!(outcome.resources.unverified.is_empty());
+    }
+
+    #[test]
     fn 알려진_책갈피_매개변수_집합만_깨끗하고_다른_집합은_불확실하다() {
         let bookmark = crate::bookmark::make_bokm_ctrl_data("name");
         assert!(is_bookmark_parameter_set(&bookmark));
@@ -2561,6 +2848,128 @@ mod tests {
         );
         assert!(report.kept_unverified.is_empty());
         assert_eq!(report.dropped_by_format, vec!["BIN0001-a.png"]);
+    }
+
+    // ───────────── T9-F21: equations, and the closed set of verbatim fields ─────────────
+
+    fn equation(raw_props: Vec<String>, raw_attrs: Option<String>) -> hwp_model::Equation {
+        hwp_model::Equation {
+            script: "x".into(),
+            width: 0,
+            height: 0,
+            inline: true,
+            x: 0,
+            y: 0,
+            raw_attrs,
+            raw_props,
+        }
+    }
+
+    fn with_equation(equation: hwp_model::Equation) -> RangeOutcome {
+        extract_b_with(|doc| {
+            let mut object = generic(b"eqed");
+            object.equation = Some(equation.clone());
+            attach(
+                &mut doc.sections[0].paragraphs[4],
+                *b"eqed",
+                Control::Generic(object),
+            );
+        })
+    }
+
+    #[test]
+    fn 수식의_원문_캡션_안_그림_참조도_센다() {
+        let outcome = with_equation(equation(
+            vec![
+                r#"<hp:sz width="1" height="1"/>"#.into(),
+                r#"<hp:caption side="BOTTOM"><hp:subList><hp:p><hp:run><hp:pic><hc:img binaryItemIDRef="c.png"/></hp:pic></hp:run></hp:p></hp:subList></hp:caption>"#.into(),
+            ],
+            None,
+        ));
+        assert_eq!(
+            outcome.resources.kept,
+            vec!["BinData/b.png", "BinData/c.png"]
+        );
+        assert_eq!(outcome.resources.excluded, vec!["BinData/unused.png"]);
+        assert!(outcome.resources.unverified.is_empty());
+    }
+
+    #[test]
+    fn 수식의_읽을_수_없는_원문은_모든_바이너리를_남긴다() {
+        for (label, equation) in [
+            ("props", equation(vec!["<hp:caption><hp:pic".into()], None)),
+            // A start-tag attribute list that is not well formed (an unquoted value).
+            (
+                "attrs",
+                equation(Vec::new(), Some("textColor=black".into())),
+            ),
+        ] {
+            let outcome = with_equation(equation);
+            assert!(outcome.resources.excluded.is_empty(), "{label}");
+            assert_eq!(
+                outcome.resources.unverified[0].code, "raw_xml_unparsed",
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn 수식의_시작_태그_속성에_든_바이너리_참조도_센다() {
+        let outcome = with_equation(equation(
+            Vec::new(),
+            Some(r#"textColor="black" binaryItemIDRef="c.png""#.into()),
+        ));
+        assert_eq!(
+            outcome.resources.kept,
+            vec!["BinData/b.png", "BinData/c.png"]
+        );
+    }
+
+    #[test]
+    fn 수식_속성의_관련_없는_이상한_값은_참조를_가리지_않는다() {
+        // The scan only reads binaryItemIDRef, so an unrelated attribute with an entity XML
+        // cannot resolve does not hide anything and is not a reason to keep every stream.
+        let outcome = with_equation(equation(
+            Vec::new(),
+            Some(r#"textColor="black" note="a&unknown;b""#.into()),
+        ));
+        assert!(outcome.resources.unverified.is_empty());
+        assert_eq!(
+            outcome.resources.excluded,
+            vec!["BinData/c.png", "BinData/unused.png"]
+        );
+    }
+
+    #[test]
+    fn 수식의_참조_없는_원문은_영향이_없다() {
+        let outcome = with_equation(equation(
+            vec![r#"<hp:sz width="1" height="1"/>"#.into()],
+            Some(r#"textColor="black" baseUnit="1000""#.into()),
+        ));
+        assert!(outcome.resources.unverified.is_empty());
+        assert_eq!(
+            outcome.resources.excluded,
+            vec!["BinData/c.png", "BinData/unused.png"]
+        );
+    }
+
+    #[test]
+    fn 잃어버린_바이너리_거부는_이름과_해당하는_다음_행동_둘을_말한다() {
+        let message = RangeError::LostResource {
+            reference: "logo".into(),
+        }
+        .to_string();
+        assert!(
+            message.contains("logo"),
+            "names the missing stream: {message}"
+        );
+        // Restore it in the source, or pick a range that does not use it.
+        assert!(message.contains("되돌려"), "{message}");
+        assert!(message.contains("다른 범위"), "{message}");
+        // `convert --to json --embed-bin` neither repairs an HWP/HWPX source nor completes the
+        // split, so it must not be offered.
+        assert!(!message.contains("embed-bin"), "{message}");
+        assert!(!message.contains("json"), "{message}");
     }
 
     #[test]

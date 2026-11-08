@@ -1348,3 +1348,174 @@ fn a_report_that_differs_from_the_fragment_only_in_case_follows_the_volume() {
         assert!(ws.dir.join("out/SOURCE-001.HWPX").exists());
     }
 }
+
+/// The (type, field) pairs of `hwp-model` that hold raw bytes, raw XML or opaque records,
+/// read from the model's SOURCE TEXT. Test modules are skipped. A field counts when its type
+/// is `Vec<u8>` (alone or nested), an opaque or raw record type, or a string/blob whose name
+/// says it is preserved raw (`raw`, `xml`, `extra`, `tail`, `payload`, `history`, `template`,
+/// `manifest`).
+fn raw_fields_in_the_model() -> std::collections::BTreeSet<String> {
+    let source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hwp-model/src");
+    let mut found = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&source_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        // Drop `#[cfg(test)] mod x { ... }` blocks by brace matching.
+        let mut kept = String::new();
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("#[cfg(test)]") {
+            kept.push_str(&rest[..at]);
+            let after = &rest[at..];
+            let Some(open) = after.find('{') else { break };
+            let mut depth = 0usize;
+            let mut end = after.len();
+            for (offset, ch) in after[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + offset + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest = &after[end..];
+        }
+        kept.push_str(rest);
+        let mut current: Option<String> = None;
+        for line in kept.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let item = trimmed
+                .strip_prefix("pub struct ")
+                .or_else(|| trimmed.strip_prefix("pub enum "))
+                .or_else(|| trimmed.strip_prefix("struct "))
+                .or_else(|| trimmed.strip_prefix("enum "));
+            if let Some(name) = item {
+                current = Some(
+                    name.split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap()
+                        .to_string(),
+                );
+                continue;
+            }
+            let Some(owner) = &current else { continue };
+            let field = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+            let Some((name, ty)) = field.split_once(": ") else {
+                continue;
+            };
+            if name.contains(' ') || name.contains('(') || name.contains('<') || name == "fn" {
+                continue;
+            }
+            let ty = ty.trim_end_matches(',');
+            let lowered = name.to_lowercase();
+            let raw_name = [
+                "raw", "xml", "extra", "tail", "payload", "history", "template", "manifest",
+            ]
+            .iter()
+            .any(|word| lowered.contains(word));
+            let raw_type =
+                ty.contains("Vec<u8>") || ty.contains("OpaqueRecord") || ty.contains("RawEntry");
+            if raw_type || (raw_name && !ty.starts_with("String::")) {
+                found.insert(format!("{owner}.{name}"));
+            }
+        }
+    }
+    found
+}
+
+/// The closure's catalog of verbatim-written fields is checked against the IR itself: a raw
+/// field added to `hwp-model` must be classified (scanned, or reasoned unable to name a
+/// binary) before this passes, and a classified field that no longer exists must be removed.
+#[test]
+fn every_verbatim_field_is_classified() {
+    let model = raw_fields_in_the_model();
+    let catalog: std::collections::BTreeSet<String> = hwp_convert::document_split::VERBATIM_FIELDS
+        .iter()
+        .map(|(field, _)| (*field).to_string())
+        .collect();
+    let unclassified: Vec<_> = model.difference(&catalog).collect();
+    let stale: Vec<_> = catalog.difference(&model).collect();
+    assert!(
+        unclassified.is_empty(),
+        "raw IR fields the closure has not classified (add them to VERBATIM_FIELDS): {unclassified:?}"
+    );
+    assert!(
+        stale.is_empty(),
+        "VERBATIM_FIELDS names fields the model no longer has: {stale:?}"
+    );
+    assert_eq!(
+        catalog.len(),
+        hwp_convert::document_split::VERBATIM_FIELDS.len(),
+        "no duplicates"
+    );
+    // Every "cannot name a binary" entry carries a reason that cites the specification or says
+    // why the field is not a carrier.
+    for (field, handling) in hwp_convert::document_split::VERBATIM_FIELDS {
+        if let hwp_convert::document_split::VerbatimField::CannotNameABinary(reason) = handling {
+            assert!(reason.len() > 12, "{field}: give a real reason");
+        }
+    }
+}
+
+/// Two names the filesystem treats as one (here the NFC and NFD spellings of a Korean name,
+/// which APFS folds) must not reach the publish step as two outputs: the report would replace
+/// the fragment and the command would still succeed. Korean file names make this realistic.
+/// On a volume that keeps the spellings apart they are two files and both are written.
+#[test]
+fn a_report_spelled_in_the_other_unicode_normalization_follows_the_volume() {
+    let Some(ws) = Workspace::new("normalization") else {
+        return;
+    };
+    let nfc = "\u{d55c}\u{ae00}";
+    let nfd = "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}";
+    std::fs::write(ws.dir.join(nfc), b"x").unwrap();
+    let folds = ws.dir.join(nfd).exists();
+    std::fs::remove_file(ws.dir.join(nfc)).unwrap();
+    std::fs::copy(
+        ws.dir.join("source.hwpx"),
+        ws.dir.join(format!("{nfc}.hwpx")),
+    )
+    .unwrap();
+    let report = format!("out/{nfd}-001.hwpx");
+    let result = hwp(
+        &ws.dir,
+        &[
+            "split",
+            &format!("{nfc}.hwpx"),
+            "--out-dir",
+            "out",
+            "--from",
+            "heading:FORM_START_PROFILE_1",
+            "--range-report",
+            &report,
+        ],
+    );
+    if folds {
+        assert!(
+            !result.status.success(),
+            "one file spelled two ways was accepted"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(ws.dir.join("out"))
+            .map(|entries| entries.flatten().map(|e| e.file_name()).collect())
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "nothing may remain: {leftovers:?}");
+    } else {
+        assert!(
+            result.status.success(),
+            "two distinct names are two files: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let fragment = std::fs::read(ws.dir.join(format!("out/{nfc}-001.hwpx"))).unwrap();
+        assert_eq!(&fragment[..2], b"PK", "the fragment is still a package");
+    }
+}

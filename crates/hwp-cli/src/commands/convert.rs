@@ -929,9 +929,11 @@ fn probe_case_insensitive(_path: &Path) -> Option<bool> {
 /// `split --out-dir new-dir` case (`out/../out/x` and `out/x` are the same file). On a
 /// case-insensitive volume ([`path_is_case_insensitive`]) the key is also case-folded, so
 /// `out/SOURCE-001.HWPX` and `out/source-001.hwpx` are one file. The key is for COMPARING only:
-/// it may be lowercased and is not a path to open or write. Folding is plain Unicode lowercase,
-/// which does not cover a volume's Unicode normalization (APFS also treats NFC and NFD
-/// spellings as one name).
+/// it may be lowercased and is not a path to open or write. The key is the EARLY refusal and
+/// models only what it can compute: dot segments, symlinks and case. It does not model Unicode
+/// normalization (APFS treats the NFC and NFD spellings of a name as one file) or anything else
+/// a volume folds. Those are caught where it cannot be wrong, at publish time, by comparing the
+/// identity of the files themselves (`output::publish_output_set`).
 pub(crate) fn normalize_for_alias_compare(path: &Path) -> PathBuf {
     let resolved = resolve_for_alias_compare(path);
     if path_is_case_insensitive(&resolved) {

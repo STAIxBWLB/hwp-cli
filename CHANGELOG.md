@@ -54,18 +54,30 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `hwp_split` returns it inline. The report is content-free: it names each anchor by kind and
   by the address it resolved to, never by its text, and `kept` / `kept-unverified` list only
   binaries the published file holds (HWP5 writes just the binaries its BIN_DATA table names, so
-  the others are listed as dropped by the format). `--range-report` and `--loss-report` may not
+  the others are listed as dropped by the format). Equations are covered too: the XML an
+  equation keeps for its size, position and caption (a caption may hold a picture) is read for
+  binary references, as is every other raw field. Every IR field that holds raw bytes, raw XML
+  or opaque records is classified in `VERBATIM_FIELDS` as scanned or as unable to name a
+  binary, with a reason, and a test fails when the model gains a raw field that is not
+  classified. `--range-report` and `--loss-report` may not
   name the same file, and neither may name a fragment, however the path is spelled (`..`
   segments through a directory that does not exist yet, and on a volume that ignores case, a
-  different case; the volume is asked, not assumed). The source
+  different case; the volume is asked, not assumed). Spellings the volume folds that a name
+  comparison cannot model, such as the two Unicode normalizations of a Korean name on APFS, are
+  caught when the outputs are published: before each file replaces what its path reaches, the
+  file's own identity (device and inode, or volume serial and file index on Windows) is
+  compared with the files already published in the same set, and a match refuses the whole
+  set and restores the earlier files. The source
   hash is taken around the parse and a file that changed meanwhile is refused. The fragment
   carries the section's page, column, header, footer, page-number and new-number controls. When
   the range starts after the section's first paragraph, a hide or odd/even adjust control on
   that paragraph acts on its own source page and is not carried; a range that starts at the
   first paragraph takes it whole. A mismatching `--source-sha256`, a missing or ambiguous
   anchor, a range across sections, a reversed or empty range and a picture whose binary the
-  source lacks are each refused before anything is written, and so is a report whose name looks
-  like a fragment of the run (it would be deleted as a stale fragment). Tested against every
+  source lacks are each refused before anything is written (the last names the missing stream
+  and says to restore it in the source package or pick a range that does not use it), and so is
+  a report whose name looks like a fragment of the run (it would be deleted as a stale
+  fragment). Tested against every
   form of the generated P0 form set, from HWPX and from its HWP5 conversion
   ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
 - `hwp styles <file> [--format text|json]` and the MCP tool `hwp_styles` list a document's named
