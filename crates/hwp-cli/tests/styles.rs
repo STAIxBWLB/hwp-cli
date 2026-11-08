@@ -261,7 +261,7 @@ fn sample_with_edited_header(name: &str, edit: impl Fn(&str) -> String) -> PathB
     let mut out = zip::ZipWriter::new(std::fs::File::create(&dest).unwrap());
     for index in 0..source.len() {
         let mut entry = source.by_index(index).unwrap();
-        if entry.name() == "Contents/header.xml" {
+        if entry.name().expect("a readable entry name") == "Contents/header.xml" {
             let mut xml = String::new();
             entry.read_to_string(&mut xml).unwrap();
             let options = zip::write::SimpleFileOptions::default()
