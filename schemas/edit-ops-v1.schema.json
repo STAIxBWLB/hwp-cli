@@ -137,7 +137,7 @@
         "bottom_mm": { "$ref": "#/$defs/unit" },
         "align": { "$ref": "#/$defs/align" }
       },
-      "description": "Shared paragraph-shape property fields (D-08): flat on create_style/set_para/set_cell_para via allOf+unevaluatedProperties, and nested as insert_para's own style object. One spelling per concept — line_spacing_pct and line_spacing_pt stay mutually exclusive (parser-enforced)."
+      "description": "Shared paragraph-shape property fields (D-08): flat on create_style/update_style/set_para/set_cell_para via allOf+unevaluatedProperties, and nested as insert_para's own style object. One spelling per concept — line_spacing_pct and line_spacing_pt stay mutually exclusive (parser-enforced)."
     },
     "charPropsFields": {
       "type": "object",
@@ -150,7 +150,7 @@
         "color": { "$ref": "#/$defs/color" },
         "font": { "$ref": "#/$defs/fontName" }
       },
-      "description": "Shared character-format property fields (D-08): flat on create_style/set_format via allOf+unevaluatedProperties, and nested as insert_para's own char object. One spelling per concept."
+      "description": "Shared character-format property fields (D-08): flat on create_style/update_style/set_format via allOf+unevaluatedProperties, and nested as insert_para's own char object. One spelling per concept."
     },
     "styleName": {
       "type": "string",
@@ -207,6 +207,22 @@
                     "character"
                   ]
                 }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "unevaluatedProperties": false,
+          "required": ["op", "style"],
+          "description": "Update a named paragraph style using fresh changed shape IDs. Paragraph and run inheritance follow independently; direct references and old shared definitions stay unchanged. Empty or unchanged updates add no definitions.",
+          "allOf": [
+            { "$ref": "#/$defs/charPropsFields" },
+            { "$ref": "#/$defs/paraPropsFields" },
+            {
+              "properties": {
+                "op": { "const": "update_style" },
+                "style": { "$ref": "#/$defs/styleRef" }
               }
             }
           ]

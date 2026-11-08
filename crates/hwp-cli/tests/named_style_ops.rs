@@ -1013,3 +1013,314 @@ fn empty_native_runs_follow_style_zero_in_hwpx_output() {
 fn empty_native_runs_keep_direct_zero_in_hwpx_output() {
     assert_empty_native_runs_apply(1, "hwpx");
 }
+
+#[path = "common/fixture_skip.rs"]
+mod fixture_skip;
+
+#[test]
+fn empty_native_runs_own_style_application_is_byte_identical() {
+    for old_shape in [0, 1] {
+        let fixture = Fixture::new(&format!("own-empty-runs-{old_shape}"), "hwp");
+        let mut doc = read(&fixture.base);
+        let (body, _) = named(&doc, "body");
+        doc.header.styles[body].char_shape = hwp_model::CharShapeId(old_shape);
+        doc.sections
+            .iter_mut()
+            .flat_map(|section| &mut section.paragraphs)
+            .find(|p| p.plain_text() == INHERITED)
+            .unwrap()
+            .char_shape_runs
+            .clear();
+        let source = fixture.path("own-empty-source");
+        hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap();
+        let before = read(&source);
+        assert!(
+            paragraph(&before, INHERITED).char_shape_runs.is_empty(),
+            "native source must expose an absent run record"
+        );
+        let (output, run) = fixture.edit(
+            &source,
+            "own-empty-noop",
+            json!([apply(at(&before, INHERITED), json!("body"), None)]),
+        );
+        success(run, "own-style application with absent native run records");
+        let source_bytes = std::fs::read(&source).unwrap();
+        let output_bytes = std::fs::read(&output).unwrap();
+        assert!(
+            source_bytes == output_bytes,
+            "own-style no-op changed native bytes for old CS {old_shape} (source {} bytes, output {} bytes)",
+            source_bytes.len(),
+            output_bytes.len()
+        );
+        let report: Value = serde_json::from_slice(
+            &std::fs::read(fixture.directory.join("own-empty-noop-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["applied_count"], 0);
+        assert_eq!(report["ops"][0]["status"], "applied");
+        assert_eq!(report["ops"][0]["pieces_touched"], 0);
+        assert!(report["ops"][0]["reason"].is_null());
+    }
+}
+
+/// Observe real layout glyph runs after native reread. Font absence is probed before
+/// rendering; a missing marker or malformed glyph output is a test failure, never a skip.
+fn assert_rendered_sizes(doc: &Document, expected: &[(&str, f32)], label: &str) {
+    let mut store = hwp_render::FontStore::new();
+    if let Some(directory) = std::env::var_os("HWP_FONT_DIR") {
+        store.load_dir(Path::new(&directory));
+    }
+    let available = expected
+        .iter()
+        .flat_map(|(text, _)| text.chars())
+        .filter(|ch| !ch.is_whitespace())
+        .all(|ch| store.font_covering(ch).is_some());
+    if !available {
+        fixture_skip::resource_unavailable(
+            label,
+            "install a system font covering the authored ASCII text or set HWP_FONT_DIR, then rerun the native render check",
+        );
+        return;
+    }
+    let mut issues = hwp_render::RenderIssueAccumulator::new();
+    let display = hwp_render::layout::layout_document(doc, &mut store, &mut issues);
+    let mut observed = Vec::new();
+    for item in display.pages.iter().flat_map(|page| &page.items) {
+        if let hwp_render::display::Item::Glyphs { run, .. } = item {
+            if !run.text.trim().is_empty() {
+                assert!(
+                    !run.glyphs.is_empty(),
+                    "nonempty native text must render glyphs"
+                );
+                assert!(run.size_pt.is_finite() && run.size_pt > 0.0);
+            }
+            observed.extend(
+                run.text
+                    .chars()
+                    .filter(|ch| !ch.is_whitespace())
+                    .map(|ch| (ch, run.size_pt)),
+            );
+        }
+    }
+    for &(text, expected_size) in expected {
+        let text: Vec<_> = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+        let matches: Vec<_> = observed
+            .windows(text.len())
+            .filter(|window| window.iter().map(|&(ch, _)| ch).eq(text.iter().copied()))
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "render must contain the unique authored marker, not merely parse it: {text:?}"
+        );
+        assert!(
+            matches[0]
+                .iter()
+                .all(|&(_, size)| (size - expected_size).abs() < 0.001),
+            "native glyph-run size differs for {text:?}; expected {expected_size}pt"
+        );
+    }
+}
+
+#[test]
+fn update_style_native_reload_preserves_independent_direct_formatting_and_renders_size() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("update-independent", extension);
+        let before = read(&fixture.base);
+        let (body_id, body) = named(&before, "body");
+        let (_, note) = named(&before, "note");
+        assert_eq!(body.char_shape, note.char_shape);
+        assert_eq!(body.para_shape, note.para_shape);
+        let operations =
+            json!([{"op":"update_style","style":"body","size":"13pt","align":"right"}]);
+        let (output, run) = fixture.edit(&fixture.base, "updated", operations.clone());
+        success(run, "update_style must succeed through typed operations");
+        let after = read(&output);
+        let (_, updated) = named(&after, "body");
+        assert_eq!(after.header.styles.len(), before.header.styles.len());
+        assert!(
+            usize::from(updated.char_shape.0) >= before.header.char_shapes.len(),
+            "changed CS must use a fresh identity"
+        );
+        assert!(
+            usize::from(updated.para_shape.0) >= before.header.para_shapes.len(),
+            "changed PS must use a fresh identity"
+        );
+        assert_eq!(
+            &after.header.char_shapes[..before.header.char_shapes.len()],
+            before.header.char_shapes.as_slice()
+        );
+        assert_eq!(
+            &after.header.para_shapes[..before.header.para_shapes.len()],
+            before.header.para_shapes.as_slice()
+        );
+        for (id, style) in before
+            .header
+            .styles
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| *id != body_id)
+        {
+            assert_eq!(
+                &after.header.styles[id], style,
+                "unrelated style definition must survive"
+            );
+        }
+        for text in [INHERITED, DIRECT_PARA] {
+            assert_eq!(shape_at(&after, paragraph(&after, text), 0).base_size, 1300);
+        }
+        for position in [0, 10] {
+            assert_eq!(
+                shape_at(&after, paragraph(&after, MIXED), position).base_size,
+                1300
+            );
+        }
+        assert_eq!(
+            shape_at(&before, paragraph(&before, MIXED), 5),
+            shape_at(&after, paragraph(&after, MIXED), 5)
+        );
+        assert_eq!(
+            shape_at(&before, paragraph(&before, HEADING_LIKE), 0),
+            shape_at(&after, paragraph(&after, HEADING_LIKE), 0)
+        );
+        assert_eq!(
+            resolved(&before, paragraph(&before, DIRECT_PARA))["para"],
+            resolved(&after, paragraph(&after, DIRECT_PARA))["para"]
+        );
+        for text in [INHERITED, MIXED, HEADING_LIKE] {
+            assert_eq!(paragraph(&after, text).para_shape, updated.para_shape);
+        }
+        assert_eq!(
+            cell_paragraph(&after, NESTED).para_shape,
+            updated.para_shape
+        );
+        assert_eq!(
+            shape_at(&after, cell_paragraph(&after, NESTED), 0).base_size,
+            1300
+        );
+        assert_non_targets(&before, &after);
+        assert_public_style_listing(
+            &output,
+            "body",
+            &[INHERITED, DIRECT_PARA, MIXED, HEADING_LIKE, NESTED],
+        );
+        assert_rendered_sizes(
+            &after,
+            &[
+                (INHERITED, 13.0),
+                (DIRECT_PARA, 13.0),
+                ("BOLD", 10.0),
+                (HEADING_LIKE, 14.0),
+                (NOTE, 10.0),
+                (HEADING, 14.0),
+                (NESTED, 13.0),
+            ],
+            &format!("ASCII fonts for named-style native render ({extension})"),
+        );
+        let (repeated, run) = fixture.edit(&output, "updated-again", operations);
+        success(
+            run,
+            "identical update_style repeat must succeed without changes",
+        );
+        assert_eq!(
+            std::fs::read(output).unwrap(),
+            std::fs::read(repeated).unwrap(),
+            "unchanged style update must be byte-stable"
+        );
+    }
+}
+
+#[test]
+fn successive_updates_keep_direct_status_when_new_values_equal_existing_shapes() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("update-collision", extension);
+        let before = read(&fixture.base);
+        let direct_ps = paragraph(&before, DIRECT_PARA).para_shape;
+        let direct_cs = paragraph(&before, HEADING_LIKE).char_shape_runs[0].1;
+        let (first, run) = fixture.edit(&fixture.base, "collision-first", json!([
+            {"op":"update_style","style":"body","size":"14pt","font":"Fixture Sans","bold":"on","align":"center"}
+        ]));
+        success(run, "first update_style to existing direct-format values");
+        let middle = read(&first);
+        let (body_id, body) = named(&middle, "body");
+        assert_ne!(
+            body.char_shape, direct_cs,
+            "equal values must not alias the direct CS identity"
+        );
+        assert_ne!(
+            body.para_shape, direct_ps,
+            "equal values must not alias the direct PS identity"
+        );
+        assert_eq!(
+            middle.header.char_shapes[usize::from(body.char_shape.0)],
+            before.header.char_shapes[usize::from(direct_cs.0)],
+            "fixture must create an actual equal-value CS collision"
+        );
+        assert_eq!(
+            middle.header.para_shapes[usize::from(body.para_shape.0)],
+            before.header.para_shapes[usize::from(direct_ps.0)],
+            "fixture must create an actual equal-value PS collision"
+        );
+        let (second, run) = fixture.edit(
+            &first,
+            "collision-second",
+            json!([
+                {"op":"update_style","style":body_id,"size":"15pt","align":"right"}
+            ]),
+        );
+        success(run, "second update_style after native reload");
+        let after = read(&second);
+        assert_eq!(
+            resolved(&before, paragraph(&before, DIRECT_PARA))["para"],
+            resolved(&after, paragraph(&after, DIRECT_PARA))["para"],
+            "direct PS must remain centered after later style update"
+        );
+        assert_eq!(
+            shape_at(&before, paragraph(&before, HEADING_LIKE), 0),
+            shape_at(&after, paragraph(&after, HEADING_LIKE), 0),
+            "direct heading-like run must remain 14pt after later update"
+        );
+        assert_eq!(
+            shape_at(&after, paragraph(&after, DIRECT_PARA), 0).base_size,
+            1500,
+            "its independent inherited CS must still update"
+        );
+        assert_eq!(
+            shape_at(&after, paragraph(&after, INHERITED), 0).base_size,
+            1500
+        );
+        assert_eq!(
+            shape_at(&after, paragraph(&after, MIXED), 5),
+            shape_at(&before, paragraph(&before, MIXED), 5)
+        );
+        assert_non_targets(&before, &after);
+    }
+}
+
+#[test]
+fn empty_update_style_is_a_successful_native_byte_identical_noop() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("empty-update", extension);
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "empty-updated",
+            json!([
+                {"op":"update_style","style":"body"}
+            ]),
+        );
+        success(run, "empty update_style must be a successful no-op");
+        let before = std::fs::read(&fixture.base).unwrap();
+        let after = std::fs::read(output).unwrap();
+        assert!(
+            before == after,
+            "empty update_style changed {extension} native bytes"
+        );
+        let report: Value = serde_json::from_slice(
+            &std::fs::read(fixture.directory.join("empty-updated-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["applied_count"], 0);
+        assert_eq!(report["ops"][0]["status"], "applied");
+        assert_eq!(report["ops"][0]["pieces_touched"], 0);
+    }
+}

@@ -3,7 +3,8 @@ use hwp_convert::format::{CharFormat, ParaProps};
 use hwp_convert::segment_id::SegmentPath;
 use hwp_convert::styles::StyleKind;
 use hwp_convert::styles::edit::{
-    CreateStyle, StyleEditError, StyleSelector, apply_style_at, create_style,
+    CreateStyle, StyleEditError, StyleSelector, UpdateStyle, apply_style_at, create_style,
+    update_style,
 };
 use hwp_model::{
     CharShape, CharShapeId, Control, Document, FaceName, GenericControl, HwpChar, LineSeg,
@@ -604,4 +605,594 @@ fn unknown_style_errors_show_a_name_or_number_without_debug_wrappers() {
     assert!(id.contains("스타일 #250을 찾을 수 없습니다"), "{id}");
     assert!(!name.contains("Name("));
     assert!(!id.contains("Id("));
+}
+
+/// T16-F3: shape zero is only an effective fallback for an absent run record;
+/// applying the paragraph's own style must not materialize that record.
+#[test]
+fn own_style_without_runs_is_an_exact_noop_for_zero_and_nonzero_style_shapes() {
+    for old_shape in [CharShapeId(0), CharShapeId(2)] {
+        let mut doc = fixture();
+        doc.header.styles[0].char_shape = old_shape;
+        doc.sections[0].paragraphs[0].char_shape_runs.clear();
+        assert!(!doc.sections[0].paragraphs[0].line_segs.is_empty());
+        let before = doc.clone();
+        let changed = apply_style_at(&mut doc, &path(&[0]), &StyleSelector::Id(0), false)
+            .expect("existing own paragraph style is valid");
+        assert!(
+            !changed,
+            "applying its own style must remain a no-op even without run records"
+        );
+        assert_eq!(
+            doc, before,
+            "a no-op must retain empty runs, saved caches and header definitions"
+        );
+    }
+}
+
+fn update_request() -> UpdateStyle {
+    UpdateStyle {
+        style: StyleSelector::Name("Body".into()),
+        character: CharFormat {
+            size_pt: Some(13.0),
+            ..CharFormat::default()
+        },
+        paragraph: ParaProps {
+            align: Some(2),
+            ..ParaProps::default()
+        },
+    }
+}
+
+fn valid_font_fixture() -> Document {
+    let mut doc = fixture();
+    for fonts in &mut doc.header.fonts {
+        *fonts = vec![FaceName {
+            name: "Fixture Serif".into(),
+            ..FaceName::default()
+        }];
+    }
+    doc
+}
+
+#[test]
+fn update_fresh_shapes_keep_independent_inheritance_and_other_style_users() {
+    let mut doc = valid_font_fixture();
+    let before = doc.clone();
+    assert!(update_style(&mut doc, &update_request()).unwrap());
+    let style = &doc.header.styles[0];
+    assert_eq!(
+        usize::from(style.char_shape.0),
+        before.header.char_shapes.len()
+    );
+    assert_eq!(
+        usize::from(style.para_shape.0),
+        before.header.para_shapes.len()
+    );
+    assert_eq!(
+        doc.header.char_shapes.len(),
+        before.header.char_shapes.len() + 1
+    );
+    assert_eq!(
+        doc.header.para_shapes.len(),
+        before.header.para_shapes.len() + 1
+    );
+    assert_eq!(
+        &doc.header.char_shapes[..before.header.char_shapes.len()],
+        before.header.char_shapes.as_slice()
+    );
+    assert_eq!(
+        &doc.header.para_shapes[..before.header.para_shapes.len()],
+        before.header.para_shapes.as_slice()
+    );
+    assert_eq!(&doc.header.styles[1..], &before.header.styles[1..]);
+    let p = &doc.sections[0].paragraphs;
+    assert_eq!(p[0].char_shape_runs, vec![(0, style.char_shape)]);
+    assert_eq!(p[1].char_shape_runs, vec![(0, style.char_shape)]);
+    assert_eq!(p[1].para_shape, before.sections[0].paragraphs[1].para_shape);
+    assert_eq!(
+        p[2].char_shape_runs,
+        vec![
+            (0, style.char_shape),
+            (2, CharShapeId(1)),
+            (4, style.char_shape)
+        ]
+    );
+    assert_eq!(p[3].char_shape_runs, vec![(0, CharShapeId(2))]);
+    for index in [0, 2, 3] {
+        assert_eq!(p[index].para_shape, style.para_shape);
+    }
+    for (index, para) in p.iter().enumerate().take(4) {
+        assert!(para.line_segs.is_empty());
+        assert_eq!(para.chars, before.sections[0].paragraphs[index].chars);
+        assert_eq!(para.controls, before.sections[0].paragraphs[index].controls);
+    }
+    assert_eq!(&p[4..], &before.sections[0].paragraphs[4..]);
+    let mut expected_style = before.header.styles[0].clone();
+    expected_style.char_shape = style.char_shape;
+    expected_style.para_shape = style.para_shape;
+    assert_eq!(
+        style, &expected_style,
+        "only the changed shape references may alter style metadata"
+    );
+}
+
+#[test]
+fn update_allocates_fresh_colliding_shapes_and_preserves_direct_status_on_repeat() {
+    let mut doc = valid_font_fixture();
+    let before = doc.clone();
+    let first = UpdateStyle {
+        character: CharFormat {
+            size_pt: Some(14.0),
+            bold: Some(true),
+            ..CharFormat::default()
+        },
+        paragraph: ParaProps {
+            align: Some(3),
+            ..ParaProps::default()
+        },
+        ..update_request()
+    };
+    assert!(update_style(&mut doc, &first).unwrap());
+    let (cs, ps) = shapes(&doc, StyleId(0));
+    assert_eq!(
+        doc.header.char_shapes[usize::from(cs.0)],
+        before.header.char_shapes[2]
+    );
+    assert_eq!(
+        doc.header.para_shapes[usize::from(ps.0)],
+        before.header.para_shapes[1]
+    );
+    assert_ne!(
+        cs,
+        CharShapeId(2),
+        "equal values must get a fresh CS identity"
+    );
+    assert_ne!(
+        ps,
+        ParaShapeId(1),
+        "equal values must get a fresh PS identity"
+    );
+    for para in &mut doc.sections[0].paragraphs {
+        para.line_segs = cache();
+    }
+    let repeat_before = doc.clone();
+    assert!(!update_style(&mut doc, &first).unwrap());
+    assert_eq!(
+        doc, repeat_before,
+        "unchanged request cannot allocate or invalidate caches"
+    );
+    let second = UpdateStyle {
+        character: CharFormat {
+            size_pt: Some(15.0),
+            ..CharFormat::default()
+        },
+        ..update_request()
+    };
+    assert!(update_style(&mut doc, &second).unwrap());
+    assert_eq!(
+        doc.sections[0].paragraphs[3].char_shape_runs,
+        before.sections[0].paragraphs[3].char_shape_runs
+    );
+    assert_eq!(
+        doc.sections[0].paragraphs[1].para_shape,
+        before.sections[0].paragraphs[1].para_shape
+    );
+    let inherited = doc.sections[0].paragraphs[1].char_shape_runs[0].1;
+    assert_eq!(
+        doc.header.char_shapes[usize::from(inherited.0)].base_size,
+        1500
+    );
+    assert_eq!(
+        &doc.sections[0].paragraphs[4..],
+        &before.sections[0].paragraphs[4..]
+    );
+    assert_eq!(
+        &doc.header.char_shapes[..before.header.char_shapes.len()],
+        before.header.char_shapes.as_slice()
+    );
+}
+
+#[test]
+fn update_unchanged_or_empty_properties_never_allocate_or_clear_any_cache() {
+    for operation in [
+        UpdateStyle {
+            character: CharFormat::default(),
+            paragraph: ParaProps::default(),
+            ..update_request()
+        },
+        UpdateStyle {
+            character: CharFormat {
+                size_pt: Some(10.0),
+                ..CharFormat::default()
+            },
+            paragraph: ParaProps {
+                align: Some(0),
+                ..ParaProps::default()
+            },
+            ..update_request()
+        },
+    ] {
+        let mut doc = valid_font_fixture();
+        let before = doc.clone();
+        assert!(!update_style(&mut doc, &operation).unwrap());
+        assert_eq!(doc, before);
+    }
+    let mut doc = valid_font_fixture();
+    let before = doc.clone();
+    let only_character = UpdateStyle {
+        paragraph: ParaProps::default(),
+        ..update_request()
+    };
+    assert!(update_style(&mut doc, &only_character).unwrap());
+    assert_eq!(doc.header.para_shapes, before.header.para_shapes);
+    assert_eq!(
+        doc.header.styles[0].para_shape,
+        before.header.styles[0].para_shape
+    );
+    let only_paragraph = UpdateStyle {
+        character: CharFormat::default(),
+        ..update_request()
+    };
+    let char_shapes = doc.header.char_shapes.clone();
+    assert!(update_style(&mut doc, &only_paragraph).unwrap());
+    assert_eq!(doc.header.char_shapes, char_shapes);
+}
+
+fn caption(paragraphs: Vec<Paragraph>) -> hwp_model::Caption {
+    hwp_model::Caption {
+        side: hwp_model::CaptionSide::Bottom,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 23,
+        width: None,
+        last_width: 1000,
+        paragraphs,
+    }
+}
+
+fn caption_table(cell: Paragraph, cap: Paragraph) -> hwp_model::Table {
+    let source = hwp_convert::from_markdown("| cell |\n|---|\n| value |\n");
+    let mut table = source
+        .sections
+        .iter()
+        .flat_map(|s| &s.paragraphs)
+        .flat_map(|p| &p.controls)
+        .find_map(|control| {
+            if let Control::Table(table) = control {
+                Some(table.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    table.rows = 1;
+    table.cols = 1;
+    table.row_cell_counts = vec![1];
+    table.cells.truncate(1);
+    table.cells[0].paragraphs = vec![cell];
+    table.caption = Some(caption(vec![cap]));
+    table
+}
+
+fn caption_picture(cap: Paragraph) -> hwp_model::Picture {
+    // Only caption traversal is exercised; no image file, decoder or writer is involved.
+    serde_json::from_value(serde_json::json!({
+        "common_data":"", "width":1000, "height":1000, "treat_as_char":true,
+        "bin_ref":{"ItemRef":"synthetic-caption-only"}, "extras":[], "caption":caption(vec![cap])
+    }))
+    .unwrap()
+}
+
+fn visit_test_paragraphs<'a>(paras: &'a [Paragraph], out: &mut Vec<&'a Paragraph>) {
+    for para in paras {
+        out.push(para);
+        for control in &para.controls {
+            match control {
+                Control::Table(table) => {
+                    if let Some(cap) = &table.caption {
+                        visit_test_paragraphs(&cap.paragraphs, out);
+                    }
+                    for cell in &table.cells {
+                        visit_test_paragraphs(&cell.paragraphs, out);
+                    }
+                }
+                Control::Picture(picture) => {
+                    if let Some(cap) = &picture.caption {
+                        visit_test_paragraphs(&cap.paragraphs, out);
+                    }
+                }
+                Control::Generic(generic) => {
+                    for list in &generic.paragraph_lists {
+                        visit_test_paragraphs(&list.paragraphs, out);
+                    }
+                    if let Some(cap) = &generic.caption {
+                        visit_test_paragraphs(&cap.paragraphs, out);
+                    }
+                }
+                Control::SectionDef(_) => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn update_visits_cells_and_all_caption_kinds_and_invalidates_changed_ancestors() {
+    let mut doc = valid_font_fixture();
+    let body = |text| para(text, 0, 0, &[(0, 0)]);
+    let mut nested = para("nested note ancestor", 1, 0, &[(0, 0)]);
+    nested.controls.push(Control::Table(caption_table(
+        body("deep cell"),
+        body("deep table caption"),
+    )));
+    let mut object = generic(vec![body("generic list"), nested]);
+    object.caption = Some(caption(vec![body("generic caption")]));
+    let untouched_object = generic(vec![para("unrelated nested note", 1, 0, &[(0, 0)])]);
+    let mut ancestor = para("outer note ancestor", 1, 0, &[(0, 0)]);
+    ancestor.controls = vec![
+        Control::Table(caption_table(body("table cell"), body("table caption"))),
+        Control::Picture(caption_picture(body("picture caption"))),
+        Control::Generic(object),
+        Control::Generic(untouched_object.clone()),
+    ];
+    doc.sections[0].paragraphs.push(ancestor);
+    let before = doc.clone();
+    assert!(update_style(&mut doc, &update_request()).unwrap());
+    let style = &doc.header.styles[0];
+    let mut paragraphs = Vec::new();
+    visit_test_paragraphs(&doc.sections[0].paragraphs, &mut paragraphs);
+    for text in [
+        "table cell",
+        "table caption",
+        "picture caption",
+        "generic list",
+        "generic caption",
+        "deep cell",
+        "deep table caption",
+    ] {
+        let target = paragraphs.iter().find(|p| p.plain_text() == text).unwrap();
+        assert_eq!(
+            target.para_shape, style.para_shape,
+            "nested PS missed: {text}"
+        );
+        assert_eq!(
+            target.char_shape_runs,
+            vec![(0, style.char_shape)],
+            "nested CS missed: {text}"
+        );
+        assert!(target.line_segs.is_empty(), "nested cache missed: {text}");
+    }
+    for text in ["outer note ancestor", "nested note ancestor"] {
+        let target = paragraphs.iter().find(|p| p.plain_text() == text).unwrap();
+        assert_eq!(target.style, StyleId(1));
+        assert_eq!(target.para_shape, ParaShapeId(0));
+        assert_eq!(target.char_shape_runs, vec![(0, CharShapeId(0))]);
+        assert!(
+            target.line_segs.is_empty(),
+            "changed descendant must invalidate ancestor layout: {text}"
+        );
+    }
+    let outer = doc.sections[0].paragraphs.last().unwrap();
+    let Control::Generic(generic) = &outer.controls[2] else {
+        panic!("fixture generic");
+    };
+    assert!(generic.hwpx_raw_xml.is_none());
+    assert_eq!(outer.controls[3], Control::Generic(untouched_object));
+    assert_eq!(
+        &doc.sections[0].paragraphs[4..6],
+        &before.sections[0].paragraphs[4..6]
+    );
+}
+
+#[test]
+fn update_font_addition_requires_valid_existing_references_and_is_atomic() {
+    let mut doc = valid_font_fixture();
+    let before = doc.clone();
+    let operation = UpdateStyle {
+        character: CharFormat {
+            font: Some("Replacement face".into()),
+            ..CharFormat::default()
+        },
+        paragraph: ParaProps::default(),
+        ..update_request()
+    };
+    assert!(update_style(&mut doc, &operation).unwrap());
+    let style = &doc.header.styles[0];
+    let shape = &doc.header.char_shapes[usize::from(style.char_shape.0)];
+    for (slot, id) in shape.face_ids.iter().enumerate() {
+        assert_eq!(
+            doc.header.fonts[slot][usize::from(*id)].name,
+            "Replacement face"
+        );
+    }
+    assert_eq!(
+        &doc.header.char_shapes[..before.header.char_shapes.len()],
+        before.header.char_shapes.as_slice()
+    );
+    assert_eq!(
+        &doc.sections[0].paragraphs[4..],
+        &before.sections[0].paragraphs[4..]
+    );
+    let repeated = doc.clone();
+    assert!(!update_style(&mut doc, &operation).unwrap());
+    assert_eq!(doc, repeated);
+    let mut broken = valid_font_fixture();
+    // Appending face 1 would silently bind this unrelated, previously unresolved reference.
+    broken.header.char_shapes[2].face_ids[6] = 1;
+    let before = broken.clone();
+    assert!(update_style(&mut broken, &operation).is_err());
+    assert_eq!(
+        broken, before,
+        "font append cannot rebind an unrelated dangling reference"
+    );
+}
+
+#[test]
+fn update_refuses_invalid_selectors_kinds_and_base_shapes_without_partial_changes() {
+    for style in [
+        StyleSelector::Name("missing".into()),
+        StyleSelector::Id(999),
+    ] {
+        let mut doc = valid_font_fixture();
+        let before = doc.clone();
+        assert!(
+            update_style(
+                &mut doc,
+                &UpdateStyle {
+                    style,
+                    ..update_request()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(doc, before);
+    }
+    let mut ambiguous = valid_font_fixture();
+    ambiguous.header.styles[1].name = "Body".into();
+    let before = ambiguous.clone();
+    assert!(update_style(&mut ambiguous, &update_request()).is_err());
+    assert_eq!(ambiguous, before);
+    for kind in [1, 2, 7] {
+        let mut doc = valid_font_fixture();
+        doc.header.styles[0].attr = kind;
+        let before = doc.clone();
+        assert!(update_style(&mut doc, &update_request()).is_err());
+        assert_eq!(doc, before);
+    }
+    let mut unknown = valid_font_fixture();
+    unknown.header.styles[0].kind_unknown = true;
+    let before = unknown.clone();
+    assert!(update_style(&mut unknown, &update_request()).is_err());
+    assert_eq!(unknown, before);
+    for table in ["char", "para"] {
+        let mut doc = valid_font_fixture();
+        if table == "char" {
+            doc.header.styles[0].char_shape = CharShapeId(999);
+        } else {
+            doc.header.styles[0].para_shape = ParaShapeId(999);
+        }
+        let before = doc.clone();
+        assert!(update_style(&mut doc, &update_request()).is_err());
+        assert_eq!(doc, before);
+    }
+    for size in [f32::NAN, f32::INFINITY] {
+        let mut doc = valid_font_fixture();
+        let before = doc.clone();
+        let operation = UpdateStyle {
+            character: CharFormat {
+                size_pt: Some(size),
+                ..CharFormat::default()
+            },
+            ..update_request()
+        };
+        assert!(update_style(&mut doc, &operation).is_err());
+        assert_eq!(doc, before);
+    }
+}
+
+#[test]
+fn update_fresh_shape_and_font_capacity_failures_preserve_the_entire_document() {
+    let full = usize::from(u16::MAX) + 1;
+    for table in ["char", "para", "font", "style"] {
+        let mut doc = valid_font_fixture();
+        let mut operation = update_request();
+        match table {
+            "char" => {
+                let base = doc.header.char_shapes[0].clone();
+                doc.header.char_shapes.resize(full, base);
+                doc.header.char_shapes[full - 1].base_size = 1300;
+                operation.paragraph = ParaProps::default();
+            }
+            "para" => {
+                let base = doc.header.para_shapes[0].clone();
+                doc.header.para_shapes.resize(full, base);
+                doc.header.para_shapes[full - 1].attr1 = 2 << 2;
+                operation.character = CharFormat::default();
+            }
+            "font" => {
+                doc.header.fonts[6].resize(
+                    full,
+                    FaceName {
+                        name: "Fixture Serif".into(),
+                        ..FaceName::default()
+                    },
+                );
+                operation.character.font = Some("Replacement face".into());
+            }
+            "style" => doc.header.styles.resize(full + 1, Style::default()),
+            _ => unreachable!(),
+        }
+        let before = doc.clone();
+        assert!(
+            update_style(&mut doc, &operation).is_err(),
+            "fresh identity must not wrap or deduplicate on capacity failure: {table}"
+        );
+        assert!(doc == before, "capacity failure must be atomic: {table}");
+    }
+}
+
+#[test]
+fn update_refuses_affected_raw_backed_users_without_clearing_the_raw_subtree() {
+    for where_user in ["list", "caption", "nested-list"] {
+        let mut doc = valid_font_fixture();
+        let user = para("raw-backed body user", 0, 0, &[(0, 0)]);
+        let mut raw = generic(vec![]);
+        raw.raw_children = vec![hwp_model::OpaqueRecord {
+            tag: 0x7777,
+            data: vec![71, 72],
+            children: vec![],
+        }];
+        match where_user {
+            "list" => raw.paragraph_lists[0].paragraphs.push(user),
+            "caption" => raw.caption = Some(caption(vec![user])),
+            "nested-list" => {
+                let mut container = para("raw nested note", 1, 0, &[(0, 0)]);
+                container
+                    .controls
+                    .push(Control::Generic(generic(vec![user])));
+                raw.paragraph_lists[0].paragraphs.push(container);
+            }
+            _ => unreachable!(),
+        }
+        let mut ancestor = para("raw note ancestor", 1, 0, &[(0, 0)]);
+        ancestor.controls.push(Control::Generic(raw));
+        doc.sections[0].paragraphs.push(ancestor);
+        let before = doc.clone();
+        let noop = UpdateStyle {
+            character: CharFormat::default(),
+            paragraph: ParaProps::default(),
+            ..update_request()
+        };
+        assert!(
+            !update_style(&mut doc, &noop).unwrap(),
+            "unchanged definitions do not affect raw-backed users: {where_user}"
+        );
+        assert!(
+            doc == before,
+            "raw-backed no-op changed the document: {where_user}"
+        );
+        assert!(
+            update_style(&mut doc, &update_request()).is_err(),
+            "raw-backed inherited user must refuse: {where_user}"
+        );
+        assert_eq!(
+            doc, before,
+            "preflight must refuse before editing earlier users or allocating shapes: {where_user}"
+        );
+    }
+    let mut doc = valid_font_fixture();
+    let mut raw = generic(vec![para("raw unrelated note", 1, 0, &[(0, 0)])]);
+    raw.raw_children = vec![hwp_model::OpaqueRecord {
+        tag: 0x7777,
+        data: vec![71, 72],
+        children: vec![],
+    }];
+    let mut ancestor = para("raw note ancestor", 1, 0, &[(0, 0)]);
+    ancestor.controls.push(Control::Generic(raw.clone()));
+    doc.sections[0].paragraphs.push(ancestor);
+    assert!(update_style(&mut doc, &update_request()).unwrap());
+    assert_eq!(
+        doc.sections[0].paragraphs.last().unwrap().controls[0],
+        Control::Generic(raw),
+        "an unrelated raw-backed user is preserved rather than cleared"
+    );
 }

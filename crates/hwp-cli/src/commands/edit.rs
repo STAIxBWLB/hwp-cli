@@ -67,6 +67,9 @@ pub(crate) enum TypedEditOperation {
     CreateStyle {
         request: hwp_convert::styles::edit::CreateStyle,
     },
+    UpdateStyle {
+        request: hwp_convert::styles::edit::UpdateStyle,
+    },
     ApplyStyle {
         address: hwp_convert::address::Address,
         style: hwp_convert::styles::edit::StyleSelector,
@@ -392,6 +395,7 @@ pub struct EditReport {
 fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
     match operation {
         TypedEditOperation::CreateStyle { .. } => "create_style",
+        TypedEditOperation::UpdateStyle { .. } => "update_style",
         TypedEditOperation::ApplyStyle { .. } => "apply_style",
         TypedEditOperation::Replace { .. } => "replace",
         TypedEditOperation::SetCell { .. } => "set_cell",
@@ -1050,6 +1054,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             TypedEditOperation::StyleTables { .. }
                 | TypedEditOperation::SetTablePlacement { .. }
                 | TypedEditOperation::ApplyStyle { .. }
+                | TypedEditOperation::UpdateStyle { .. }
         )
     });
 
@@ -1737,9 +1742,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 TypedEditOperation::StyleTables { .. }
                     | TypedEditOperation::SetTablePlacement { .. }
                     | TypedEditOperation::ApplyStyle { .. }
+                    | TypedEditOperation::UpdateStyle { .. }
             )
         {
-            // #359/#427: table styling, placement and named-style reapplication are
+            // #359/#427: table styling, placement and named-style application/update are
             // successful no-ops when already in effect: no changes mean no pieces touched.
             ops_outcomes.push(OpOutcome {
                 index,
@@ -2841,6 +2847,7 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         // has to pick its cause here.
         Op::CreateStyle { .. }
         | Op::ApplyStyle { .. }
+        | Op::UpdateStyle { .. }
         | Op::InsertImage { .. }
         | Op::Seal { .. }
         | Op::MoveParagraph { .. }
@@ -3081,6 +3088,18 @@ fn apply_typed_operation(
             let id = hwp_convert::styles::edit::create_style(doc, request)?;
             eprintln!("스타일 생성: {}", id.0);
             *edits += 1;
+        }
+        TypedEditOperation::UpdateStyle { request } => {
+            let id = request.style.resolve(doc)?;
+            if output_format == OutputFormat::Hwp && id.0 > u8::MAX as u16 {
+                anyhow::bail!(
+                    "스타일 번호를 HWP의 1바이트 범위에 저장할 수 없습니다. HWPX 출력으로 다시 시도해 보세요"
+                );
+            }
+            if hwp_convert::styles::edit::update_style(doc, request)? {
+                eprintln!("스타일 갱신: {}", id.0);
+                *edits += 1;
+            }
         }
         TypedEditOperation::ApplyStyle {
             style,

@@ -12,6 +12,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- `hwp edit --ops` accepts `update_style` for named paragraph styles. Changed character and
+  paragraph shapes receive fresh IDs, preserving unrelated users and direct formatting even
+  when existing definitions have identical values. Inheriting users in modeled body, cell and
+  caption/control lists follow independently. Affected raw-backed users refuse atomically;
+  unchanged updates and own-style reapplication preserve caches and native bytes
+  ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 - `hwp edit --ops` accepts `create_style` (copy a named or numbered base and override
   character/paragraph properties) and paragraph-addressed `apply_style` (name or number).
   Both operations support paragraph-kind styles only; character-style editing is refused with
