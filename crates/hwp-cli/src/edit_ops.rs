@@ -74,11 +74,13 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
             .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;
     let document_spec: serde_json::Value = serde_json::from_str(include_str!(
         "../../../schemas/document-spec-v1.schema.json"
-    ))?;
+    )).map_err(|error| anyhow::anyhow!("내장 document-spec-v1 스키마를 해석할 수 없습니다: {error}. 정상 빌드의 hwp를 설치하거나 해당 스키마를 수정해 다시 빌드하세요"))?;
+    let document_spec = jsonschema::Resource::from_contents(document_spec)
+        .map_err(|error| anyhow::anyhow!("내장 document-spec-v1 스키마 리소스를 만들 수 없습니다: {error}. 스키마의 $schema/$id를 확인하고 다시 빌드하세요"))?;
     let validator = jsonschema::options()
         .with_resource(
             "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
-            jsonschema::Resource::from_contents(document_spec)?,
+            document_spec,
         )
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)

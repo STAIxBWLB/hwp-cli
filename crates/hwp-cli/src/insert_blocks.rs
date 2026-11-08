@@ -8,8 +8,9 @@ use hwp_model::{BorderFillId, Control, Document, StyleId};
 use serde::Deserialize;
 
 use crate::document_spec::{
-    BlockCompiler, BlockDefaults, BlockSpec, BreakKind, DocumentSpec, ListSpec, MetadataSpec,
-    PageSpec, RunSpec, SectionSpec, SpecVersion, StyleSpec, validate_spec,
+    BlockCompiler, BlockDefaults, BlockSpec, BreakKind, DocumentSpec, ListKind, ListSpec,
+    MAX_BLOCKS, MetadataSpec, PageSpec, RunSpec, SectionSpec, SpecVersion, StyleSpec,
+    validate_spec,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Default, serde::Serialize)]
@@ -61,8 +62,10 @@ fn unsupported(kind: &str) -> String {
 }
 
 fn referenced_styles(request: &InsertBlocks) -> Result<BTreeSet<String>, String> {
-    if request.blocks.is_empty() || request.blocks.len() > crate::document_spec::MAX_BLOCKS {
-        return Err("insert_blocks의 blocks 개수가 제한을 벗어났습니다. 1..=20000개 블록으로 나누어 요청하세요".into());
+    if request.blocks.is_empty() || request.blocks.len() > MAX_BLOCKS {
+        return Err(format!(
+            "insert_blocks의 blocks 개수가 제한을 벗어났습니다. 1..={MAX_BLOCKS}개 블록으로 나누어 요청하세요"
+        ));
     }
     let mut names = BTreeSet::new();
     let mut lists = BTreeSet::new();
@@ -137,6 +140,53 @@ fn check_target(doc: &Document, target: &SegmentPath) -> Result<(), String> {
     Ok(())
 }
 
+/// Non-raw HWP NUMBERING definitions become the writer's synthesized record.
+/// Compare its actual templates/starts and the format selectors the reader does not retain;
+/// do not project away a list setting that the requested output cannot represent.
+fn check_hwp_lists(
+    request: &InsertBlocks,
+    lists: &BTreeMap<String, ListSpec>,
+) -> Result<(), String> {
+    let defaults = hwp5::write::synthesized_numbering_levels();
+    for (name, list) in lists {
+        if list.kind != ListKind::Ordered {
+            continue;
+        }
+        for (index, level) in list.levels.iter().enumerate() {
+            let Some(default) = defaults.get(index) else {
+                return Err(format!(
+                    "목록 '{name}'의 level {index}는 현재 HWP 출력기의 기본 번호 범위를 벗어납니다. HWPX 출력으로 다시 시도하세요"
+                ));
+            };
+            let token = format!("^{}", index + 1);
+            if level.start != default.start
+                || level.marker.replace("{n}", &token) != default.template
+            {
+                let marker = default.template.replace(&token, "{n}");
+                return Err(format!(
+                    "목록 '{name}'의 level {index} marker/start를 현재 HWP 출력기가 보존할 수 없습니다. HWPX 출력으로 다시 시도하거나 기본 marker '{marker}', start {}을 사용하세요",
+                    default.start
+                ));
+            }
+            let used = request.blocks.iter().any(|block| {
+                matches!(block,
+                    BlockSpec::Paragraph { list: Some(reference), .. }
+                        if reference.name == *name && usize::from(reference.level) == index
+                )
+            });
+            if used
+                && hwp5::write::DEFAULT_NUMBERING_FORMATS.get(index)
+                    != Some(&hwp_model::NumFmt::Digit)
+            {
+                return Err(format!(
+                    "목록 '{name}'의 level {index} 번호 형식(Digit)을 현재 HWP 출력기가 해당 수준의 기본 형식으로 바꿉니다. 번호 형식을 보존하려면 HWPX 출력으로 다시 시도하세요"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 struct StyleResolver<'a, 'b> {
     compiler: &'a mut BlockCompiler<'b>,
     request: &'a InsertBlocks,
@@ -205,12 +255,12 @@ impl StyleResolver<'_, '_> {
 }
 
 /// Compile on a candidate and publish its header/content only after every check succeeds.
-/// `max_style` is 255 for HWP output and 65535 for HWPX output.
+/// HWP output is bounded by the existing writer's style IDs and numbering records.
 pub fn apply(
     doc: &mut Document,
     target: &SegmentPath,
     request: &InsertBlocks,
-    max_style: u16,
+    hwp_output: bool,
 ) -> Result<usize, String> {
     check_target(doc, target)?;
     if request.styles.len() > 256 || request.lists.len() > 256 {
@@ -219,6 +269,11 @@ pub fn apply(
                 .into(),
         );
     }
+    let max_style = if hwp_output {
+        u16::from(u8::MAX)
+    } else {
+        u16::MAX
+    };
     let names = referenced_styles(request)?;
     let styles = list_named_styles(doc, &[]).map_err(|error| error.to_string())?;
     let default = doc.header.styles.first().ok_or_else(|| "대상 문서의 기본 스타일 0이 없습니다. hwp styles로 유효한 문서인지 확인한 뒤 다시 시도하세요".to_owned())?;
@@ -279,6 +334,9 @@ pub fn apply(
         }],
     };
     validate_spec(&validation, Path::new(".")).map_err(|error| format!("insert_blocks 블록/스타일/목록 정의가 유효하지 않습니다: {error}. DocumentSpec v1 정의를 수정한 뒤 다시 시도하세요"))?;
+    if hwp_output {
+        check_hwp_lists(request, &lists)?;
+    }
     compiler
         .compile_lists(&lists)
         .map_err(|error| format!("목록 컴파일 실패: {error}. lists 정의와 원본 번호/글머리표 표 크기를 확인한 뒤 다시 시도하세요"))?;

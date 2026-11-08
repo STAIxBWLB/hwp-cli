@@ -3377,13 +3377,13 @@ fn apply_typed_operation(
         TypedEditOperation::InsertBlocks { request, .. } => {
             let target = resolved_target.expect("insert_blocks address preflight");
             let current = offsets.current_path(&target.path)?;
-            let max_style = if output_format == OutputFormat::Hwp {
-                u16::from(u8::MAX)
-            } else {
-                u16::MAX
-            };
-            let count = hwp_cli::insert_blocks::apply(doc, &current, request, max_style)
-                .map_err(|error| anyhow::anyhow!(error))?;
+            let count = hwp_cli::insert_blocks::apply(
+                doc,
+                &current,
+                request,
+                output_format == OutputFormat::Hwp,
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
             let mut inserted = current;
             let start = inserted
                 .indices

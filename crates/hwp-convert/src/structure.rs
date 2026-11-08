@@ -472,6 +472,16 @@ pub fn insert_paragraphs_at(
             "삽입 위치 주소를 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 얻어 보세요"
                 .to_owned()
         })?;
+    // The first section paragraph owns its section/column setup. Moving it later
+    // makes the native writers synthesize or omit setup on the new first paragraph.
+    if before
+        && list[idx]
+            .controls
+            .iter()
+            .any(|control| matches!(control, Control::SectionDef(_)))
+    {
+        return Err("구역 정의 문단 앞에는 삽입할 수 없습니다. insert_blocks는 position=after, insert_para는 before=false로 이 문단 뒤에 삽입하세요".into());
+    }
     let at_idx = if before { idx } else { idx + 1 };
     list.splice(at_idx..at_idx, paragraphs);
     crate::edit::fixup_last_para_flag(list);
