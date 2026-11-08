@@ -696,6 +696,54 @@ fn the_closure_tags_equal_the_hwp5_tags() {
         hwp_convert::document_split::TAG_SHAPE_COMPONENT_PICTURE,
         hwp5::record::tag::SHAPE_COMPONENT_PICTURE
     );
+    assert_eq!(
+        hwp_convert::document_split::TAG_VIDEO_DATA,
+        hwp5::record::tag::VIDEO_DATA
+    );
+    assert_eq!(
+        hwp_convert::document_split::TAG_CTRL_DATA,
+        hwp5::record::tag::CTRL_DATA
+    );
+    assert_eq!(
+        hwp_convert::document_split::TAG_DOC_DATA,
+        hwp5::record::tag::DOC_DATA
+    );
+    assert_eq!(
+        hwp_convert::document_split::TAG_BULLET,
+        hwp5::record::tag::BULLET
+    );
+}
+
+/// The closure is closed by the specification, not by review rounds: the catalog of places a
+/// record can name a BinData id (한글문서파일형식 5.0 revision 1.3: table 107/32 picture, table
+/// 23 fill, table 42 bullet, table 118 OLE, tables 125/126 video, table 52 `PIT_BINDATA`) has a
+/// pinned size, so adding or dropping a site is a deliberate act with a citation. Every site
+/// the catalog names that is not the modeled picture must be a code the schema accepts.
+#[test]
+fn the_closure_catalog_is_closed() {
+    let sites = hwp_convert::document_split::BINDATA_REFERENCE_SITES;
+    assert_eq!(sites.len(), 7, "{sites:?}");
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../schemas/range-extraction-v1.schema.json"
+    ))
+    .unwrap();
+    let accepted: Vec<&str> =
+        schema["properties"]["resources"]["properties"]["unverified_sites"]["items"]["properties"]
+            ["code"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|code| code.as_str().unwrap())
+            .collect();
+    for (section, record, handled) in sites {
+        assert!(section.starts_with('§'), "{record}: cite a spec section");
+        if *handled != "picture" {
+            assert!(
+                accepted.contains(handled),
+                "{record} ({section}) is handled as {handled}, which the schema does not accept"
+            );
+        }
+    }
 }
 
 /// A reference site the closure cannot read must reach the published report and keep the
@@ -1057,10 +1105,13 @@ fn a_report_path_that_reaches_the_fragment_through_dotdot_is_refused() {
     let Some(ws) = Workspace::new("dotdot") else {
         return;
     };
-    std::fs::create_dir_all(ws.dir.join("out")).unwrap();
+    // Nothing creates `out` here: a new --out-dir is the usual split, and the alias checks run
+    // before the directory exists, where `std::path::absolute` still keeps `..`.
+    assert!(!ws.dir.join("out").exists());
     for (flag, spelled) in [
         ("--range-report", "out/../out/source-001.hwpx"),
         ("--range-report", "./out/source-001.hwpx"),
+        ("--range-report", "out/sub/../source-001.hwpx"),
         ("--loss-report", "out/../out/source-001.hwpx"),
     ] {
         let result = hwp(
@@ -1082,6 +1133,23 @@ fn a_report_path_that_reaches_the_fragment_through_dotdot_is_refused() {
             "{flag} {spelled}: nothing may be published"
         );
     }
+    // The same files with the directory already there are refused too.
+    std::fs::create_dir_all(ws.dir.join("out")).unwrap();
+    let result = hwp(
+        &ws.dir,
+        &[
+            "split",
+            "source.hwpx",
+            "--out-dir",
+            "out",
+            "--from",
+            "heading:FORM_START_PROFILE_1",
+            "--range-report",
+            "out/../out/source-001.hwpx",
+        ],
+    );
+    assert!(!result.status.success());
+    assert!(!ws.dir.join("out/source-001.hwpx").exists());
     // Control: a report beside the fragment is fine and the fragment stays a package.
     hwp_ok(
         &ws.dir,
@@ -1108,4 +1176,128 @@ fn the_reported_source_hash_is_the_hash_of_the_extracted_file() {
     };
     let report = extract(&ws, "source.hwpx", "h", "FORM_START_PROFILE_1", None, &[]);
     assert_eq!(report["source_sha256"], ws.sha256("source.hwpx").as_str());
+}
+
+/// A report whose name looks like a fragment of this run is deleted by the stale-fragment
+/// cleanup right after it is published, and the command would still report success.
+#[test]
+fn a_report_named_like_a_fragment_is_refused_not_deleted() {
+    let Some(ws) = Workspace::new("report-name") else {
+        return;
+    };
+    for (flag, name) in [
+        ("--range-report", "out/source-002.hwpx"),
+        ("--range-report", "out/../out/source-017.hwpx"),
+        ("--loss-report", "out/source-002.hwpx"),
+    ] {
+        let result = hwp(
+            &ws.dir,
+            &[
+                "split",
+                "source.hwpx",
+                "--out-dir",
+                "out",
+                "--from",
+                "heading:FORM_START_PROFILE_1",
+                flag,
+                name,
+            ],
+        );
+        assert!(!result.status.success(), "{flag} {name} must be refused");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            stderr.contains(flag) && stderr.contains("source-NNN.hwpx"),
+            "the refusal names the flag and the pattern: {stderr}"
+        );
+        assert!(
+            !ws.dir.join("out").exists(),
+            "{flag} {name}: nothing written"
+        );
+    }
+    // Names that do not match the fragment pattern are fine and survive the cleanup.
+    for name in [
+        "out/source-002.json",
+        "out/source-x.hwpx",
+        "out/report.hwpx",
+        "source-002.hwpx",
+    ] {
+        hwp_ok(
+            &ws.dir,
+            &[
+                "split",
+                "source.hwpx",
+                "--out-dir",
+                "out",
+                "--from",
+                "heading:FORM_START_PROFILE_1",
+                "--range-report",
+                name,
+            ],
+        );
+        assert!(
+            ws.dir.join(name).exists(),
+            "{name} must survive the stale cleanup"
+        );
+    }
+}
+
+/// Genuine Hangul-saved HWP5 files carry real orphan `/BinData` streams: `annual_report.hwp`
+/// stores `BIN0001.jpg` that no `BIN_DATA` row names, and the writer cannot emit it. The report
+/// must say so, and everything it calls kept must be in the published file.
+#[test]
+fn a_genuine_orphan_stream_is_reported_as_dropped_by_the_format() {
+    let source =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/hwp5/annual_report.hwp");
+    if fixture_skip::fixture_missing(&source) {
+        return;
+    }
+    let dir = temp_path::TempPath::new("hwp417", "annual");
+    std::fs::create_dir_all(&*dir).unwrap();
+    std::fs::copy(&source, dir.join("annual_report.hwp")).unwrap();
+    hwp_ok(
+        &dir,
+        &[
+            "split",
+            "annual_report.hwp",
+            "--out-dir",
+            "o",
+            "--from",
+            "at:0.0",
+            "--range-report",
+            "o.json",
+        ],
+    );
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("o.json")).unwrap()).unwrap();
+    assert_report_valid(&report);
+    let resources = &report["resources"];
+    assert_eq!(
+        resources["dropped_by_format"],
+        serde_json::json!(["BIN0001.jpg"])
+    );
+    assert!(resources["excluded"].as_array().unwrap().is_empty());
+    let published = hwp5::read_document(&dir.join("o/annual_report-001.hwp"))
+        .unwrap()
+        .document;
+    let held: Vec<String> = published
+        .bin_streams
+        .iter()
+        .map(|b| b.name.clone())
+        .collect();
+    for list in ["kept", "kept_unverified"] {
+        for name in resources[list].as_array().unwrap() {
+            assert!(
+                held.contains(&name.as_str().unwrap().to_string()),
+                "{list} {name} not in {held:?}"
+            );
+        }
+    }
+    // The raw shape components of its decorative objects are reported, not guessed at.
+    let codes: Vec<&str> = resources["unverified_sites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|site| site["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"raw_shape"), "{codes:?}");
 }

@@ -867,20 +867,41 @@ pub(crate) fn print_warnings(warnings: &[String]) {
     }
 }
 
-/// Normalize paths for the --loss-report alias guard. Canonicalize existing paths;
-/// for a new report, canonicalize its parent and append the filename. Dot segments
-/// and symlink spellings resolving to the same file then compare equal.
-/// Fall back to an absolute path, then the original path, if normalization fails.
+/// Normalize paths for the alias guards. Canonicalize existing paths. For a path that does not
+/// exist yet, canonicalize its longest existing ancestor and append the rest with `.` and `..`
+/// resolved lexically: a component that does not exist cannot be a symlink, so `..` after it
+/// simply cancels it. Dot segments and symlink spellings resolving to the same file then
+/// compare equal even when the output directory is about to be created, which is the usual
+/// `split --out-dir new-dir` case (`out/../out/x` and `out/x` are the same file).
+/// Falls back to the original path only if the current directory cannot be read.
 pub(crate) fn normalize_for_alias_compare(path: &Path) -> PathBuf {
+    use std::path::Component;
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }
-    if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
-        && let Ok(canonical_parent) = std::fs::canonicalize(parent)
-    {
-        return canonical_parent.join(name);
+    let Ok(absolute) = std::path::absolute(path) else {
+        return path.to_path_buf();
+    };
+    // The longest prefix that exists. `ancestors()` yields the path itself first, then each
+    // shorter prefix, so the first one that canonicalizes is the longest.
+    let Some((existing, canonical_existing)) = absolute
+        .ancestors()
+        .find_map(|ancestor| Some((ancestor, std::fs::canonicalize(ancestor).ok()?)))
+    else {
+        return absolute;
+    };
+    let mut resolved = canonical_existing;
+    let rest = absolute.strip_prefix(existing).unwrap_or(Path::new(""));
+    for component in rest.components() {
+        match component {
+            Component::Normal(name) => resolved.push(name),
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
     }
-    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+    resolved
 }
 
 /// Publish --loss-report through the same staged/validated transaction as other output,
@@ -1379,6 +1400,69 @@ fn clear_linesegs(doc: &mut hwp_model::Document) {
 
 #[cfg(test)]
 mod tests {
+    // ───── normalize_for_alias_compare: paths whose directories do not exist yet (#417 F13) ─────
+
+    fn alias_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hwp-alias-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    #[test]
+    fn 아직_없는_디렉터리_밑의_점점_경로도_같은_파일로_정규화된다() {
+        let root = alias_dir("missing-dirs");
+        let plain = root.join("out").join("a.hwpx");
+        for spelling in [
+            root.join("out").join("..").join("out").join("a.hwpx"),
+            root.join("out").join(".").join("a.hwpx"),
+            root.join("out").join("sub").join("..").join("a.hwpx"),
+            root.join("x").join("..").join("out").join("a.hwpx"),
+        ] {
+            assert!(!root.join("out").exists());
+            assert_eq!(
+                normalize_for_alias_compare(&spelling),
+                normalize_for_alias_compare(&plain),
+                "{}",
+                spelling.display()
+            );
+        }
+        assert_eq!(normalize_for_alias_compare(&plain), plain);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn 서로_다른_파일은_정규화_뒤에도_다르다() {
+        let root = alias_dir("different");
+        assert_ne!(
+            normalize_for_alias_compare(&root.join("out").join("a.hwpx")),
+            normalize_for_alias_compare(&root.join("out").join("b.hwpx"))
+        );
+        assert_ne!(
+            normalize_for_alias_compare(&root.join("out").join("a.hwpx")),
+            normalize_for_alias_compare(&root.join("out2").join("a.hwpx"))
+        );
+        // `..` past a real directory leaves it.
+        assert_ne!(
+            normalize_for_alias_compare(&root.join("out").join("..").join("a.hwpx")),
+            normalize_for_alias_compare(&root.join("out").join("a.hwpx"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 존재하는_심볼릭_링크_조상은_실제_위치로_풀린다() {
+        let root = alias_dir("symlink");
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("link")).unwrap();
+        assert_eq!(
+            normalize_for_alias_compare(&root.join("link").join("new").join("a.hwpx")),
+            normalize_for_alias_compare(&root.join("real").join("new").join("a.hwpx"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     use super::*;
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};

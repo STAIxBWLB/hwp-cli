@@ -236,12 +236,16 @@ pub(crate) fn write_validated_files(
     }
     let mut normalized = Vec::with_capacity(outputs.len());
     for (destination, _) in outputs {
-        let absolute = std::path::absolute(destination).with_context(|| {
+        // `std::path::absolute` keeps `..`, so `out/../out/a` and `out/a` would be two files to
+        // it. The alias normalizer resolves them to one, which is what the set must not hold
+        // twice: the second write would replace the first and the publish would still succeed.
+        std::path::absolute(destination).with_context(|| {
             format!(
                 "출력 경로를 절대경로로 바꿀 수 없습니다: {}",
                 destination.display()
             )
         })?;
+        let absolute = crate::commands::convert::normalize_for_alias_compare(destination);
         if normalized.contains(&absolute) {
             anyhow::bail!(
                 "출력 집합에 중복 경로가 있습니다: {}",
@@ -3133,6 +3137,27 @@ mod tests {
         staged[0].preserve_workspace = false;
         drop(staged);
         assert_no_debris(&dir);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn output_set_rejects_one_file_spelled_two_ways_before_any_write() {
+        let dir = test_dir("set-dotdot");
+        // `out` does not exist yet: the usual case for a new --out-dir.
+        let plain = dir.join("out").join("a.bin");
+        let dotdot = dir.join("out").join("..").join("out").join("a.bin");
+        let outputs = vec![
+            (plain.clone(), b"FRAGMENT".to_vec()),
+            (dotdot, b"REPORT".to_vec()),
+        ];
+        let error = write_validated_files(&outputs, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("중복"), "{error}");
+        assert!(
+            !dir.join("out").exists(),
+            "nothing may be staged or published"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

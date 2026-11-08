@@ -34,12 +34,13 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
   excluded or dropped by the output format (HWP5 writes only the binaries its BIN_DATA table
   names) is written only when you pass `--range-report {file.json}`; `hwp_split` always returns
   it in its `range` field. A binary is excluded only when the whole fragment provably does not use
-  it: when the fragment holds a reference the tool cannot read (an image fill, a raw shape or OLE
-  object, a carried package part that is not readable XML), every binary travels and the report
+  it: when the fragment holds a reference the tool cannot read (an image fill, a bullet that may be an
+  image bullet, a raw shape, OLE or video object, a carried package part that is not readable XML), every binary travels and the report
   lists those sites. The report is content-free: anchors appear as a kind and a resolved address,
   never as the heading or bookmark text. The fragment carries the section's page, column, header,
-  footer, page-number and new-number controls; a hide or odd/even adjust control on the section's
-  first paragraph acts on that source page, so it stays behind.
+  footer, page-number and new-number controls. When the range starts after the section's first
+  paragraph, a hide or odd/even adjust control on that paragraph acts on its own source page, so
+  it stays behind; a range that starts at the first paragraph takes it whole.
 - `hwp compare {a} {b}` / `hwp_compare` — paragraph and structural differences between two
   documents, leaving both untouched. This is not `hwp diff`, which compares a render against a
   Hancom reference PNG.

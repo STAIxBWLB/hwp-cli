@@ -378,6 +378,12 @@ fn reminted_canonical_name(
 /// `BinRef::Id` references keep resolving; every other stream keeps its name,
 /// minting a `{prefix}{n}_` name on a collision. The returned map rewires
 /// `BinRef::ItemRef` references. Shared by both grafting tiers.
+///
+/// The map is keyed by what a picture's `ItemRef` can say, resolved through the INPUT document:
+/// every stream name, and every id the input's own manifest lists (to the final name of the
+/// stream that id points at in the input). A later input's picture that says `image1` therefore
+/// follows its own document's `image1`, not whatever `image1` means in the merged result, whose
+/// manifest is the first input's.
 fn graft_bin_streams(
     target: &mut Document,
     input: &Document,
@@ -385,6 +391,7 @@ fn graft_bin_streams(
     storage_remap: &HashMap<u16, u16>,
 ) -> HashMap<String, String> {
     let mut rename: HashMap<String, String> = HashMap::new();
+    let mut final_name: Vec<String> = Vec::with_capacity(input.bin_streams.len());
     for bin in &input.bin_streams {
         let mut name = bin.name.clone();
         if let Some(canonical) = reminted_canonical_name(&input.header.bin_data, bin, storage_remap)
@@ -402,10 +409,33 @@ fn graft_bin_streams(
             }
         }
         rename.insert(bin.name.clone(), name.clone());
+        final_name.push(name.clone());
         target.bin_streams.push(BinStream {
             name,
             data: bin.data.clone(),
         });
+    }
+    // Every spelling an `ItemRef` of the input could use, resolved the way the input resolves
+    // it (manifest first), mapped to the final name. A spelling the input cannot resolve is not
+    // added, so it keeps today's behavior (left as written).
+    let mut spellings: Vec<String> = input
+        .hwpx_bin_manifest
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+    for bin in &input.bin_streams {
+        spellings.push(bin.name.clone());
+        if let Some(file) = bin.name.rsplit('/').next() {
+            spellings.push(file.to_string());
+            if let Some(stem) = file.split('.').next() {
+                spellings.push(stem.to_string());
+            }
+        }
+    }
+    for spelling in spellings {
+        if let Some(index) = input.bin_stream_index(&BinRef::ItemRef(spelling.clone())) {
+            rename.insert(spelling, final_name[index].clone());
+        }
     }
     rename
 }
@@ -1262,6 +1292,89 @@ mod tests {
             .find(|s| &s.name == resolved_name)
             .map(|s| s.data.as_slice());
         assert_eq!(resolved_bytes, Some(b"BBBB".as_slice()));
+    }
+
+    /// The picture of the paragraph at `index` of section `section`, resolved to its bytes.
+    fn picture_bytes(doc: &Document, section: usize, index: usize) -> Option<Vec<u8>> {
+        let picture = doc.sections[section].paragraphs[index]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })?;
+        doc.resolve_bin(&picture.bin_ref).map(<[u8]>::to_vec)
+    }
+
+    /// A document with one picture paragraph that says `item`, carrying one stream `name` with
+    /// `data` and a manifest `item -> name`.
+    fn document_with_item(item: &str, name: &str, data: &[u8]) -> Document {
+        let mut doc = from_markdown("본문\n");
+        doc.sections[0].paragraphs.insert(
+            0,
+            hwp_model::Paragraph {
+                controls: vec![Control::Picture(sample_picture(item))],
+                ..Default::default()
+            },
+        );
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: name.into(),
+            data: data.to_vec(),
+        });
+        doc.hwpx_bin_manifest = vec![(item.into(), name.into())];
+        doc
+    }
+
+    /// Two HWPX-style inputs that both say `image1`, with different manifests: A's `image1`
+    /// is `BinData/p1.png`, B's is `BinData/image1.png`. `general` makes B take the general
+    /// graft tier.
+    fn two_inputs_reusing_image1(general: bool) -> (Document, Document) {
+        let a = document_with_item("image1", "BinData/p1.png", b"A-IMAGE");
+        let mut b = document_with_item("image1", "BinData/image1.png", b"B-IMAGE");
+        if general {
+            b = non_palette_compatible(b);
+            b.hwpx_bin_manifest = vec![("image1".into(), "BinData/image1.png".into())];
+        }
+        (a, b)
+    }
+
+    #[test]
+    fn 병합_뒤_입력의_그림은_자기_문서의_매니페스트_id로_자기_바이트를_가리킨다() {
+        for general in [false, true] {
+            let (a, b) = two_inputs_reusing_image1(general);
+            let a_sections = a.sections.len();
+            let outcome = merge_documents(&[a, b]).unwrap();
+            let doc = &outcome.document;
+            assert_eq!(
+                picture_bytes(doc, 0, 0).as_deref(),
+                Some(b"A-IMAGE".as_slice()),
+                "general={general}: the first input's picture"
+            );
+            assert_eq!(
+                picture_bytes(doc, a_sections, 0).as_deref(),
+                Some(b"B-IMAGE".as_slice()),
+                "general={general}: the second input's picture must follow ITS manifest, \
+                 not the first input's `image1`"
+            );
+        }
+    }
+
+    #[test]
+    fn 병합_뒤_충돌로_이름이_바뀐_스트림도_id로_해석된다() {
+        // Both inputs name their stream BinData/image1.png and both manifests say image1; the
+        // second stream is renamed on collision, and its id must follow it.
+        let a = document_with_item("image1", "BinData/image1.png", b"A-IMAGE");
+        let b = document_with_item("image1", "BinData/image1.png", b"B-IMAGE");
+        let a_sections = a.sections.len();
+        let doc = merge_documents(&[a, b]).unwrap().document;
+        assert_eq!(
+            picture_bytes(&doc, 0, 0).as_deref(),
+            Some(b"A-IMAGE".as_slice())
+        );
+        assert_eq!(
+            picture_bytes(&doc, a_sections, 0).as_deref(),
+            Some(b"B-IMAGE".as_slice())
+        );
     }
 
     fn sample_picture(bin_name: &str) -> hwp_model::Picture {

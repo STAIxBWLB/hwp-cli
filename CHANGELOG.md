@@ -43,8 +43,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   carried header and footer, raw-preserved objects, the package parts copied back verbatim)
   provably uses it. A picture's item id resolves through the package manifest, so an id that
   differs from its file name still finds its stream. When the fragment holds a reference the
-  tool cannot read, such as a border-fill image fill, a raw HWP5 shape or OLE record or a
-  carried part that is not readable XML, every binary is kept and the report lists the sites.
+  tool cannot read, such as a border-fill image fill, a bullet that may be an image bullet, a
+  raw HWP5 shape, OLE or video record, a Parameter Set that may name a binary, or a carried
+  part that is not readable XML, every binary is kept and the report lists the sites. The set
+  of places the HWP 5.0 specification lets name a binary is enumerated in the code and pinned
+  by a test.
   `--range-report` publishes `hwp-range-extraction-v1` (source hash, fragment hash,
   source-to-output paragraph and table addresses, kept, kept-unverified, excluded and
   dropped-by-format binaries, unverified sites) in the same transaction as the fragment, and
@@ -54,12 +57,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   the others are listed as dropped by the format). `--range-report` and `--loss-report` may not
   name the same file, and neither may name a fragment, however the path is spelled. The source
   hash is taken around the parse and a file that changed meanwhile is refused. The fragment
-  carries the section's page, column, header, footer, page-number and new-number controls; a
-  hide or odd/even adjust control on the section's first paragraph acts on that source page and
-  is not carried. A mismatching `--source-sha256`, a missing or
-  ambiguous anchor, a range across sections, a reversed or empty range and a picture whose binary
-  the source lacks are each refused before anything is written. Tested against every form of the generated P0 form set, from HWPX and from its HWP5
-  conversion ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
+  carries the section's page, column, header, footer, page-number and new-number controls. When
+  the range starts after the section's first paragraph, a hide or odd/even adjust control on
+  that paragraph acts on its own source page and is not carried; a range that starts at the
+  first paragraph takes it whole. A mismatching `--source-sha256`, a missing or ambiguous
+  anchor, a range across sections, a reversed or empty range and a picture whose binary the
+  source lacks are each refused before anything is written, and so is a report whose name looks
+  like a fragment of the run (it would be deleted as a stale fragment). Tested against every
+  form of the generated P0 form set, from HWPX and from its HWP5 conversion
+  ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
 - `hwp styles <file> [--format text|json]` and the MCP tool `hwp_styles` list a document's named
   styles with their resolved character and paragraph attributes and `used_by`, the `para`
   segment ids that `hwp cat --with-segments --segments v2` publishes. The JSON form is the new
@@ -69,6 +75,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `hwp merge` keeps the pictures of later HWPX inputs pointing at their own images. A picture
+  names its image by manifest id, and the merged document carries only the first input's
+  manifest, so a later input that reused an id such as `image1` for a different file used to
+  resolve to the first input's image. Each later input's ids are now resolved through that
+  input's own manifest while its streams are grafted, which also keeps an id working after its
+  stream was renamed on a name collision. Resolving a picture's id now consults the package
+  manifest first, so an id that differs from its file name (`id="logo"`,
+  `href="BinData/p1.png"`) finds its image, where `hwp convert` used to drop it as a removed
+  binary asset; an id the manifest lists never falls back to a same-named file of another item
+  ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
 - The HWPX reader now reads `hh:style@type` (`PARA`/`CHAR`) into the style kind that HWP5 stores in
   the low bits of `STYLE.attr`, and the HWPX writer writes `CHAR` back for a character style
   instead of always `PARA`. Character styles such as `쪽 번호` therefore survive an HWPX to HWPX

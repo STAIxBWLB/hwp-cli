@@ -153,20 +153,12 @@ fn remove_stale_fragments(out_dir: &Path, stem: &str, extension: &str, keep: &[P
             return;
         }
     };
-    let prefix = format!("{stem}-");
-    let suffix = format!(".{extension}");
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_fragment_name =
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.strip_prefix(&prefix)
-                        .and_then(|rest| rest.strip_suffix(&suffix))
-                        .is_some_and(|index| {
-                            !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
-                        })
-                });
+        let is_fragment_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| is_fragment_file_name(name, stem, extension));
         if is_fragment_name
             && path.is_file()
             && !keep.contains(&path)
@@ -178,6 +170,40 @@ fn remove_stale_fragments(out_dir: &Path, stem: &str, extension: &str, keep: &[P
             );
         }
     }
+}
+
+/// Whether `name` is `{stem}-{digits}.{extension}`, the name of a fragment this command
+/// publishes. The stale-fragment cleanup deletes files with such names that a run did not
+/// write, so a report must not carry one (it would be deleted right after publication, and
+/// a JSON file with a document extension would mislead anyway).
+fn is_fragment_file_name(name: &str, stem: &str, extension: &str) -> bool {
+    name.strip_prefix(&format!("{stem}-"))
+        .and_then(|rest| rest.strip_suffix(&format!(".{extension}")))
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// Refuses a report path (`flag` names the option) that sits in `out_dir` under a fragment
+/// name. Compared by normalized directory, so `out/../out/x-002.hwp` is the same place.
+fn reject_report_named_like_fragment(
+    flag: &str,
+    report_path: &Path,
+    out_dir: &Path,
+    stem: &str,
+    extension: &str,
+) -> anyhow::Result<()> {
+    let Some(name) = report_path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(());
+    };
+    let report_dir = report_path.parent().unwrap_or(Path::new(""));
+    let same_dir = crate::commands::convert::normalize_for_alias_compare(report_dir)
+        == crate::commands::convert::normalize_for_alias_compare(out_dir);
+    if same_dir && is_fragment_file_name(name, stem, extension) {
+        anyhow::bail!(
+            "{flag} 파일 이름 '{name}'이(가) 분할 조각 이름({stem}-NNN.{extension})과 같은 형식이라 \
+             조각으로 오인되어 이후 실행에서 지워집니다 — 다른 이름을 지정하세요"
+        );
+    }
+    Ok(())
 }
 
 /// Structured outcome of one split run: the published fragment paths plus the
@@ -464,6 +490,24 @@ pub(crate) fn execute(
     }
     if let Some(report_path) = range.and_then(|request| request.report.as_deref()) {
         alias_targets.push(report_path);
+    }
+    if let Some(report_path) = loss_report {
+        reject_report_named_like_fragment(
+            "--loss-report",
+            report_path,
+            out_dir,
+            &stem,
+            &extension,
+        )?;
+    }
+    if let Some(report_path) = range.and_then(|request| request.report.as_deref()) {
+        reject_report_named_like_fragment(
+            "--range-report",
+            report_path,
+            out_dir,
+            &stem,
+            &extension,
+        )?;
     }
     for destination in &destinations {
         crate::commands::output::reject_output_aliases(destination, &alias_targets)?;

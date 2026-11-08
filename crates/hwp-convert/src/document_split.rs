@@ -457,8 +457,8 @@ pub enum AddressKind {
 /// or `package/NAME` for a package part carried verbatim).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnverifiedSite {
-    /// `border_fill_image`, `raw_shape`, `raw_ole`, `raw_picture`, `raw_xml_unparsed` or
-    /// `carried_part_unread`.
+    /// `border_fill_image`, `bullet_image`, `raw_shape`, `raw_ole`, `raw_picture`, `raw_video`,
+    /// `parameter_set`, `raw_xml_unparsed` or `carried_part_unread`.
     pub code: &'static str,
     pub at: String,
 }
@@ -622,13 +622,46 @@ fn body_paragraphs(doc: &Document) -> impl Iterator<Item = (usize, usize, &Parag
     })
 }
 
-/// HWP5 record tags that can carry a binary reference the IR does not model (한글문서파일형식
-/// 5.0 §4.3.9, `HWPTAG_BEGIN` = 0x10): a shape component (its fill may be a picture), an OLE
-/// object and a picture component. Local copies because this crate does not depend on `hwp5`;
-/// `crates/hwp-cli/tests/split_range.rs` pins them to `hwp5::record::tag`.
+/// HWP5 record tags that can carry a binary reference the IR does not model. Local copies
+/// because this crate does not depend on `hwp5`; `crates/hwp-cli/tests/split_range.rs` pins
+/// every one to `hwp5::record::tag`.
 pub const TAG_SHAPE_COMPONENT: u16 = 0x10 + 60;
 pub const TAG_SHAPE_COMPONENT_OLE: u16 = 0x10 + 68;
 pub const TAG_SHAPE_COMPONENT_PICTURE: u16 = 0x10 + 69;
+pub const TAG_VIDEO_DATA: u16 = 0x10 + 82;
+pub const TAG_CTRL_DATA: u16 = 0x10 + 71;
+pub const TAG_DOC_DATA: u16 = 0x10 + 11;
+pub const TAG_BULLET: u16 = 0x10 + 8;
+
+/// Every place the HWP 5.0 file format (한글문서파일형식 5.0 revision 1.3) lets a record or table
+/// name a BinData id, and what this closure does about each. The list is CLOSED by the
+/// specification, not by review rounds: it was read off the spec's tables by searching for
+/// "BinData ID", "BinItem", "스토리지" and the image-fill and image-bullet rows, and
+/// `crates/hwp-cli/tests/split_range.rs::the_closure_catalog_is_closed` pins its size so that
+/// adding or removing an entry is a deliberate act with a spec citation.
+///
+/// | spec | where | what names the id | handled |
+/// |---|---|---|---|
+/// | §4.3.9.4 table 107 / table 32 | `SHAPE_COMPONENT_PICTURE` | `BinItem` id (picture) | the modeled `Picture::bin_ref` |
+/// | §4.2.5 table 23 (fill, table 32) | `BORDER_FILL` | image fill (`type & 0x2`) picture info | `border_fill_image` |
+/// | §4.3.9.2.1 (border/fill block) | `SHAPE_COMPONENT` | the same fill table | `raw_shape` |
+/// | §4.2.9 table 42 | `BULLET` | image-bullet id (INT32) + picture info | `bullet_image` |
+/// | §4.3.9.5 table 118 | `SHAPE_COMPONENT_OLE` | storage BinData id | `raw_ole` |
+/// | §4.3.9.8 tables 125, 126 | `VIDEO_DATA` | video and thumbnail BinData ids | `raw_video` |
+/// | §4.2.12 table 52 (`PIT_BINDATA`) | `DOC_DATA` and `CTRL_DATA` Parameter Sets | item type 0x8002 | `parameter_set` |
+/// | §4.3.10.1.3 table 135 | `PAGE_BORDER_FILL` | a `BORDER_FILL` id, not a BinData id | via `border_fill_image` |
+/// | §4.3.9.6 | chart | stored inside an OLE compound file | via `raw_ole` |
+///
+/// Everything else in the catalogs (tables 13 and 41 onward) names no BinData id.
+pub const BINDATA_REFERENCE_SITES: &[(&str, &str, &str)] = &[
+    ("§4.3.9.4", "SHAPE_COMPONENT_PICTURE", "picture"),
+    ("§4.2.5", "BORDER_FILL", "border_fill_image"),
+    ("§4.3.9.2.1", "SHAPE_COMPONENT", "raw_shape"),
+    ("§4.2.9", "BULLET", "bullet_image"),
+    ("§4.3.9.5", "SHAPE_COMPONENT_OLE", "raw_ole"),
+    ("§4.3.9.8", "VIDEO_DATA", "raw_video"),
+    ("§4.2.12", "DOC_DATA/CTRL_DATA", "parameter_set"),
+];
 
 /// Whether a SHAPE_COMPONENT record is long enough to hold a fill block and that block's fill
 /// type has the image bit. Only the record layout and the one flag are read, never the BinData
@@ -657,6 +690,31 @@ fn shape_component_has_image_fill(data: &[u8]) -> bool {
     };
     let border = base + 92 + usize::from(count) * 96;
     read_u32(border + 13).is_some_and(|fill_type| fill_type & 0x2 != 0)
+}
+
+/// Whether `data` is the bookmark Parameter Set genuine Hangul files store in a `bokm`
+/// control's `CTRL_DATA`: set id 0x021b, one item, a BSTR whose length exactly fills the
+/// record (measured on `bookmark.hwp`: `1b02 0100 00000040 0100 0600 <6 WCHAR>`, 24 bytes).
+/// This is the one parameter set whose items are known to hold text and not a BinData id; the
+/// spec's tables 50 and 51 describe a WORD item id there where the genuine file has four
+/// bytes, so any other set is not interpreted.
+fn is_bookmark_parameter_set(data: &[u8]) -> bool {
+    if data.len() < 12 || data[0..2] != [0x1b, 0x02] || data[2..4] != [0x01, 0x00] {
+        return false;
+    }
+    // item id (4 bytes), item type (2 bytes, 1 = PIT_BSTR), length (2 bytes), WCHAR array.
+    let item_type = u16::from_le_bytes([data[8], data[9]]);
+    let length = usize::from(u16::from_le_bytes([data[10], data[11]]));
+    item_type == 1 && data.len() == 12 + 2 * length
+}
+
+/// Whether a raw BULLET record is the character bullet the writer emits and genuine files
+/// store (compat rule B7): 25 bytes, a 4-byte `0xFFFFFFFF` character-shape id at offset 8, the
+/// bullet character at offset 12, and every byte after it zero, which is where the spec's
+/// image-bullet flag, picture info and check character live (table 42). Any other shape might
+/// be an image bullet, and its picture id is not read.
+fn is_plain_character_bullet(data: &[u8]) -> bool {
+    data.len() == 25 && data[8..12] == [0xff; 4] && data[14..].iter().all(|byte| *byte == 0)
 }
 
 /// Every binary reference of a document, and every place whose reference could not be read.
@@ -697,8 +755,18 @@ impl ReferenceScan {
                     self.unverified("raw_shape", at);
                 }
                 TAG_SHAPE_COMPONENT_OLE => self.unverified("raw_ole", at),
+                // Local and web video name a BinData id for the file and for its thumbnail
+                // (한글문서파일형식 5.0 §4.3.9.8, tables 125 and 126). Never parsed.
+                TAG_VIDEO_DATA => self.unverified("raw_video", at),
                 TAG_SHAPE_COMPONENT_PICTURE if !modeled_picture => {
                     self.unverified("raw_picture", at);
+                }
+                // A control's Parameter Set may hold a `PIT_BINDATA` item (§4.2.12, table
+                // 52). The only layout measured on genuine files is the bookmark set, so that
+                // one is recognized by its set id and its exact length and every other set is
+                // an unverified site.
+                TAG_CTRL_DATA if !is_bookmark_parameter_set(&record.data) => {
+                    self.unverified("parameter_set", at);
                 }
                 _ => {}
             }
@@ -737,6 +805,17 @@ impl ReferenceScan {
             }
         }
         self.refs.extend(found);
+    }
+
+    /// Header-level opaque records: only `DOC_DATA` (a Parameter Set, §4.2.12) can name a
+    /// BinData id here, and the one measured genuine payload is not interpreted.
+    fn opaque_header(&mut self, record: &hwp_model::OpaqueRecord, at: &str) {
+        if record.tag == TAG_DOC_DATA && !record.data.is_empty() {
+            self.unverified("parameter_set", at);
+        }
+        for child in &record.children {
+            self.opaque_header(child, at);
+        }
     }
 
     fn paragraph(&mut self, paragraph: &Paragraph, at: &str) {
@@ -800,6 +879,27 @@ fn scan_references(fragment: &Document) -> ReferenceScan {
             scan.unverified("border_fill_image", &format!("header/border_fills/{index}"));
         }
     }
+    // A bullet may be an image bullet: the record carries an image flag/id and picture info
+    // (§4.2.9, table 42). The record is kept raw and re-emitted, and what the image-bullet
+    // fields hold in genuine files has not been measured (the only layout verified is the
+    // character bullet: 25 bytes, the character at offset 12, the rest zero, compat rule B7).
+    // So a bullet is a clean site only when it has exactly that shape; anything else keeps the
+    // streams.
+    for (index, bullet) in fragment.header.bullets.iter().enumerate() {
+        if !is_plain_character_bullet(&bullet.data) || !bullet.children.is_empty() {
+            scan.unverified("bullet_image", &format!("header/bullets/{index}"));
+        }
+    }
+    // Header records preserved raw: a document-data Parameter Set can hold a `PIT_BINDATA`.
+    for (index, record) in fragment
+        .header
+        .extras
+        .iter()
+        .chain(&fragment.header.id_extras)
+        .enumerate()
+    {
+        scan.opaque_header(record, &format!("header/extras/{index}"));
+    }
     // Package parts the HWPX writer copies back unchanged (`hwpx_extra_entries`: META-INF/*,
     // DocOptions, scripts, master pages). They are parts of the fragment as much as a section
     // is, so a `binaryItemIDRef` in one counts. A part that is not UTF-8 XML cannot be read and
@@ -858,9 +958,12 @@ fn count_tables(paragraph: &Paragraph) -> usize {
 /// paragraphs back where the anchor was, so the controls still act on the page they sit on.
 /// Here the range starts somewhere else: a hide or an odd/even adjust acts on the source page
 /// that holds it, and moved onto the fragment's first paragraph it would hide or shift a page
-/// the author never marked. When the section's first paragraph holds one, the fragment loses
-/// it, and nothing in the fragment says so; the range report does not list it either, because
-/// the report is about binaries and addresses.
+/// the author never marked. This only matters when the range starts AFTER the section's first
+/// paragraph: a range that starts at paragraph 0 takes that paragraph whole, hide and
+/// odd/even controls included, and they stay where they were. When the range starts later and
+/// the first paragraph holds one, the fragment loses it, and nothing in the fragment says so;
+/// the range report does not list it either, because the report is about binaries and
+/// addresses.
 fn is_section_setup_char(paragraph: &Paragraph, ch: &HwpChar) -> bool {
     let HwpChar::ExtCtrl { ctrl_index, .. } = ch else {
         return false;
@@ -2182,6 +2285,182 @@ mod tests {
         let error = extract_range(&doc, "h", &selector(heading("A"), None, true)).unwrap_err();
         assert_eq!(error, RangeError::EmptyDocument);
         assert!(error.to_string().contains("hwp cat"), "{error}");
+    }
+
+    // ───────────── T9-F16: video, bullets, parameter sets ─────────────
+
+    /// The 25-byte character bullet the writer emits and genuine files store (compat rule B7).
+    fn character_bullet() -> hwp_model::RawEntry {
+        let mut data = vec![0x08, 0, 0, 0, 0, 0, 0x32, 0];
+        data.extend_from_slice(&[0xff; 4]);
+        data.extend_from_slice(&0x2022u16.to_le_bytes());
+        data.extend_from_slice(&[0u8; 11]);
+        hwp_model::RawEntry {
+            data,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn 동영상_레코드는_비디오와_썸네일_바이너리를_지우지_않는다() {
+        let outcome = extract_b_with(|doc| {
+            let mut object = generic(b"gso ");
+            object.raw_children.push(hwp_model::OpaqueRecord {
+                tag: 0,
+                data: Vec::new(),
+                children: vec![opaque(TAG_VIDEO_DATA)],
+            });
+            attach(
+                &mut doc.sections[0].paragraphs[4],
+                *b"gso ",
+                Control::Generic(object),
+            );
+        });
+        assert!(outcome.resources.excluded.is_empty());
+        assert_eq!(outcome.resources.unverified[0].code, "raw_video");
+        assert_eq!(outcome.fragment.bin_streams.len(), 3);
+    }
+
+    #[test]
+    fn 글머리표_문자_하나만_있는_글머리표는_불확실하지_않다() {
+        let outcome = extract_b_with(|doc| {
+            doc.header.bullets.push(character_bullet());
+        });
+        assert!(outcome.resources.unverified.is_empty());
+        assert_eq!(
+            outcome.resources.excluded,
+            vec!["BinData/c.png", "BinData/unused.png"]
+        );
+    }
+
+    #[test]
+    fn 이미지_글머리표일_수_있는_글머리표는_모든_바이너리를_남긴다() {
+        for (label, edit) in [
+            ("image id set", (14usize, 7u8)),
+            ("check bullet char set", (20, 0x41)),
+            ("any trailing byte", (24, 1)),
+        ] {
+            let mut bullet = character_bullet();
+            bullet.data[edit.0] = edit.1;
+            let outcome = extract_b_with(|doc| doc.header.bullets.push(bullet.clone()));
+            assert!(outcome.resources.excluded.is_empty(), "{label}");
+            assert_eq!(
+                outcome.resources.unverified[0].code, "bullet_image",
+                "{label}"
+            );
+            assert_eq!(
+                outcome.resources.unverified[0].at, "header/bullets/0",
+                "{label}"
+            );
+        }
+        // A bullet of an unexpected length, or with child records, is not the known shape.
+        for bullet in [
+            hwp_model::RawEntry {
+                data: vec![0; 20],
+                children: Vec::new(),
+            },
+            hwp_model::RawEntry {
+                children: vec![opaque(0)],
+                ..character_bullet()
+            },
+        ] {
+            let outcome = extract_b_with(|doc| doc.header.bullets.push(bullet.clone()));
+            assert_eq!(outcome.resources.unverified[0].code, "bullet_image");
+        }
+    }
+
+    #[test]
+    fn 알려진_책갈피_매개변수_집합만_깨끗하고_다른_집합은_불확실하다() {
+        let bookmark = crate::bookmark::make_bokm_ctrl_data("name");
+        assert!(is_bookmark_parameter_set(&bookmark));
+        let genuine = hex_bytes("1b020100000000400100060045cc08ac3cd54cd1a4c2b8d2");
+        assert!(
+            is_bookmark_parameter_set(&genuine),
+            "the measured bookmark.hwp payload"
+        );
+        // Another set id, another item count, another item type, a length that does not fill
+        // the record, trailing bytes and a short record are all different sets.
+        let mut wrong_set = genuine.clone();
+        wrong_set[0] = 0x1c;
+        let mut two_items = genuine.clone();
+        two_items[2] = 2;
+        let mut not_a_string = genuine.clone();
+        not_a_string[8] = 7;
+        let mut overlong = genuine.clone();
+        overlong[10] = 9;
+        let mut trailing = genuine.clone();
+        trailing.push(0);
+        for other in [
+            wrong_set,
+            two_items,
+            not_a_string,
+            overlong,
+            trailing,
+            vec![0x1b, 2],
+        ] {
+            assert!(!is_bookmark_parameter_set(&other), "{other:?}");
+        }
+
+        for (data, expect_site) in [
+            (genuine, false),
+            (hex_bytes("1c020100000000408002 0200 0a00"), true),
+        ] {
+            let outcome = extract_b_with(|doc| {
+                let mut object = generic(b"bokm");
+                object.raw_children.push(hwp_model::OpaqueRecord {
+                    tag: crate::bookmark::CTRL_DATA_TAG,
+                    data: data.clone(),
+                    children: Vec::new(),
+                });
+                attach_with_code(
+                    &mut doc.sections[0].paragraphs[4],
+                    hwp_model::ctrl_char::BOOKMARK,
+                    *b"bokm",
+                    Control::Generic(object),
+                );
+            });
+            assert_eq!(
+                !outcome.resources.unverified.is_empty(),
+                expect_site,
+                "{data:?}"
+            );
+            if expect_site {
+                assert_eq!(outcome.resources.unverified[0].code, "parameter_set");
+                assert!(outcome.resources.excluded.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn 머리의_문서_임의_데이터_집합은_해석하지_않고_불확실로_둔다() {
+        let outcome = extract_b_with(|doc| {
+            doc.header.extras.push(hwp_model::OpaqueRecord {
+                tag: TAG_DOC_DATA,
+                data: vec![0x1c, 0x02, 0x01, 0x00],
+                children: Vec::new(),
+            });
+            // An empty document-data record names nothing.
+            doc.header.extras.push(hwp_model::OpaqueRecord {
+                tag: TAG_DOC_DATA,
+                data: Vec::new(),
+                children: Vec::new(),
+            });
+        });
+        assert!(outcome.resources.excluded.is_empty());
+        assert_eq!(outcome.resources.unverified.len(), 1);
+        assert_eq!(outcome.resources.unverified[0].code, "parameter_set");
+        assert_eq!(outcome.resources.unverified[0].at, "header/extras/0");
+    }
+
+    fn hex_bytes(text: &str) -> Vec<u8> {
+        let digits: Vec<u8> = text
+            .bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .collect();
+        digits
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
     }
 
     #[test]
