@@ -162,7 +162,7 @@ Create a new document
 |---|---|---|---|
 | `-o, --output` | `<OUTPUT>` |  | Output HWP/HWPX path (not required with --list-templates) |
 | `--from` | `<FROM>` |  | Input markdown or JSON file (empty document when omitted) |
-| `--template` | `<TEMPLATE>` |  | Use an embedded document template by English slug or Korean alias (see --list-templates). Brings its own profile and native 두문/결문 frames, whose values default to the template's own {{slots}}. Mutually exclusive with --from; --preset and the frame flags override one template default each |
+| `--template` | `<TEMPLATE>` |  | Use an embedded document template by English slug or Korean alias (see --list-templates). Brings its own profile and native header/footer frames, whose values default to the template's own {{slots}}. Mutually exclusive with --from; --preset and the frame flags override one template default each |
 | `--list-templates` |  |  | List all embedded document templates (slug and Korean alias) and exit; needs no -o |
 | `--set-meta` | `<SET_META>` |  | Set metadata "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
 | `--preset` | `<PRESET>` |  | Official-document profile (markdown input only): official, report, plan, notice, minutes, or press. Legacy and Korean aliases normalize to one profile. official and report also select the official heading-numbering ladder (Ⅰ./1./가./1)); other profiles and no preset keep the section ladder (1./1-1./1-1-1.) |
@@ -171,12 +171,12 @@ Create a new document
 | `--margin-left` | `<MARGIN_LEFT>` |  | Left page margin in millimetres (0..=200) |
 | `--margin-right` | `<MARGIN_RIGHT>` |  | Right page margin in millimetres (0..=200) |
 | `--strict` |  |  | Fail (non-zero exit) when markdown import drops content, e.g. an HTML block that violates the import contract. Default: warn and continue (exit 0) |
-| `--doc-head` | `<DOC_HEAD>` |  | Document header block (두문) "key=value" (keys: 기관명\|수신\|경유; repeatable) |
-| `--doc-foot` | `<DOC_FOOT>` |  | Document footer block (결문) "key=value" (keys: 발신명의\|기안자\|검토자\|결재자\|협조자\| 시행번호\|시행일자\|접수번호\|접수일자\|주소\|홈페이지\|전화\|팩스\|이메일\|공개구분\|수신자; repeatable. 수신자 is the recipient list of a document whose 두문 reads "수신자 참조", and is the one 결문 row emitted only when supplied) |
-| `--notice-head` | `<NOTICE_HEAD>` |  | Notice (공고문) header block "key=value" (keys: 기관명\|공고번호; repeatable) |
-| `--notice-foot` | `<NOTICE_FOOT>` |  | Notice (공고문) footer block "key=value" (keys: 공고일자\|발신명의; repeatable) |
-| `--press-head` | `<PRESS_HEAD>` |  | Press release (보도자료) header block "key=value" (keys: 기관명\|보도시점\|배포일\| 담당부서\|담당자\|연락처; repeatable) |
-| `--table-placement` | `inline` \| `floating` |  | Table placement: inline keeps "treat as character" (글자처럼 취급), floating anchors each table to its paragraph so a long table can split across pages. Applies to every table the input produces; pictures are unaffected. Omit to keep the historical default (no explicit placement) |
+| `--doc-head` | `<DOC_HEAD>` |  | Document header block "key=value" (keys: 기관명\|수신\|경유; repeatable) |
+| `--doc-foot` | `<DOC_FOOT>` |  | Document footer block "key=value" (keys: 발신명의\|기안자\|검토자\|결재자\|협조자\| 시행번호\|시행일자\|접수번호\|접수일자\|주소\|홈페이지\|전화\|팩스\|이메일\|공개구분\|수신자; repeatable. 수신자 is the recipient-list key for a document whose header reads "수신자 참조", and is the only footer row emitted only when supplied) |
+| `--notice-head` | `<NOTICE_HEAD>` |  | Notice header block "key=value" (keys: 기관명\|공고번호; repeatable) |
+| `--notice-foot` | `<NOTICE_FOOT>` |  | Notice footer block "key=value" (keys: 공고일자\|발신명의; repeatable) |
+| `--press-head` | `<PRESS_HEAD>` |  | Press release header block "key=value" (keys: 기관명\|보도시점\|배포일\| 담당부서\|담당자\|연락처; repeatable) |
+| `--table-placement` | `inline` \| `floating` |  | Table placement: inline keeps "treat as character", floating anchors each table to its paragraph so a long table can split across pages. Applies to every table the input produces; pictures are unaffected. Omit to keep the historical default (no explicit placement) |
 
 ## `hwp compose`
 
@@ -284,7 +284,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--delete-field` | `<DELETE_FIELD>` |  | Delete a field by name, "name" (repeatable; list names with hwp fields) |
 | `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks) |
 | `--style-tables` | `<STYLE_TABLES>` |  | Style every eligible table (header shade/bold/center, content-proportional widths) under an official-document preset: official, report, plan, notice, minutes, or press. Skips single-column tables (frame blocks); byte-stable when applied twice |
-| `--table-placement` | `inline` \| `floating` |  | Set table placement: inline restores "treat as character" (글자처럼 취급), floating anchors the table to its paragraph so it can split across pages. Applies to every table, or to one table with --table. Byte-stable when applied twice |
+| `--table-placement` | `inline` \| `floating` |  | Set table placement: inline restores "treat as character", floating anchors the table to its paragraph so it can split across pages. Applies to every table, or to one table with --table. Byte-stable when applied twice |
 | `--table` | `<TABLE>` |  | Restrict --table-placement to this zero-based recursive table index (same addressing as --label-table) |
 | `--verify` |  |  | Verify by re-reading after writing |
 | `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |

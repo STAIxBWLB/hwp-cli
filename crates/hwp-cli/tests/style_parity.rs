@@ -73,7 +73,7 @@ impl Fixture {
 }
 
 /// A bounded stdio exchange through the actual MCP authority and edit boundary.
-fn mcp(arguments: Value) -> Value {
+fn mcp_tool(name: &str, arguments: Value) -> Value {
     let mut child = hwp()
         .arg("mcp")
         .stdin(Stdio::piped())
@@ -112,7 +112,7 @@ fn mcp(arguments: Value) -> Value {
     let _ = receive();
     send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
     send(
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hwp_edit","arguments":arguments}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}}),
     );
     let result = receive();
     drop(input);
@@ -137,7 +137,7 @@ fn apply() -> Value {
     json!({"op":"apply_style","style":"Body","address":{"at":{"section":0,"paragraph":0}}})
 }
 fn update() -> Value {
-    json!({"op":"update_style","style":0,"size":"13pt"})
+    json!({"op":"update_style","style":0,"size":"13pt","line_spacing_pct":"190%"})
 }
 
 fn channel_parity(extension: &'static str, operation: Value) {
@@ -148,24 +148,103 @@ fn channel_parity(extension: &'static str, operation: Value) {
     } else {
         fixture.source.clone()
     };
-    let expected = fixture.ops(&source, "ops-result", json!([operation.clone()]));
+    compare_channels(&fixture, &source, vec![operation]);
+}
+
+fn compare_channels(fixture: &Fixture, source: &Path, operations: Vec<Value>) {
+    let expected = fixture.ops(source, "ops-result", json!(operations));
+    let stdin_output = fixture.output("stdin-result");
+    let mut child = hwp()
+        .arg("edit")
+        .arg(source)
+        .arg("-o")
+        .arg(&stdin_output)
+        .args(["--ops", "-", "--verify"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&operations).unwrap())
+        .unwrap();
+    success(child.wait_with_output().unwrap());
+    let expected_bytes = std::fs::read(&expected).unwrap();
+    assert_eq!(
+        expected_bytes,
+        std::fs::read(stdin_output).unwrap(),
+        "file and stdin requests must be byte-identical"
+    );
     let output = fixture.output("mcp-result");
-    let mut item = operation.clone();
-    item.as_object_mut().unwrap().remove("op");
     let mut arguments = json!({"input":source,"output":output,"verify":true});
-    arguments[op] = json!([item]);
-    let response = mcp(arguments);
+    for operation in &operations {
+        let op = operation["op"].as_str().unwrap();
+        let mut item = operation.clone();
+        item.as_object_mut().unwrap().remove("op");
+        if arguments.get(op).is_none() {
+            arguments[op] = json!([]);
+        }
+        arguments[op].as_array_mut().unwrap().push(item);
+    }
+    let response = mcp_tool("hwp_edit", arguments);
     assert!(
         response.get("error").is_none() && response["result"]["isError"] != true,
-        "{op} MCP must execute the same request as --ops: {response}"
+        "MCP must execute the same request as --ops: {response}"
     );
-    assert!(output.is_file(), "{op} MCP must publish a native output");
+    assert!(output.is_file(), "MCP must publish a native output");
     assert_eq!(
-        std::fs::read(expected).unwrap(),
+        expected_bytes,
         std::fs::read(&output).unwrap(),
-        "{op} channel output must be byte-identical"
+        "channel output must be byte-identical"
     );
-    success(hwp().arg("validate").arg(output).output().unwrap());
+    success(hwp().arg("validate").arg(&output).output().unwrap());
+    let cli = hwp()
+        .arg("styles")
+        .arg(&output)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "styles CLI must list the edited output"
+    );
+    let listing: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    let response = mcp_tool("hwp_styles", json!({"path":output}));
+    assert!(
+        response.get("error").is_none() && response["result"]["isError"] != true,
+        "hwp_styles must list the edited output: {response}"
+    );
+    let from_mcp: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        listing, from_mcp,
+        "styles CLI and MCP must expose identical attributes and used_by IDs"
+    );
+}
+
+fn ordered_batch(extension: &'static str) {
+    let fixture = Fixture::new("ordered-batch", extension);
+    compare_channels(
+        &fixture,
+        &fixture.source,
+        vec![
+            create(),
+            json!({"op":"update_style","style":"Body","size":"14pt"}),
+            apply(),
+        ],
+    );
+}
+
+#[test]
+fn ordered_style_batch_matches_all_channels_hwp() {
+    ordered_batch("hwp");
+}
+#[test]
+fn ordered_style_batch_matches_all_channels_hwpx() {
+    ordered_batch("hwpx");
 }
 
 #[test]
@@ -259,4 +338,133 @@ fn duplicate_create_refuses_atomically_hwp() {
 #[test]
 fn duplicate_create_refuses_atomically_hwpx() {
     duplicate_create("hwpx");
+}
+
+#[path = "common/fixture_skip.rs"]
+mod fixture_skip;
+
+/// A short text with a pinned host font exercises default certification rules without
+/// asserting a page count, glyph positions or any font-dependent metric.
+fn certifies(extension: &'static str, operation: Value) {
+    use sha2::{Digest, Sha256};
+    let op = operation["op"].as_str().unwrap();
+    let fixture = Fixture::new(&format!("certify-{op}"), extension);
+    let mut fonts = hwp_render::FontStore::new();
+    if let Some(dir) = std::env::var_os("HWP_FONT_DIR") {
+        fonts.load_dir(Path::new(&dir));
+    }
+    let Some(font) = fonts.font_covering('A') else {
+        fixture_skip::resource_unavailable(
+            "ASCII system font for named-style certification",
+            "install a system font or set HWP_FONT_DIR, then rerun style_parity",
+        );
+        return;
+    };
+    if font.data.len() > hwp_cli::certification::MAX_FONT_FILE_BYTES as usize
+        || font.family.is_empty()
+    {
+        fixture_skip::resource_unavailable(
+            "bounded named ASCII font for certification",
+            "provide a named font under 32 MiB through HWP_FONT_DIR and rerun style_parity",
+        );
+        return;
+    }
+    let pin = fixture.root.join("font.bin");
+    std::fs::write(&pin, &*font.data).unwrap();
+    let mut isolated = hwp_render::FontStore::new_isolated();
+    isolated.load_file(&pin).unwrap();
+    if !"Style probe."
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .all(|ch| isolated.font_covering(ch).is_some())
+    {
+        fixture_skip::resource_unavailable(
+            "one pinned font covering the authored ASCII probe",
+            "provide an ASCII font via HWP_FONT_DIR and rerun style_parity",
+        );
+        return;
+    }
+    let mut doc = if extension == "hwp" {
+        hwp5::read_document(&fixture.source).unwrap().document
+    } else {
+        hwpx::read_document(&fixture.source).unwrap().document
+    };
+    for face in doc.header.fonts.iter_mut().flatten() {
+        *face = hwp_model::FaceName {
+            name: font.family.clone(),
+            ..Default::default()
+        };
+    }
+    if extension == "hwp" {
+        hwp5::write_document(&doc, &fixture.source, &hwp5::WriteOptions::default()).unwrap();
+    } else {
+        hwpx::write_document(&doc, &fixture.source).unwrap();
+    }
+    let source = if op == "apply_style" {
+        fixture.ops(&fixture.source, "created", json!([create()]))
+    } else {
+        fixture.source.clone()
+    };
+    let output = fixture.ops(&source, "certified", json!([operation]));
+    success(hwp().arg("validate").arg(&output).output().unwrap());
+    // Keep all render checks at their defaults; only the environmental font identity is supplied.
+    // Omitted oracle configuration defaults to disabled, so this proves native-only certification.
+    let policy = json!({"schema_version":"1.0", "document":{"fonts":{"manifest":[{"path":"font.bin", "sha256":Sha256::digest(&*font.data).iter().map(|byte| format!("{byte:02x}")).collect::<String>()}]}}, "render":{"pages":[1]}, "oracle":{"mode":"disabled"}});
+    let policy_path = fixture.root.join("policy.json");
+    std::fs::write(&policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    let report = fixture.root.join("certification");
+    success(
+        hwp()
+            .arg("certify")
+            .arg(output)
+            .arg("--policy")
+            .arg(policy_path)
+            .arg("--report")
+            .arg(&report)
+            .output()
+            .unwrap(),
+    );
+    let receipt: Value =
+        serde_json::from_slice(&std::fs::read(report.join("report.json")).unwrap()).unwrap();
+    assert_eq!(receipt["overall"], "passed");
+    assert_eq!(receipt["scope"], "native_only");
+}
+
+#[test]
+fn create_passes_default_certification_rules_hwp() {
+    certifies("hwp", create());
+}
+#[test]
+fn create_passes_default_certification_rules_hwpx() {
+    certifies("hwpx", create());
+}
+#[test]
+fn apply_passes_default_certification_rules_hwp() {
+    certifies("hwp", apply());
+}
+#[test]
+fn apply_passes_default_certification_rules_hwpx() {
+    certifies("hwpx", apply());
+}
+#[test]
+fn update_passes_default_certification_rules_hwp() {
+    certifies("hwp", update());
+}
+#[test]
+fn update_passes_default_certification_rules_hwpx() {
+    certifies("hwpx", update());
+}
+
+#[test]
+fn identical_clear_direct_apply_is_byte_stable_hwp() {
+    let mut operation = apply();
+    operation["clear_direct"] = json!(true);
+    repeated("hwp", operation);
+}
+
+#[test]
+fn identical_clear_direct_apply_is_byte_stable_hwpx() {
+    let mut operation = apply();
+    operation["clear_direct"] = json!(true);
+    repeated("hwpx", operation);
 }

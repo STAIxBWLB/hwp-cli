@@ -118,7 +118,7 @@ syntax (used by `fill`, `slots` and the template tools).
   --forms` adds Korean form fields (label cells, inline `라벨: 값`) with key, label, source,
   confidence, occurrences and required.
 - `hwp styles {file} [--format text|json]` — list named styles: id, name, kind (`null` when the
-  document does not state it, always for HWPX), resolved char/para attrs and `used_by`, the `para`
+  document omits it or gives an unsupported value), resolved char/para attrs and `used_by`, the `para`
   segment ids `hwp cat --with-segments --segments v2` publishes. `--format json` is `hwp-styles-v1`.
 - `hwp validate {file} [--json]` — structural validation (mimetype, required entries, XML
   parsing); exit code 0 when valid.
@@ -190,7 +190,7 @@ workflows, lives in [references/editing-recipes.md](references/editing-recipes.m
 analysis, anchor-based paragraph edits, data-driven table fill, label-value forms, and the
 validate-plus-render guard sequence.
 
-The three workflows below were run verbatim against `fixtures/samples/report-tables.hwpx`
+The analyze, edit-one-section and guard workflows below were run verbatim against `fixtures/samples/report-tables.hwpx`
 (hwp 0.12.1, 2026-08-29) before being written down.
 
 ### Analyze a document
@@ -247,6 +247,72 @@ round-trip alone can reflow layout — verified on the fixture, where a plain
 byte-preserving `--replace` fast path kept the original count. When layout must stay
 untouched, prefer `--replace`-only edits (the package-preserving path) and treat any
 page-count change as a reason to inspect the rendered pages, not to weaken validation.
+
+### Restyle named paragraphs
+
+List the current styles and paragraph addresses before editing:
+
+```bash
+hwp styles doc.hwpx --format json
+hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
+```
+
+Select a style with `kind: "paragraph"`. In this example, `body` is an existing primary style
+name and `at: {section: 0, paragraph: 1}` is the chosen paragraph; replace both with values from
+this document. An address can instead be `{"id":"<current para segment id>"}` from v2 or a
+style's `used_by`. IDs belong to the source snapshot: obtain fresh ones after editing.
+
+Save this array as `restyle.json`:
+
+```json
+[
+  {"op":"create_style","name":"Body restyled","based_on":"body","kind":"paragraph","size":"13pt"},
+  {"op":"apply_style","address":{"at":{"section":0,"paragraph":1}},"style":"Body restyled","clear_direct":false}
+]
+```
+
+```bash
+hwp edit doc.hwpx -o styled.hwpx --ops restyle.json
+```
+
+The same array can be piped to `hwp edit doc.hwpx -o styled.hwpx --ops -`; named-style
+operations have no dedicated flags. MCP executes named-style arrays in create/update/apply
+order, before the other edit arrays. Use the ordered `--ops` array for a different interleaving.
+
+To update the new style's users together, save
+`[{"op":"update_style","style":"Body restyled","size":"14pt"}]` as `update-style.json`, then run
+`hwp edit styled.hwpx -o updated.hwpx --ops update-style.json`. Style selectors accept an exact
+primary name or an integer ID. `update_style` allocates changed definitions with copy-on-write;
+other styles and direct formatting keep their own shapes. `apply_style` preserves direct
+character and paragraph formatting by default; `clear_direct: true` explicitly resets both to
+the target style. These operations currently edit paragraph styles, not character styles.
+
+Equivalent `hwp_edit` MCP arguments for the two calls are:
+
+```json
+{"input":"doc.hwpx","output":"styled.hwpx","create_style":[{"name":"Body restyled","based_on":"body","kind":"paragraph","size":"13pt"}],"apply_style":[{"address":{"at":{"section":0,"paragraph":1}},"style":"Body restyled","clear_direct":false}]}
+```
+
+```json
+{"input":"styled.hwpx","output":"updated.hwpx","update_style":[{"style":"Body restyled","size":"14pt"}]}
+```
+
+Repeated identical apply/update requests succeed without a semantic change. Repeating creation
+refuses the duplicate name atomically. Stale IDs also refuse before publication. If an affected
+user is inside raw-preserved records or XML that cannot be regenerated, the edit refuses with
+locations; use `hwp styles` to select another style or repair the source first.
+
+```bash
+hwp validate updated.hwpx
+hwp certify updated.hwpx --policy policy.json --report ./style-certification
+```
+
+Supply a policy appropriate for the document and a report directory that does not exist.
+`certify` currently requires `--policy`; there is no implicit default-policy command to copy.
+Read the report and inspect rendering when appearance matters. A `native_only` pass checks the
+native implementation under that policy; it does not attest that Hancom opened or rendered the
+file. Hancom-open evidence is a separate receipt. The same workflow accepts `.hwp` paths; output
+format constraints and refusal diagnostics still apply.
 
 ## MCP server
 

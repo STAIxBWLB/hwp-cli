@@ -1437,7 +1437,23 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         .transpose()?;
     use crate::commands::edit::TypedEditOperation as Op;
 
-    let mut operations = Vec::new();
+    // Named-style arrays share the ops-file schema and fixed create/update/apply order.
+    // Empty arrays leave every existing request on its original path.
+    let mut style_items = Vec::new();
+    for operation in ["create_style", "update_style", "apply_style"] {
+        for item in arg_array(args, operation)? {
+            style_items.push(
+                crate::edit_ops::named_style_item(item.clone(), operation)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+    }
+    let mut operations = if style_items.is_empty() {
+        Vec::new()
+    } else {
+        crate::edit_ops::parse_ops_value(Value::Array(style_items))
+            .map_err(|error| format!("{error:#}"))?
+    };
 
     for item in arg_array(args, "replace")? {
         operations.push(Op::Replace {
@@ -2424,12 +2440,15 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_edit",
-            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
+            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 이름 있는 스타일 배열은 다른 편집 배열보다 먼저 create_style/update_style/apply_style 순서로 실행한다. 다른 순서가 필요하면 CLI --ops 배열을 사용한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
                 "report": {"type": "string", "description": "편집 보고서(edit-report-v1 JSON)를 쓸 경로(선택) — CLI --report와 같은 산출물"},
                 "dry_run": {"type": "boolean", "description": "true면 출력 문서를 게시하지 않고 적용 결과만 보고한다 — CLI --dry-run과 동일"},
+                "create_style": crate::edit_ops::named_style_schema("create_style"),
+                "update_style": crate::edit_ops::named_style_schema("update_style"),
+                "apply_style": crate::edit_ops::named_style_schema("apply_style"),
                 "replace": {"type": "array", "items": {"type": "object", "properties": {
                     "from": {"type": "string"}, "to": {"type": "string"},
                     "address": {"type": "object", "additionalProperties": false,
