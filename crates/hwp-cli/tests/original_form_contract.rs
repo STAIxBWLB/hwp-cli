@@ -259,6 +259,27 @@ fn observe(
     )
 }
 
+fn compare_observed_fonts(
+    before: &contract::FontIdentity,
+    after: &contract::FontIdentity,
+    label: &str,
+) {
+    let unavailable = |fonts: &contract::FontIdentity| {
+        !fonts.entries.is_empty()
+            && fonts.entries.iter().any(|entry| {
+                entry.sha256.is_none() || entry.face_index.is_none() || entry.outcome == "missing"
+            })
+    };
+    if unavailable(before) && unavailable(after) {
+        fixture_skip::resource_unavailable(
+            label,
+            "install the required fonts or set HWP_FONT_DIR, then collect fresh render observations",
+        );
+    } else {
+        contract::compare_font_identity(before, after).unwrap();
+    }
+}
+
 #[test]
 fn generated_forms_match_manifest_and_repeat_in_both_formats() {
     let Some(fixture) = Fixture::new("repeat") else {
@@ -288,7 +309,11 @@ fn generated_forms_match_manifest_and_repeat_in_both_formats() {
     let (before, fonts) = observe(&fixture.doc, &fixture.forms());
     let (after, other_fonts) = observe(&twin_doc, &fixture.forms());
     contract::compare_anchor_positions(&before, &after).unwrap();
-    contract::compare_font_identity(&fonts, &other_fonts).unwrap();
+    compare_observed_fonts(
+        &fonts,
+        &other_fonts,
+        "font bytes for HWPX fixture comparison",
+    );
     // Native and HWPX each have their own semantic baseline; this does not waive
     // format-materialization differences or assert universal cross-format styles.
     run(
@@ -324,7 +349,11 @@ fn generated_forms_match_manifest_and_repeat_in_both_formats() {
     let (native_anchors, native_fonts) = observe(&native, &fixture.forms());
     let (identity_anchors, identity_fonts) = observe(&identity, &fixture.forms());
     contract::compare_anchor_positions(&native_anchors, &identity_anchors).unwrap();
-    contract::compare_font_identity(&native_fonts, &identity_fonts).unwrap();
+    compare_observed_fonts(
+        &native_fonts,
+        &identity_fonts,
+        "font bytes for native fixture comparison",
+    );
     let ledger: Value =
         serde_json::from_slice(&std::fs::read(fixture.dir.join("conversion.json")).unwrap())
             .unwrap();
@@ -540,23 +569,43 @@ fn anchor_and_font_self_checks_reject_moved_starts_and_incomplete_evidence() {
             .layer,
         "body_anchors"
     );
-    let mut reordered_fonts = fonts.clone();
-    reordered_fonts.entries.reverse();
-    reordered_fonts.entries.push(fonts.entries[0].clone());
-    contract::compare_font_identity(&fonts, &reordered_fonts).unwrap();
-    let mut bad_fonts = fonts.clone();
-    bad_fonts.entries[0].sha256 = Some("deliberately broken observation".into());
-    assert_eq!(
-        contract::compare_font_identity(&fonts, &bad_fonts)
-            .unwrap_err()
-            .layer,
-        "fonts"
-    );
+    if fonts.entries.iter().all(|entry| {
+        entry.sha256.is_some() && entry.face_index.is_some() && entry.outcome != "missing"
+    }) {
+        let mut reordered_fonts = fonts.clone();
+        reordered_fonts.entries.reverse();
+        reordered_fonts.entries.push(fonts.entries[0].clone());
+        contract::compare_font_identity(&fonts, &reordered_fonts).unwrap();
+        let mut bad_fonts = fonts.clone();
+        bad_fonts.entries[0].sha256 = Some("deliberately broken observation".into());
+        assert_eq!(
+            contract::compare_font_identity(&fonts, &bad_fonts)
+                .unwrap_err()
+                .layer,
+            "fonts"
+        );
+    } else {
+        fixture_skip::resource_unavailable(
+            "font bytes for identity self-checks",
+            "install the required fonts or set HWP_FONT_DIR, then rerun the self-check",
+        );
+    }
     let mut store = hwp_render::FontStore::new_isolated();
     let mut issues = hwp_render::RenderIssueAccumulator::new();
     let (_, mut map) =
         hwp_render::layout::layout_document_with_segments(&fixture.doc, &mut store, &mut issues);
     contract::anchor_positions(&fixture.doc, &map, &contract::body_paths(&fixture.doc)).unwrap();
+    let missing_fonts = contract::FontIdentity::from_store(&store);
+    assert!(
+        !missing_fonts.entries.is_empty(),
+        "isolated layout records its missing-font requests"
+    );
+    assert_eq!(
+        contract::compare_font_identity(&missing_fonts, &missing_fonts)
+            .expect_err("missing font bytes must not pass the identity layer")
+            .code,
+        "incomplete_resolution"
+    );
     map.truncated = true;
     assert!(contract::anchor_positions(&fixture.doc, &map, &fixture.forms()).is_err());
     map.truncated = false;

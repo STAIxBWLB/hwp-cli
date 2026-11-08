@@ -140,6 +140,9 @@ SHA-256, face index와 matched/substituted/missing 결과를 기록한다. 반�
 네이티브 호환성 판정으로 바꾸지 않는다. CI 글꼴 근거는 관측 결과이며 외부 고정이 없다고
 명시한다.
 
+글꼴 byte hash, face index 또는 해석 결과가 없으면 동일한 font identity가 아니라 미확인 증거다.
+필수 테스트는 이를 자원 부족 skip으로 집계하며 strict mode에서는 실패한다.
+
 페이지·픽셀 수용에는 원본·명세·출력과 렌더 해시, 제품 HEAD·버전, 원래 요청한 family,
 해석된 글꼴 바이트 SHA-256·face index·matched/substituted/missing 결과를 기록한 외부 근거가
 필요하다. 원래 요청은 유지한다. 고정된 바이트나 완전한 글꼴 해석 결과가 없으면 글꼴·페이지

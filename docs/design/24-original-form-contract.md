@@ -151,6 +151,9 @@ comparison checks that observed identities agree; it neither pins a CI font nor 
 fallback observations into a matched-font or native-compatibility verdict. CI font observations
 are explicitly labeled observed and externally unpinned.
 
+Missing font-byte hashes, face indices or resolution outcomes are unavailable evidence, not equal
+font identities. Required tests count that unavailable resource; strict mode fails it.
+
 Page/pixel acceptance needs an external receipt recording the source/spec/output and render
 hashes, product head/version, original requested family, resolved font-byte SHA-256, face index
 and matched/substituted/missing outcome. Retain the original requests. Without pinned bytes or a

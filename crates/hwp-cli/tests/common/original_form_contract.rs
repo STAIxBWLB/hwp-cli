@@ -56,9 +56,14 @@ pub struct ContractViolation {
 }
 impl fmt::Display for ContractViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let action = if self.layer == "fonts" {
+            "configure HWP_FONT_DIR and collect fresh render observations"
+        } else {
+            "validate the document and inspect the local expected projection"
+        };
         write!(
             f,
-            "original-form {}: {} (id={}); validate the document and inspect the local expected projection",
+            "original-form {}: {} (id={}); {action}",
             self.layer, self.code, self.id
         )
     }
@@ -655,6 +660,23 @@ pub fn compare_font_identity(
 ) -> Result<(), ContractViolation> {
     if expected.entries.is_empty() || actual.entries.is_empty() {
         return Err(condition("fonts", "missing_observation", "identity"));
+    }
+    let incomplete = |entry: &FontResolutionIdentity| {
+        entry.face_index.is_none()
+            || !entry.sha256.as_ref().is_some_and(|hash| {
+                hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit())
+            })
+            || !matches!(
+                entry.outcome.as_str(),
+                "matched" | "substituted" | "coverage_substituted"
+            )
+    };
+    if expected.entries.iter().any(incomplete) || actual.entries.iter().any(incomplete) {
+        return Err(condition(
+            "fonts",
+            "incomplete_resolution",
+            "resolved_identity",
+        ));
     }
     let mut before = expected.entries.clone();
     let mut after = actual.entries.clone();
