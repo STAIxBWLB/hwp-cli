@@ -30,7 +30,7 @@ fetch_font() {
   mkdir -p "$font_dir"
   staged_font="$(mktemp "$font_dir/.$filename.XXXXXX")"
   if ! curl --fail --silent --show-error --location --proto '=https' --retry 3 \
-    --max-time 120 --max-filesize "$max_fetch_bytes" --output "$staged_font" "$font_url"; then
+    --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 120 --max-filesize "$max_fetch_bytes" --output "$staged_font" "$font_url"; then
     rm -f "$staged_font"
     return 1
   fi

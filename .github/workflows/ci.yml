@@ -167,10 +167,20 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 -m unittest tools/test_pdf_parity.py
       # Fonts are not committed; the script fetches them from upstream and verifies
-      # manifest hashes.
+      # manifest hashes. The cache is keyed on the manifest and keeps the hash-named font
+      # bytes, so a warm run needs no network (#412); the script re-verifies every cached file
+      # against the manifest hash before using it.
+      - name: Restore corpus font cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/corpus-font-cache
+          key: corpus-fonts-${{ hashFiles('corpus/structured-v1/manifest.json') }}
       - name: Structured document corpus (pinned OFL fonts, offline cargo)
         if: ${{ !cancelled() }}
         shell: bash
+        timeout-minutes: 15
+        env:
+          HWP_CORPUS_FONT_CACHE: ${{ runner.temp }}/corpus-font-cache
         run: bash scripts/check-structured-corpus.sh
       # AGENTS.md invariant 1 as a gate: hwp-convert and hwp-render must stay off each
       # other's normal dependency graph, which is the whole reason the segment id rule is
@@ -230,6 +240,12 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/tests/fixture-skip-accounting.sh
+      # #412: the shared apt installer used by the pdf-parity and test jobs decides between the
+      # cached .deb files and the bounded network fallback; this proves both with stubbed apt.
+      - name: CI apt installer self test
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/tests/ci-apt-install.sh
 
   pdf-parity:
     name: pdf-parity
@@ -243,47 +259,43 @@ jobs:
       # Same hung-mirror bound as the test job's font install: an unbounded
       # apt-get here ate the whole 30-minute job budget on #117's own run,
       # reporting "cancelled" without the oracle having run at all.
+      - name: Identify the runner image (cache key)
+        id: image
+        shell: bash
+        run: echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      # The .deb files of the pinned Poppler are cached per runner image. A warm run installs
+      # them with downloads forbidden, so a stalled apt mirror cannot fail the PR; a cold or
+      # stale cache falls back to the bounded mirror install (scripts/ci-apt-install.sh).
+      - name: Restore Poppler package cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-poppler
+          key: apt-poppler-${{ steps.image.outputs.version }}
       - name: Install pinned Poppler tools
         shell: bash
-        # Worst case is 3 x (120s update + 120s install) + 2 x 10s sleep, ~12.3 min;
-        # with the mirror pinned and apt-level timeouts the normal case is seconds.
+        # Worst case is 3 x (120s update + 120s install) + 2 x 10s sleep, ~12.3 min.
         timeout-minutes: 15
         run: |
           set -euo pipefail
-          # The runner's azure.archive.ubuntu.com mirror intermittently accepts the
-          # connection and then stalls: on #119 three 90s-bounded attempts each died
-          # inside the mirror's Ign/retry loop while apt's own fallback to
-          # archive.ubuntu.com was still in progress. Hosted 24.04 runners select
-          # repositories through mirror+file:/etc/apt/apt-mirrors.txt with the azure
-          # mirror first, so pin the official archive THERE (the .sources/sed line
-          # below is belt-and-braces for runners without the mirrorlist); apt's short
-          # per-request timeouts make any remaining dead mirror cost seconds, and the
-          # retry loop stays as backstop.
-          echo "https://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo sed -i 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-          apt_get="sudo apt-get -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=1"
-          installed=0
-          for attempt in 1 2 3; do
-            if timeout 120 $apt_get update && timeout 120 $apt_get install --no-install-recommends -y poppler-utils; then
-              installed=1
-              break
-            fi
-            echo "poppler install attempt ${attempt} failed or timed out; retrying" >&2
-            sleep 10
-          done
-          if [ "$installed" != 1 ]; then
-            echo "poppler-utils could not be installed after 3 attempts" >&2
-            exit 1
-          fi
+          bash scripts/ci-apt-install.sh "$RUNNER_TEMP/apt-poppler" poppler-utils
+          # The cache is an accelerator, never the source of truth: the pinned version is
+          # asserted on whatever got installed.
           expected="$(python3 -c 'import json; print(json.load(open("fixtures/pdf-parity/public/manifest.json", encoding="utf-8"))["pins"]["poppler_version"])')"
           actual="$(pdfinfo -v 2>&1 | sed -n '1p')"
           echo "pdfinfo: $actual"
           test "$actual" = "$expected"
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
+      # The script keeps and re-verifies hash-matching files in this directory ("cached"), so a
+      # restored cache means no download; every file is checked against the manifest hash.
+      - name: Restore parity font cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fixtures/pdf-parity/fonts
+          key: pdf-parity-fonts-${{ hashFiles('fixtures/pdf-parity/public/manifest.json') }}
       - name: Fetch exact OFL fonts
         shell: bash
+        timeout-minutes: 10
         run: bash scripts/fetch-pdf-parity-fonts.sh
       - name: Build hwp
         run: cargo build --locked -p hwp-cli
@@ -328,35 +340,25 @@ jobs:
       # well under a minute; three bounded attempts fail fast and recover from a
       # transient mirror, and the step still fails loudly if fonts genuinely
       # cannot be installed (the render smoke tests need them).
+      - name: Identify the runner image (cache key)
+        if: runner.os == 'Linux'
+        id: image
+        shell: bash
+        run: echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      # Same cache-then-bounded-network install as the Poppler step above: a warm run installs
+      # fonts-nanum from cached .deb files with downloads forbidden.
+      - name: Restore Korean font package cache
+        if: runner.os == 'Linux'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-fonts
+          key: apt-fonts-${{ steps.image.outputs.version }}
       - name: Install Korean fonts (for rendering tests)
         if: runner.os == 'Linux'
-        # Must exceed the retry loop's worst case (3 x (120s update + 120s install)
-        # + 2 x 10s sleep, ~12.3 min); a smaller budget can cut the last retry short.
+        # Must exceed the install script's worst case (3 x (120s update + 120s install) + 2 x
+        # 10s sleep, ~12.3 min); a smaller budget can cut the last retry short.
         timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          # Per-attempt `timeout` matters: the failure mode seen twice was a HANG,
-          # not a non-zero exit. Without it the first attempt never returns, the
-          # step-level timeout kills the whole step, and the retries never run.
-          # The runner's azure.archive.ubuntu.com mirror intermittently accepts and
-          # then stalls (#119). Hosted 24.04 runners select repositories through
-          # mirror+file:/etc/apt/apt-mirrors.txt with the azure mirror first, so pin
-          # the official archive THERE (the .sources sed is belt-and-braces for
-          # runners without the mirrorlist), and cap apt's own per-request waits so
-          # any remaining dead mirror costs seconds, not the attempt.
-          echo "https://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-          sudo sed -i 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
-            /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-          apt_get="sudo apt-get -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=1"
-          for attempt in 1 2 3; do
-            if timeout 120 $apt_get update && timeout 120 $apt_get install -y fonts-nanum; then
-              exit 0
-            fi
-            echo "font install attempt ${attempt} failed or timed out; retrying" >&2
-            sleep 10
-          done
-          echo "fonts-nanum could not be installed after 3 attempts" >&2
-          exit 1
+        run: bash scripts/ci-apt-install.sh "$RUNNER_TEMP/apt-fonts" fonts-nanum
       - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       # fixtures/hwp5 and fixtures/hwpx are gitignored (data policy), so this run is reduced in

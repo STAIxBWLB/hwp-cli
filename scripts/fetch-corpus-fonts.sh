@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # 고정 코퍼스 폰트를 upstream에서 받아 manifest의 SHA-256으로 검증한다.
 # 폰트 바이트는 커밋하지 않는다(대형 바이너리). 해시가 맞는 파일이 이미 있으면 재다운로드하지 않는다.
+# HWP_CORPUS_FONT_CACHE=<dir>: 해시(SHA-256)를 파일명으로 쓰는 로컬 캐시. 캐시에 같은 해시의 파일이
+# 있으면 네트워크 없이 복사하고(복사본도 해시를 다시 검증), 받은 파일은 검증 뒤 캐시에 넣는다.
+# CI는 이 디렉터리를 actions/cache로 보존해 폰트 호스트 장애가 PR을 붉게 만들지 않게 한다.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,6 +16,7 @@ exec "$py" - "$manifest_path" <<'PY'
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +28,7 @@ ALLOWED_HOST = "raw.githubusercontent.com"
 
 manifest_path = sys.argv[1]
 base = os.path.dirname(manifest_path)
+cache_dir = os.environ.get("HWP_CORPUS_FONT_CACHE") or None
 manifest = json.load(open(manifest_path, "rb"))
 
 
@@ -59,12 +64,19 @@ def fetch(url, dest, want):
     if os.path.exists(dest) and sha256(dest) == want:
         return False
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    cached = os.path.join(cache_dir, want) if cache_dir else None
+    if cached and os.path.isfile(cached) and sha256(cached) == want:
+        # Verified against the manifest hash, so a damaged or swapped cache entry is not used.
+        shutil.copyfile(cached, dest)
+        os.chmod(dest, 0o644)
+        return False
     handle, tmp = tempfile.mkstemp(dir=os.path.dirname(dest))
     os.close(handle)
     try:
         subprocess.run(
             ["curl", "--fail", "--silent", "--show-error", "--location",
-             "--proto", "=https", "--retry", "3", "--max-time", "120",
+             "--proto", "=https", "--retry", "3", "--retry-delay", "5", "--retry-all-errors",
+             "--connect-timeout", "20", "--max-time", "120",
              "--max-filesize", str(MAX_FETCH_BYTES), "--output", tmp, url],
             check=True,
         )
@@ -74,6 +86,9 @@ def fetch(url, dest, want):
         if got != want:
             sys.exit(f"corpus font hash mismatch for {url}\n  expected {want}\n  got      {got}")
         os.chmod(tmp, 0o644)
+        if cached:
+            os.makedirs(cache_dir, exist_ok=True)
+            shutil.copyfile(tmp, cached)
         os.replace(tmp, dest)
     finally:
         if os.path.exists(tmp):

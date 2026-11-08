@@ -11,12 +11,17 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "common/short_root.rs"]
+mod short_root;
+
 fn hwp() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hwp"))
 }
 
+/// A short per-process directory: `fill` nests two staging workspaces inside its output
+/// directory, and Windows refuses a directory path of 248 characters or more (#412).
 fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("hwp-slot-fill-{}-{name}", std::process::id()));
+    let dir = short_root::short_dir("sf", name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -1176,5 +1181,48 @@ fn a_doubled_at_sign_is_a_literal_at_sign() {
     assert!(text.contains("메일: @example"), "{text}");
     assert!(!text.contains("@@"), "{text}");
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The directory name stays inside the budget that keeps `fill`'s nested staging workspaces
+/// under the Windows 248 character directory limit, and distinct labels stay distinct (#412).
+#[test]
+fn test_dir_names_are_short_unique_and_budgeted() {
+    let longest = "parts-format-matrix-with-a-very-long-label";
+    let dir = test_dir(longest);
+    let temp = std::env::temp_dir();
+    let added = dir.as_os_str().len() - temp.as_os_str().len();
+    assert!(
+        added <= short_root::SHORT_DIR_NAME_BUDGET,
+        "{} characters added: {}",
+        added,
+        dir.display()
+    );
+    // The 2026-09-27 failure: this directory plus `<output dir>/<name>` plus two staging
+    // workspaces of `.template.hwpx.hwp-output-<pid>-<n>-<32 hex>.tmp` and `template-baseline`.
+    let staging = ".template.hwpx.hwp-output-99999-9-".len() + 32 + ".tmp".len();
+    let nested = dir.as_os_str().len()
+        + "\\plain-hwp-hwpx".len()
+        + 1
+        + staging
+        + 1
+        + "template-baseline".len()
+        + 1
+        + staging;
+    let windows_temp = r"C:\Users\RUNNER~1\AppData\Local\Temp".len();
+    let on_runner = nested - temp.as_os_str().len() + windows_temp;
+    assert!(
+        on_runner < 248,
+        "{on_runner} characters on a Windows runner"
+    );
+
+    let a = test_dir("parts-format-matrix-alpha");
+    let b = test_dir("parts-format-matrix-bravo");
+    assert_ne!(a, b, "labels sharing a 12 character start must not collide");
+    assert_eq!(
+        a,
+        test_dir("parts-format-matrix-alpha"),
+        "same label, same directory"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
