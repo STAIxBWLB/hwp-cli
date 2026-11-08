@@ -133,12 +133,26 @@ fn assert_anchors_match(before: &Document, after: &Document) {
         }
     }
     let mut breaks = 0;
+    let mut stored_height_checks = 0;
     for (source, output) in before.sections[0]
         .paragraphs
         .iter()
         .zip(&after.sections[0].paragraphs)
     {
         assert_eq!(source.header.break_type & 4, output.header.break_type & 4);
+        for (source_ctrl, output_ctrl) in source.controls.iter().zip(&output.controls) {
+            if let (hwp_model::Control::Table(a), hwp_model::Control::Table(b)) =
+                (source_ctrl, output_ctrl)
+            {
+                stored_height_checks += 1;
+                let source_heights: Vec<_> = a.cells.iter().map(|cell| cell.height).collect();
+                let output_heights: Vec<_> = b.cells.iter().map(|cell| cell.height).collect();
+                assert_eq!(
+                    source_heights, output_heights,
+                    "conversion must preserve stored cell minima rather than persisting render-only spacing"
+                );
+            }
+        }
         if source.header.break_type & 4 != 0 {
             breaks += 1;
             assert_eq!(
@@ -162,6 +176,7 @@ fn assert_anchors_match(before: &Document, after: &Document) {
         );
     }
     assert_eq!(breaks, 3);
+    assert_eq!(stored_height_checks, 4, "visit every authored form table");
 }
 
 fn probe(row_count: usize, merged: bool, following_body: bool) {

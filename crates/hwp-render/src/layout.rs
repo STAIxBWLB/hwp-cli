@@ -5035,8 +5035,8 @@ fn layout_box_para_iter<'a>(
         flow_floor = flow_floor.max(content_bottom);
         if synthesize_uncached && was_uncached {
             let spacing_bottom = para_geometry(doc, para).spacing_bottom;
-            content_bottom += spacing_bottom;
-            flow_floor = flow_floor.max(content_bottom);
+            // B5 carries this gap to the next paragraph. C2 ends the final
+            // cell block at its last line bottom, without a trailing after-gap.
             if let Some(last) = line_segs.last() {
                 uncached_next_v = last
                     .v_pos

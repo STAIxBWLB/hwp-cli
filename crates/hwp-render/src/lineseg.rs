@@ -48,7 +48,10 @@ pub fn synthesize_linesegs(
     // Floating-table sections reuse the renderer's legal row/cell fragment flow.
     // Other sections keep their measured Hancom inline-table advance.
     let flow_anchors = if floating_sections.iter().any(|floating| *floating) {
-        for section in &mut doc.sections {
+        for (si, section) in doc.sections.iter_mut().enumerate() {
+            if !floating_sections[si] {
+                continue;
+            }
             let width = section
                 .section_def()
                 .and_then(|d| d.page.as_ref())
@@ -190,7 +193,7 @@ fn fill_nested(
                     .iter()
                     .map(|cell| crate::layout::cell_margins(t, cell))
                     .collect();
-                for (cell, (ml, mr, mt, mb)) in t.cells.iter_mut().zip(margins) {
+                for (cell, (ml, mr, _, _)) in t.cells.iter_mut().zip(margins) {
                     let w = (cell.width.0 - ((ml + mr) * 100.0).round() as i32).max(1);
                     // 셀은 기존 동작대로 항상 재계산한다 — 셀 줄 수가 표 높이의 입력이고,
                     // 편집으로 낡은 줄 배치를 그대로 두면 표가 어긋난다.
@@ -203,7 +206,6 @@ fn fill_nested(
                         store,
                         warnings,
                     );
-                    materialize_cell_after_spacing(cell, snap, mt, mb);
                 }
             }
             Control::Picture(pic) => {
@@ -253,26 +255,6 @@ fn fill_nested(
             Control::SectionDef(_) => {}
         }
     }
-}
-
-/// A following cache line records paragraph gaps; the last gap needs a cell floor.
-/// This runs only while regenerating cells, leaving saved-cache rendering unchanged.
-fn materialize_cell_after_spacing(cell: &mut hwp_model::Cell, doc: &Document, mt: f32, mb: f32) {
-    let Some(last) = cell.paragraphs.last() else {
-        return;
-    };
-    let after = doc
-        .header
-        .para_shapes
-        .get(last.para_shape.0 as usize)
-        .map_or(0, |p| p.spacing_bottom.max(0) / 2);
-    if after == 0 {
-        return;
-    }
-    let minimum = para_line_block(last)
-        .saturating_add(after)
-        .saturating_add(((mt + mb) * 100.0).round() as i32);
-    cell.height.0 = cell.height.0.max(minimum);
 }
 
 /// 캡션 본문 폭. `None`은 "여백까지 넓힘"이라 본문 폭으로 본다.

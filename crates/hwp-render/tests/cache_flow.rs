@@ -145,6 +145,10 @@ fn wholly_uncached_cells_preserve_paragraph_margins_and_spacing() {
             _ => None,
         })
         .unwrap();
+    assert_eq!(
+        outer.cells[0].height.0, 1,
+        "cache synthesis must preserve the authored cell minimum for native output"
+    );
     let first = &outer.cells[0].paragraphs[0].line_segs[0];
     let second = &outer.cells[0].paragraphs[1].line_segs[0];
     assert_eq!(first.col_start, 1000, "left paragraph margin must survive");
@@ -163,8 +167,8 @@ fn wholly_uncached_cells_preserve_paragraph_margins_and_spacing() {
     );
     assert_eq!(uncached.len(), 1);
     assert!(
-        (uncached[0].3 - 52.0).abs() < 0.01,
-        "row height must include both paragraphs and final after-spacing: {uncached:?}"
+        (uncached[0].3 - 45.0).abs() < 0.01,
+        "C2 row height includes paragraph gaps but no final after-spacing: {uncached:?}"
     );
     let synthesized = rectangles(&layout(&cached), fill_color);
     assert_eq!(synthesized.len(), 1);
@@ -225,4 +229,47 @@ fn successive_uncached_nested_tables_keep_distinct_measured_heights() {
             "successive nested tables must not overlap: {short:?}, {tall:?}"
         );
     }
+}
+
+#[test]
+fn saved_cache_keeps_row_height_and_following_row_origin() {
+    let mut doc = hwp_convert::from_markdown("Anchor\n");
+    let color = 0x0001_2345;
+    let fill = add_fill(&mut doc, color);
+    let mut para = paragraph(&doc);
+    doc.header.para_shapes[para.para_shape.0 as usize].spacing_bottom = 1400;
+    para.line_segs = vec![hwp_model::LineSeg {
+        text_start: 0,
+        v_pos: 0,
+        line_height: 1000,
+        text_height: 1000,
+        baseline_gap: 850,
+        line_spacing: 600,
+        col_start: 0,
+        seg_width: 19800,
+        flags: 0x0006_0000,
+    }];
+    let mut saved = table(vec![para], fill, 1200);
+    saved.rows = 2;
+    saved.row_cell_counts = vec![1, 1];
+    let mut second = saved.cells[0].clone();
+    second.row = 1;
+    saved.cells.push(second);
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(saved));
+    let rows = rectangles(&layout(&doc), color);
+    assert_eq!(rows.len(), 2);
+    assert!(
+        (rows[0].3 - 12.0).abs() < 0.01,
+        "saved first row stays 12pt: {rows:?}"
+    );
+    assert!(
+        (rows[1].3 - 12.0).abs() < 0.01,
+        "saved second row stays 12pt: {rows:?}"
+    );
+    assert!(
+        (rows[1].1 - rows[0].1 - 12.0).abs() < 0.01,
+        "after-spacing must not move the following saved-cache row: {rows:?}"
+    );
 }
