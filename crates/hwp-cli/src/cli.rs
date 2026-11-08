@@ -62,8 +62,8 @@ pub enum LintProfileArg {
 }
 
 #[derive(Subcommand)]
-// Edit 변형이 편집 플래그(Vec<String> 다수)로 커서 다른 변형과 크기차가 크다.
-// CLI 명령 enum은 시작 시 한 번만 파싱되므로 크기차는 무의미 — 박싱 대신 허용.
+// Edit has many Vec<String> flags and is larger than the other variants.
+// The command enum is parsed once at startup, so allow the size difference instead of boxing.
 #[allow(clippy::large_enum_variant)]
 pub enum Cmd {
     /// Show file information: format, version, properties and stream list
@@ -487,6 +487,9 @@ pub enum Cmd {
         /// Also list Korean form fields - label cells, inline "label: value" and the slots - with key, label, source, confidence, occurrences and required (JSON "fields"; kordoc rules)
         #[arg(long)]
         forms: bool,
+        /// Discover exact source-bound form occurrences, including unsupported targets (requires --forms --json)
+        #[arg(long, requires_all = ["forms", "json"])]
+        occurrences: bool,
     },
 
     /// Fidelity-preserving template fill (replace `{{name}}`, padded `{{ name }}` too, in hwpx; package preserved; values are literal)

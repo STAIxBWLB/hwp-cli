@@ -18,6 +18,8 @@ use regex::Regex;
 use crate::edit::{FormCellCandidate, FormTarget, cell_text, splice_edits, walk_form_cells};
 use crate::field::text_segments;
 
+pub mod binding;
+
 /// Where a form field was seen.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FormFieldSource {

@@ -327,7 +327,12 @@ fn real_main() -> anyhow::Result<()> {
         Cmd::Fields { file, json } => commands::fields::run(&file, json),
         Cmd::Bookmarks { file, json } => commands::bookmarks::run(&file, json),
         Cmd::Styles { file, format } => commands::styles::run(&file, format),
-        Cmd::Slots { file, json, forms } => commands::slots::run(&file, json, forms),
+        Cmd::Slots {
+            file,
+            json,
+            forms,
+            occurrences,
+        } => commands::slots::run(&file, json, forms, occurrences),
         Cmd::Fill {
             input,
             output,

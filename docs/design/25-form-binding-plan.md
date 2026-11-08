@@ -1,152 +1,147 @@
 [한국어](25-form-binding-plan.ko.md) · [English](25-form-binding-plan.md)
 
-# Proposed source-bound form binding plan
+# Source-bound form binding plan
 
-**Status: proposal, not implemented.** This draft describes #418 under #411. English is canonical.
-`ApplyFormBindings` below is a proposed compound operation, not an available CLI flag, edit op,
-MCP tool or approved schema. API and schema approval remain open. Existing command behavior,
-including #358 snapshot rules, is unchanged.
+**Status: approved design, implementation in progress.** This contract belongs to #418 under
+#411; English is canonical. The compound `apply_form_bindings` API and initial plan contract
+have been approved. This document specifies their design, not availability in a released CLI,
+MCP tool or binary. Existing operations and #358 snapshot rules remain unchanged.
 
-## Purpose and boundaries
+## Purpose and evidence boundary
 
-Discover each fillable occurrence in a supplied native form, let a person review exact targets,
-then bind one literal semantic key to every intended location. Reuse existing discovery, clone,
-text-splice, cell-edit and atomic publication machinery. Do not regenerate the supplied form or
-introduce another editing engine.
+Review exact occurrences in a supplied native form, then bind each literal semantic key to all
+explicitly selected locations. Reuse existing discovery patterns, clone/splice/cell primitives
+and the edit transaction's atomic writer. Do not regenerate the form or add a parallel editor.
 
-This proposal covers structural and semantic edit budgets. It does not prove font resolution,
-pagination, clipping, native render quality or Hancom open/export compatibility. Those require
-separate evidence under #419 and the P0 contract in [24-original-form-contract.md](24-original-form-contract.md).
-Pagination/style work remains under #420; the complete user workflow belongs to #421.
+This contract supplies structural and semantic edit budgets. Font resolution, pagination,
+clipping, render quality and Hancom open/export remain separate evidence under #419 and
+[24-original-form-contract.md](24-original-form-contract.md). Reflow permission is not a layout
+pass. Pagination/style work belongs to #420 and the complete workflow to #421.
 
-## Occurrence catalogue
+## Discovery contract
 
-The catalogue must keep repeated labels as individual occurrences, including rejected or ambiguous
-candidates. The current `scan_form_fields` key/count listing is not an exact-target catalogue.
+`form-discovery-v1.schema.json` matches `FormDiscovery` and `FormOccurrence` in
+`crates/hwp-convert/src/form/binding.rs`. Version 1 is closed, requires every serialized field
+(including nullable fields), allows at most 20000 occurrences and at most 32 path indices.
 
-| Proposed field | Meaning |
+| Field | Meaning |
 |---|---|
-| Occurrence ID | Deterministic identity bound to the source hash, model path, kind and source claim; not authorization or a reusable ID for another source |
-| Kind | Placeholder, inline value, adjacent/below value cell, parenthesized blank, checkbox or annotation; native named fields await a scope ruling |
-| Target | An owning cell coordinate or exact paragraph/text claim, with existing v2 IDs/`SegmentPath` where addressable |
-| Container | Table identity, recursive table index, cell origin/spans and enclosing model route; a covered coordinate in a merged cell is not a new owner |
-| Profile identity | Caller-assigned logical identity and explicit membership, never inferred from a repeated label alone |
-| Evidence | Label location, pattern/target policy, expected prior-value digest and applicable source-coordinate convention |
-| Resolution | Resolved, ambiguous or unsupported, with candidate IDs and bounded cause/next-action codes |
+| `id` | `occ-` plus a lowercase 64-digit SHA-256, bound to source hash, model route, kind, claim and prior text digest; not authorization |
+| `kind` | `cell_text`, `placeholder`, `inline_value` or `native_field` |
+| `paragraph_id`, `section`, `indices`, `model_route` | Existing checksummed paragraph address where supported, plus exact source model coordinates; unsupported captions have no invented editable paragraph ID |
+| `table_id`, `table_index`, `row`, `col` | Nullable containing-table identity, discovery table ordinal and owning cell origin; merged covered coordinates are not separate owners |
+| `start`, `end` | Half-open `Paragraph::chars` indices, not UTF-8 offsets, WCHAR offsets or rendered Markdown ranges |
+| `label`, `old_text`, `prior_sha256` | Local review evidence, exact prior text and its digest |
+| `bindable`, `cause`, `next_step` | Target capability, bounded refusal cause and next action; unsupported occurrences retain IDs and evidence |
 
-Semantic binding keys are literal caller keys. Keep them separate from `normalize_form_label`
-and `form::normalize_label`, which implement different legacy matching contracts. Evidence must
-state which discovery policy supplied a suggestion; fuzzy matches and overlap precedence are
-not permission to select a target automatically. One occurrence cannot receive conflicting keys.
+Every cell paragraph is an inventory target, not an inferred label-value assignment. Neighboring
+cell text in `label` is evidence only. The caller chooses explicit occurrence IDs; repeated
+labels and overlapping full-cell/placeholder claims remain individually reviewable. `bindable`
+means a supported candidate, not uniqueness, automatic ownership or permission to overlap.
+Placeholders and body inline values have exact text claims. Cell blanks, checkboxes and
+annotations are reviewed through their explicit cell-paragraph targets; discovery does not
+silently choose a semantic key or apply the legacy form fill's normalization/first-wins policy.
 
-Text locations must distinguish UTF-8 match offsets, `para.chars` indices and WCHAR positions.
-Rendered Markdown ranges are not interchangeable with any of them. Convert through the existing
-text/splice machinery at one defined boundary and verify the original claim before applying it.
+Caption, raw-preserved and rich targets are inventory-only with cause/next-step evidence. Native
+named fields are listed individually as `native_field`, never bindable in this contract; callers
+are directed to `hwp fields` and the existing name-based field workflow. A field name is evidence,
+not an occurrence address. No caption/raw/native-field mutation is promised by this inventory.
 
-Table/profile IDs identify occurrences in this source. They do not claim a native persistent
-identifier. Where #417 extraction was used, retain its source-to-output address map as provenance;
-do not guess shifted table indices.
+## Source identity and literal keys
 
-## Source and review binding
+The plan carries exact lowercase 64-digit `source_sha256` and `structural_sha256` values. The
+structural fingerprint uses the current parsed-IR JSON serialization, including values and
+structure; serde-skipped binary payloads remain bound by the original byte hash. It supplements,
+and never replaces, the source hash. It is not a universal cross-format semantic equality hash.
 
-A plan carries the exact source SHA-256 plus a structural fingerprint covering selected table
-membership, grid/merge/width information and the supported semantic formatting projection.
-Fingerprint fields and canonicalization require schema review. A fingerprint supplements the
-source hash; it cannot authorize applying to different source bytes.
+Semantic keys are literal caller strings of 1..128 characters, not normalized labels. Keep them
+separate from `normalize_form_label` and `form::normalize_label`. Missing, stale, unsupported,
+overlapping or multiply owned targets refuse before publication. One `(occurrence_id, copy)`
+pair has one owner across the complete plan. Source-to-output addresses from #417 are provenance
+for an extracted source, not permission to guess shifted table indices.
 
-Review selects explicit occurrence IDs for each key, declared clones and each target's edit
-budget. Missing, ambiguous, overlapping, stale or unsupported bindings refuse before publication.
-Do not turn the legacy form fill's first-wins warnings into an ambiguity policy for this plan.
+## Approved compound apply and repetition
 
-## Proposed compound apply
+`apply_form_bindings` is a standalone compound operation in the existing `edit-ops-v1` engine.
+It is exclusive with other operations in its batch. It verifies one reviewed plan and literal
+values, performs declared repeats, resolves explicit targets, applies existing primitives and
+publishes once through the existing atomic transaction. This does not change older ops or their
+selector semantics. CLI/MCP transport implementation and delivery checks are still in progress.
 
-The proposed standalone `ApplyFormBindings` operation would enter the existing `edit-ops-v1`
-execution/publication path. It would not replace existing ops or change their selector semantics.
-Its bounded request would reference one reviewed plan, literal values and explicit allowances.
-Exact wire spelling, limits, CLI/MCP forms and schema approval remain unresolved.
+Plan version 1 contains `bindings`, optional `repeats` and optional `constraints`. Bounds are
+256 bindings, 1..256 targets per binding, 16 repeat entries and 128 constraints. Each target
+requires `occurrence_id`, `max_chars` (1..20000) and an explicit `allow_reflow` boolean; `copies`
+defaults to `[0]`, has unique indices in 0..15 and cannot be empty. Values must have exactly the
+binding keys, at most 256 entries and at most 20000 Unicode scalar values per string. LF and TAB
+are allowed; CR and other C0 controls are refused. Every target's `max_chars` also applies.
 
-The compound operation would:
+A repeat identifies its source `table_id`, insertion `after_paragraph_id`, total `copies` in
+1..16 and exactly that many unique, nonempty caller-assigned `profile_ids` (each at most 128
+characters). Profile membership is explicit and never inferred from repeated labels. The count
+includes the original: one to four means three clones, not four additions.
 
-- Verify source identity, structural fingerprint, review selections and bounded constraints.
-- Perform only declared profile repetition with existing `clone_table` and its ID remapping.
-- Recatalogue after cloning, producing explicit old-to-new occurrence/table/profile maps.
-- Resolve the reviewed post-clone target set, preview expected changes, and reject ambiguity.
-- Apply text splices or cell edits through existing primitives and publish once through the
-  existing atomic writer, retaining its refusal and preservation reporting behavior.
+Repeat sources and insertion anchors are restricted to top-level body tables/paragraphs;
+nested-table repetition is unsupported in this initial contract.
 
-The desired profile copy count includes the original: a target of four from one source profile
-means three clones. It does not mean append four copies. Clone mode and permitted content are
-explicit; existing keep-mode refusal for unsupported Generic objects remains meaningful.
+Clone first using existing `clone_table` and ID remapping, then explicitly recatalogue and produce
+source-to-copy occurrence/table/profile maps. Plan targets select copies explicitly, with copy 0
+being the original. Keep-mode refusal for unsupported Generic content still applies. Do not
+assume discovery ordinals are editable table indices for unsupported caption contents.
 
-Clone-first recataloguing is an internal, explicit boundary of this proposed compound operation.
-It does not relax #358 for existing batches: a previously resolved label coordinate is not valid
-merely because a preceding op cloned or moved a table. Post-clone targets need their own reviewed
-mapping rule, not arithmetic guesses or fabricated editable IDs.
+This compound recatalogue boundary leaves #358 unchanged. Existing batches cannot reuse a label
+coordinate after a table-changing op. Post-clone bindings use verified maps, not arithmetic
+index shifts, textual anchors guessed from duplicates or fabricated editable IDs.
 
-## Constraints and revised values
+## Numeric constraints and replay
 
-Use a closed, bounded integer model for caller-supplied totals: equality and a sum of an explicit
-bounded list of integer binding keys compared with a supplied integer total. Reject missing or
-non-integer values and checked-arithmetic overflow. No expression strings, scripting, functions,
-implicit formulas, inferred subtotals or general evaluator. Exact ranges and list limits await
-schema approval. The caller supplies subtotal/total values; a failed check refuses publication.
+`equal` compares the numeric values of `left` and `right`. `sum` adds an explicit list of 1..256
+key values and compares it with the caller-supplied `total`. All referenced keys must have values.
+The grammar is unsigned ASCII digits, optionally comma-grouped in thousands, within `i64::MAX`.
+For example, `1,000` and `1000` compare equal. Signs, units, decimal fractions, whitespace and
+non-ASCII digits are refused. Arithmetic uses checked addition; overflow or mismatch refuses
+publication. There are no expression strings, implicit formulas, inferred totals or evaluator.
+Diagnostics identify the rule index and cause without echoing semantic keys or value strings.
 
-A reviewed plan may replay revised values against the same original source hash and unchanged
-target/clone topology. Recompute constraints and the exact preview for the new values; target
-selection and the declared budget remain fixed. Each replay starts from that original source,
-so it does not clone an earlier result again. Applying to previous output or any changed source
-requires recataloguing, a fresh source-bound plan and review. A matching structural fingerprint
-alone is insufficient to bypass that boundary.
+Revised values may replay against the same original source hash and reviewed target/clone
+topology. Recompute constraints and the exact preview without rediscovering targets by their new
+values. Every replay starts from that original source, so it does not clone earlier output again.
+Previous output or any changed source requires fresh discovery, a new source-bound plan and
+review. A matching structural fingerprint alone cannot authorize changed source bytes.
 
-## Preview, receipt and edit budget
+## Local preview, receipts and semantic budget
 
-An explicitly requested local preview may contain exact cells, label evidence, old/new values
+An explicitly requested local discovery/preview may contain labels, exact cells, prior/new text
 and clone maps. Public logs and default receipts contain hashes, occurrence/operation IDs,
-counts and bounded cause/next-action codes; they must not echo document text, value strings or
-legacy warnings containing original cell contents. Receipt identity binds source, reviewed plan,
-values, output and the actual apply result; hashes do not attest layout or native compatibility.
+counts and bounded cause/next-action codes. Do not leak discovery text, semantic values or legacy
+warnings containing original cell contents. Receipt identity binds source, reviewed plan, values,
+output and actual outcome; it does not attest layout or native compatibility.
 
-Every target requires a reviewed reflow allowance and semantic edit budget. Declare permitted
-value replacements, paragraph-count changes, clone additions and any allowed target formatting
-change. Preserve non-target cell text, indentation, paragraph/character properties, grid, merge
-spans, widths, borders, signatures and retained resources except explicit allowances. An allowance
-must not silently shrink fonts, alter column geometry or accept arbitrary formatting changes.
-Long values outside the reviewed budget refuse with the affected occurrence ID and next action.
+Every target requires reviewed reflow permission. `max_chars` bounds replacement Unicode scalar
+count. With `allow_reflow=false`, replacement WCHAR length cannot exceed the original claim's
+WCHAR length. A true value permits that length growth within `max_chars`; it does not permit
+font shrinking, grid changes, arbitrary formatting changes or unreviewed paragraph creation.
+Neither length check establishes fit, wrapping, page count or clipping correctness.
 
-Existing `set_cell` uses the first paragraph/character shape as its replacement template and
-rebuilds the cell's paragraph list. Therefore, mixed-style, multi-paragraph or control-rich targets
-cannot be advertised as format-preserving merely because `set_cell` accepts them. Precise text
-edits should reuse candidate/splice logic; unsupported budgets require refusal or explicit review,
-not a parallel rewriting implementation. This budget is semantic, not evidence that text fits a
-page. #419 must evaluate the separate render/font/anchor acceptance evidence.
+Preserve non-target text, indentation, paragraph/character properties, grid, merge spans, widths,
+borders, signature areas and resources except declared repeats and reviewed value replacements.
+Precise paragraph slices reuse existing splice logic. Existing `set_cell` rebuilds a cell from
+its first paragraph/character shape; accepting a value there does not prove preservation of
+mixed styles, control-rich content or paragraph counts. Unsupported targets refuse rather than
+invoke a broader rewriting path. #419 remains responsible for separate font/render/anchor and
+native-open acceptance evidence.
 
-## Reuse and unresolved decisions
+## Acceptance fixtures and delivery
 
-- `form.rs`: preserve candidate-pattern semantics while exposing occurrence evidence separately
-  from aggregated `FormField` results. Review legacy normalization and first-wins conflicts.
-- `edit.rs`: reuse `walk_form_cells`, `find_form_cells_by_label`, `set_cell`, splice primitives
-  and `clone_table`; extend visibility only as needed within the existing engine.
-- CLI edit execution: reuse source snapshots, address preflight, offset rules, dry-run/receipts
-  and atomic writer. Existing `fill --forms` is HWPX-only, so it is not the both-format executor.
-- Native named fields: decide whether they belong in this catalogue; current `list_fields` and
-  `set_field` are separate name-based surfaces without per-occurrence target precision.
-- Captions and raw-rich targets: current form/table walks omit captions, while some raw-backed
-  containers cannot safely regenerate. Catalogue them as unsupported where discovered; do not
-  invent segment IDs or promise mutation until a shared traversal/serialization contract exists.
-- Approve the compound operation/schema, bounded fingerprint/constraint model, post-clone mapping
-  rules and supported edit budgets before implementation.
+Reuse the owner-authored P0 generator and `expected.json` for exact cells, grids, resource roles,
+repeated labels, merged signature areas and four authored profiles. That source already has four
+profiles; it does not prove actual repetition. Derive a supplementary one-profile source from
+the same authored blueprint through shipped #417 heading-range extraction, retaining its real
+source-to-output map. Do not manually slice IR paragraph arrays. Exercise three actual clones to
+reach four and verify post-clone mappings.
 
-## Proposed acceptance fixtures
-
-Reuse the owner-authored P0 generator and `expected.json`: exact cell/grid/resource expectations,
-repeated labels, merged signatures and four authored profiles. That source already contains four
-profiles and does not itself prove cloning from one to four. Add a supplementary one-profile
-source derived from the same authored blueprint to exercise three real clones and post-clone maps.
-Neither source may be derived from private forms, proprietary fonts or specification extracts.
-
-Reuse P0 `FormProjection`, `ExpectedCell`, `expect_cell_values` and comparisons as test oracles,
-not production imports. The existing expectation helper preserves paragraph count and rejects
-mixed/control-rich value replacement budgets; broader deliberate changes need an explicit
-expected document/projection. Validate both formats, stale/ambiguous atomic refusal, revised
-allocation consistency and CLI/MCP parity independently. No result from these synthetic semantic
-checks is Hancom open/export evidence.
+P0 `FormProjection`, `ExpectedCell`, `expect_cell_values` and comparisons remain test oracles,
+not production imports. Their bounded paragraph/style rules remain intact; deliberate broader
+changes require an explicit expected document/projection. Verify both formats, revised allocation
+consistency, stale/ambiguous atomic refusal, unsupported target inventory, CLI/MCP parity and the
+complete repository gate. Do not derive fixtures from private forms, proprietary fonts or
+specification extracts, or promote synthetic semantic checks into Hancom open/export evidence.

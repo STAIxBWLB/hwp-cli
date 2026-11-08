@@ -744,6 +744,11 @@ pub const KO: &[(&str, &str, &str)] = &[
     ("slots", "json", "JSON으로 출력"),
     (
         "slots",
+        "occurrences",
+        "원본 해시에 묶인 개별 양식 위치와 지원하지 않는 대상을 JSON으로 표시 (--forms --json 필요)",
+    ),
+    (
+        "slots",
         "forms",
         "한국 공문서 양식 필드도 나열 — 레이블 셀, 본문의 \"라벨: 값\", 자리표시자를 키·레이블·출처·신뢰도·등장 횟수·필수 여부와 함께 (JSON \"fields\"; kordoc 규칙)",
     ),
