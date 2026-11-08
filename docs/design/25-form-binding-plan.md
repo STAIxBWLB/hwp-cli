@@ -118,6 +118,9 @@ output and actual outcome; it does not attest layout or native compatibility.
 The receipt records `native_warning_count`; original writer/preview-render messages appear
 only in the explicit local preview's `native_warnings`. Font substitution during preview is
 not semantic loss and does not supply the separate #419 render/font acceptance.
+Preview segment IDs describe the resolved post-clone, pre-binding state; paths and cell
+coordinates identify the prepared targets. Text edits change segment checksums. Discover the
+published output afresh for any later edit rather than reusing a preview ID.
 
 Every target requires reviewed reflow permission. `max_chars` bounds replacement Unicode scalar
 count. With `allow_reflow=false`, replacement WCHAR length cannot exceed the original claim's

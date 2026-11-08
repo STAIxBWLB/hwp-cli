@@ -280,6 +280,562 @@
           "description": "true면 일치한 요청만 게시; 기본 false",
           "type": "boolean"
         },
+        "apply_form_bindings": {
+          "additionalProperties": false,
+          "description": "Exclusive compound binding operation. Receipt is content-free; preview is explicitly requested local document content. Cannot be combined with another operation.",
+          "properties": {
+            "plan": {
+              "additionalProperties": false,
+              "description": "Source-bound reviewed form bindings. Keys are literal and are never normalized. Runtime additionally checks unique binding keys and unique (occurrence_id, copy) ownership, exact values-key membership, integer constraints and source/catalogue identity. Equal is numeric equality; constraints accept only unsigned ASCII integer strings, optionally with correctly grouped comma thousands, within i64::MAX. No expression evaluator. Profile copy counts include the original. This schema defines plan data, not native-open or layout evidence.",
+              "properties": {
+                "bindings": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "key": {
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "targets": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "allow_reflow": {
+                              "type": "boolean"
+                            },
+                            "copies": {
+                              "default": [
+                                0
+                              ],
+                              "items": {
+                                "maximum": 15,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "maxItems": 16,
+                              "minItems": 1,
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "max_chars": {
+                              "maximum": 20000,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "occurrence_id": {
+                              "maxLength": 1024,
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "occurrence_id",
+                            "max_chars",
+                            "allow_reflow"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 256,
+                        "minItems": 1,
+                        "type": "array"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "targets"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 256,
+                  "type": "array"
+                },
+                "constraints": {
+                  "default": [],
+                  "items": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "kind": {
+                            "const": "equal"
+                          },
+                          "left": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "right": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "left",
+                          "right"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "keys": {
+                            "items": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "maxItems": 256,
+                            "minItems": 1,
+                            "type": "array"
+                          },
+                          "kind": {
+                            "const": "sum"
+                          },
+                          "total": {
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "keys",
+                          "total"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "maxItems": 128,
+                  "type": "array"
+                },
+                "repeats": {
+                  "default": [],
+                  "items": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 1
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 1,
+                              "minItems": 1
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 2
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 2,
+                              "minItems": 2
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 3
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 3,
+                              "minItems": 3
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 4
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 4,
+                              "minItems": 4
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 5
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 5,
+                              "minItems": 5
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 6
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 6,
+                              "minItems": 6
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 7
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 7,
+                              "minItems": 7
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 8
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 8,
+                              "minItems": 8
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 9
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 9,
+                              "minItems": 9
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 10
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 10,
+                              "minItems": 10
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 11
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 11,
+                              "minItems": 11
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 12
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 12,
+                              "minItems": 12
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 13
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 13,
+                              "minItems": 13
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 14
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 14,
+                              "minItems": 14
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 15
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 15,
+                              "minItems": 15
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "copies": {
+                              "const": 16
+                            }
+                          },
+                          "required": [
+                            "copies"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "profile_ids": {
+                              "maxItems": 16,
+                              "minItems": 16
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "after_paragraph_id": {
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "copies": {
+                        "maximum": 16,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "profile_ids": {
+                        "items": {
+                          "maxLength": 128,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array",
+                        "uniqueItems": true
+                      },
+                      "table_id": {
+                        "maxLength": 1024,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "table_id",
+                      "after_paragraph_id",
+                      "copies",
+                      "profile_ids"
+                    ],
+                    "type": "object"
+                  },
+                  "maxItems": 16,
+                  "type": "array"
+                },
+                "source_sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "structural_sha256": {
+                  "maxLength": 64,
+                  "minLength": 64,
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "version": {
+                  "const": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "version",
+                "source_sha256",
+                "structural_sha256",
+                "bindings"
+              ],
+              "title": "hwp-cli FormBindingPlan v1",
+              "type": "object"
+            },
+            "preview": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "receipt": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": {
+                "maxLength": 20000,
+                "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F]*$",
+                "type": "string"
+              },
+              "description": "Literal values. LF and TAB are allowed; other C0 controls, including CR, are forbidden. Runtime requires exactly the binding keys and validates numeric rules.",
+              "maxProperties": 256,
+              "propertyNames": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "plan",
+            "values",
+            "receipt"
+          ],
+          "type": "object"
+        },
         "apply_style": {
           "items": {
             "additionalProperties": false,
@@ -2393,6 +2949,10 @@
       "properties": {
         "forms": {
           "description": "true면 양식 필드(fields)도 반환; 기본 false",
+          "type": "boolean"
+        },
+        "occurrences": {
+          "description": "forms=true와 함께 원본 해시에 묶인 개별 위치/지원하지 않는 대상의 local discovery를 반환. 원문을 포함하며 공개 receipt가 아님",
           "type": "boolean"
         },
         "path": {

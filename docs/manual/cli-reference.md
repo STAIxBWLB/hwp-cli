@@ -340,6 +340,7 @@ List `{{name}}` text placeholders (template slots; a name is any text without br
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
 | `--forms` |  |  | Also list Korean form fields - label cells, inline "label: value" and the slots - with key, label, source, confidence, occurrences and required (JSON "fields"; kordoc rules) |
+| `--occurrences` |  |  | Discover exact source-bound form occurrences, including unsupported targets (requires --forms --json) |
 
 ## `hwp fill`
 

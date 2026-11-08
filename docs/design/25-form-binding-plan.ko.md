@@ -115,6 +115,9 @@ ASCII 숫자와 선택적인 올바른 세 자리 쉼표 묶음이며 상한은 
 영수증에는 `native_warning_count`만 기록하며 writer·미리보기 렌더의 원래 메시지는
 명시적인 로컬 preview의 `native_warnings`에만 둔다. 미리보기 폰트 대체는 의미 손실과
 다르며 별도 #419의 렌더·폰트 수용 증거가 아니다.
+미리보기의 segment ID는 복제 후 바인딩 전 상태를 나타내며 경로와 셀 좌표가 준비된
+대상을 식별한다. 텍스트 편집은 체크섬을 바꾸므로 이후 편집에는 미리보기 ID를 재사용하지
+말고 발행된 출력에서 discovery를 새로 수행한다.
 
 모든 대상에는 검토된 재배치 허용 여부가 필요하다. `max_chars`는 교체 문자열의 Unicode
 scalar 개수를 제한한다. `allow_reflow=false`이면 교체 WCHAR 길이가 이전 범위의 WCHAR

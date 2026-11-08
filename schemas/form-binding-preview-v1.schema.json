@@ -40,7 +40,8 @@
             "type": "string"
           },
           "table_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Resolved post-clone, pre-binding segment ID. Paths remain the prepared output coordinates; replacements change this checksum, so rediscover published output before another edit."
           },
           "section": {
             "type": "integer",
@@ -91,7 +92,8 @@
             ]
           },
           "paragraph_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Resolved post-clone, pre-binding paragraph ID; start/end use that state, not the edited text. Rediscover published output for later edits."
           },
           "section": {
             "type": "integer",
