@@ -424,6 +424,7 @@ pub fn compare_form_contract(
         "table_count",
     )?;
     for (index, (before, after)) in expected.tables.iter().zip(&actual.tables).enumerate() {
+        same(&before.key, &after.key, "structure", &index.to_string())?;
         same(
             &(before.rows, before.cols),
             &(after.rows, after.cols),
@@ -609,7 +610,7 @@ pub fn compare_anchor_positions(
 }
 
 /// Observed font bytes and outcomes are separate from requested style family names.
-#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct FontResolutionIdentity {
     pub requested: String,
     pub bold: bool,
@@ -647,7 +648,13 @@ pub fn compare_font_identity(
     if expected.entries.is_empty() || actual.entries.is_empty() {
         return Err(condition("fonts", "missing_observation", "identity"));
     }
-    same(expected, actual, "fonts", "resolved_identity")
+    let mut before = expected.entries.clone();
+    let mut after = actual.entries.clone();
+    before.sort();
+    before.dedup();
+    after.sort();
+    after.dedup();
+    same(&before, &after, "fonts", "resolved_identity")
 }
 
 fn string_atoms(text: &str) -> Vec<Atom> {

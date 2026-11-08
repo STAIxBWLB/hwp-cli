@@ -540,6 +540,10 @@ fn anchor_and_font_self_checks_reject_moved_starts_and_incomplete_evidence() {
             .layer,
         "body_anchors"
     );
+    let mut reordered_fonts = fonts.clone();
+    reordered_fonts.entries.reverse();
+    reordered_fonts.entries.push(fonts.entries[0].clone());
+    contract::compare_font_identity(&fonts, &reordered_fonts).unwrap();
     let mut bad_fonts = fonts.clone();
     bad_fonts.entries[0].sha256 = Some("deliberately broken observation".into());
     assert_eq!(
