@@ -341,8 +341,9 @@ fn first_line_pushed_after_floating_table_uses_resolved_page_anchor() {
 }
 
 #[test]
-fn explicit_break_space_before_agrees_in_inline_and_floating_sections() {
-    // This is an internal consistency rule, not Hangul-open evidence.
+fn explicit_break_keeps_prior_space_before_in_both_section_paths() {
+    // Keep the prior positive space-before on each path. Their pre-existing
+    // raw-vs-half-unit discrepancy remains tracked by #415.
     for floating in [false, true] {
         let mut source = hwp_convert::from_markdown("Anchor\n\nHeading\n");
         let mut heading_shape = source.header.para_shapes
@@ -361,8 +362,9 @@ fn explicit_break_space_before_agrees_in_inline_and_floating_sections() {
             .push(Control::Table(object));
         synthesize(&mut source);
         assert_eq!(
-            source.sections[0].paragraphs[1].line_segs[0].v_pos, 0,
-            "explicit-break space-before must be omitted in both section paths (floating={floating})"
+            source.sections[0].paragraphs[1].line_segs[0].v_pos,
+            if floating { 1200 } else { 2400 },
+            "explicit break resets the cursor but keeps the path's prior space-before (floating={floating})"
         );
     }
 }

@@ -4687,6 +4687,18 @@ enum BoxParaSelection {
     Empty,
 }
 
+// Render-only cell caches are not serialized by synthesize_linesegs.
+fn compute_cell_render_linesegs(
+    store: &mut FontStore,
+    doc: &Document,
+    para: &Paragraph,
+    width: i32,
+    v: &mut i32,
+    warnings: &mut RenderIssueAccumulator,
+) -> Vec<hwp_model::LineSeg> {
+    crate::lineseg::compute_box_linesegs(store, doc, para, width, v, warnings)
+}
+
 /// Iterator form of `layout_box_paragraphs`; it also accepts a column fragment.
 ///
 /// A cached lineseg `v_pos` is honoured exactly as Hancom stored it and is never
@@ -4768,7 +4780,7 @@ fn layout_box_para_iter<'a>(
         let line_segs = if synthesize_uncached && !para.chars.is_empty() {
             let mut v = (((content_bottom - origin_y) * 100.0).round() as i32 + v_origin)
                 .max(uncached_next_v);
-            synthesized = crate::lineseg::compute_box_linesegs(
+            synthesized = compute_cell_render_linesegs(
                 store,
                 doc,
                 para,
@@ -7683,5 +7695,59 @@ mod cell_split_plan_tests {
             cached_cell_split_plan(&cell, 0.0, 634.82, 654.80, 2.82).expect("two-run cached plan");
         let heights: Vec<f32> = plan.groups.iter().map(|group| group.height).collect();
         assert_eq!(heights, vec![500.0, 130.0, 370.0]);
+    }
+}
+
+#[cfg(test)]
+mod cell_render_cache_tests {
+    #[test]
+    fn ephemeral_cell_line_box_respects_both_paragraph_margins() {
+        let mut doc = hwp_convert::from_markdown("Margin cell\n");
+        let para = &doc.sections[0].paragraphs[0];
+        let shape = &mut doc.header.para_shapes[para.para_shape.0 as usize];
+        shape.margin_left = 2000;
+        shape.margin_right = 4000;
+        let para = &doc.sections[0].paragraphs[0];
+        let mut store = crate::FontStore::new_isolated();
+        let mut warnings = crate::RenderIssueAccumulator::new();
+        let width = 10000;
+        let lines = super::compute_cell_render_linesegs(
+            &mut store,
+            &doc,
+            para,
+            width,
+            &mut 0,
+            &mut warnings,
+        );
+        assert!(!lines.is_empty(), "exercise the render-only cell cache");
+        for line in &lines {
+            assert!(
+                line.col_start >= 1000,
+                "line stays after the left paragraph margin"
+            );
+            assert!(
+                line.col_start + line.seg_width <= width - 2000,
+                "render-only line box must stay before the right paragraph margin: {} + {} > {}",
+                line.col_start,
+                line.seg_width,
+                width - 2000
+            );
+        }
+        let native = crate::lineseg::compute_box_linesegs(
+            &mut store,
+            &doc,
+            para,
+            width,
+            &mut 0,
+            &mut warnings,
+        );
+        assert_eq!(
+            native[0].seg_width, width,
+            "native synthesis retains its prior full-width bytes"
+        );
+        assert_eq!(
+            native[0].col_start, 1000,
+            "native synthesis retains its prior col_start"
+        );
     }
 }
