@@ -639,6 +639,9 @@ impl FontIdentity {
                         hwp_render::fonts::FontResolutionOutcome::Matched => "matched",
                         hwp_render::fonts::FontResolutionOutcome::Substituted => "substituted",
                         hwp_render::fonts::FontResolutionOutcome::Missing => "missing",
+                        hwp_render::fonts::FontResolutionOutcome::CoverageSubstituted => {
+                            "coverage_substituted"
+                        }
                     }
                     .into(),
                 })
