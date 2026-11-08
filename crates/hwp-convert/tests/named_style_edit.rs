@@ -554,3 +554,54 @@ fn explicit_paragraph_creation_from_unknown_base_states_only_the_new_kind() {
     assert_eq!(doc.header.styles[0], before.header.styles[0]);
     assert_eq!(doc.sections, before.sections);
 }
+
+fn assert_empty_run_follows_only_inherited_zero(old_shape: u16) {
+    let mut doc = fixture();
+    doc.header.styles[0].char_shape = CharShapeId(old_shape);
+    doc.sections[0].paragraphs[0].char_shape_runs.clear();
+    assert!(!doc.sections[0].paragraphs[0].plain_text().is_empty());
+    let target = create_style(&mut doc, &request("Empty-run target")).unwrap();
+    let (target_shape, _) = shapes(&doc, target);
+    assert_ne!(target_shape, CharShapeId(0));
+    assert!(apply_style_at(&mut doc, &path(&[0]), &selector(target), false).unwrap());
+    let expected = if old_shape == 0 {
+        target_shape
+    } else {
+        CharShapeId(0)
+    };
+    assert_eq!(
+        doc.sections[0].paragraphs[0].char_shape_runs,
+        vec![(0, expected)],
+        "empty runs must materialize effective shape0 before the inherited/direct decision"
+    );
+    doc.sections[0].paragraphs[0].line_segs = cache();
+    let before = doc.clone();
+    assert!(!apply_style_at(&mut doc, &path(&[0]), &selector(target), false).unwrap());
+    assert_eq!(
+        doc, before,
+        "reapplication preserves caches after materializing the effective run"
+    );
+}
+
+#[test]
+fn empty_runs_follow_when_old_style_uses_shape_zero() {
+    assert_empty_run_follows_only_inherited_zero(0);
+}
+
+#[test]
+fn empty_runs_keep_direct_zero_when_old_style_uses_another_shape() {
+    assert_empty_run_follows_only_inherited_zero(1);
+}
+
+#[test]
+fn unknown_style_errors_show_a_name_or_number_without_debug_wrappers() {
+    let name = StyleEditError::UnknownStyle(StyleSelector::Name("Missing body".into())).to_string();
+    let id = StyleEditError::UnknownStyle(StyleSelector::Id(250)).to_string();
+    assert!(
+        name.contains("스타일 Missing body을 찾을 수 없습니다"),
+        "{name}"
+    );
+    assert!(id.contains("스타일 #250을 찾을 수 없습니다"), "{id}");
+    assert!(!name.contains("Name("));
+    assert!(!id.contains("Id("));
+}

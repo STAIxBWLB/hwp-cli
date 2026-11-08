@@ -910,3 +910,106 @@ fn unknown_hwpx_kind_refuses_application_and_explicit_creation_verifies() {
     assert!(named(&after, "body").1.kind_unknown);
     assert_public_style_listing(&output, CREATED, &[INHERITED]);
 }
+
+fn assert_empty_native_runs_apply(old_shape: u16, extension: &str) {
+    let fixture = Fixture::new(&format!("empty-runs-{old_shape}-{extension}"), "hwp");
+    let mut doc = read(&fixture.base);
+    let (body_id, _) = named(&doc, "body");
+    doc.header.styles[body_id].char_shape = hwp_model::CharShapeId(old_shape);
+    let edited_paragraph = doc
+        .sections
+        .iter_mut()
+        .flat_map(|section| &mut section.paragraphs)
+        .find(|paragraph| paragraph.plain_text() == INHERITED)
+        .unwrap();
+    edited_paragraph.char_shape_runs.clear();
+    let source = fixture.path("empty-native-source");
+    hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap();
+    let before = read(&source);
+    assert!(
+        paragraph(&before, INHERITED).char_shape_runs.is_empty(),
+        "the CLI source must reach apply_style with no run record"
+    );
+    assert!(!paragraph(&before, INHERITED).plain_text().is_empty());
+    let operations = fixture.directory.join("empty-native-ops.json");
+    std::fs::write(
+        &operations,
+        serde_json::to_vec(&json!([
+            create(CREATED, json!("body")),
+            apply(at(&before, INHERITED), json!(CREATED), None)
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = fixture.directory.join(format!("empty-applied.{extension}"));
+    success(
+        hwp()
+            .arg("edit")
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&operations)
+            .output()
+            .unwrap(),
+        "apply_style with absent native run record",
+    );
+
+    // HWPX serialization itself fills in shape0. Check the CLI's pre-native IR as well,
+    // so the direct-zero branch cannot pass merely because serialization hides empty runs.
+    let ir_path = fixture.directory.join("empty-applied.json");
+    success(
+        hwp()
+            .arg("edit")
+            .arg(&source)
+            .arg("-o")
+            .arg(&ir_path)
+            .arg("--ops")
+            .arg(&operations)
+            .output()
+            .unwrap(),
+        "inspect the edited IR before native serialization",
+    );
+    let ir = hwp_convert::from_json(&std::fs::read_to_string(ir_path).unwrap()).unwrap();
+    let target = named(&ir, CREATED).1.char_shape;
+    assert_ne!(target.0, 0);
+    let expected = if old_shape == 0 {
+        target
+    } else {
+        hwp_model::CharShapeId(0)
+    };
+    assert_eq!(
+        paragraph(&ir, INHERITED).char_shape_runs,
+        vec![(0, expected)],
+        "CLI must materialize effective shape0 before applying the follow rule ({extension}, old={old_shape})"
+    );
+    let after = read(&output);
+    let target = named(&after, CREATED).1.char_shape;
+    let expected = if old_shape == 0 {
+        target
+    } else {
+        hwp_model::CharShapeId(0)
+    };
+    assert_eq!(
+        paragraph(&after, INHERITED).char_shape_runs,
+        vec![(0, expected)],
+        "native output must preserve the inherited/direct decision ({extension}, old={old_shape})"
+    );
+}
+
+#[test]
+fn empty_native_runs_follow_style_zero_in_hwp_output() {
+    assert_empty_native_runs_apply(0, "hwp");
+}
+#[test]
+fn empty_native_runs_keep_direct_zero_in_hwp_output() {
+    assert_empty_native_runs_apply(1, "hwp");
+}
+#[test]
+fn empty_native_runs_follow_style_zero_in_hwpx_output() {
+    assert_empty_native_runs_apply(0, "hwpx");
+}
+#[test]
+fn empty_native_runs_keep_direct_zero_in_hwpx_output() {
+    assert_empty_native_runs_apply(1, "hwpx");
+}
