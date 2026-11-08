@@ -75,6 +75,13 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
 
 /// Validate every JSON channel against the same closed vocabulary before normalization.
 pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<TypedEditOperation>> {
+    let entries = value.as_array().ok_or_else(|| anyhow::anyhow!(
+        "편집 연산 JSON의 최상위 값은 배열이어야 합니다. 연산 객체를 [ ... ]로 감싸세요 (입력 내용 생략)"))?;
+    if entries.iter().any(|entry| !entry.is_object()) {
+        anyhow::bail!(
+            "편집 연산 배열의 모든 항목은 객체여야 합니다. 중첩 배열/문자열 포장을 제거하고 op 속성을 가진 객체를 지정하세요 (입력 내용 생략)"
+        );
+    }
     fn contains_binding(value: &serde_json::Value) -> bool {
         match value {
             serde_json::Value::Object(object) => {
