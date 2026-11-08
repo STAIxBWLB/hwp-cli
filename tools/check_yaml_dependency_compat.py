@@ -61,7 +61,9 @@ def main():
         (project / "Cargo.lock").write_bytes(lock_bytes)
         revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, timeout=30)
         receipt = {"schema": "hwp-yaml-dependency-compat-v1",
-                   "source_commit": revision.stdout.strip() if revision.returncode == 0 else None, "candidate": versions["serde_norway"],
+                   "source_commit": revision.stdout.strip() if revision.returncode == 0 else None,
+                   "source_dirty": (bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, text=True)) if revision.returncode == 0 else None),
+                   "candidate": versions["serde_norway"],
                    "legacy": "0.9.34+deprecated", "root_lock_sha256": digest(lock_bytes),
                    "harness_sha256": digest(source), "project": str(project),
                    "scope": "authored public models and exact writer bytes; no font/render/native-open proof"}
@@ -78,7 +80,7 @@ def main():
                                 capture_output=True, text=True, timeout=args.timeout)
         if result.returncode:
             cause = result.stderr.strip()[-4000:]
-            raise RuntimeError(f"isolated Cargo comparison exited {result.returncode}: {cause}\nNext step: inspect the isolated project; provision exact dependencies on the admitted host if offline cache is missing, then rerun. Do not add legacy YAML to the root graph.")
+            raise RuntimeError(f"isolated Cargo comparison exited {result.returncode}: {cause}\nNext step: inspect {project / 'Cargo.toml'}; if the offline cache is missing dependencies, run cargo fetch --manifest-path {project / 'Cargo.toml'} on the admitted host, then rerun python3 tools/check_yaml_dependency_compat.py. Do not add legacy YAML to the root graph.")
         proof_lock = (project / "Cargo.lock").read_bytes()
         root_packages = {(item["name"], item["version"], item.get("source"), item.get("checksum")) for item in packages}
         comparison_packages = tomllib.loads(proof_lock.decode())["package"]
