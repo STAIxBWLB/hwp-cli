@@ -18,9 +18,12 @@ pub const STYLES_SCHEMA_VERSION: &str = "1.0";
 
 /// Lists the document's named styles with default text options, the options the envelope's
 /// segment ids are published under.
-pub fn list(doc: &Document) -> std::io::Result<Vec<NamedStyle>> {
+///
+/// Fails when the style table is longer than `StyleId` can address (the message names the cause
+/// and the next step), so no listing ever carries a wrapped id.
+pub fn list(doc: &Document) -> anyhow::Result<Vec<NamedStyle>> {
     let (_, segments) = to_markdown_with_segments_v2(doc, &MarkdownOptions::default())?;
-    Ok(list_named_styles(doc, &segments))
+    Ok(list_named_styles(doc, &segments)?)
 }
 
 /// The complete listing document.

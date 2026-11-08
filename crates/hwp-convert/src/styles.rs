@@ -66,26 +66,59 @@ fn style_kind(doc: &Document, attr: u8) -> Option<StyleKind> {
     }
 }
 
+/// The style table has a row no paragraph's `StyleId` can name.
+///
+/// `StyleId` is a `u16`, so a table holds at most 65,536 rows (ids 0..=65535). The JSON IR loader
+/// does not bound `header.styles`, and listing a longer table would wrap its ids, publishing two
+/// rows under one id and breaking the contract that a row's array index is its `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleTableTooLarge {
+    /// Number of rows in the table.
+    pub rows: usize,
+}
+
+impl std::fmt::Display for StyleTableTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "스타일 표가 {}행이라 스타일 번호가 가리킬 수 있는 최대 {}행을 넘습니다. 문서가 손상됐거나 JSON IR의 header.styles가 잘못됐습니다. 원본 HWP/HWPX 파일에서 다시 변환해 보세요",
+            self.rows,
+            usize::from(u16::MAX) + 1
+        )
+    }
+}
+
+impl std::error::Error for StyleTableTooLarge {}
+
 /// Lists every named style of `doc`, joined with the `para` segments of `segments`.
 ///
 /// `segments` must come from [`crate::to_markdown_with_segments_v2`] over the same document.
-/// A paragraph naming a style id outside the table is attributed to no style.
-pub fn list_named_styles(doc: &Document, segments: &[Segment]) -> Vec<NamedStyle> {
-    let mut styles: Vec<NamedStyle> = doc
+/// A paragraph naming a style id outside the table is attributed to no style. A table whose rows
+/// outnumber the `StyleId` range is refused ([`StyleTableTooLarge`]) rather than listed with
+/// wrapped ids.
+pub fn list_named_styles(
+    doc: &Document,
+    segments: &[Segment],
+) -> Result<Vec<NamedStyle>, StyleTableTooLarge> {
+    let mut styles = doc
         .header
         .styles
         .iter()
         .enumerate()
-        .map(|(index, style)| NamedStyle {
-            id: index as u16,
-            name: style.name.clone(),
-            english_name: style.english_name.clone(),
-            kind: style_kind(doc, style.attr),
-            next_style: style.next_style,
-            attrs: level(doc, Some(style.char_shape.0), Some(style.para_shape.0)),
-            used_by: Vec::new(),
+        .map(|(index, style)| {
+            Ok(NamedStyle {
+                id: u16::try_from(index).map_err(|_| StyleTableTooLarge {
+                    rows: doc.header.styles.len(),
+                })?,
+                name: style.name.clone(),
+                english_name: style.english_name.clone(),
+                kind: style_kind(doc, style.attr),
+                next_style: style.next_style,
+                attrs: level(doc, Some(style.char_shape.0), Some(style.para_shape.0)),
+                used_by: Vec::new(),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, StyleTableTooLarge>>()?;
     for segment in segments {
         if segment.kind != SegmentKind::Para {
             continue;
@@ -94,7 +127,7 @@ pub fn list_named_styles(doc: &Document, segments: &[Segment]) -> Vec<NamedStyle
             style.used_by.push(segment.id.clone());
         }
     }
-    styles
+    Ok(styles)
 }
 
 #[cfg(test)]
@@ -119,6 +152,7 @@ mod tests {
     fn hwp5_attr_low_bits_name_the_kind() {
         let doc = doc_with_styles("hwp5", &[0, 1, 2, 0x81]);
         let kinds: Vec<_> = list_named_styles(&doc, &[])
+            .unwrap()
             .iter()
             .map(|s| s.kind.map(StyleKind::as_str))
             .collect();
@@ -139,8 +173,30 @@ mod tests {
         let doc = doc_with_styles("hwpx", &[0, 0]);
         assert!(
             list_named_styles(&doc, &[])
+                .unwrap()
                 .iter()
                 .all(|s| s.kind.is_none())
+        );
+    }
+
+    /// The largest table `StyleId` can address lists with distinct, in-order ids; one row more
+    /// is refused instead of wrapping row 65,536 back to id 0.
+    #[test]
+    fn a_table_past_the_style_id_range_is_refused_not_wrapped() {
+        let max_rows = usize::from(u16::MAX) + 1;
+        let doc = doc_with_styles("hwp5", &vec![0; max_rows]);
+        let listed = list_named_styles(&doc, &[]).expect("65,536 rows is the full StyleId range");
+        assert_eq!(listed.len(), max_rows);
+        assert_eq!(listed[0].id, 0);
+        assert_eq!(listed[max_rows - 1].id, u16::MAX);
+
+        let doc = doc_with_styles("hwp5", &vec![0; max_rows + 1]);
+        let error = list_named_styles(&doc, &[]).expect_err("65,537 rows has no id for row 65,536");
+        assert_eq!(error, StyleTableTooLarge { rows: max_rows + 1 });
+        let message = error.to_string();
+        assert!(
+            message.contains("65537") && message.contains("65536"),
+            "{message}"
         );
     }
 }

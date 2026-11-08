@@ -327,3 +327,39 @@ fn the_mcp_tool_returns_the_cli_listing() {
     let from_mcp: Value = serde_json::from_str(text).unwrap();
     assert_eq!(from_mcp, styles(&file));
 }
+
+/// A style table longer than a paragraph's `StyleId` can address is refused with its cause and
+/// the next step, over the JSON IR loader that accepts an unbounded `header.styles` (T15-F1).
+#[test]
+fn an_oversized_style_table_is_refused_instead_of_wrapping_ids() {
+    let out = hwp()
+        .args(["cat", "--format", "json"])
+        .arg(sample())
+        .output()
+        .expect("run hwp cat");
+    assert!(out.status.success());
+    let mut ir: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let template = ir["header"]["styles"][0].clone();
+    ir["header"]["styles"] = Value::Array(vec![template; 65_537]);
+    let dir = std::env::temp_dir().join(format!("hwp-styles-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("oversized.json");
+    std::fs::write(&path, serde_json::to_vec(&ir).unwrap()).unwrap();
+
+    let run = hwp()
+        .arg("styles")
+        .arg(&path)
+        .output()
+        .expect("run hwp styles");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!run.status.success(), "an oversized table must be refused");
+    assert!(
+        run.stdout.is_empty(),
+        "nothing is listed before the refusal"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("65537") && stderr.contains("65536") && stderr.contains("다시 변환"),
+        "the refusal states the cause and the next step: {stderr}"
+    );
+}

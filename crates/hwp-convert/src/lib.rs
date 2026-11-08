@@ -88,7 +88,7 @@ pub use structure::{
     text_in_unwritable_object,
 };
 pub use style::{display_width, style_table, style_tables};
-pub use styles::{NamedStyle, StyleKind, list_named_styles};
+pub use styles::{NamedStyle, StyleKind, StyleTableTooLarge, list_named_styles};
 
 /// IR 전체를 JSON으로 직렬화 (구조 검사·디버깅·기계 소비용).
 ///
