@@ -24,7 +24,7 @@ const MAX_NESTING: usize = 16;
 /// Left and right inner margin of a compiled table cell, in HWPUNIT (`Cell::margins[0..2]`).
 /// Content inside a cell has the cell width minus both, so the insertion validator reads it
 /// from here instead of repeating the number.
-pub(crate) const CELL_SIDE_MARGIN_HWP: i32 = 510;
+pub(crate) const CELL_SIDE_MARGIN_HWP: i32 = hwp_model::control::DEFAULT_CELL_MARGINS[0] as i32;
 const MAX_TEXT_CHARS: usize = 2_000_000;
 const MAX_NAME_CHARS: usize = 128;
 const MAX_SHORT_TEXT_CHARS: usize = 4096;

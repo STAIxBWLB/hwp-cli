@@ -234,8 +234,10 @@ fn check_target(doc: &Document, target: &SegmentPath, before: bool) -> Result<f3
             return Err(invalid());
         };
         let cell = table.cells.get(*cell).ok_or_else(invalid)?;
-        width =
-            hwpunit_to_mm(cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]));
+        // The cell's own margins are often the 0xffff "inherit" sentinel or all zero
+        // ("omitted"); `Table::cell_margins` resolves both exactly as the renderer does.
+        let margins = table.cell_margins(cell);
+        width = hwpunit_to_mm(cell.width.0 - i32::from(margins[0]) - i32::from(margins[1]));
         paragraph = cell.paragraphs.get(*para).ok_or_else(invalid)?;
         rest = tail;
     }
