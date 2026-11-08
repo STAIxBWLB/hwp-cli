@@ -1250,4 +1250,159 @@ mod tests {
             "{width} mm, expected {expected} mm"
         );
     }
+
+    const UNKNOWN_WIDTH: &str = "본문 폭을 알 수 없습니다";
+
+    /// Document-supplied geometry is untrusted: the HWP5 reader accepts any i32 for a cell or
+    /// page width, so the width computation must refuse values it cannot subtract safely
+    /// instead of panicking (overflow-checked builds) or wrapping to a huge width (release).
+    #[test]
+    fn hostile_cell_geometry_is_refused_not_overflowed() {
+        for width in [i32::MIN, i32::MIN + 1, -1, 0, 1000] {
+            let (doc, at) = doc_with_cell(width, [0; 4], [0; 4]);
+            let error = check_target(&doc, &at, false)
+                .expect_err("a cell narrower than its margins has no usable width");
+            assert!(error.contains(UNKNOWN_WIDTH), "{width}: {error}");
+        }
+        // The widest cell is fine and does not overflow either.
+        let (doc, at) = doc_with_cell(i32::MAX, [0; 4], [0; 4]);
+        assert!(check_target(&doc, &at, false).unwrap() > 1.0);
+    }
+
+    #[test]
+    fn hostile_page_geometry_is_refused_not_overflowed() {
+        let at = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let width_of = |page: hwp_model::PageDef| {
+            let mut doc = hwp_convert::from_markdown("anchor\n");
+            set_page(&mut doc, page);
+            check_target(&doc, &at, false)
+        };
+        let page = |width: i32, height: i32, left: i32, right: i32, gutter: i32, attr: u32| {
+            let mut page = a4_page(width, height, attr);
+            page.margin_left = hwp_model::HwpUnit(left);
+            page.margin_right = hwp_model::HwpUnit(right);
+            page.gutter = hwp_model::HwpUnit(gutter);
+            page
+        };
+        for (label, hostile) in [
+            ("paper at i32::MIN", page(i32::MIN, 0, 0, 0, 0, 0)),
+            ("rotated paper at i32::MIN", page(0, i32::MIN, 0, 0, 0, 1)),
+            (
+                "margin pair overflowing",
+                page(59528, 84189, i32::MAX, i32::MAX, 0, 0),
+            ),
+            ("negative margin", page(59528, 84189, -1, 5669, 0, 0)),
+            ("negative gutter", page(59528, 84189, 5669, 5669, -1, 0)),
+            (
+                "negative margin at i32::MIN",
+                page(59528, 84189, i32::MIN, 5669, 0, 0),
+            ),
+            (
+                "margins wider than the paper",
+                page(59528, 84189, 40000, 40000, 0, 0),
+            ),
+        ] {
+            let error = width_of(hostile).expect_err(label);
+            assert!(error.contains(UNKNOWN_WIDTH), "{label}: {error}");
+        }
+    }
+
+    /// A column gap is read from a signed field; a negative one has no meaning and must not
+    /// widen the columns or reach the multiplication unchecked.
+    #[test]
+    fn hostile_column_geometry_is_refused_not_overflowed() {
+        let column = |count: u16, gap: i32, same_width: bool, widths: Vec<i32>| {
+            let mut doc = hwp_convert::from_markdown("first\n\nsecond\n");
+            doc.sections[0].paragraphs[1]
+                .controls
+                .push(Control::Generic(hwp_model::GenericControl {
+                    ctrl_id: *b"cold",
+                    data: Vec::new(),
+                    paragraph_lists: Vec::new(),
+                    extras: Vec::new(),
+                    raw_children: Vec::new(),
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: Some(hwp_model::ColumnDef {
+                        count,
+                        kind: 0,
+                        direction: 0,
+                        same_width,
+                        gap,
+                        widths,
+                        divider: None,
+                    }),
+                    caption: None,
+                    hwpx_raw_xml: None,
+                    container_box: None,
+                }));
+            check_target(
+                &doc,
+                &SegmentPath {
+                    section: 0,
+                    indices: vec![1],
+                },
+                false,
+            )
+        };
+        for (label, result) in [
+            ("negative gap", column(2, -2835, true, Vec::new())),
+            ("gap at i32::MIN", column(2, i32::MIN, true, Vec::new())),
+            ("gap at i32::MAX", column(65535, i32::MAX, true, Vec::new())),
+            (
+                "gaps wider than the body",
+                column(255, 100_000, true, Vec::new()),
+            ),
+        ] {
+            let error = result.expect_err(label);
+            assert!(error.contains(UNKNOWN_WIDTH), "{label}: {error}");
+        }
+        // Valid and degenerate layouts keep working: a stated width list, a zero count that
+        // means one column, and a single column with a nonsensical gap that is never used.
+        assert!(column(2, 2835, false, vec![i32::MIN, 20000, 30000]).unwrap() > 50.0);
+        assert!(column(0, i32::MIN, true, Vec::new()).unwrap() > 150.0);
+        assert!(column(1, -5, true, Vec::new()).unwrap() > 150.0);
+    }
+
+    /// The HWP5 writer finds a stream by file name ignoring ASCII case and by substring. A
+    /// target holding the inserted image's name in other letters, with other bytes, would
+    /// capture the picture there, so the stream must be renamed, and the written .hwp must
+    /// resolve the picture to its own bytes.
+    #[test]
+    fn a_case_only_name_collision_with_other_bytes_does_not_capture_the_picture_in_hwp() {
+        let dir = scratch("case-collision");
+        let name = picture_name(&dir);
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let ctx = AssetContext {
+            base_dir: Some(&canonical),
+            roots: &[],
+        };
+        let (mut doc, at) = target();
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: format!("BinData/{}", name.to_ascii_uppercase()),
+            data: b"another image entirely".to_vec(),
+        });
+        apply(&mut doc, &at, &request("assets/logo.png"), true, &ctx).unwrap();
+        let output = dir.join("out.hwp");
+        hwp5::write_document(&doc, &output, &hwp5::write::WriteOptions::default()).unwrap();
+        let reread = hwp5::read_document(&output).unwrap().document;
+        let picture = reread.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .expect("the picture survives the HWP write");
+        assert_eq!(
+            reread.resolve_bin(&picture.bin_ref),
+            Some(PNG),
+            "the written .hwp resolved the picture to the stream that differs only in case"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
