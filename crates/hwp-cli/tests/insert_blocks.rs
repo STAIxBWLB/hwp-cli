@@ -2482,3 +2482,175 @@ fn landscape_pages_measure_against_the_rotated_paper() {
         );
     }
 }
+
+// ---- #428 T3 review round 4 (T21-F8) ----
+
+/// The fixture with its table's inner margins and its first cell's margins rewritten, written
+/// back in its own format. Returns the path and the cell's width in HWPUNIT.
+fn with_cell_margins(
+    fixture: &Fixture,
+    stem: &str,
+    cell: [u16; 4],
+    table_inner: [u16; 4],
+) -> (PathBuf, i32) {
+    let mut doc = read(&fixture.base);
+    let mut width = 0;
+    for control in doc
+        .sections
+        .iter_mut()
+        .flat_map(|s| &mut s.paragraphs)
+        .flat_map(|p| &mut p.controls)
+    {
+        if let Control::Table(table) = control {
+            table.inner_margins = table_inner;
+            for (i, c) in table.cells.iter_mut().enumerate() {
+                c.margins = cell;
+                if i == 0 {
+                    width = c.width.0;
+                }
+            }
+        }
+    }
+    let path = fixture.path(stem);
+    if fixture.extension == "hwp" {
+        hwp5::write_document(&doc, &path, &hwp5::write::WriteOptions::default()).unwrap();
+    } else {
+        hwpx::write_document(&doc, &path).unwrap();
+    }
+    let reread = read(&path);
+    let Control::Table(table) = reread
+        .sections
+        .iter()
+        .flat_map(|s| &s.paragraphs)
+        .flat_map(|p| &p.controls)
+        .find(|c| matches!(c, Control::Table(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        table.cells[0].margins, cell,
+        "{}: the cell margins survive the rewrite as written",
+        fixture.extension
+    );
+    (path, width)
+}
+
+fn mm_of(units: i32) -> f32 {
+    (f64::from(units) * 25.4 / 7200.0) as f32
+}
+
+#[test]
+fn a_cell_that_inherits_its_margins_accepts_text_and_measures_blocks_against_the_inherited_width() {
+    let max = u16::MAX;
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("inherit-margins", extension);
+        let (source, cell_width) =
+            with_cell_margins(&fixture, "inherit", [max; 4], [700, 800, 900, 1000]);
+        let usable = mm_of(cell_width - 700 - 800);
+        let before = read(&source);
+        let id = para_id(&source, CELL);
+        // Plain text: refused on 714bd1b (width of about -422 mm), accepted here.
+        let (output, run) = fixture.edit(
+            &source,
+            "inherit-text",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "Text in an inheriting cell.")])
+            )]),
+            false,
+        );
+        success(run, "text into a cell whose margins are inherited");
+        validates(&output);
+        // A table just under the inherited width fits, just over is refused naming the width.
+        let table = |mm: f32| {
+            json!([{"type":"table","columns":[{"width_mm":mm}],
+                "rows":[{"cells":[{"blocks":[block("body","Nested.")]}]}]}])
+        };
+        let (output, run) = fixture.edit(
+            &source,
+            "inherit-fits",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                table(usable - 0.5)
+            )]),
+            false,
+        );
+        success(run, "a table narrower than the inherited-margin width");
+        validates(&output);
+        let diagnostic = fixture.refuse(
+            &source,
+            "inherit-over",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                table(usable + 0.5)
+            )]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("layout_overflow"),
+            "{extension}: a table wider than the inherited width must be refused: {diagnostic}"
+        );
+        let _ = before;
+    }
+}
+
+#[test]
+fn a_cell_with_omitted_margins_uses_the_default_margins() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("omitted-margins", extension);
+        let (source, cell_width) = with_cell_margins(&fixture, "omitted", [0; 4], [0; 4]);
+        let usable = mm_of(cell_width - 510 - 510);
+        let id = para_id(&source, CELL);
+        let table = |mm: f32| {
+            json!([{"type":"table","columns":[{"width_mm":mm}],
+                "rows":[{"cells":[{"blocks":[block("body","Nested.")]}]}]}])
+        };
+        // Between the default-margin width and the bare cell width: only the margin-aware check
+        // refuses it.
+        let in_between = usable + 1.0;
+        assert!(
+            in_between < mm_of(cell_width),
+            "the probe stays inside the cell itself"
+        );
+        let diagnostic = fixture.refuse(
+            &source,
+            "omitted-over",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                table(in_between)
+            )]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("layout_overflow"),
+            "{extension}: {diagnostic}"
+        );
+        let (output, run) = fixture.edit(
+            &source,
+            "omitted-fits",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                table(usable - 0.5)
+            )]),
+            false,
+        );
+        success(run, "a table inside the default-margin width");
+        validates(&output);
+    }
+}
