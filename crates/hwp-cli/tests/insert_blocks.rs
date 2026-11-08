@@ -834,12 +834,9 @@ fn line_break_and_direct_run_properties_preserve_target_named_run_style() {
         let inserted = paragraph(&after, "Styled\nSecond line.");
         assert_eq!(inserted.style.0 as usize, body_id);
         assert_eq!(inserted.para_shape, body.para_shape);
-        assert!(
-            inserted
-                .chars
-                .iter()
-                .any(|ch| *ch == hwp_model::HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK))
-        );
+        assert!(inserted.chars.contains(&hwp_model::HwpChar::CharCtrl(
+            hwp_model::ctrl_char::LINE_BREAK
+        )));
         let direct = char_shape_at(&after, inserted, 0);
         assert_eq!(direct.base_size, 1200);
         assert!(direct.is_bold() && direct.is_italic());
@@ -1085,6 +1082,86 @@ fn generic_paragraph_target_refuses_early_with_body_cell_remedy() {
             diagnostic.contains("본문 또는 표 셀 문단이 아닙니다")
                 && diagnostic.contains("다시 선택"),
             "Generic insertion must fail at the explicit target-kind gate before writing: {diagnostic}"
+        );
+    }
+}
+
+#[test]
+fn high_named_style_refuses_hwp_without_publication_but_inserts_into_hwpx() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("high-style-bound", extension);
+        let mut doc = read(&fixture.base);
+        let template = doc
+            .header
+            .styles
+            .iter()
+            .find(|style| style.name == "body")
+            .unwrap()
+            .clone();
+        assert!(
+            doc.header.styles.len() < 257,
+            "authored fixture must leave room for the controlled style-ID boundary"
+        );
+        while doc.header.styles.len() < 257 {
+            let index = doc.header.styles.len();
+            let mut style = template.clone();
+            style.name = format!("padding-style-{index}");
+            style.english_name = style.name.clone();
+            doc.header.styles.push(style);
+        }
+        let high = &mut doc.header.styles[256];
+        high.name = "high-style".into();
+        high.english_name = "high-style".into();
+        high.attr &= !7;
+        high.kind_unknown = false;
+        let source = fixture.dir.join("high-style-source.hwpx");
+        hwpx::write_document(&doc, &source).unwrap();
+        let before = read(&source);
+        assert_eq!(before.header.styles[256].name, "high-style");
+        assert!(!before.header.styles[256].kind_unknown);
+        let operations = json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "refuse",
+            json!({}),
+            json!([block("high-style", "High named style inserted.")])
+        )]);
+        let original_bytes = std::fs::read(&source).unwrap();
+        if extension == "hwp" {
+            let destination = fixture.path("high-style-result");
+            std::fs::copy(&fixture.base, &destination).unwrap();
+            let destination_bytes = std::fs::read(&destination).unwrap();
+            let (_, run) = fixture.edit(&source, "high-style-result", operations, false);
+            assert!(
+                !run.status.success(),
+                "HWP insertion cannot narrow style ID 256 to one byte"
+            );
+            let diagnostic = String::from_utf8_lossy(&run.stderr);
+            assert!(
+                diagnostic.contains("high-style")
+                    && diagnostic.contains("256")
+                    && diagnostic.contains("HWPX"),
+                "style-bound refusal must identify the name, ID and HWPX remedy: {diagnostic}"
+            );
+            assert!(
+                std::fs::read(destination).unwrap() == destination_bytes,
+                "style-bound refusal must preserve the existing destination"
+            );
+        } else {
+            let (output, run) = fixture.edit(&source, "high-style-result", operations, false);
+            success(run, "style ID 256 remains valid for HWPX insertion");
+            let after = read(&output);
+            let inserted = paragraph(&after, "High named style inserted.");
+            assert_eq!(inserted.style.0, 256);
+            assert_eq!(after.header.styles[256].name, "high-style");
+            assert_eq!(
+                index(&after, "High named style inserted."),
+                index(&after, ANCHOR) + 1
+            );
+        }
+        assert!(
+            std::fs::read(source).unwrap() == original_bytes,
+            "style-bound check must never change the source HWPX"
         );
     }
 }
