@@ -12,6 +12,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- `hwp edit --ops` accepts `create_style` (copy a named or numbered base and override
+  character/paragraph properties) and paragraph-addressed `apply_style` (name or number).
+  Creation preserves existing shared shape definitions; application preserves direct paragraph
+  and run formatting independently unless `clear_direct` is true. Duplicate/unknown styles,
+  stale addresses and HWP style numbers above 255 are refused before output publication
+  ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 - `hwp styles <file> [--format text|json]` and the MCP tool `hwp_styles` list a document's named
   styles with their resolved character and paragraph attributes and `used_by`, the `para`
   segment ids that `hwp cat --with-segments --segments v2` publishes. The JSON form is the new

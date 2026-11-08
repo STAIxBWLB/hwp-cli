@@ -197,16 +197,16 @@ fn tracer_ops_rejects_malformed() {
 const KIND_COVERAGE_MD: &str =
     "# T\n\nintro para\n\n| 항목 | 수량 |\n|---|---|\n| 가 | 1 |\n\n1. list para\n";
 
-/// 최소 유효 PNG(시그니처+IHDR) — image_pixel_size가 치수를 읽고 writer가 바이트를
-/// 그대로 임베드한다(디코딩은 하지 않음; cli.rs write_min_png와 동일).
+/// Minimal PNG signature and IHDR: image_pixel_size reads dimensions and the writer
+/// embeds the bytes without decoding, as cli.rs write_min_png does.
 fn write_min_png(path: &Path, w: u32, h: u32) {
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
     png.extend([0, 0, 0, 13]);
     png.extend(b"IHDR");
     png.extend(w.to_be_bytes());
     png.extend(h.to_be_bytes());
-    png.extend([8, 6, 0, 0, 0]); // bit depth/color type 등
-    png.extend([0, 0, 0, 0]); // CRC 자리(검증 안 함)
+    png.extend([8, 6, 0, 0, 0]); // bit depth and color type
+    png.extend([0, 0, 0, 0]); // CRC placeholder, not validated
     std::fs::write(path, &png).unwrap();
 }
 
@@ -220,7 +220,7 @@ fn write_min_png(path: &Path, w: u32, h: u32) {
 /// set_page, set_format/set_align/set_para, indent_para/outdent_para, row/col
 /// surgery, set_cell_para, style_tables, delete_field, delete_bookmark). The text-
 /// and model-level assertions mirror the verified binary drive: replace payloads,
-/// field/hyperlink display text, 수정값 on the added (first) table, 라벨값 in the
+/// field/hyperlink display text, replacement on the added (first) table, label value in the
 /// input form table (second), the clone removed, the doomed
 /// para gone, the inserted picture deleted from its anchor paragraph, the seal left
 /// as a floating Picture with both image parts shipped in the package, and the
@@ -396,7 +396,7 @@ fn kind_coverage_all_33() {
         2,
         "add_table + clone_table + delete_table(index 1) must leave exactly two tables"
     );
-    // set_cell_by_label resolves against the ORIGINAL document, so its label 항목 names the form
+    // set_cell_by_label resolves against the ORIGINAL document, so its label names the form
     // table, and it runs before add_table puts a table ahead of that form (#358: after it, the
     // preflight table index would name the added table and the batch is refused).
     assert!(
@@ -482,7 +482,7 @@ fn kind_coverage_all_33() {
 
 // ── Phase 7 plan 07-01: addressed `set_format` tracer (EDT-05) ─────────────────────────
 
-/// Paragraphs 2 and 4 (0-based: 제목, 첫 문단, 같은 문단, 셋째 문단, 같은 문단) are identical
+/// Paragraphs 2 and 4 (zero-based: title, first, repeated, third, repeated) are identical
 /// text — the anchor-collision fixture success criterion 1 requires.
 const DUPLICATE_TEXT_MD: &str = "# 제목\n\n첫 문단\n\n같은 문단\n\n셋째 문단\n\n같은 문단\n";
 
@@ -1787,8 +1787,8 @@ fn non_destructive_ops_on_one_paragraph_still_compose() {
     assert!(styled, "run-range set_format must have applied");
 }
 
-/// load_ops가 스키마 위반을 만날 때 내보내는 bail 마커 접두어
-/// ("편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {instance_path}: {error}").
+/// Prefix emitted by load_ops when an operation violates the schema.
+/// Includes the instance path and schema error.
 const OPS_SCHEMA_MARKER: &str = "편집 연산이 edit-ops-v1 스키마를 벗어났습니다";
 
 const SHAPE_REJECT_MD: &str = "# T\n\nshape rejection probe\n";
@@ -2017,15 +2017,15 @@ fn unknown_kind_and_missing_tag() {
     }
 }
 
-/// 미적용 bail 마커 접두어 (edit.rs: "적용되지 않은 편집 요청이 있습니다: {}
-/// (--allow-partial로 일치한 요청만 적용 가능)").
+/// Prefix for the unapplied-operation abort in edit.rs.
+/// The message suggests --allow-partial for applying only matching requests.
 const OPS_UNAPPLIED_MARKER: &str = "적용되지 않은 편집 요청이 있습니다";
 
-/// --allow-partial이 출력 전에 내보내는 미적용 경고 접두어 ("경고: 미적용 편집 요청: {request}").
+/// Unapplied-operation warning prefix emitted before --allow-partial publishes output.
 const OPS_UNAPPLIED_WARNING: &str = "미적용 편집 요청";
 
-/// set_cell 같은 표 종류 op의 apply-time 하드 abort 문구 — Err 반환으로 run 전체가
-/// 즉시 중단되며, unapplied push로 기록되지 않는다.
+/// Apply-time hard abort for table operations such as set_cell: Err stops the entire run
+/// immediately instead of recording an unapplied request.
 fn table_missing_phrase(index: usize) -> String {
     format!("표 #{index}를 찾을 수 없습니다")
 }
@@ -2045,7 +2045,7 @@ fn table_base_for(name: &str) -> (PathBuf, PathBuf) {
 
 /// Layered failure semantics, layer 1 (D-03/D-04): a set_cell whose table index
 /// matches no table is an apply-time hard abort, not an unapplied entry. The
-/// default run exits nonzero with the 표 #N를 찾을 수 없습니다 abort and writes
+/// default run exits nonzero with the missing-table abort and writes
 /// nothing; --allow-partial does NOT rescue it — the flag only downgrades unapplied
 /// pushes, and a table-kind target miss never becomes one. Verified deviation from
 /// the assigned expectation (unapplied bail marker / per-op warning): the bail layer
@@ -2221,7 +2221,7 @@ fn unapplied_partial_semantics() {
 /// D-08's re-styling exemption through the typed channel: style_tables-only ops on
 /// a document whose GFM table is styled at import time produce zero edits and are
 /// still published — the generic "no visible effect" publish guard exempts
-/// style_tables, so the run exits 0 with the 이미 적용되어 있습니다 no-op note.
+/// style_tables, so the run exits zero with the already-applied no-op note.
 /// Re-running the same ops on that output stays exit 0 and byte-identical (D-08's
 /// byte-stability on a second run). The exemption is style_tables-specific: the
 /// same --allow-partial with a replace that matched nothing is still refused by the
@@ -2455,7 +2455,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "faa58b2a751428bca61395d087ead98e954ef4d401f1f19ac14e839774ffef0c",
+        actual, "842e93fe0c8ddce2c8a1d2731711035761c87e9b93ef91652621207c4966b5c6",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -2816,7 +2816,7 @@ fn failed_op_under_allow_partial_reports_status_failed() {
 fn failed_op_reason_carries_no_request_text() {
     let dir = test_dir("report-reason-content-free");
     let md = dir.join("doc.md");
-    // A one-column table after the paragraphs: a vertical form ("소속" over "학교") that
+    // A one-column table after the paragraphs: a vertical affiliation/school form that
     // `set_cell_by_label` resolves, and that `style_tables` skips as unstyleable.
     std::fs::write(
         &md,
@@ -3399,22 +3399,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// stdin 편집 완료 마커 접두어 (edit.rs: "편집 완료: {input} → {output}").
+/// Prefix for the stdin edit completion message, followed by input and output.
 const STDIN_DONE_MARKER: &str = "편집 완료:";
 
-/// read_bounded가 상한 초과 입력에 내보내는 bail 문구 (edit_ops.rs: cap =
-/// MAX_OPS_BYTES = 16 MiB가 십진 포맷으로 그대로 들어간다).
+/// Abort message from read_bounded for oversized input (edit_ops.rs: cap =
+/// MAX_OPS_BYTES = 16 MiB, formatted as a decimal byte count).
 const OPS_SIZE_LIMIT_MARKER: &str = "입력이 크기 제한(16777216바이트)을 초과했습니다";
 
-/// read_bounded가 읽기 실패(non-UTF-8 포함)에 내보내는 오류 접두어
-/// ("편집 연산 입력을 읽을 수 없습니다: {error}").
+/// Error prefix from read_bounded for read failures, including invalid UTF-8.
+/// The underlying read error follows the prefix.
 const OPS_READ_ERROR_MARKER: &str = "편집 연산 입력을 읽을 수 없습니다";
 
 /// MAX_OPS_BYTES (edit_ops.rs) — integration tests cannot see pub(crate) consts.
 const MAX_OPS_BYTES: usize = 16 * 1024 * 1024;
 
-/// `hwp edit <doc> -o <out> --ops -`를 stdin 파이프로 스폰한다 (CLI argv 표기:
-/// stdin은 `-`로만 쓴다 — `--ops-stdin` 플래그는 존재하지 않는다).
+/// Spawn `hwp edit <doc> -o <out> --ops -` with piped stdin.
+/// Only `-` denotes stdin; there is no --ops-stdin flag.
 fn spawn_edit_stdin(base: &Path, out: &Path) -> std::process::Child {
     hwp()
         .arg("edit")
@@ -3430,10 +3430,10 @@ fn spawn_edit_stdin(base: &Path, out: &Path) -> std::process::Child {
         .expect("spawn hwp edit --ops -")
 }
 
-/// payload를 stdin에 기록하고 자식 종료를 수거한다. 자식이 상한 초과 등으로 조기
-/// 종료하면 남은 쓰기는 BrokenPipe — 허용하고 계속한다. 자식이 읽지 않아 부모가
-/// 영원히 막히는 회귀는 워치독이 grace 후 자식을 kill해 최악에도 테스트 실패로
-/// 전환한다 (D-16 no-hang guard).
+/// Write the payload to stdin and collect the child exit status. If it exits early
+/// for oversized input, allow BrokenPipe on remaining writes. If the child stops reading
+/// and blocks the parent, the watchdog kills it after the grace period so the regression
+/// becomes a test failure instead of hanging forever (D-16 no-hang guard).
 fn feed_stdin_and_collect(
     mut child: std::process::Child,
     payload: &[u8],
@@ -3470,7 +3470,7 @@ fn feed_stdin_and_collect(
 
 /// The committed stdin fragment piped through `--ops -` is lossless end to end
 /// (D-05): insert_para seeds "seed a=>b" after the "intro" anchor, replace rewrites
-/// it to "seed c=d:e", and the run exits 0 with the 편집 완료 marker and no
+/// it to "seed c=d:e", and the run exits zero with the edit-completion marker and no
 /// unapplied note. The notation is pinned too: `hwp edit --help` lists `--ops
 /// <FILE>` and there is no `--ops-stdin` flag — stdin is spelled `--ops -`.
 #[test]
@@ -3531,7 +3531,7 @@ fn stdin_roundtrip_lossless() {
         "the anchor paragraph must survive, got {texts:?}"
     );
 
-    // CLI 표기 고정: stdin은 `--ops -`로만 쓴다.
+    // Pin CLI spelling: stdin is selected only with --ops -.
     let help = hwp().args(["edit", "--help"]).output().unwrap();
     let help_text = format!(
         "{}{}",
@@ -3562,7 +3562,7 @@ fn stdin_limits() {
     let base = dir.join("base.hwpx");
     new_from(&md, &base);
 
-    // (a) 16 MiB 상한 초과 stdin.
+    // (a) stdin exceeding the 16 MiB limit.
     let mut payload = b"[".to_vec();
     payload.extend(vec![b'x'; MAX_OPS_BYTES + 65536 - payload.len() - 1]);
     payload.push(b']');
@@ -3592,7 +3592,7 @@ fn stdin_limits() {
         "oversized stdin must not produce an output file"
     );
 
-    // (b) non-UTF-8 stdin — 패닉 없이 읽기 오류로 표면화.
+    // (b) Invalid UTF-8 stdin surfaces as a read error without panic.
     let payload: Vec<u8> = [0xFF, 0xFE, 0x00, 0x01].repeat(1024);
     let out = dir.join("bad-utf8.out.hwpx");
     let child = spawn_edit_stdin(&base, &out);
@@ -4456,7 +4456,7 @@ fn move_para_into_its_own_cell_is_refused() {
     assert!(stderr.contains("그 문단 안의 위치"), "{stderr}");
 }
 
-/// Two one-row forms, "성명" then "주소".
+/// Two one-row forms, name then address.
 const TWO_FORMS_MD: &str =
     "# F\n\n| 성명 |  |\n|---|---|\n| x | y |\n\nmid\n\n| 주소 |  |\n|---|---|\n| z | w |\n";
 
@@ -4537,7 +4537,7 @@ fn label_edit_after_a_table_change_is_refused() {
 
 /// The flag channel runs `--set-cell` before `--set-cell-by-label`. Rewriting a cell that holds a
 /// nested table drops that table and renumbers the tables after it, so the label edit preflight
-/// resolved would fill the next form. It is refused. Before, it filled "전화" and exited 0.
+/// resolved would fill the next form. It is refused. Previously it filled the phone field.
 #[test]
 fn flag_label_edit_after_a_set_cell_drops_a_nested_table_is_refused() {
     let dir = test_dir("flag-label-nested-table");
@@ -4550,7 +4550,7 @@ fn flag_label_edit_after_a_set_cell_drops_a_nested_table_is_refused() {
     .unwrap();
     let base = dir.join("base.hwpx");
     new_from(&md, &base);
-    // Nest the 주소 form (body paragraph 2) in the outer table's cell (0,0).
+    // Nest the address form (body paragraph 2) in the outer table's cell (0,0).
     let before = hwpx::read_document(&base).unwrap().document;
     let id = cell_paragraph_id(&before, 0, 0);
     let (nested, success, stderr) = run_ops_batch(
@@ -4710,7 +4710,7 @@ fn unaddressed_structural_op_in_a_sibling_list_leaves_addresses_alone() {
 // ── Phase 7 plan 07-04: list indent/outdent (EDT-05) ────────────────────────────
 
 /// A numbered list of four level-1 items (0-based paragraphs 1..=4); items 2 and 4 carry
-/// identical text "같은 항목" for the anchor-collision proof. Paragraph 5 is a plain,
+/// identical text for the anchor-collision proof. Paragraph 5 is a plain,
 /// non-list paragraph for the rejection case. Paragraph 0 is the "# T" heading — head_type 0,
 /// not a list item, but its plain-text render embeds a "1. " outline prefix (an unrelated
 /// heading-numbering feature), so paragraph 5 is the unambiguous non-list target instead.
@@ -4853,7 +4853,7 @@ fn indent_para_on_non_list_paragraph_rejected_no_output() {
     let base = dir.join("base.hwpx");
     new_from(&md, &base);
 
-    // Paragraph 5 = "일반 문단", not a list item.
+    // Paragraph 5 is an ordinary paragraph, not a list item.
     let ops = dir.join("ops.json");
     std::fs::write(
         &ops,

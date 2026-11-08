@@ -1,9 +1,9 @@
-//! 서식 편집 — 글자 모양(굵게/기울임/밑줄/취소선/크기/색)·문단 정렬.
+//! Format editing: character shapes (weight/slant/underline/strike/size/color) and alignment.
 //!
-//! 매칭된 텍스트 범위의 char_shape_run을 새 CharShape로 가리키게 하거나(글자),
-//! 문단의 para_shape를 정렬만 바꾼 ParaShape로 교체한다(문단). 헤더 테이블에
-//! shape를 append하는 건 안전하다 — writer가 ID_MAPPINGS 카운트를 `.len()`에서
-//! 자동 유도한다. 편집한 문단의 줄 배치는 비워(낡음) writer가 재합성하게 한다.
+//! Point matched text runs at a new CharShape for character changes, or replace
+//! a paragraph's ParaShape with an alignment-adjusted copy. Appending shapes to
+//! header tables is safe because the writer derives ID_MAPPINGS counts from
+//! their lengths. Clear edited paragraph caches so the writer resynthesizes them.
 
 use hwp_model::{
     CharShape, CharShapeId, Control, Document, FaceName, LANG_COUNT, ParaShape, ParaShapeId,
@@ -13,19 +13,19 @@ use hwp_model::{
 use crate::edit::{find_match, utf16_len};
 use crate::segment_id::SegmentPath;
 
-/// 글자 모양 변경 요청. None인 항목은 기존 값 유지.
+/// Character-format changes; None retains the existing value.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CharFormat {
     pub bold: Option<bool>,
     pub italic: Option<bool>,
     pub underline: Option<bool>,
     pub strike: Option<bool>,
-    /// 글자 크기 pt (base_size = pt×100).
+    /// Font size in points (base_size = points times 100).
     pub size_pt: Option<f32>,
-    /// 글자색 COLORREF(0x00BBGGRR).
+    /// Text color as COLORREF (0x00BBGGRR).
     pub color: Option<u32>,
-    /// 글꼴 이름(A2) — 하나의 이름을 7개 언어 슬롯 전부에 균일하게 쓴다
-    /// (`find_or_insert_face`를 통해 `header.fonts`에서 찾거나 추가).
+    /// Font name (A2): apply one name uniformly across all seven language slots,
+    /// finding or inserting it in header.fonts through find_or_insert_face.
     pub font: Option<String>,
 }
 
@@ -41,8 +41,8 @@ impl CharFormat {
     }
 }
 
-/// `pattern`과 일치하는 모든 텍스트 범위의 글자 모양을 바꾼다(본문·표 셀·글상자
-/// 재귀). 반환값은 적용한 범위 수.
+/// Change every text range matching pattern, recursing through body paragraphs,
+/// table cells and text boxes. Return the number of ranges changed.
 pub fn set_char_format(doc: &mut Document, pattern: &str, fmt: &CharFormat) -> usize {
     if pattern.is_empty() || fmt.is_empty() {
         return 0;
@@ -92,7 +92,7 @@ fn restyle_para(
         n += 1;
         start = char_idx + pat_chars;
     }
-    // 표 셀·글상자 문단 재귀(치환 편집과 동일 패턴).
+    // Recurse through table-cell and text-box paragraphs, like replacement editing.
     for ctrl in &mut para.controls {
         match ctrl {
             Control::Table(t) => {
@@ -110,7 +110,7 @@ fn restyle_para(
                     }
                 }
                 if n > before {
-                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    // Changed object content invalidates captured XML; never emit stale XML.
                     g.hwpx_raw_xml = None;
                 }
             }
@@ -120,8 +120,8 @@ fn restyle_para(
     n
 }
 
-/// `[w_start, w_end)` 범위의 char_shape_run을 서식 적용 모양으로 바꾼다.
-/// 범위 안 각 run의 기존 모양을 base로 두고 요청 비트만 토글(부분 서식 보존).
+/// Apply character formatting to runs in [w_start, w_end).
+/// Base each run on its existing shape and change only requested properties.
 fn restyle_range(
     runs: &mut Vec<(u32, CharShapeId)>,
     w_start: u32,
@@ -148,7 +148,7 @@ fn restyle_range(
     );
     let start_id = id_at(runs, w_start);
     let end_id = id_at(runs, w_end);
-    // 범위 경계 보강(없을 때만).
+    // Add missing range boundaries.
     if !runs.iter().any(|(p, _)| *p == w_start) {
         runs.push((w_start, start_id));
     }
@@ -156,7 +156,7 @@ fn restyle_range(
         runs.push((w_end, end_id));
     }
     runs.sort_by_key(|(p, _)| *p);
-    // 범위 안 run id를 서식 적용 shape로 교체.
+    // Replace shape IDs for runs inside the range.
     for (p, id) in runs.iter_mut() {
         if *p >= w_start && *p < w_end {
             let base = shapes.get(id.0 as usize).cloned().unwrap_or_default();
@@ -344,7 +344,7 @@ fn shift_head_level_at_inner(
     Ok(new_level)
 }
 
-/// 위치 `pos`에서 활성인 char_shape id(= pos 이하 마지막 run).
+/// Active character-shape ID at pos: the last run starting at or before it.
 fn id_at(runs: &[(u32, CharShapeId)], pos: u32) -> CharShapeId {
     runs.iter()
         .rev()
@@ -353,14 +353,14 @@ fn id_at(runs: &[(u32, CharShapeId)], pos: u32) -> CharShapeId {
         .unwrap_or(CharShapeId(0))
 }
 
-/// run 불변식 재수립: 정렬·동일 위치 제거·인접 동일 id 병합·첫 run pos=0.
+/// Restore run invariants: sort, deduplicate positions, merge adjacent IDs and start at zero.
 fn normalize_runs(runs: &mut Vec<(u32, CharShapeId)>) {
     runs.sort_by_key(|(p, _)| *p);
     let mut out: Vec<(u32, CharShapeId)> = Vec::with_capacity(runs.len());
     for &(pos, id) in runs.iter() {
         match out.last_mut() {
-            Some(last) if last.0 == pos => last.1 = id, // 같은 위치: 나중 것 유지
-            Some(last) if last.1 == id => {}            // 인접 동일 id 제거
+            Some(last) if last.0 == pos => last.1 = id, // Same position: retain the later entry.
+            Some(last) if last.1 == id => {}            // Remove adjacent equal IDs.
             _ => out.push((pos, id)),
         }
     }
@@ -372,8 +372,8 @@ fn normalize_runs(runs: &mut Vec<(u32, CharShapeId)>) {
     *runs = out;
 }
 
-/// base 모양에 요청 서식을 적용한 새 모양(요청 항목만 바꿈).
-fn apply_format(
+/// Apply requested formatting to a base shape, retaining unspecified fields.
+pub(crate) fn apply_format(
     mut cs: CharShape,
     fmt: &CharFormat,
     resolved_font: Option<[u16; LANG_COUNT]>,
@@ -385,17 +385,17 @@ fn apply_format(
         toggle(&mut cs.attr, 1, i);
     }
     if let Some(u) = fmt.underline {
-        cs.attr &= !(0x3 << 2); // 밑줄 종류 비트 2~3
+        cs.attr &= !(0x3 << 2); // Underline kind occupies bits 2-3.
         if u {
-            cs.attr |= 1 << 2; // 1 = 글자 아래
+            cs.attr |= 1 << 2; // 1 = below the text.
         }
     }
     if let Some(s) = fmt.strike {
-        cs.attr &= !(0x7 << 18); // 취소선 비트 18~20 (바이트 왕복 보존)
+        cs.attr &= !(0x7 << 18); // Strike bits 18-20, retained for byte round trips.
         if s {
             cs.attr |= 1 << 18;
         }
-        cs.strike = s; // 의미 플래그 — has_strike/렌더/hwpx SOLID 쓰기 근거
+        cs.strike = s; // Semantic flag used by has_strike, rendering and HWPX SOLID output.
     }
     if let Some(sz) = fmt.size_pt {
         cs.base_size = (sz * 100.0).round().max(100.0) as i32;
@@ -442,12 +442,15 @@ fn find_or_insert_face(fonts: &mut Vec<FaceName>, name: &str) -> u16 {
 /// through [`find_or_insert_face`] against that slot's own table. Called ONCE per addressed or
 /// pattern-form format op (not per matched run) so a batch never re-scans the font table more
 /// than once per distinct name.
-fn resolve_font_faces(fonts: &mut [Vec<FaceName>; LANG_COUNT], name: &str) -> [u16; LANG_COUNT] {
+pub(crate) fn resolve_font_faces(
+    fonts: &mut [Vec<FaceName>; LANG_COUNT],
+    name: &str,
+) -> [u16; LANG_COUNT] {
     std::array::from_fn(|slot| find_or_insert_face(&mut fonts[slot], name))
 }
 
-/// `pattern`을 가진 문단의 정렬을 바꾼다(본문·표 셀·글상자 재귀).
-/// align: 0=양쪽, 1=왼쪽, 2=오른쪽, 3=가운데, 4=배분, 5=나눔. 반환=바꾼 문단 수.
+/// Change alignment of paragraphs matching pattern, including cells and text boxes.
+/// align: justify=0, left=1, right=2, center=3, distribute=4, divide=5. Return changed count.
 pub fn set_para_align(doc: &mut Document, pattern: &str, align: u8) -> usize {
     if pattern.is_empty() {
         return 0;
@@ -477,7 +480,7 @@ fn align_para(
             .get(para.para_shape.0 as usize)
             .cloned()
             .unwrap_or_default();
-        // 정렬은 attr1 비트 2~4.
+        // Alignment occupies attr1 bits 2-4.
         ps.attr1 = (ps.attr1 & !(0x7 << 2)) | (((u32::from(align)) & 0x7) << 2);
         para.para_shape = find_or_insert_para(pshapes, ps);
         para.line_segs.clear();
@@ -500,7 +503,7 @@ fn align_para(
                     }
                 }
                 if n > before {
-                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    // Changed object content invalidates captured XML; never emit stale XML.
                     g.hwpx_raw_xml = None;
                 }
             }
@@ -549,7 +552,7 @@ impl ParaProps {
 /// HWPUNIT -> IR (hwp5 PARA_SHAPE) unit conversion. Every entry point that stores a
 /// [`ParaProps`] goes through this, so the same key and value produce the same stored
 /// shape whichever flag wrote it.
-fn to_ir_units(props: &ParaProps) -> ParaProps {
+pub(crate) fn to_ir_units(props: &ParaProps) -> ParaProps {
     ParaProps {
         line_spacing: props.line_spacing.map(|(kind, v)| {
             if kind == 0 {
@@ -571,10 +574,18 @@ fn to_ir_units(props: &ParaProps) -> ParaProps {
 /// Point one paragraph at a shape carrying `props` (an existing identical shape is reused).
 /// `props` must already be in IR units - see [`to_ir_units`].
 fn apply_para_props(para: &mut Paragraph, props: &ParaProps, pshapes: &mut Vec<ParaShape>) {
-    let mut ps = pshapes
+    let ps = pshapes
         .get(para.para_shape.0 as usize)
         .cloned()
         .unwrap_or_default();
+    let ps = apply_para_shape_props(ps, props);
+    para.para_shape = find_or_insert_para(pshapes, ps);
+    para.line_segs.clear();
+}
+
+/// Apply paragraph properties to one shape without allocation or unit conversion.
+/// `props` must already be in IR units; entry points call [`to_ir_units`] once.
+pub(crate) fn apply_para_shape_props(mut ps: ParaShape, props: &ParaProps) -> ParaShape {
     if let Some((kind, value)) = props.line_spacing {
         ps.line_spacing_type = kind;
         ps.line_spacing = value;
@@ -596,11 +607,10 @@ fn apply_para_props(para: &mut Paragraph, props: &ParaProps, pshapes: &mut Vec<P
         ps.spacing_bottom = v;
     }
     if let Some(align) = props.align {
-        // 정렬은 attr1 비트 2~4 — align_para와 같은 clear-then-set.
+        // Alignment occupies attr1 bits 2-4; clear then set, as in align_para.
         ps.attr1 = (ps.attr1 & !(0x7 << 2)) | ((u32::from(align) & 0x7) << 2);
     }
-    para.para_shape = find_or_insert_para(pshapes, ps);
-    para.line_segs.clear();
+    ps
 }
 
 /// Changes the para shape properties of paragraphs containing `pattern` (GK-4 — recurses
@@ -658,7 +668,7 @@ fn props_para(
                     }
                 }
                 if n > before {
-                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                    // Changed object content invalidates captured XML; never emit stale XML.
                     g.hwpx_raw_xml = None;
                 }
             }
@@ -861,7 +871,7 @@ mod tests {
         assert!(cs.is_bold() && cs.is_italic() && cs.has_underline() && cs.has_strike());
         assert_eq!(cs.base_size, 1600);
         assert_eq!(cs.text_color, 0x0000_00FF);
-        // 끄기: bold만 false.
+        // Turn off bold only.
         let off = apply_format(
             cs.clone(),
             &CharFormat {
@@ -885,7 +895,7 @@ mod tests {
         };
         let id1 = find_or_insert(&mut shapes, a.clone());
         assert_eq!(id1, CharShapeId(1));
-        let id2 = find_or_insert(&mut shapes, a); // 동일 → 재사용
+        let id2 = find_or_insert(&mut shapes, a); // Equal shape: reuse.
         assert_eq!(id2, CharShapeId(1));
         assert_eq!(shapes.len(), 2);
     }
@@ -900,8 +910,8 @@ mod tests {
         assert_eq!(fonts.len(), 2, "반복 설정은 테이블을 키우지 않음");
     }
 
-    /// `set_char_format`으로 글꼴을 설정하면 매칭된 run의 `CharShape.face_ids`가 7개 언어
-    /// 슬롯 전부에 같은 face id를 가리켜야 한다(A2).
+    /// Setting a font with set_char_format must point matched runs' CharShape.face_ids
+    /// to that font in all seven language slots (A2).
     #[test]
     fn set_char_format_글꼴_7슬롯_균일_적용() {
         let mut doc = from_markdown::from_markdown("글꼴 테스트 문단입니다.");
@@ -934,7 +944,7 @@ mod tests {
 
     #[test]
     fn restyle_range_부분범위() {
-        // runs=[(0,id0)], 범위 [3,6)에 굵게 적용 → [(0,0),(3,new),(6,0)].
+        // Apply bold to [3,6) in [(0,id0)]: [(0,0),(3,new),(6,0)].
         let mut shapes = vec![CharShape::default()];
         let mut runs = vec![(0u32, CharShapeId(0))];
         restyle_range(
@@ -954,7 +964,7 @@ mod tests {
         assert_eq!(runs[1].0, 3);
         assert_eq!(runs[2], (6, CharShapeId(0)), "범위 뒤 원래 모양 복원");
         assert!(shapes[runs[1].1.0 as usize].is_bold());
-        // 첫 run은 항상 pos 0.
+        // The first run always starts at zero.
         assert_eq!(runs[0].0, 0);
     }
 
@@ -970,7 +980,7 @@ mod tests {
             indices: vec![1],
         };
         let original_len = doc.sections[0].paragraphs[1].wchar_len();
-        // 범위는 원래 길이 기준으로는 유효했다 — 이후 문단이 짧아진 상황을 흉내낸다.
+        // The range fit the original length; simulate a subsequently shortened paragraph.
         let w_end = original_len;
         doc.sections[0].paragraphs[1].chars.truncate(3);
         let before_runs = doc.sections[0].paragraphs[1].char_shape_runs.clone();
@@ -1003,7 +1013,7 @@ mod tests {
             indices: vec![1],
         };
         let props = ParaProps {
-            align: Some(3), // 가운데
+            align: Some(3), // Center.
             ..ParaProps::default()
         };
         assert!(apply_para_props_at(&mut doc, &path, &props));
@@ -1148,14 +1158,14 @@ mod tests {
         assert_eq!(n, 1);
         let para = &doc.sections[0].paragraphs[0];
         assert!(para.line_segs.is_empty(), "편집 문단 줄배치 비움");
-        // 매칭 범위가 굵게+색 모양을 가리키는 run이 새로 생겨야 한다.
-        // (첫 문단은 secd/cold 컨트롤 16 WCHAR가 앞에 있어 위치는 고정 아님.)
+        // A new run must apply the bold/color shape to the matching range.
+        // The first paragraph starts with 16 WCHAR of secd/cold controls, so positions vary.
         let styled = para.char_shape_runs.iter().any(|(_, id)| {
             let cs = &doc.header.char_shapes[id.0 as usize];
             cs.is_bold() && cs.text_color == 0x0000_00FF
         });
         assert!(styled, "굵게+색 run 존재: {:?}", para.char_shape_runs);
-        // 범위 뒤는 원래 모양(0)으로 복원.
+        // Restore original shape zero after the range.
         assert!(
             para.char_shape_runs
                 .iter()
@@ -1170,7 +1180,7 @@ mod tests {
         let para = &mut doc.sections[0].paragraphs[0];
         para.line_segs.push(dummy_lineseg());
         let before = doc.header.para_shapes.len();
-        let n = set_para_align(&mut doc, "가운데", 3); // 3=가운데
+        let n = set_para_align(&mut doc, "가운데", 3); // 3 = center.
         assert_eq!(n, 1);
         let para = &doc.sections[0].paragraphs[0];
         assert!(para.line_segs.is_empty());
@@ -1241,7 +1251,7 @@ mod tests {
 
     #[test]
     fn set_cell_para_props_는_set_para_props와_같은_단위환산() {
-        // 같은 키·값이면 어느 플래그로 썼든 같은 모양이 저장돼야 한다(to_ir_units 공유).
+        // Equal keys/values store equal shapes through every flag, sharing to_ir_units.
         let props = ParaProps {
             line_spacing: Some((1, 1300)),
             indent: Some(-1000),
@@ -1269,7 +1279,7 @@ mod tests {
 
     #[test]
     fn set_cell_para_props_정렬_다섯_이름() {
-        // justify=0 left=1 right=2 center=3 distribute=4 — attr1 비트 2~4에 clear-then-set.
+        // justify=0, left=1, right=2, center=3, distribute=4: clear then set attr1 bits 2-4.
         for align in [0u8, 1, 2, 3, 4] {
             let mut doc = table_doc();
             let props = ParaProps {

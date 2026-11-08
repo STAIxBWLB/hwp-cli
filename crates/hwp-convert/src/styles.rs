@@ -1,10 +1,14 @@
-//! The named-style listing behind `hwp styles` (#427 T2): every entry of the header's style
+//! Named styles: copy-on-write mutations in [`edit`] and the `hwp styles` listing (#427 T2).
+//! The listing includes every entry of the header's style
 //! table with its resolved attributes and the paragraphs that use it.
 //!
-//! Nothing here re-derives an id or an attribute. The attributes come from the same
+//! The listing does not re-derive an id or an attribute. The attributes come from the same
 //! [`level`] the segment envelope's `style` level uses, and `used_by` is read off the `para`
 //! segments [`crate::to_markdown_with_segments_v2`] already produced, so a listed id is by
 //! construction an id `hwp cat --with-segments --segments v2` publishes.
+
+/// Copy-on-write named-style editing.
+pub mod edit;
 
 use hwp_model::Document;
 
