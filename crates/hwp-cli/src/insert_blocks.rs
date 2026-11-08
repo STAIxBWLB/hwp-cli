@@ -1158,4 +1158,94 @@ mod tests {
         assert!(error.contains("layout_overflow"), "{error}");
         assert_eq!(doc, before);
     }
+
+    /// A document whose first table has one cell of the given width and margins, and whose table
+    /// states the given inner margins; the cell's first paragraph is `[0, control, 0, 0]`.
+    fn doc_with_cell(
+        width: i32,
+        cell_margins: [u16; 4],
+        inner: [u16; 4],
+    ) -> (Document, SegmentPath) {
+        let mut doc = hwp_convert::from_markdown("| a |\n|---|\n| b |\n");
+        let (section_index, paragraph_index, control_index) = doc
+            .sections
+            .iter()
+            .enumerate()
+            .find_map(|(si, section)| {
+                section.paragraphs.iter().enumerate().find_map(|(pi, p)| {
+                    p.controls
+                        .iter()
+                        .position(|c| matches!(c, Control::Table(_)))
+                        .map(|ci| (si, pi, ci))
+                })
+            })
+            .expect("a table");
+        let Control::Table(table) =
+            &mut doc.sections[section_index].paragraphs[paragraph_index].controls[control_index]
+        else {
+            unreachable!()
+        };
+        table.inner_margins = inner;
+        let cell = &mut table.cells[0];
+        cell.width = hwp_model::HwpUnit(width);
+        cell.margins = cell_margins;
+        (
+            doc,
+            SegmentPath {
+                section: section_index,
+                indices: vec![paragraph_index, control_index, 0, 0],
+            },
+        )
+    }
+
+    /// 0xffff in a cell margin means "use the table's"; subtracting it raw gives a width of about
+    /// -422 mm and refuses every insertion, text included.
+    #[test]
+    fn an_inherited_cell_margin_is_resolved_not_subtracted_raw() {
+        let max = u16::MAX;
+        // A 10000-unit (about 35.3 mm) cell inheriting 700/800 side margins from its table.
+        let (doc, at) = doc_with_cell(10000, [max, max, max, max], [700, 800, 900, 1000]);
+        let width = check_target(&doc, &at, false).expect("an inherited margin is a valid cell");
+        let expected = hwpunit_to_mm(10000 - 700 - 800);
+        assert!(
+            (width - expected).abs() < 0.01,
+            "{width} mm, expected {expected} mm"
+        );
+        // One side inherited, the other the cell's own.
+        let (doc, at) = doc_with_cell(10000, [max, 300, 1, 1], [700, 800, 900, 1000]);
+        let width = check_target(&doc, &at, false).unwrap();
+        let expected = hwpunit_to_mm(10000 - 700 - 300);
+        assert!(
+            (width - expected).abs() < 0.01,
+            "{width} mm, expected {expected} mm"
+        );
+        // A table that states nothing inherits Hangul's default.
+        let (doc, at) = doc_with_cell(10000, [max, max, max, max], [0; 4]);
+        let width = check_target(&doc, &at, false).unwrap();
+        let expected = hwpunit_to_mm(10000 - 510 - 510);
+        assert!(
+            (width - expected).abs() < 0.01,
+            "{width} mm, expected {expected} mm"
+        );
+    }
+
+    /// An all-zero margin array is the IR's "omitted" marker: the table's (or the default)
+    /// applies, so the width is smaller than the cell, not equal to it.
+    #[test]
+    fn omitted_cell_margins_take_the_table_and_default_margins() {
+        let (doc, at) = doc_with_cell(10000, [0; 4], [0; 4]);
+        let width = check_target(&doc, &at, false).unwrap();
+        let expected = hwpunit_to_mm(10000 - 510 - 510);
+        assert!(
+            (width - expected).abs() < 0.01,
+            "{width} mm, expected {expected} mm"
+        );
+        let (doc, at) = doc_with_cell(10000, [0; 4], [600, 650, 1, 1]);
+        let width = check_target(&doc, &at, false).unwrap();
+        let expected = hwpunit_to_mm(10000 - 600 - 650);
+        assert!(
+            (width - expected).abs() < 0.01,
+            "{width} mm, expected {expected} mm"
+        );
+    }
 }
