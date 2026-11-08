@@ -1146,7 +1146,13 @@ fn layout_document_pages(
                 page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
             }
             let tabs = crate::tab::tab_stops(doc, para);
-            let geom = para_geometry(doc, para);
+            let mut geom = para_geometry(doc, para);
+            if anchors.is_some() && para_index == 0 {
+                // B5: the section's first paragraph starts at zero. Apply this
+                // to the anchor prepass flow; later explicit breaks and page
+                // overflow retain their existing space-before placement.
+                geom.spacing_top = 0.0;
+            }
             let links = crate::shape::hyperlink_ranges(para);
             // Do not consume a list counter for a paragraph that has no visible line at all.
             let marker = if para.line_segs.is_empty() && para.chars.is_empty() {
@@ -1921,7 +1927,7 @@ impl TableSplitCtx<'_, '_> {
 }
 
 /// Default inner cell margins (HWPUNIT; Hangul defaults).
-const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
+pub(crate) const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
 
 /// One cached page-sized run of a cell.  The selections retain paragraph
 /// boundaries, while `first_v_pos` translates Hancom's page-relative cache to

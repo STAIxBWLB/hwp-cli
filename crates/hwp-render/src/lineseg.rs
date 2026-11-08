@@ -195,13 +195,22 @@ fn fill_nested(
                         warnings,
                     );
                 }
-                let margins: Vec<_> = t
-                    .cells
-                    .iter()
-                    .map(|cell| crate::layout::cell_margins(t, cell))
-                    .collect();
-                for (cell, (ml, mr, _, _)) in t.cells.iter_mut().zip(margins) {
-                    let w = (cell.width.0 - ((ml + mr) * 100.0).round() as i32).max(1);
+                let table_margins = t.inner_margins;
+                for cell in &mut t.cells {
+                    // Native caches inherit only an explicit 0xffff sentinel.
+                    // Zero is authored padding, including an all-zero margin array.
+                    let [ml, mr]: [u16; 2] =
+                        std::array::from_fn(|i| match (cell.margins[i], table_margins[i]) {
+                            (u16::MAX, u16::MAX) => crate::layout::DEFAULT_CELL_MARGINS[i],
+                            (u16::MAX, inherited) => inherited,
+                            (explicit, _) => explicit,
+                        });
+                    let w = cell
+                        .width
+                        .0
+                        .saturating_sub(i32::from(ml))
+                        .saturating_sub(i32::from(mr))
+                        .max(1);
                     // Always recompute cells, as before: their line counts determine table height,
                     // and stale pre-edit caches would misalign the table.
                     fill_list(

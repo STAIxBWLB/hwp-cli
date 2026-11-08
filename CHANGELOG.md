@@ -17,8 +17,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Cacheless body line advance follows declared spacing instead of a fixed 1.6x multiplier.
   Nonempty cacheless cells reuse the existing line metrics with render-only widths narrowed by
   left/right paragraph margins. Native nested caches retain their prior full-width convention
-  without added body paragraph gaps. Cell width resolves inherited margins through `cell_margins`,
-  fixing a width-of-1 fallback when the cell stores the `0xffff` sentinel. Stored cell minima and
+  without added body paragraph gaps. Native cell width resolves only explicit `0xffff` margin
+  sentinels through table margins (using the existing default only for a table sentinel too),
+  fixing the width-of-1 fallback while preserving explicit zero padding. The floating anchor
+  prepass follows B5 by omitting space-before for each section's first paragraph only. Stored cell minima and
   saved-cache row floors remain unchanged. Nested-cache preparation also covers table/picture
   captions and text-box lists. Unchanged native HWP5 paragraphs retain their source representation;
   edited floating-section paragraphs can receive new positions and page-start flags.

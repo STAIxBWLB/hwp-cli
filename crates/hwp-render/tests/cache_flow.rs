@@ -300,6 +300,22 @@ fn first_line_pushed_after_floating_table_uses_resolved_page_anchor() {
     let id = hwp_render::segment_id::paragraph_id(&address, &source.sections[0].paragraphs[1]);
     let mut store = FontStore::new();
     let mut issues = RenderIssueAccumulator::new();
+    let following = &source.sections[0].paragraphs[1];
+    let shaped = hwp_render::shape::shape_range(
+        &mut store,
+        &source,
+        following,
+        (0, following.wchar_len()),
+        &mut issues,
+    );
+    if !shaped.iter().any(
+        |item| matches!(item, hwp_render::shape::InlineItem::Run(run) if !run.glyphs.is_empty()),
+    ) {
+        eprintln!(
+            "SKIP first-line pagination precondition: no host font shapes ASCII; install a system font with ASCII glyphs"
+        );
+        return;
+    }
     let (_, source_map) =
         hwp_render::layout::layout_document_with_segments(&source, &mut store, &mut issues);
     let source_pages: Vec<_> = source_map
