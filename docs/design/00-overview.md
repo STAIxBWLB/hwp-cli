@@ -96,6 +96,7 @@ width 1, inline width 8, extended width 8). Lossless round-tripping is preserved
 | 21 | [pdf-parity](21-pdf-parity.md) | **PDF parity contract (Hancom Office 2024)** — oracle, five-metric set, thresholds, font gate, data policy and non-goals the parity harness reads (issue #79) |
 | 22 | [remote-mcp-deployment](22-remote-mcp-deployment.md) | **Remote MCP deployment design** — how doc 20 gets built and hosted: the shared `hwp serve` HTTP adapter, the `httparse` dependency decision (doc 20 §8 gate), and two tiers (Cloudflare Workers + Containers, AgentCore behind an Amazon Quick connector) |
 | 23 | [hwpx-skill-absorption](23-hwpx-skill-absorption.md) | **hwpx skill absorption** — subcommand-grain parity matrix (28 old subcommands + script-level guarantees, verified/inferred marked), the D-14 margin record, the living checklist phases 2.2-2.5 update in place (issue #121, skills#35) |
+| 24 | [original-form-contract](24-original-form-contract.md) | **Original-form preservation contract** - synthetic P0 fixture, cell/grid/style/resource projections, explicit changes, relative anchors and separate font/native evidence (#411, #416) |
 
 ---
 

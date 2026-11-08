@@ -828,11 +828,13 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       # Checklist line 12, read rather than re-run (D-07): the evaluated commit's own CI check
-      # runs are the 3-OS evidence. The expected job names below must stay in sync with ci.yml,
-      # exactly as release.yml's verify-ci job already requires. An absent or incomplete run is
+      # runs are the 3-OS evidence. The five expected names below stay in sync with ci.yml;
+      # release verify-ci uses ci-ok, which also allows declared lightweight skips. Readiness
+      # uses ordinary workflow_dispatch for full validation of docs/formula-only main commits.
+      # An absent or incomplete run is
       # `pending` and fails the job; it is never a pass. One exception: ci.yml deduplicates a
-      # main push whose tree a merged PR head already verified, so such a commit has no own
-      # check runs — the identical-tree fallback below accepts the PR head's green runs, with
+      # main push whose tree a merged PR head already verified, so its heavy checks are skipped
+      # while ci-ok succeeds. The identical-tree fallback below accepts the PR head's green runs, with
       # the evidence naming the PR head it relied on. The fallback applies ONLY when every
       # gate job on the evaluated commit is absent or skipped (the dedup signature): a failed,
       # cancelled, succeeded-but-partial or pending own job is never overridden by earlier PR

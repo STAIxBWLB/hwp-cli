@@ -437,6 +437,16 @@ pub enum Cmd {
         json: bool,
     },
 
+    /// List named styles (resolved attributes; `used_by` is the paragraph segment ids
+    /// `cat --with-segments --segments v2` publishes)
+    Styles {
+        /// Target HWP/HWPX file
+        file: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: StylesFormat,
+    },
+
     /// List `{{name}}` text placeholders (template slots; a name is any text without braces or control characters, padding inside the braces trimmed)
     Slots {
         /// Target HWP/HWPX file
@@ -796,6 +806,13 @@ pub enum TextFormat {
     Json,
     Html,
     Csv,
+}
+
+/// Output format of `hwp styles`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum StylesFormat {
+    Text,
+    Json,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

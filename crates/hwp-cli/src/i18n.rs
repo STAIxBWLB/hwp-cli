@@ -704,6 +704,13 @@ pub const KO: &[(&str, &str, &str)] = &[
     ("bookmarks", "file", "대상 HWP/HWPX 파일"),
     ("bookmarks", "json", "JSON으로 출력"),
     (
+        "styles",
+        "",
+        "이름 있는 스타일 목록 표시 (해석된 속성, used_by는 cat --with-segments --segments v2가 내는 문단 세그먼트 id)",
+    ),
+    ("styles", "file", "대상 HWP/HWPX 파일"),
+    ("styles", "format", "출력 포맷"),
+    (
         "slots",
         "",
         "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록 표시 (이름은 중괄호·제어문자를 뺀 임의 텍스트, 중괄호 안 공백은 제거)",

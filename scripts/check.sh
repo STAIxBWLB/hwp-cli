@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# 로컬 CI 미러 — .github/workflows/ci.yml의 Rust/fixture 게이트와 public PDF parity를 실행.
-# ci.yml처럼 앞 게이트가 실패해도 나머지를 끝까지 실행해 한 번에 보고한다.
-# PR 전에 이 스크립트 한 방으로 로컬 검증을 끝낸다.
+# Local CI mirror: Rust/fixture gates and public PDF parity from ci.yml.
+# Continue after individual failures so one run reports every gate.
+# Run this complete gate before opening a PR.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 
-# CI는 dtolnay/rust-toolchain@1.93.0으로 고정한다. 로컬에 같은 툴체인이 있으면 그것을
-# 써서 rustfmt/clippy 결과를 CI와 바이트 동일하게 맞춘다(없으면 호스트 + 경고).
-if rustup toolchain list 2>/dev/null | grep -q '^1\.93\.0'; then
+# Use the same 1.93.0 toolchain as CI when installed, keeping fmt/clippy deterministic.
+# Otherwise use the host toolchain and print the existing warning.
+if rustup toolchain list 2>/dev/null | grep '^1\.93\.0' >/dev/null; then
     CARGO="cargo +1.93.0"
 else
     CARGO="cargo"
@@ -39,7 +39,7 @@ run $CARGO clippy --workspace --all-targets -- -D warnings
 # it logs, so after a failed test step the fixture-skip tally is a partial count (#350).
 partial=""
 run $CARGO test --workspace || partial=" (partial)"
-run python3 -m unittest tools/test_pdf_parity.py
+run python3 -m unittest tools/test_pdf_parity.py tools/test_ci_gate.py
 run bash scripts/tests/hancom-regression.sh
 run bash scripts/check-structured-corpus.sh
 run bash scripts/check-crate-edges.sh

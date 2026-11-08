@@ -1,7 +1,7 @@
-//! 충실도 보존 fill (patch::fill_placeholders) 통합 테스트.
+//! Integration tests for fidelity-preserving fill (patch::fill_placeholders).
 //!
-//! 합성 HWPX(미리보기 썸네일 + `hp:switch` 호환 블록 + `{{name}}`)를 만든 뒤,
-//! 채우기 후에도 비대상 엔트리가 바이트 보존되고 본문 자리표시자만 치환되는지 검증.
+//! Build a synthetic HWPX with a preview thumbnail, hp:switch compatibility block and {{name}},
+//! then verify fill changes only body placeholders while retaining non-target entry bytes.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -27,14 +27,14 @@ fn build_fixture(path: &std::path::Path) {
     zip.start_file("Preview/PrvImage.png", deflated).unwrap();
     zip.write_all(PRV_IMAGE).unwrap();
 
-    // 2016 호환 블록(hp:switch) — IR 경유 writer가 떨어뜨리는 부분.
+    // 2016 compatibility block (hp:switch), previously dropped by the IR writer.
     zip.start_file("Contents/header.xml", deflated).unwrap();
     zip.write_all(
         b"<hh:head><hp:switch><hp:case>a</hp:case><hp:default>b</hp:default></hp:switch></hh:head>",
     )
     .unwrap();
 
-    // 단일 런 자리표시자.
+    // A placeholder contained in one run.
     zip.start_file("Contents/section0.xml", deflated).unwrap();
     zip.write_all(
         "<hs:sec><hp:p><hp:run><hp:t>{{기관명}} 운영 보고</hp:t></hp:run></hp:p></hs:sec>"
@@ -65,18 +65,18 @@ fn fill_preserves_preview_and_compat() {
 
     let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
 
-    // mimetype 첫 엔트리 + STORED.
+    // mimetype is the first entry and STORED.
     {
         let first = zip.by_index(0).unwrap();
-        assert_eq!(first.name(), "mimetype");
+        assert_eq!(first.name().unwrap(), "mimetype");
         assert_eq!(first.compression(), CompressionMethod::Stored);
     }
-    // 미리보기 썸네일 바이트 보존 (raw copy).
+    // Preserve preview-thumbnail bytes through raw copy.
     assert_eq!(read_entry(&mut zip, "Preview/PrvImage.png"), PRV_IMAGE);
-    // hp:switch 호환 블록 보존.
+    // Preserve the hp:switch compatibility block.
     let header = String::from_utf8(read_entry(&mut zip, "Contents/header.xml")).unwrap();
     assert!(header.contains("hp:switch"), "hp:switch 보존");
-    // 본문: 자리표시자 → 값.
+    // Body: replace the placeholder with its value.
     let section = String::from_utf8(read_entry(&mut zip, "Contents/section0.xml")).unwrap();
     assert!(!section.contains("{{기관명}}"), "자리표시자 제거됨");
     assert!(section.contains("제주한라대학교"), "값 삽입됨");
@@ -256,7 +256,7 @@ struct RawEntry {
 fn raw_entry(path: &std::path::Path, name: &str) -> RawEntry {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
     let index = (0..archive.len())
-        .find(|index| archive.by_index(*index).unwrap().name() == name)
+        .find(|index| archive.by_index(*index).unwrap().name().unwrap() == name)
         .unwrap();
     let entry = archive.by_index(index).unwrap();
     let metadata = (
@@ -403,7 +403,7 @@ fn template_fill_rejects_ambiguous_or_non_text_field_and_preserves_destination()
 
 // ---- patch::replace_texts ----
 
-/// replace_texts용 픽스처: 섹션에 대학명 텍스트 + PrvText.txt(UTF-8) 포함.
+/// replace_texts fixture: university-name text in the section and UTF-8 PrvText.txt.
 fn build_replace_fixture(path: &std::path::Path) {
     let file = std::fs::File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
@@ -426,7 +426,7 @@ fn build_replace_fixture(path: &std::path::Path) {
     zip.start_file("Contents/header.xml", deflated).unwrap();
     zip.write_all(b"<hh:head/>").unwrap();
 
-    // 대학명 + XML 특수문자 포함 본문.
+    // Body containing a university name and XML special characters.
     zip.start_file("Contents/section0.xml", deflated).unwrap();
     zip.write_all(
         "<hs:sec><hp:p><hp:run><hp:t>한빛대학교 &amp; 한빛대 협약</hp:t></hp:run></hp:p></hs:sec>"
@@ -444,7 +444,7 @@ fn replace_texts_바이트보존_순차치환() {
     let out = dir.join("hwpx_repl_out.hwpx");
     build_replace_fixture(&src);
 
-    // 긴 이름 먼저(순차 치환 — 짧은 이름이 먼저면 긴 이름 안을 오염).
+    // Longer names first; sequentially replacing a short name first would corrupt the longer name.
     let pairs = vec![
         ("한빛대학교".to_string(), "누리대학교".to_string()),
         ("한빛대".to_string(), "누리대".to_string()),
@@ -454,20 +454,20 @@ fn replace_texts_바이트보존_순차치환() {
     assert_eq!(counts.get("Preview/PrvText.txt"), Some(&1), "미리보기 1건");
 
     let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
-    // 비대상 엔트리는 바이트 보존.
+    // Preserve non-target entry bytes.
     assert_eq!(read_entry(&mut zip, "Preview/PrvImage.png"), PRV_IMAGE);
     {
         let first = zip.by_index(0).unwrap();
-        assert_eq!(first.name(), "mimetype");
+        assert_eq!(first.name().unwrap(), "mimetype");
         assert_eq!(first.compression(), CompressionMethod::Stored);
     }
-    // 재오염 없음: "누리대학교" 안에 "누리대"가 다시 치환되지 않았다.
+    // No repeated substitution of the shorter name inside the replacement university name.
     let section = String::from_utf8(read_entry(&mut zip, "Contents/section0.xml")).unwrap();
     assert!(
         section.contains("누리대학교 &amp; 누리대 협약"),
         "순차 치환 결과: {section}"
     );
-    // PrvText도 치환.
+    // Replace PrvText as well.
     let prv = String::from_utf8(read_entry(&mut zip, "Preview/PrvText.txt")).unwrap();
     assert_eq!(prv, "누리대학교 보고서");
 
@@ -483,7 +483,7 @@ fn replace_texts_xml_이스케이프() {
     let out = dir.join("hwpx_repl_esc_out.hwpx");
     build_replace_fixture(&src);
 
-    // from/to의 특수문자는 XML 이스케이프 후 치환돼야 한다.
+    // XML-escape special characters in from/to before substitution.
     let pairs = vec![("한빛대 협약".to_string(), "A&B 제휴".to_string())];
     hwpx::patch::replace_texts(&src, &out, &pairs).unwrap();
 
@@ -503,7 +503,7 @@ fn replace_texts_xml_이스케이프() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---- patch::rewrite_document_staged (IR 외과 수술 재작성) ----
+// ---- patch::rewrite_document_staged (surgical IR rewriting) ----
 
 const SURG_PNG_REFERENCED: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 1, 1, 1];
 const SURG_PNG_NEW: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 7, 7, 7, 7];
@@ -517,7 +517,7 @@ const SURG_HEADER_XML: &str = r##"<?xml version="1.0" encoding="UTF-8"?><hh:head
 
 const SURG_CONTENT_HPF: &str = r##"<?xml version="1.0" encoding="UTF-8"?><opf:package xmlns:opf="http://www.idpf.org/2007/opf/"><opf:metadata><opf:title>원본 제목</opf:title></opf:metadata><opf:manifest><opf:item id="header" href="Contents/header.xml" media-type="application/xml"/><opf:item id="section0" href="Contents/section0.xml" media-type="application/xml"/><opf:item id="section1" href="Contents/section1.xml" media-type="application/xml"/><opf:item id="settings" href="settings.xml" media-type="application/xml"/><opf:item id="image1" href="BinData/image1.png" media-type="image/png" isEmbeded="1"/></opf:manifest><opf:spine><opf:itemref idref="header" linear="yes"/><opf:itemref idref="section0" linear="yes"/><opf:itemref idref="section1" linear="yes"/></opf:spine></opf:package>"##;
 
-/// 컨테이너(미해석 개체 원문) + image1을 참조하는 그림을 담은 첫째 구역.
+/// First section containing captured container XML and a picture referencing image1.
 const SURG_SECTION0_XML: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>원본 본문</hp:t><hp:container id="77" zOrder="3"><hp:sz width="1000" height="500"/><hp:subList><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>컨테이너 텍스트</hp:t></hp:run></hp:p></hp:subList></hp:container><hp:pic id="5" zOrder="0"><hp:sz width="100" height="100"/><hp:pos treatAsChar="1" vertOffset="0" horzOffset="0"/><hp:img binaryItemIDRef="image1" bright="0" contrast="0"/></hp:pic></hp:run></hp:p></hs:sec>"##;
 
 const SURG_SECTION1_XML: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p id="0" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>둘째 구역</hp:t></hp:run></hp:p></hs:sec>"##;
@@ -555,7 +555,7 @@ fn build_surgical_fixture(path: &std::path::Path) {
 }
 
 fn surgical_dir(tag: &str) -> std::path::PathBuf {
-    // PID 포함 — 병렬 cargo test 세션끼리 산출물을 덮어쓰지 않게.
+    // Include the PID to prevent parallel cargo test sessions from overwriting artifacts.
     let dir = std::env::temp_dir().join(format!("hwpx-surgical-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -565,7 +565,7 @@ fn read_surgical_doc(path: &std::path::Path) -> hwp_model::Document {
     hwpx::read_document(path).unwrap().document
 }
 
-/// 외과 수술 후에도 비대상 엔트리가 압축 바이트·ZIP 메타데이터까지 동일한지 검사.
+/// Check non-target entries retain compressed bytes and ZIP metadata after surgical rewriting.
 fn assert_raw_preserved(src: &std::path::Path, out: &std::path::Path, names: &[&str]) {
     for name in names {
         assert_eq!(
@@ -576,7 +576,7 @@ fn assert_raw_preserved(src: &std::path::Path, out: &std::path::Path, names: &[&
     }
 }
 
-/// 불투명 엔트리 전체(본문 콘텐츠 외 모든 것) — 어떤 dirty 조합에서도 보존돼야 한다.
+/// All opaque entries (everything outside body content) must survive every dirty combination.
 const SURG_OPAQUE_ENTRIES: &[&str] = &[
     "mimetype",
     "version.xml",
@@ -595,7 +595,7 @@ fn rewrite_staged_텍스트편집_비대상_엔트리_바이트보존() {
     build_surgical_fixture(&src);
 
     let mut doc = read_surgical_doc(&src);
-    // section0 첫 문단 텍스트 한 글자 편집 ("원본 본문" → "개본 본문").
+    // Edit one character in section0's first paragraph.
     for ch in &mut doc.sections[0].paragraphs[0].chars {
         if let hwp_model::HwpChar::Text('원') = ch {
             *ch = hwp_model::HwpChar::Text('개');
@@ -621,7 +621,7 @@ fn rewrite_staged_텍스트편집_비대상_엔트리_바이트보존() {
         report.preservation.events
     );
 
-    // 비대상 콘텐츠 엔트리(section1·header·content.hpf)까지 raw 보존.
+    // Raw-preserve non-target content entries too (section1/header/content.hpf).
     let mut preserved = SURG_OPAQUE_ENTRIES.to_vec();
     preserved.extend([
         "Contents/section1.xml",
@@ -651,7 +651,7 @@ fn rewrite_staged_이미지추가_새엔트리와_매니페스트_갱신() {
     build_surgical_fixture(&src);
 
     let mut doc = read_surgical_doc(&src);
-    // 새 바이너리 + 그림 컨트롤 삽입 (insert-image op과 같은 IR 변화).
+    // Insert a new binary and picture control, matching the insert-image operation's IR change.
     doc.bin_streams.push(hwp_model::BinStream {
         name: "inserted1.png".to_string(),
         data: SURG_PNG_NEW.to_vec(),
@@ -669,7 +669,7 @@ fn rewrite_staged_이미지추가_새엔트리와_매니페스트_갱신() {
     new_pic.bin_ref = hwp_model::BinRef::ItemRef("inserted1.png".to_string());
     para.controls.push(hwp_model::Control::Picture(new_pic));
     let new_index = (para.controls.len() - 1) as u32;
-    // 기존 그림 앵커 문자에서 확장 컨트롤 문자 형태(code/ctrl_id/payload)를 복사한다.
+    // Copy the extended control character layout (code/ctrl_id/payload) from the existing picture anchor.
     let (code, ctrl_id, payload) = para
         .chars
         .iter()
@@ -690,7 +690,7 @@ fn rewrite_staged_이미지추가_새엔트리와_매니페스트_갱신() {
         ctrl_index: Some(new_index),
     });
 
-    // content.hpf는 dirty가 아니지만, 새 BinData가 생겨 패치가 강제로 재생성해야 한다.
+    // Although content.hpf is not dirty, new BinData requires the patch to regenerate it.
     let dirty = hwpx::patch::DirtyEntries {
         sections: Some(vec![0]),
         header: false,
@@ -711,13 +711,13 @@ fn rewrite_staged_이미지추가_새엔트리와_매니페스트_갱신() {
     );
 
     let mut zip = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
-    // 새 바이너리는 seed와 충돌하지 않는 새 엔트리로 추가됐다.
+    // The new binary receives an entry name that does not conflict with the seed.
     assert_eq!(
         read_entry(&mut zip, "BinData/image2.png"),
         SURG_PNG_NEW,
         "새 BinData 엔트리"
     );
-    // content.hpf 강제 재생성: 신규 항목 추가 + 기존 항목 유지.
+    // Force content.hpf regeneration: add the new item and retain existing items.
     let hpf = String::from_utf8(read_entry(&mut zip, "Contents/content.hpf")).unwrap();
     assert!(
         hpf.contains(
@@ -754,7 +754,7 @@ fn rewrite_staged_메타데이터편집_content_hpf만_재생성() {
 
     let mut doc = read_surgical_doc(&src);
     doc.metadata.title = Some("새 제목".to_string());
-    // 섹션 0개 dirty — 본문은 전부 raw 복사돼야 한다.
+    // No dirty sections: raw-copy the entire body.
     let dirty = hwpx::patch::DirtyEntries {
         sections: Some(vec![]),
         header: false,
@@ -818,7 +818,7 @@ fn rewrite_staged_전체_dirty도_불투명_엔트리는_보존() {
         section.contains(r#"binaryItemIDRef="image1""#),
         "기존 그림이 원본 id 유지: {section}"
     );
-    // content.hpf가 재생성돼도 원본 매니페스트 id 체계를 유지한다.
+    // Retain the original manifest ID scheme even when regenerating content.hpf.
     let hpf = String::from_utf8(read_entry(&mut zip, "Contents/content.hpf")).unwrap();
     assert!(
         hpf.contains(r#"id="image1" href="BinData/image1.png""#),

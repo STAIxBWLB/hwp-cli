@@ -23,6 +23,7 @@
 - [`hwp edit`](#hwp-edit)
 - [`hwp fields`](#hwp-fields)
 - [`hwp bookmarks`](#hwp-bookmarks)
+- [`hwp styles`](#hwp-styles)
 - [`hwp slots`](#hwp-slots)
 - [`hwp fill`](#hwp-fill)
 - [`hwp validate`](#hwp-validate)
@@ -311,6 +312,17 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 |---|---|---|---|
 | `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
+
+## `hwp styles`
+
+이름 있는 스타일 목록 표시 (해석된 속성, used_by는 cat --with-segments --segments v2가 내는 문단 세그먼트 id)
+
+**사용법:** `hwp styles [OPTIONS] <FILE>`
+
+| 인자/플래그 | 값 | 기본값 | 설명 |
+|---|---|---|---|
+| `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
+| `--format` | `text` \| `json` | `text` | 출력 포맷 |
 
 ## `hwp slots`
 

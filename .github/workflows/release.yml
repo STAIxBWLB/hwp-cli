@@ -1,10 +1,9 @@
 name: Release
 
-# Pushing a vX.Y.Z tag publishes platform `hwp` binaries to a GitHub Release (archive +
-# sha256) only after (1) the tagged commit already has a green CI run — its own, or the green
-# run of a merged PR head whose tree is identical (ci.yml deduplicates such main pushes, so
-# the tagged commit can legitimately have no own check runs) — and (2) the tag
-# matches the Cargo.toml version.
+# Pushing a vX.Y.Z tag publishes archives only after its ci-ok aggregate succeeds (or
+# an absent aggregate is backed by an identical-tree PR with all five heavy checks plus
+# ci-ok successful), and the tag matches Cargo.toml. Deduplicated main pushes now report
+# their own ci-ok; only their heavy jobs are skipped.
 # Release flow (main is protected, so the version bump cannot be pushed to it directly):
 # close the CHANGELOG section and run scripts/release.sh X.Y.Z on a branch, discard the tag
 # it creates there (`git tag -d vX.Y.Z`), open a PR, squash merge it, then tag the merge
@@ -33,20 +32,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Pass gate: the tagged commit must already have a green CI run (ci.yml runs on every
-  # main push, and release.sh always tags main HEAD). Re-running the whole matrix here
-  # duplicated ~25 runner-minutes per release; reading the check-runs API gives the same
-  # guarantee. ci.yml may deduplicate a main push whose tree a merged PR head already
-  # verified, leaving the commit with no own check runs — the identical-tree fallback below
-  # accepts that PR head's green runs, but ONLY when every gate job on the tagged commit is
-  # absent or skipped (the dedup signature): a failed, cancelled or pending own job must
-  # never be overridden by earlier PR evidence. The job names below must stay in sync with
-  # ci.yml.
+  # Pass gate: require the stable ci-ok aggregate, which covers every gating CI job
+  # and the explicitly proved path/dedup skips. Skipped/neutral/failed/cancelled aggregates
+  # refuse release. Legacy absent aggregates may use a merged identical-tree PR's ci-ok.
   #
   # A tag pushed right after the merge used to fail here because the tagged commit's CI was
   # still running (v1.2.0, #412). The gate now polls: while a CI workflow run for the commit is
   # unfinished, or any gate job is queued/in progress, it waits and re-reads, up to
-  # CI_WAIT_DEADLINE seconds. Only settled states are judged, so the rules below are unchanged.
+  # CI_WAIT_DEADLINE seconds. Only settled states are judged against the ci-ok aggregate.
   verify-ci:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -62,12 +55,13 @@ jobs:
           CI_WAIT_DEADLINE: "2700" # seconds; inside the job's 60-minute timeout
         run: |
           set -euo pipefail
-          expected=("lint" "pdf-parity" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)")
-          # Prints the five states for $1 and succeeds only if all are completed/success.
+          expected=("ci-ok")
+          fallback_expected=("lint" "pdf-parity" "test (ubuntu-latest)" "test (macos-latest)" "test (windows-latest)" "ci-ok")
+          # PR fallback requires the full six-check proof, not a lightweight aggregate alone.
           check_green() {
             local sha="$1" runs state name failed=0
             runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?filter=latest&per_page=100")" || return 1
-            for name in "${expected[@]}"; do
+            for name in "${fallback_expected[@]}"; do
               state="$(jq -r --arg n "$name" \
                 '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
                 <<<"$runs")"
@@ -78,7 +72,7 @@ jobs:
           }
           # Poll until CI on the tagged commit has settled: no ci.yml run for the commit is
           # unfinished and no gate job is queued or in progress. The dedup case settles too
-          # (its decision job finishes and the matrix stays absent/skipped).
+          # (decision and ci-ok finish while the heavy jobs stay intentionally skipped).
           deadline=$(( $(date +%s) + ${CI_WAIT_DEADLINE:-2700} ))
           while :; do
             runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=latest&per_page=100")"
@@ -105,14 +99,12 @@ jobs:
             echo "$name: $state"
             case "$state" in
             completed/success)
-              # A real own result exists. It counts toward the pass above, but the dedup
-              # signature is all five absent/skipped, so a partial own result also
-              # disqualifies the PR-head fallback.
+              # A real own aggregate result disqualifies historical PR fallback.
               fallback_ok=false
               ;;
-            absent|completed/skipped|completed/neutral)
-              # The dedup signature: ci.yml's decision job skipped the matrix, so the
-              # commit legitimately has no own runs — the PR-head fallback stays available.
+            absent)
+              # Only legacy commits without ci-ok can use identical-tree PR evidence.
+              # A skipped/neutral aggregate is unexpected and must never pass.
               all_green=false
               ;;
             *)
@@ -131,9 +123,8 @@ jobs:
             echo "::error::Tagged commit $GITHUB_SHA has no green CI. Let the CI workflow pass on main, then re-run this workflow."
             exit 1
           fi
-          # Identical-tree fallback: a main commit deduplicated by ci.yml's decision job has
-          # no own check runs (only absent/skipped, verified above); accept the merged PR
-          # head's green runs when the trees match.
+          # Legacy absent-aggregate fallback accepts only an identical-tree merged PR
+          # whose five heavy checks and ci-ok succeeded. Lightweight runs publish their own ci-ok.
           pulls="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100")"
           pr="$(jq -c --arg sha "$GITHUB_SHA" \
             '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | sort_by(.number) | last // empty' \
@@ -179,12 +170,19 @@ jobs:
             exit 1
           fi
 
+  # Dependency policy (cargo-deny: advisories, bans, licenses, sources) is a release
+  # prerequisite only; deny.yml is not a pull request check.
+  deny:
+    uses: ./.github/workflows/deny.yml
+    permissions:
+      contents: read
+
   # Create the release shell once (notes come from the CHANGELOG section). Skipped if it
   # already exists (rerun-safe). Created as a draft: `releases/latest` ignores drafts, so
   # install.sh and `hwp update` cannot pick the release up until publish-release flips it,
   # which happens only after every asset gate has passed.
   create-release:
-    needs: [verify-ci, verify-version]
+    needs: [verify-ci, verify-version, deny]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -346,15 +344,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
 
-  # Homebrew formula (the repo itself is the tap): update version/sha256 from the freshly
-  # uploaded assets. main is a protected branch, so the bot cannot push directly — open a PR
-  # and merge it: squash auto-merge when possible, an immediate squash merge as fallback
-  # (repos with no required checks refuse auto-merge on clean PRs). The release is valid
-  # either way, and scripts/update_formula.sh X.Y.Z remains the local recovery path.
+  # Homebrew formula updates open a PR and wait for its exact-head ci-ok before enabling
+  # squash auto-merge. GitHub's clean-status refusal can use a checked head-matched merge
+  # after a fresh PR seal; every other error refuses. If automation cannot pass the gate,
+  # inspect CI and merge the formula PR manually after its checks pass.
   update-formula:
     needs: publish-release
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+      actions: write # explicitly dispatch CI for the GITHUB_TOKEN-created formula PR
     steps:
       # Check out main, not the tag — the formula change targets main.
       - uses: actions/checkout@v7
@@ -397,12 +399,8 @@ jobs:
               exit 1
             fi
           fi
-          # Auto-merge first; repos with no required checks refuse auto-merge on a clean
-          # PR ("Pull request is in clean status"), so fall back to merging immediately.
-          if ! gh pr merge --auto --squash "$branch"; then
-            gh pr merge --squash "$branch" \
-              || echo "::warning::merge the formula PR manually: https://github.com/$GITHUB_REPOSITORY/compare/main...$branch"
-          fi
+          python3 scripts/ci_gate.py formula --repo "$GITHUB_REPOSITORY" \
+            --branch "$branch" --head "$(git rev-parse HEAD)"
 
       # The step above used to end on a warning and exit 0 whether or not the formula actually
       # moved, so a release could finish green with `brew install hwp` still serving the previous

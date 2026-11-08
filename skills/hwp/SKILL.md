@@ -117,6 +117,9 @@ syntax (used by `fill`, `slots` and the template tools).
   — list fields (name/kind/value), bookmarks (bokm), `{{name}}` template slots. `hwp slots
   --forms` adds Korean form fields (label cells, inline `라벨: 값`) with key, label, source,
   confidence, occurrences and required.
+- `hwp styles {file} [--format text|json]` — list named styles: id, name, kind (`null` when the
+  document does not state it, always for HWPX), resolved char/para attrs and `used_by`, the `para`
+  segment ids `hwp cat --with-segments --segments v2` publishes. `--format json` is `hwp-styles-v1`.
 - `hwp validate {file} [--json]` — structural validation (mimetype, required entries, XML
   parsing); exit code 0 when valid.
 - `hwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
@@ -289,7 +292,7 @@ of it, and re-enable the connector if repeated startup failures caused Quick to 
 
 When helping someone configure Quick, prefer JSON import and never put shell quote characters
 inside an argument. Verify three layers in order: the exact absolute binary returns a version;
-Quick reports 22 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
+Quick reports 23 tools and stays enabled after refresh; then `hwp_new` followed by `hwp_validate`
 succeeds on an absolute path under the configured LocalLow root (for example
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`). Do not claim
 that discovery alone proves file access.
@@ -297,7 +300,7 @@ After a connector edit, refresh or start a new chat instead of reusing an old ge
 The copy-paste operator and AI runbook is:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-Tools (22):
+Tools (23):
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -306,6 +309,7 @@ Tools (22):
 | `hwp_grep` | `path`, `pattern` | Paragraph substring search; `{matches, count, truncated}`; zero matches is a normal result |
 | `hwp_list_fields` | `path` | List fields |
 | `hwp_list_bookmarks` | `path` | List bookmarks (bokm) |
+| `hwp_styles` | `path` | List named styles with resolved attributes and `used_by` segment ids, as an `hwp-styles-v1` listing |
 | `hwp_slots` | `path` | List `{{name}}` placeholders |
 | `hwp_render` | `path` | Render pages (optional per-call `password`; `format`: png/svg/pdf, `pages` range); single-page PNG returns base64, larger results write files via `output_path` |
 | `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations (mirrors every `hwp edit` flag, incl. `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*`) |
@@ -327,7 +331,7 @@ Tools (22):
 ## HTTP mode for containers
 
 `hwp serve` speaks the same protocol as `hwp mcp`, over HTTP instead of stdio, so the same
-22 tools are reachable from a container. It is meant to sit behind a trusted edge that has already
+23 tools are reachable from a container. It is meant to sit behind a trusted edge that has already
 terminated TLS, authenticated the caller and capped the request body — not to face the internet
 directly.
 

@@ -124,6 +124,21 @@
     "name": "hwp_list_bookmarks"
   },
   {
+    "description": "이름 있는 스타일 목록을 hwp-styles-v1 JSON으로. 스타일마다 id·이름·종류·해석된 글자/문단 속성과, 그 스타일을 쓰는 문단의 세그먼트 id(used_by, `hwp cat --with-segments --segments v2`가 내는 id와 동일)를 담는다.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "hwp_styles"
+  },
+  {
     "description": "페이지를 렌더한다. 기본은 단일 페이지 PNG를 base64 이미지로 반환(에이전트가 문서를 직접 본다). format=svg/pdf 또는 다중 페이지 선택(pages)은 output_path가 필요하고, 파일로 저장 뒤 {files, pages, dpi} JSON을 반환한다(16MiB 응답 상한 우회). 페이지별 파일명은 CLI와 같이 <stem>-<N>.<ext>(단일 페이지면 경로 그대로), pdf는 단일 멀티페이지 파일.",
     "inputSchema": {
       "additionalProperties": false,

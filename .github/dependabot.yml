@@ -1,0 +1,14 @@
+# Cargo dependency updates. Dependabot PRs go through the normal CI gate like any other PR;
+# the release-blocking dependency policy lives in deny.toml / .github/workflows/deny.yml.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Seoul
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]

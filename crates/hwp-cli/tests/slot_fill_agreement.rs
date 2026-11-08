@@ -61,8 +61,8 @@ fn every_reported_slot_is_fillable() {
     let source = dir.join("source.md");
     std::fs::write(
         &source,
-        // 제목: whole in one run. 이름/기관명: split by emphasis and by bold.
-        // 연락처: split twice over. 비고: formatting around, not inside, the name.
+        // Title: whole in one run. Name/organization: split by emphasis and by bold.
+        // Contact: split twice over. Notes: formatting around, not inside, the name.
         "제목  {{제목}}\n\n\
          이름: {{이*름*}}\n\n\
          기관: {{기**관**명}}\n\n\
@@ -504,18 +504,18 @@ fn rewrite_section0(from: &Path, to: &Path, find: &str, replace: &str) {
         let mut entry = source.by_index(i).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == "Contents/section0.xml" {
+        if entry.name().unwrap() == "Contents/section0.xml" {
             let xml = String::from_utf8(data).unwrap();
             assert!(xml.contains(find), "{find} not in the section");
             data = xml.replace(find, replace).into_bytes();
         }
-        let method = if entry.name() == "mimetype" {
+        let method = if entry.name().unwrap() == "mimetype" {
             zip::CompressionMethod::Stored
         } else {
             zip::CompressionMethod::Deflated
         };
         out.start_file(
-            entry.name(),
+            entry.name().unwrap(),
             SimpleFileOptions::default().compression_method(method),
         )
         .unwrap();

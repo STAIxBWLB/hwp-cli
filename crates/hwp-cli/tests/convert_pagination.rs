@@ -6,6 +6,10 @@ use hwp_model::Document;
 use hwp_render::segment_map::SegmentMap;
 use serde_json::json;
 
+#[allow(dead_code)] // This regression reuses only the shared anchor layer.
+#[path = "common/original_form_contract.rs"]
+mod original_form_contract;
+
 struct ProbeDir(PathBuf);
 impl Drop for ProbeDir {
     fn drop(&mut self) {
@@ -89,49 +93,19 @@ fn assert_anchors_match(before: &Document, after: &Document) {
             }
         }
     }
-    for (pi, paragraph) in before.sections[0].paragraphs.iter().enumerate() {
-        let address = hwp_render::segment_id::SegmentPath {
-            section: 0,
-            indices: vec![pi],
-        };
-        let id = hwp_render::segment_id::paragraph_id(&address, paragraph);
-        let source_pages: Vec<_> = before_map
-            .rows
-            .iter()
-            .filter(|row| row.id == id)
-            .map(|row| row.page)
-            .collect();
-        let output_pages: Vec<_> = after_map
-            .rows
-            .iter()
-            .filter(|row| row.id == id)
-            .map(|row| row.page)
-            .collect();
-        assert_eq!(
-            source_pages, output_pages,
-            "body paragraph {pi} must retain its page anchor"
-        );
-    }
-    let tables = |map: SegmentMap| {
-        map.rows
-            .into_iter()
-            .filter(|row| row.kind == "table")
-            .map(|row| (row.page, row.bbox))
-            .collect::<Vec<_>>()
-    };
-    let source = tables(before_map);
-    let output = tables(after_map);
-    assert_eq!(source.len(), output.len(), "table fragments must agree");
-    for ((page, bbox), (output_page, output_bbox)) in source.iter().zip(&output) {
-        assert_eq!(page, output_page, "table fragment page anchors must agree");
-        let (a, b) = (bbox.unwrap(), output_bbox.unwrap());
-        for (x, y) in [(a.x0, b.x0), (a.y0, b.y0), (a.x1, b.x1), (a.y1, b.y1)] {
-            assert!(
-                (x - y).abs() < 0.05,
-                "table anchor geometry drift: {a:?} != {b:?}"
-            );
-        }
-    }
+    let before_anchors = original_form_contract::anchor_positions(
+        before,
+        &before_map,
+        &original_form_contract::body_paths(before),
+    )
+    .unwrap();
+    let after_anchors = original_form_contract::anchor_positions(
+        after,
+        &after_map,
+        &original_form_contract::body_paths(after),
+    )
+    .unwrap();
+    original_form_contract::compare_anchor_positions(&before_anchors, &after_anchors).unwrap();
     let mut breaks = 0;
     let mut stored_height_checks = 0;
     for (source, output) in before.sections[0]
