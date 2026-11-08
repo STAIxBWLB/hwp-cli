@@ -23,9 +23,12 @@ pub enum Atom {
 fn atoms(para: &Paragraph) -> Vec<Atom> {
     para.chars
         .iter()
-        .filter_map(|ch| match ch {
+        .enumerate()
+        .filter_map(|(index, ch)| match ch {
             HwpChar::Text(ch) => Some(Atom::Text(*ch)),
-            HwpChar::CharCtrl(code) if *code != hwp_model::ctrl_char::PARA_BREAK => {
+            HwpChar::CharCtrl(code)
+                if *code != hwp_model::ctrl_char::PARA_BREAK || index + 1 != para.chars.len() =>
+            {
                 Some(Atom::CharControl(*code))
             }
             HwpChar::InlineCtrl { code, .. } => Some(Atom::InlineControl(*code)),

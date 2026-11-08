@@ -31,6 +31,7 @@ projection에 타입이 있는 제어 atom으로 보존하며 명시적인 expec
 이를 평탄화한 문자열로 일치 처리하거나 암묵적으로 교체하지 않는다. 숫자 코드가 같아도
 CharCtrl과 InlineCtrl은 서로 다른 atom 종류로 유지한다. ExtCtrl atom은 code, `ctrl_id`,
 참조하는 control index를 보존하므로 보이는 텍스트가 같아도 필드·개체 앵커 변경을 숨길 수 없다.
+선택적인 마지막 문단 종료문자만 정규화하고, 문단 중간의 문단 나누기 제어문자는 atom으로 유지한다.
 네이티브 원본 payload tail은 이 의미 투영의 범위 밖에 남는다.
 
 생성 원본 테스트는 두 HWPX 사본의 전체 투영을 비교한다. 두 포맷은 각각 manifest의 셀 값,

@@ -757,3 +757,21 @@ fn contract_rejects_missing_default_tab_definition() {
         .expect_err("tab definition zero is a real reference and must resolve");
     assert_eq!(error.layer, "references");
 }
+
+#[test]
+fn contract_keeps_interior_paragraph_break_control() {
+    let Some(fixture) = Fixture::new("interior-terminator") else {
+        return;
+    };
+    let baseline = assert_manifest(&fixture.doc, &fixture.expected);
+    let mut broken = fixture.doc.clone();
+    cell_mut(&mut broken, 0, 1, 1).paragraphs[0]
+        .chars
+        .insert(1, HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
+    assert_eq!(
+        contract::compare_form_contract(&baseline, &contract::project_form(&broken))
+            .expect_err("only the trailing paragraph terminator may be normalized")
+            .layer,
+        "cell_values"
+    );
+}

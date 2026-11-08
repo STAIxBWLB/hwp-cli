@@ -33,7 +33,8 @@ values retain typed control atoms in the projection and require an explicit expe
 they cannot be flattened into a string match or silently replaced. Character controls and inline
 controls remain distinct atom variants even when their numeric codes match. Extended-control atoms
 retain the code, `ctrl_id` and referenced control index; changing a field/object anchor cannot be
-hidden by unchanged visible text. Raw native payload tails remain outside this semantic projection.
+hidden by unchanged visible text. Only an optional trailing paragraph terminator is normalized; interior paragraph-break controls
+remain atoms. Raw native payload tails remain outside this semantic projection.
 
 The generated-source test compares full HWPX twin projections. Both formats independently check
 manifest cell values, grid widths/spans, form markers/breaks and resource roles. HWP5 then has its
