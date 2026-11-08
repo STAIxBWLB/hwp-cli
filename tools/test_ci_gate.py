@@ -369,7 +369,7 @@ class WorkflowTests(unittest.TestCase):
     def jobs(self):
         content = (ROOT / ".github/workflows/ci.yml").read_text()
         jobs = content.split("\njobs:\n", 1)[1]
-        starts = list(re.finditer(r"(?m)^  ([A-Za-z][A-Za-z0-9_-]*):\s*$", jobs))
+        starts = list(re.finditer(r"(?m)^  ([A-Za-z_][A-Za-z0-9_-]*):\s*$", jobs))
         return content, {match.group(1): jobs[match.end():starts[index + 1].start() if index + 1 < len(starts) else len(jobs)] for index, match in enumerate(starts)}
 
     def test_ci_ok_always_covers_all_existing_gates_and_decision(self):

@@ -367,7 +367,7 @@ jobs:
           echo "skipped-for-missing-fixtures=$skipped (optional=$optional)$partial"
           exit "$status"
 
-  # This stable name is the only required PR check. Always evaluate failed/cancelled/skipped
+  # Configure this stable name as the only required PR check. Evaluate failed/cancelled/skipped
   # dependencies, and accept skips only when decision explicitly proved a lightweight run.
   ci-ok:
     name: ci-ok
