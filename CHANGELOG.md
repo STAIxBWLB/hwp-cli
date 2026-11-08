@@ -32,7 +32,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `fonts-nanum` installs go through `scripts/ci-apt-install.sh`, which installs from `.deb` files
   cached per runner image with downloads forbidden and falls back to the bounded mirror install;
   the structured-corpus and PDF-parity fonts are cached and re-verified against their manifest
-  SHA-256 before use, and their downloads retry with connect timeouts. The pinned Poppler version
+  SHA-256 before use, and their downloads retry within a stated time budget (a retry window plus
+  one last attempt per file) that the step limits are checked to cover. The pinned Poppler version
   is still asserted after installation, and fonts stay glyf TTFs (`fonts-nanum`). The long
   `slot_fill_agreement` test directory names that hit Windows `os error 206` are replaced by short
   unique ones ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).

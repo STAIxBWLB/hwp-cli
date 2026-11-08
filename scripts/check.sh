@@ -52,6 +52,7 @@ run bash scripts/release_verification_block.sh --self-test
 run bash scripts/tests/release-readiness-selfcheck.sh
 run bash scripts/tests/fixture-skip-accounting.sh
 run bash scripts/tests/ci-apt-install.sh
+run bash scripts/tests/ci-download-budgets.sh
 run "$target_dir/debug/examples/validate_structured_corpus" \
     schemas/pdf-parity-history-v1.schema.json \
     fixtures/pdf-parity/public/scoreboard/history.json

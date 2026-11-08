@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
-# 고정 코퍼스 폰트를 upstream에서 받아 manifest의 SHA-256으로 검증한다.
-# 폰트 바이트는 커밋하지 않는다(대형 바이너리). 해시가 맞는 파일이 이미 있으면 재다운로드하지 않는다.
-# HWP_CORPUS_FONT_CACHE=<dir>: 해시(SHA-256)를 파일명으로 쓰는 로컬 캐시. 캐시에 같은 해시의 파일이
-# 있으면 네트워크 없이 복사하고(복사본도 해시를 다시 검증), 받은 파일은 검증 뒤 캐시에 넣는다.
-# CI는 이 디렉터리를 actions/cache로 보존해 폰트 호스트 장애가 PR을 붉게 만들지 않게 한다.
+# Fetch the pinned corpus fonts from upstream and verify them against the manifest SHA-256.
+# Font bytes are never committed (large binaries). A file that is already present with the
+# right hash is not downloaded again.
+#
+# HWP_CORPUS_FONT_CACHE=<dir>: a local cache whose file names are the SHA-256 of their content.
+# A cache entry with the wanted hash is copied without touching the network (the copy is verified
+# again), and a downloaded file is added to the cache after it is verified. CI keeps this
+# directory with actions/cache so an outage of the font host does not turn a pull request red.
+#
+# Download time budget, per file: a cold cache pays this, a warm one never reaches it.
+#   curl attempt   <= CONNECT_TIMEOUT to connect, <= MAX_TIME in total
+#   whole retries  <= RETRY_MAX_TIME before a new attempt may start (--retry-max-time)
+#   worst case      = RETRY_MAX_TIME + MAX_TIME per file (the last attempt starts just inside the
+#                     retry window). Measured against a server that accepts and never answers.
+# The CI step that runs this must allow files * (RETRY_MAX_TIME + MAX_TIME) plus the work after it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Windows 러너에는 python3 셰임이 없을 수 있다.
+# A Windows runner may not have a python3 shim.
 py=python3
 command -v "$py" >/dev/null 2>&1 || py=python
 manifest_path="${HWP_CORPUS_MANIFEST_PATH:-corpus/structured-v1/manifest.json}"
@@ -24,6 +34,9 @@ from pathlib import PurePosixPath
 from urllib.parse import urlsplit, urlunsplit, quote
 
 MAX_FETCH_BYTES = 32 * 1024 * 1024
+CONNECT_TIMEOUT = 20  # seconds
+MAX_TIME = 120  # seconds per attempt
+RETRY_MAX_TIME = 150  # seconds before no new attempt starts; see the budget in the header
 ALLOWED_HOST = "raw.githubusercontent.com"
 
 manifest_path = sys.argv[1]
@@ -76,7 +89,8 @@ def fetch(url, dest, want):
         subprocess.run(
             ["curl", "--fail", "--silent", "--show-error", "--location",
              "--proto", "=https", "--retry", "3", "--retry-delay", "5", "--retry-all-errors",
-             "--connect-timeout", "20", "--max-time", "120",
+             "--connect-timeout", str(CONNECT_TIMEOUT), "--max-time", str(MAX_TIME),
+             "--retry-max-time", str(RETRY_MAX_TIME),
              "--max-filesize", str(MAX_FETCH_BYTES), "--output", tmp, url],
             check=True,
         )

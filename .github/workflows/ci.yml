@@ -171,7 +171,11 @@ jobs:
       - name: Structured document corpus (pinned OFL fonts, offline cargo)
         if: ${{ !cancelled() }}
         shell: bash
-        timeout-minutes: 15
+        # Covers the download budget scripts/fetch-corpus-fonts.sh documents: 3 targets (font,
+        # license, metadata) at (150 s retry window + 120 s last attempt) = 13.5 min worst case,
+        # then the offline cargo build and corpus run (88 s of the whole step with a warm Rust
+        # cache). Only a cold font cache pays the download part. Kept under the job's 30 minutes.
+        timeout-minutes: 22
         env:
           HWP_CORPUS_FONT_CACHE: ${{ runner.temp }}/corpus-font-cache
         run: bash scripts/check-structured-corpus.sh
@@ -239,6 +243,13 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/tests/ci-apt-install.sh
+      # A step limit shorter than the download retry budget it wraps would cancel a slow but
+      # recoverable download; this reads both from the files and fails when one stops covering
+      # the other.
+      - name: CI download budgets self test
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash scripts/tests/ci-download-budgets.sh
 
   pdf-parity:
     name: pdf-parity
@@ -288,7 +299,10 @@ jobs:
           key: pdf-parity-fonts-${{ hashFiles('fixtures/pdf-parity/public/manifest.json') }}
       - name: Fetch exact OFL fonts
         shell: bash
-        timeout-minutes: 10
+        # Covers the download budget scripts/fetch-pdf-parity-fonts.sh documents: 2 fonts at
+        # (150 s retry window + 120 s last attempt) = 9 min worst case, plus 3 min of margin. Only
+        # a cold cache pays any of it.
+        timeout-minutes: 12
         run: bash scripts/fetch-pdf-parity-fonts.sh
       - name: Build hwp
         run: cargo build --locked -p hwp-cli
