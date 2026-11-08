@@ -18,7 +18,8 @@
 //! bullet ids, and hwp5 bin-data ids — `BinRef::Id`) are shifted by that
 //! collection's offset with no shared-base assumption, in body paragraphs and
 //! in every nested paragraph collection: table cells, Generic paragraph
-//! lists, and table/picture captions. The input's `header.bin_data` table is
+//! lists, and captions on tables, pictures and Generic controls. The input's
+//! `header.bin_data` table is
 //! appended with colliding `storage_id`s reminted (and the payload streams
 //! renamed to match) so `BinRef::Id` keeps resolving through
 //! `Document::resolve_bin`'s `BIN{storage_id:04X}.{ext}` rule. A
@@ -162,6 +163,7 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         .split_first()
         .ok_or_else(|| "병합할 입력이 없습니다".to_string())?;
 
+    let missing_bin_name = unresolved_bin_name(inputs);
     let mut target = first.clone();
     let primary_metadata = target.metadata.clone();
     let mut general_path_used = false;
@@ -178,10 +180,10 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         let sections_before = target.sections.len();
 
         let dropped_bin_data = if palette_compatible(&target.header, &input.header) {
-            graft_palette_compatible(&mut target, input)?
+            graft_palette_compatible(&mut target, input, &missing_bin_name)?
         } else {
             general_path_used = true;
-            let (offsets, dropped) = graft_header_general(&mut target, input)?;
+            let (offsets, dropped) = graft_header_general(&mut target, input, &missing_bin_name)?;
             let mut unresolvable_border_fill_refs = 0usize;
             for section in &input.sections {
                 let mut section = section.clone();
@@ -279,6 +281,17 @@ fn graft_bin_data(
         .iter()
         .filter_map(|b| b.storage_id)
         .collect();
+    // One source storage id can be referenced by multiple typed rows. Choose one id that
+    // is safe for all their extensions, then reuse it for every row in that source group.
+    let mut extensions: HashMap<u16, Vec<&str>> = HashMap::new();
+    for item in &input.header.bin_data {
+        if let Some(id) = item.storage_id {
+            extensions
+                .entry(id)
+                .or_default()
+                .push(item.extension.as_deref().unwrap_or(""));
+        }
+    }
     let mut remap: HashMap<u16, u16> = HashMap::new();
     let mut dropped = 0usize;
     let mut exhausted = false;
@@ -290,23 +303,28 @@ fn graft_bin_data(
         }
         let mut item = item.clone();
         if let Some(storage_id) = item.storage_id {
-            let ext = item.extension.as_deref().unwrap_or("");
+            let reserved = |document: &Document, candidate| {
+                extensions[&storage_id]
+                    .iter()
+                    .any(|ext| bin_stream_name_taken(document, candidate, ext))
+            };
             let new_id = if let Some(&mapped) = remap.get(&storage_id) {
                 mapped
-            } else if !used.contains(&storage_id) && !bin_stream_name_taken(target, storage_id, ext)
-            {
+            } else if !used.contains(&storage_id) && !reserved(target, storage_id) {
                 used.push(storage_id);
+                remap.insert(storage_id, storage_id);
                 storage_id
             } else {
-                // Mint the first id that is neither grafted nor stream-named
-                // already; exhausting the u16 space makes this entry (and
-                // every later one) ungraftable.
+                // Mint an id outside both the target namespace and source carrier names;
+                // a preceding orphan must not occupy the new canonical name. Exhausting
+                // the u16 space makes this entry and every later one ungraftable.
                 let mut candidate = used.iter().max().copied().unwrap_or(0);
                 let fresh = loop {
                     match candidate.checked_add(1) {
                         Some(next)
                             if !used.contains(&next)
-                                && !bin_stream_name_taken(target, next, ext) =>
+                                && !reserved(target, next)
+                                && !reserved(input, next) =>
                         {
                             break Some(next);
                         }
@@ -334,18 +352,10 @@ fn graft_bin_data(
     Ok((offset, remap, dropped))
 }
 
-/// Whether a target bin stream already carries `BIN{storage_id:04X}.{ext}` as
-/// its trailing name — the name `Document::resolve_bin` derives for a
-/// bin_data entry with this storage id and extension.
+/// Whether a canonical BIN carrier name is reserved by existing streams or the primary
+/// manifest namespace. Native numeric refs require a storage-id remint, not a filename prefix.
 fn bin_stream_name_taken(target: &Document, storage_id: u16, ext: &str) -> bool {
-    let candidate = format!("BIN{storage_id:04X}.{ext}");
-    target.bin_streams.iter().any(|b| {
-        b.name
-            .rsplit('/')
-            .next()
-            .unwrap_or(&b.name)
-            .eq_ignore_ascii_case(&candidate)
-    })
+    bin_namespace_name_taken(target, &format!("BIN{storage_id:04X}.{ext}"))
 }
 
 /// If `bin` is the payload stream of one of `bin_data`'s entries (its
@@ -373,23 +383,116 @@ fn reminted_canonical_name(
     })
 }
 
+/// A carried filename must not be captured by an earlier stream's suffix/stem/substring
+/// lookup or by the primary manifest's id/href namespace. Checking containment in this
+/// direction lets a longer graft prefix escape a reserved spelling without restoring it.
+fn bin_namespace_name_taken(target: &Document, name: &str) -> bool {
+    let candidate = name.to_ascii_lowercase();
+    target
+        .bin_streams
+        .iter()
+        .map(|bin| bin.name.as_str())
+        .chain(
+            target
+                .hwpx_bin_manifest
+                .iter()
+                .flat_map(|(id, href)| [id.as_str(), href.as_str()]),
+        )
+        .any(|reserved| reserved.to_ascii_lowercase().contains(&candidate))
+}
+
+/// Reserve a non-content name that no input or eventual graft can resolve. The HWP5
+/// writer also has an unlisted-id substring fallback (#453), so absence must hold for
+/// substrings, not just full names, stems and suffixes. All inputs are checked up front.
+fn unresolved_bin_name(inputs: &[Document]) -> String {
+    let reserved: Vec<String> = inputs
+        .iter()
+        .flat_map(|input| {
+            input.bin_streams.iter().map(|bin| bin.name.as_str()).chain(
+                input
+                    .hwpx_bin_manifest
+                    .iter()
+                    .flat_map(|(id, href)| [id.as_str(), href.as_str()]),
+            )
+        })
+        .map(|name| format!("_{name}").to_ascii_lowercase())
+        .collect();
+    let mut counter = 0usize;
+    loop {
+        let candidate = format!("__hwp_cli_missing_bin_{counter}__");
+        if reserved.iter().all(|name| !name.contains(&candidate)) {
+            return candidate;
+        }
+        counter = counter
+            .checked_add(1)
+            .expect("finite input namespace cannot exhaust missing-name candidates");
+    }
+}
+
+/// Read every modeled picture reference on the same paragraph paths the two remappers visit.
+/// Actual spellings matter: valid suffixes can contain multiple path components, and an
+/// unlisted but unresolved id must not gain a meaning through another input's manifest.
+fn collect_item_spellings(paragraphs: &[Paragraph], spellings: &mut Vec<String>) {
+    for paragraph in paragraphs {
+        for control in &paragraph.controls {
+            match control {
+                Control::Picture(picture) => {
+                    if let BinRef::ItemRef(name) = &picture.bin_ref {
+                        spellings.push(name.clone());
+                    }
+                    if let Some(caption) = &picture.caption {
+                        collect_item_spellings(&caption.paragraphs, spellings);
+                    }
+                }
+                Control::Table(table) => {
+                    if let Some(caption) = &table.caption {
+                        collect_item_spellings(&caption.paragraphs, spellings);
+                    }
+                    for cell in &table.cells {
+                        collect_item_spellings(&cell.paragraphs, spellings);
+                    }
+                }
+                Control::Generic(generic) => {
+                    if let Some(caption) = &generic.caption {
+                        collect_item_spellings(&caption.paragraphs, spellings);
+                    }
+                    for list in &generic.paragraph_lists {
+                        collect_item_spellings(&list.paragraphs, spellings);
+                    }
+                }
+                Control::SectionDef(_) => {}
+            }
+        }
+    }
+}
+
 /// Grafts `input`'s bin streams onto `target`. A stream that is the payload
 /// of an hwp5 BIN_DATA entry takes the entry's reminted canonical name so
 /// `BinRef::Id` references keep resolving; every other stream keeps its name,
-/// minting a `{prefix}{n}_` name on a collision. The returned map rewires
+/// minting a `{prefix}{n}_` name on a stream/manifest namespace collision. The returned map
+/// rewires
 /// `BinRef::ItemRef` references. Shared by both grafting tiers.
 ///
 /// The map is keyed by what a picture's `ItemRef` can say, resolved through the INPUT document:
 /// every stream name, and every id the input's own manifest lists (to the final name of the
 /// stream that id points at in the input). A later input's picture that says `image1` therefore
 /// follows its own document's `image1`, not whatever `image1` means in the merged result, whose
-/// manifest is the first input's.
+/// manifest is the first input's. Unresolvable spellings use the globally reserved missing
+/// name, so neither the primary manifest nor a later input can give them another meaning.
 fn graft_bin_streams(
     target: &mut Document,
     input: &Document,
     prefix: &str,
     storage_remap: &HashMap<u16, u16>,
+    missing_name: &str,
 ) -> HashMap<String, String> {
+    // A double-underscore token cannot begin inside this prefix. Prepending one underscore
+    // to every source name above covers the only possible boundary match after `{prefix}{n}_`.
+    // Reminted canonical BIN names remove a path and keep their source's extension.
+    assert!(
+        !prefix.contains("__"),
+        "graft prefix must preserve missing-token separation"
+    );
     let mut rename: HashMap<String, String> = HashMap::new();
     let mut final_name: Vec<String> = Vec::with_capacity(input.bin_streams.len());
     for bin in &input.bin_streams {
@@ -397,11 +500,11 @@ fn graft_bin_streams(
         if let Some(canonical) = reminted_canonical_name(&input.header.bin_data, bin, storage_remap)
         {
             name = canonical;
-        } else if target.bin_streams.iter().any(|b| b.name == name) {
+        } else if bin_namespace_name_taken(target, &name) {
             let mut n = target.bin_streams.len() + 1;
             loop {
                 let candidate = format!("{prefix}{n}_{}", bin.name);
-                if !target.bin_streams.iter().any(|b| b.name == candidate) {
+                if !bin_namespace_name_taken(target, &candidate) {
                     name = candidate;
                     break;
                 }
@@ -415,9 +518,9 @@ fn graft_bin_streams(
             data: bin.data.clone(),
         });
     }
-    // Every spelling an `ItemRef` of the input could use, resolved the way the input resolves
-    // it (manifest first), mapped to the final name. A spelling the input cannot resolve is not
-    // added, so it keeps today's behavior (left as written).
+    // Known aliases plus every actual modeled `ItemRef`, resolved the way the input resolves
+    // it (manifest first), mapped to the final name. Never leave unresolved spellings exposed
+    // to the first input's manifest or to another carried stream's fallback names.
     let mut spellings: Vec<String> = input
         .hwpx_bin_manifest
         .iter()
@@ -432,10 +535,17 @@ fn graft_bin_streams(
             }
         }
     }
+    for section in &input.sections {
+        collect_item_spellings(&section.paragraphs, &mut spellings);
+    }
     for spelling in spellings {
-        if let Some(index) = input.bin_stream_index(&BinRef::ItemRef(spelling.clone())) {
-            rename.insert(spelling, final_name[index].clone());
-        }
+        let name = input
+            .bin_stream_index(&BinRef::ItemRef(spelling.clone()))
+            .map_or_else(
+                || missing_name.to_string(),
+                |index| final_name[index].clone(),
+            );
+        rename.insert(spelling, name);
     }
     rename
 }
@@ -449,14 +559,18 @@ fn graft_bin_streams(
 /// not be grafted (u16 storage-id space exhausted) for the caller to record
 /// as [`MergeLoss::BinDataDropped`]. `Err` when a header collection length or
 /// a shifted id overflows the u16 id space (#173).
-fn graft_palette_compatible(target: &mut Document, input: &Document) -> Result<usize, String> {
+fn graft_palette_compatible(
+    target: &mut Document,
+    input: &Document,
+    missing_name: &str,
+) -> Result<usize, String> {
     let cs_off = u16_len(target.header.char_shapes.len())? - PALETTE_LEN;
     let ps_off = u16_len(target.header.para_shapes.len())? - BASE_PARA_SHAPES;
     let num_off = u16_len(target.header.numbering_levels.len())?;
     let bul_off = u16_len(target.header.bullet_chars.len())?;
 
     let (bd_off, storage_remap, dropped) = graft_bin_data(target, input)?;
-    let rename = graft_bin_streams(target, input, "merge", &storage_remap);
+    let rename = graft_bin_streams(target, input, "merge", &storage_remap, missing_name);
 
     // Extend target with the input's off-palette extras (numbering/bullet
     // references shifted by the offsets computed above).
@@ -505,7 +619,7 @@ fn graft_palette_compatible(target: &mut Document, input: &Document) -> Result<u
 /// runs), bin-data id references (`BinRef::Id`, shifted by the full bin-data
 /// offset — bin data has no shared palette base) and rewires bin-stream
 /// (Picture) references after a rename, including nested table cells,
-/// Generic paragraph lists and table/picture captions. A `SectionDef`
+/// Generic paragraph lists and captions on every modeled control. A `SectionDef`
 /// control is untouched — it matches none of the arms below and stays as-is,
 /// which is exactly D-02's "each input's Section carried over unchanged"
 /// requirement. Mirrors `hwp_convert::merge::remap_paragraph`. `Err` when a
@@ -611,6 +725,7 @@ struct HeaderOffsets {
 fn graft_header_general(
     target: &mut Document,
     input: &Document,
+    missing_name: &str,
 ) -> Result<(HeaderOffsets, usize), String> {
     let char_shape = u16_len(target.header.char_shapes.len())?;
     let para_shape = u16_len(target.header.para_shapes.len())?;
@@ -625,7 +740,7 @@ fn graft_header_general(
     }
 
     let (bin_data, storage_remap, dropped) = graft_bin_data(target, input)?;
-    let bin_rename = graft_bin_streams(target, input, "graft", &storage_remap);
+    let bin_rename = graft_bin_streams(target, input, "graft", &storage_remap, missing_name);
 
     // Fonts, border fills, tab defs/stops, numberings/numbering_levels and
     // bullets/bullet_chars carry no id references of their own — append verbatim.

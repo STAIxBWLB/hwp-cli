@@ -25,6 +25,11 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
 - `hwp merge {inputs...} -o {out}` / `hwp_merge` — concatenate two or more documents, one Section
   per input in argument order. Page, footnote and outline numbering keep each input's own
   start/continue settings, so re-check them afterwards.
+  Later HWPX picture item references keep their own source meaning; reused ids do
+  not make a missing target resolve to another input's image. The merge retains the first
+  manifest's reference namespace; later inputs cannot supply its declared missing targets.
+  Native output reports removed images as `BinaryAssetRemoved`;
+  use `--strict` to refuse publication when that loss is unacceptable.
 - `hwp split {in} --out-dir {dir}` / `hwp_split` — one fragment per Section by default; `--pages`
   splits on page ranges instead, estimated from the layout cache Hancom saved rather than
   recomputed, so it may not match Hancom's own pagination. `--from`/`--to` (`from`/`to` in

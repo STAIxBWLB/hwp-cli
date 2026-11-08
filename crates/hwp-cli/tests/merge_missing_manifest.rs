@@ -76,7 +76,7 @@ fn picture(doc: &Document) -> &Picture {
         })
         .unwrap()
 }
-fn replace_manifest_href(path: &Path) {
+fn replace_manifest_href(path: &Path, old_href: &str, new_href: &str) {
     let bytes = std::fs::read(path).unwrap();
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
     let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
@@ -87,7 +87,7 @@ fn replace_manifest_href(path: &Path) {
         let method = entry.compression();
         // Remove the old payload too: an unrelated orphan loss must not satisfy the
         // BinaryAssetRemoved assertion intended for B's missing picture.
-        if name == "BinData/p2.png" {
+        if name == old_href {
             continue;
         }
         let mut data = Vec::new();
@@ -95,12 +95,10 @@ fn replace_manifest_href(path: &Path) {
         if name == "Contents/content.hpf" {
             let xml = String::from_utf8(data).unwrap();
             assert!(
-                xml.contains("BinData/p2.png"),
+                xml.contains(old_href),
                 "authored source must expose the manifest target being replaced"
             );
-            data = xml
-                .replace("BinData/p2.png", "BinData/missing.png")
-                .into_bytes();
+            data = xml.replace(old_href, new_href).into_bytes();
             changed = true;
         }
         writer
@@ -117,7 +115,7 @@ fn replace_manifest_href(path: &Path) {
 fn sources(dir: &Path, general: bool) {
     hwpx::write_document(&input("BinData/p1.png", false), &dir.join("a.hwpx")).unwrap();
     hwpx::write_document(&input("BinData/p2.png", general), &dir.join("b.hwpx")).unwrap();
-    replace_manifest_href(&dir.join("b.hwpx"));
+    replace_manifest_href(&dir.join("b.hwpx"), "BinData/p2.png", "BinData/missing.png");
     let a = hwpx::read_document(&dir.join("a.hwpx")).unwrap().document;
     let b = hwpx::read_document(&dir.join("b.hwpx")).unwrap().document;
     assert_eq!(
@@ -147,7 +145,7 @@ fn assert_binary_loss(path: &Path) {
         report.events.iter().any(|event| event.code
             == hwp_model::PreservationCode::BinaryAssetRemoved
             && event.count > 0),
-        "missing B image must report BinaryAssetRemoved rather than reuse A: {report:?}"
+        "missing image must report BinaryAssetRemoved rather than reuse another input: {report:?}"
     );
 }
 fn native_case(extension: &str, general: bool) {
@@ -253,4 +251,121 @@ fn general_hwpx_merge_missing_manifest_reports_binary_asset_removed() {
 #[test]
 fn general_hwpx_merge_missing_manifest_strict_refuses_atomically_with_binary_loss() {
     strict_case("hwpx", true);
+}
+
+// Writer-survival positive controls; the parsed HWPX href differs from the bare core-IR case.
+fn native_canonical_remint_case(extension: &str) {
+    let dir = temp_path::TempPath::new("hwp417-merge-missing", &format!("canonical-{extension}"));
+    std::fs::create_dir_all(&*dir).unwrap();
+    hwpx::write_document(&input("BinData/a-original.png", false), &dir.join("a.hwpx")).unwrap();
+    // The HWPX reader retains only BinData/ manifest hrefs, so the real source uses this
+    // package spelling rather than the bare BIN0001.png accepted by the core IR controls.
+    replace_manifest_href(
+        &dir.join("a.hwpx"),
+        "BinData/a-original.png",
+        "BinData/BIN0001.png",
+    );
+    let a = hwpx::read_document(&dir.join("a.hwpx")).unwrap().document;
+    assert_eq!(
+        a.hwpx_bin_manifest,
+        vec![("logo".into(), "BinData/BIN0001.png".into())]
+    );
+    assert!(
+        a.bin_streams.is_empty(),
+        "primary source must have no orphan bytes to mask loss evidence"
+    );
+    assert!(a.resolve_bin(&picture(&a).bin_ref).is_none());
+    hwpx::write_document(
+        &input("BinData/b-original.png", false),
+        &dir.join("b-source.hwpx"),
+    )
+    .unwrap();
+    let convert = Command::new(env!("CARGO_BIN_EXE_hwp"))
+        .current_dir(&*dir)
+        .args(["convert", "b-source.hwpx", "-o", "b.hwp"])
+        .output()
+        .unwrap();
+    assert!(
+        convert.status.success(),
+        "native numeric-source conversion must succeed: {}",
+        String::from_utf8_lossy(&convert.stderr)
+    );
+    let b = hwp5::read_document(&dir.join("b.hwp")).unwrap().document;
+    assert_eq!(b.meta.source_format, "hwp5");
+    assert!(
+        matches!(picture(&b).bin_ref, BinRef::Id(hwp_model::BinDataId(1))),
+        "actual converted fixture must have numeric picture ID1"
+    );
+    assert_eq!(b.header.bin_data[0].storage_id, Some(1));
+    assert_eq!(b.header.bin_data[0].extension.as_deref(), Some("png"));
+    assert_eq!(
+        b.resolve_bin(&picture(&b).bin_ref),
+        Some(authored_png().as_slice())
+    );
+    let a_bytes = std::fs::read(dir.join("a.hwpx")).unwrap();
+    let b_bytes = std::fs::read(dir.join("b.hwp")).unwrap();
+    let output = format!("canonical-merged.{extension}");
+    let run = Command::new(env!("CARGO_BIN_EXE_hwp"))
+        .current_dir(&*dir)
+        .args([
+            "merge",
+            "a.hwpx",
+            "b.hwp",
+            "-o",
+            &output,
+            "--loss-report",
+            "canonical-loss.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "native canonical merge must publish with missing-primary loss evidence: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_binary_loss(&dir.join("canonical-loss.json"));
+    let merged = if extension == "hwp" {
+        hwp5::read_document(&dir.join(&output)).unwrap().document
+    } else {
+        hwpx::read_document(&dir.join(&output)).unwrap().document
+    };
+    assert_eq!(merged.sections.len(), 2);
+    for picture in merged.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .filter_map(|control| match control {
+            Control::Picture(picture) => Some(picture),
+            _ => None,
+        })
+    {
+        assert!(
+            merged.resolve_bin(&picture.bin_ref).is_none(),
+            "retained primary missing picture must never resolve to B; writer-reported removal is also allowed"
+        );
+    }
+    let b_picture = merged.sections[1]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            Control::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .expect("B's valid native picture must survive publication");
+    assert_eq!(
+        merged.resolve_bin(&b_picture.bin_ref),
+        Some(authored_png().as_slice()),
+        "B's published picture must retain exact source PNG bytes"
+    );
+    assert!(std::fs::read(dir.join("a.hwpx")).unwrap() == a_bytes);
+    assert!(std::fs::read(dir.join("b.hwp")).unwrap() == b_bytes);
+}
+#[test]
+fn hwp_native_canonical_remint_keeps_missing_primary_and_valid_numeric_payload_distinct() {
+    native_canonical_remint_case("hwp");
+}
+#[test]
+fn hwpx_native_canonical_remint_keeps_missing_primary_and_valid_numeric_payload_distinct() {
+    native_canonical_remint_case("hwpx");
 }

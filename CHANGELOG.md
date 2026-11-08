@@ -109,6 +109,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Merge resolves each later input's modeled `BinRef::ItemRef` picture references in that
+  input, including unlisted and multi-component suffix spellings, instead of letting a
+  missing id bind to another input's image. Carrier names avoid existing stream names and
+  the first manifest's ids/hrefs; the first reference namespace stays unchanged during grafting,
+  and its declared missing targets stay missing. Canonical HWP5 carriers use the existing storage-id remint path, with shared extensions
+  and source orphan names checked together. Missing images produce `BinaryAssetRemoved`
+  in permissive native output; `--strict` refuses before publication
+  ([#460](https://github.com/STAIxBWLB/hwp-cli/issues/460)).
+
 - HWP5 range and `--pages` fragments recompute the section-list last-paragraph marker after
   selection, so exactly the new final paragraph carries nchars bit31 (compatibility rule B4).
   An end-exclusive range whose two anchors resolve to the same paragraph now reports an empty

@@ -51,6 +51,10 @@ syntax (used by `fill`, `slots` and the template tools).
   on a clean run. Page, footnote and outline numbering keep each input's own start/continue
   settings, so re-check them after merging. One `--password` / `--password-stdin` covers the
   whole batch.
+  Later HWPX picture item references resolve in their own source. Reused ids must not bind
+  missing targets to another input's image; the first reference namespace stays unchanged
+  during grafting, including its declared missing targets.
+  Removed images are reported as `BinaryAssetRemoved`; `--strict` refuses their publication.
 - `hwp split {input} --out-dir {dir}` — divide one document into fragments, one per Section by
   default (named `{stem}-NNN.{lowercased ext}`). `--pages "N"|"N-M"` (repeatable) splits on page
   ranges instead; those boundaries come from the layout cache Hancom saved, so they are an

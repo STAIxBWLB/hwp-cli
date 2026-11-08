@@ -51,6 +51,9 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   `hwp-preservation-report-v1` 원장을 기록합니다. 쪽·각주·개요 번호는 각 입력의
   시작·계속 설정을 그대로 유지하므로 병합한 뒤 다시 확인하세요. `--password` /
   `--password-stdin`은 전체 입력에 한 번만 적용됩니다.
+  후속 HWPX의 그림 항목 참조는 각 원본에서 해석합니다. ID가 같아도 누락된 대상을 다른
+  입력의 이미지로 연결하지 않으며, 병합 중 첫 참조 규칙과 선언된 누락 대상을 유지합니다.
+  제거된 이미지는 `BinaryAssetRemoved`로 보고하고 `--strict`는 발행을 거부합니다.
 - `hwp split {input} --out-dir {dir}` — 문서 하나를 조각으로 나눕니다. 기본은 Section
   하나당 조각 하나이며 이름은 `{stem}-NNN.{소문자 확장자}`입니다. `--pages "N"|"N-M"`
   (반복 가능)을 주면 쪽 범위로 나누는데, 그 경계는 한컴이 저장한 레이아웃 캐시에서 얻은

@@ -671,16 +671,30 @@ fn general_canonical_bin_remint_avoids_preceding_orphan_carrier() {
     canonical_bin_remint_case(true, true);
 }
 
-fn shared_storage_extensions_case(general: bool) {
+fn shared_storage_extensions_case(general: bool, colliding_primary: bool) {
     // This is accepted model namespace behavior, not evidence of genuine native-file validity.
-    let mut a = input("BIN0001.png", None);
+    let mut a = input(
+        if colliding_primary {
+            "BIN0001.png"
+        } else {
+            "identity-missing.png"
+        },
+        None,
+    );
     let mut missing_jpg = picture(&a, 0).clone();
     missing_jpg.bin_ref = BinRef::ItemRef("missing-jpg".into());
     a.sections[0].paragraphs[0]
         .controls
         .push(Control::Picture(missing_jpg));
-    a.hwpx_bin_manifest
-        .push(("missing-jpg".into(), "BIN0002.jpg".into()));
+    a.hwpx_bin_manifest.push((
+        "missing-jpg".into(),
+        if colliding_primary {
+            "BIN0002.jpg"
+        } else {
+            "identity-missing.jpg"
+        }
+        .into(),
+    ));
     let first_manifest = a.hwpx_bin_manifest.clone();
     let primary_refs = section_picture_refs(&a, 0);
     assert_eq!(primary_refs.len(), 2);
@@ -768,12 +782,107 @@ fn shared_storage_extensions_case(general: bool) {
         storage_ids[0], storage_ids[1],
         "rows sharing a source storage ID must share one collision-safe remap"
     );
+    if !colliding_primary {
+        assert_eq!(
+            storage_ids,
+            vec![Some(1), Some(1)],
+            "a non-colliding shared storage ID must retain the identity mapping for every row"
+        );
+    }
 }
 #[test]
 fn fast_shared_storage_id_remint_checks_every_extension() {
-    shared_storage_extensions_case(false);
+    shared_storage_extensions_case(false, true);
 }
 #[test]
 fn general_shared_storage_id_remint_checks_every_extension() {
-    shared_storage_extensions_case(true);
+    shared_storage_extensions_case(true, true);
+}
+
+fn earlier_stream_shadow_case(general: bool, suffix_shadow: bool) {
+    let mut a = input(
+        "BinData/shadow-a.png",
+        Some(b"owner-authored shadow A bytes"),
+    );
+    let primary_manifest = a.hwpx_bin_manifest.clone();
+    let primary_ref = picture_ref(&a, 0);
+    a.bin_streams.push(BinStream {
+        name: if suffix_shadow {
+            "prefix/BinData/p2.png"
+        } else {
+            "prefix-BinData/p2.png-extra"
+        }
+        .into(),
+        data: b"owner-authored unrelated earlier shadow bytes".to_vec(),
+    });
+    let mut b = input("BinData/p2.png", Some(b"owner-authored shadow B bytes"));
+    if general {
+        b.header.styles.push(hwp_model::Style {
+            name: "ExtraStyle".into(),
+            english_name: "ExtraStyle".into(),
+            ..Default::default()
+        });
+        b.header.border_fills.push(Default::default());
+    }
+    assert_eq!(
+        b.resolve_bin(&picture_ref(&b, 0)),
+        Some(b"owner-authored shadow B bytes".as_slice())
+    );
+    let outcome = merge_documents(&[a, b]).unwrap();
+    assert_eq!(outcome.general_path_used, general);
+    let merged = &outcome.document;
+    assert_eq!(merged.hwpx_bin_manifest, primary_manifest);
+    assert_eq!(picture_ref(merged, 0), primary_ref);
+    assert_eq!(
+        merged.resolve_bin(&primary_ref),
+        Some(b"owner-authored shadow A bytes".as_slice())
+    );
+    let b_ref = picture_ref(merged, 1);
+    let resolved = merged
+        .bin_stream_index(&b_ref)
+        .expect("valid B reference must remain resolvable");
+    assert_eq!(
+        merged.resolve_bin(&b_ref),
+        Some(b"owner-authored shadow B bytes".as_slice()),
+        "an unrelated earlier suffix/substring shadow must not capture B's valid source payload"
+    );
+    let BinRef::ItemRef(spelling) = b_ref else {
+        panic!("source B item reference remains an ItemRef")
+    };
+    assert!(!spelling.is_empty());
+    for earlier in &merged.bin_streams[..resolved] {
+        assert!(
+            !earlier
+                .name
+                .to_ascii_lowercase()
+                .contains(&spelling.to_ascii_lowercase()),
+            "HWP5's first substring match must not resolve B to earlier stream {:?} using {spelling:?}",
+            earlier.name
+        );
+    }
+}
+#[test]
+fn fast_later_valid_item_avoids_earlier_stream_suffix_shadow() {
+    earlier_stream_shadow_case(false, true);
+}
+#[test]
+fn general_later_valid_item_avoids_earlier_stream_suffix_shadow() {
+    earlier_stream_shadow_case(true, true);
+}
+#[test]
+fn fast_later_valid_item_avoids_earlier_stream_substring_shadow() {
+    earlier_stream_shadow_case(false, false);
+}
+#[test]
+fn general_later_valid_item_avoids_earlier_stream_substring_shadow() {
+    earlier_stream_shadow_case(true, false);
+}
+
+#[test]
+fn fast_shared_storage_id_identity_mapping_keeps_every_extension() {
+    shared_storage_extensions_case(false, false);
+}
+#[test]
+fn general_shared_storage_id_identity_mapping_keeps_every_extension() {
+    shared_storage_extensions_case(true, false);
 }
