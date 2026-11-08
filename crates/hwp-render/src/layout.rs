@@ -1926,9 +1926,6 @@ impl TableSplitCtx<'_, '_> {
     }
 }
 
-/// Default inner cell margins (HWPUNIT; Hangul defaults).
-const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
-
 /// One cached page-sized run of a cell.  The selections retain paragraph
 /// boundaries, while `first_v_pos` translates Hancom's page-relative cache to
 /// the fragment's page-space origin.
@@ -3256,36 +3253,11 @@ fn layout_para_objects(
     (bottom, page_split)
 }
 
-/// Cell margins in pt (left/right/top/bottom): cell override, table default, then Hangul default.
+/// Cell margins in pt (left/right/top/bottom): cell override, table default, then Hangul
+/// default. The resolution rule is `hwp_model::Table::cell_margins`, shared with
+/// `insert_blocks`, so the two cannot disagree about how wide a cell's content is.
 fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
-    // HWP5 uses 0xffff in a cell LIST_HEADER to mean "use the table
-    // default".  It is important that the sentinel remains in the IR for a
-    // lossless hwp5 -> hwp5 round trip, so resolve it only at render time.
-    // An all-zero cell margin array is the older IR convention for an omitted
-    // cell margin and keeps the existing table/default fallback behavior.
-    let table_default = if table.inner_margins.iter().any(|&v| v > 0 && v != u16::MAX) {
-        std::array::from_fn(|i| {
-            if table.inner_margins[i] == u16::MAX {
-                DEFAULT_CELL_MARGINS[i]
-            } else {
-                table.inner_margins[i]
-            }
-        })
-    } else {
-        DEFAULT_CELL_MARGINS
-    };
-    let raw = if cell.margins.iter().all(|&v| v == 0) {
-        table_default
-    } else {
-        cell.margins
-    };
-    let m: [u16; 4] = std::array::from_fn(|i| {
-        if raw[i] == u16::MAX {
-            table_default[i]
-        } else {
-            raw[i]
-        }
-    });
+    let m = table.cell_margins(cell);
     (
         m[0] as f32 / 100.0,
         m[1] as f32 / 100.0,
