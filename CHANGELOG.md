@@ -18,7 +18,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   an actionable message and remains a follow-up after HWPX style-type support (PR #442).
   Creation preserves existing shared shape definitions; application preserves direct paragraph
   and run formatting independently unless `clear_direct` is true. Duplicate/unknown styles,
-  stale addresses and HWP style numbers above 255 are refused before output publication
+  unknown style kinds, stale addresses and HWP style numbers above 255 are refused before
+  output publication
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 - `hwp styles <file> [--format text|json]` and the MCP tool `hwp_styles` list a document's named
   styles with their resolved character and paragraph attributes and `used_by`, the `para`

@@ -67,6 +67,7 @@ fn fixture() -> Document {
             name: "Body".into(),
             english_name: "Body alias".into(),
             attr: 0xa0,
+            kind_unknown: false,
             next_style: 1,
             lang_id: 1042,
             tail: vec![7, 9],
@@ -523,4 +524,33 @@ fn character_style_creation_and_paragraph_application_are_refused_atomically() {
         Err(StyleEditError::CharacterStylesUnsupported)
     );
     assert_eq!(doc, before);
+}
+
+#[test]
+fn unknown_target_kind_is_refused_without_mutation() {
+    for bits in [0, 1, 7] {
+        let mut doc = fixture();
+        doc.header.styles[1].kind_unknown = true;
+        doc.header.styles[1].attr = bits;
+        let before = doc.clone();
+        assert!(
+            apply_style_at(&mut doc, &path(&[0]), &StyleSelector::Id(1), false).is_err(),
+            "an unstated kind must not be inferred from attr {bits}"
+        );
+        assert_eq!(doc, before);
+    }
+}
+
+#[test]
+fn explicit_paragraph_creation_from_unknown_base_states_only_the_new_kind() {
+    let mut doc = fixture();
+    doc.header.styles[0].kind_unknown = true;
+    let before = doc.clone();
+    let id = create_style(&mut doc, &request("Explicit paragraph")).unwrap();
+    assert!(
+        !doc.header.styles[usize::from(id.0)].kind_unknown,
+        "an explicit paragraph request states the new style's kind"
+    );
+    assert_eq!(doc.header.styles[0], before.header.styles[0]);
+    assert_eq!(doc.sections, before.sections);
 }

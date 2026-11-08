@@ -4703,7 +4703,12 @@ fn canonical_document(
         for style in &mut canonical.header.styles {
             // Match PR #442's HWPX writer/reader pair: low kind bits 1 emit CHAR,
             // which reads back as 1; every other stated kind emits PARA and reads as 0.
-            style.attr = if style.attr & 0x7 == 1 { 1 } else { 0 };
+            // An unstated kind omits type and reads as attr 0, retaining kind_unknown.
+            style.attr = if !style.kind_unknown && style.attr & 0x7 == 1 {
+                1
+            } else {
+                0
+            };
             style.tail.clear();
             if style.lang_id <= 0 {
                 // The writer materializes zero/negative language IDs as Korean (1042).
@@ -5069,6 +5074,76 @@ mod tests {
             signature(&reserved),
             "PR #442's writer emits PARA for reserved kind bits"
         );
+    }
+
+    /// The HWPX writer omits type when kind_unknown, and its reader then restores attr 0.
+    #[test]
+    fn hwpx_projection_keeps_unknown_kind_but_drops_its_unwritten_attr_bits() {
+        let mut unknown = hwp_convert::from_markdown("Unknown style kind probe.");
+        unknown.header.styles[0].kind_unknown = true;
+        unknown.header.styles[0].attr = 0;
+        let mut unwritten = unknown.clone();
+        unwritten.header.styles[0].attr = 1;
+        let signature = |doc| semantic_signature_for(doc, Some(SemanticTarget::Hwpx));
+        assert_eq!(
+            signature(&unknown),
+            signature(&unwritten),
+            "an omitted type reads back as attr0 regardless of the unwritten bits"
+        );
+        let mut stated = unknown.clone();
+        stated.header.styles[0].kind_unknown = false;
+        assert_ne!(
+            signature(&unknown),
+            signature(&stated),
+            "an unstated kind must remain distinct from a stated PARA kind in HWPX"
+        );
+    }
+
+    /// Isolate the native kind projection from unrelated cross-format package conversion.
+    #[test]
+    fn named_style_creation_from_unknown_ir_verifies_as_hwp() {
+        use hwp_convert::styles::edit::{CreateStyle, StyleSelector, apply_style_at, create_style};
+        let source = hwp_convert::from_markdown("Native kind projection probe.");
+        let native = std::env::temp_dir().join(format!(
+            "hwp-t3-kind-calibration-{}.hwp",
+            std::process::id()
+        ));
+        hwp5::write_document(&source, &native, &hwp5::WriteOptions::default()).unwrap();
+        let mut doc = hwp5::read_document(&native).unwrap().document;
+        std::fs::remove_file(&native).unwrap();
+        let old = doc.sections[0].paragraphs[0].style;
+        doc.header.styles[usize::from(old.0)].kind_unknown = true;
+        doc.meta.source_format = "json".into();
+        let id = create_style(
+            &mut doc,
+            &CreateStyle {
+                name: "Explicit paragraph".into(),
+                based_on: Some(StyleSelector::Id(old.0)),
+                kind: hwp_convert::StyleKind::Paragraph,
+                character: hwp_convert::CharFormat {
+                    size_pt: Some(13.0),
+                    ..Default::default()
+                },
+                paragraph: hwp_convert::ParaProps::default(),
+            },
+        )
+        .unwrap();
+        apply_style_at(
+            &mut doc,
+            &hwp_convert::segment_id::SegmentPath {
+                section: 0,
+                indices: vec![0],
+            },
+            &StyleSelector::Id(id.0),
+            false,
+        )
+        .unwrap();
+        crate::commands::convert::write_hwp_edited(&doc, &native).unwrap();
+        verify_output(&native, Some(&doc)).unwrap();
+        let actual = hwp5::read_document(&native).unwrap().document;
+        std::fs::remove_file(&native).unwrap();
+        assert!(!actual.header.styles[usize::from(id.0)].kind_unknown);
+        assert!(!actual.header.styles[usize::from(old.0)].kind_unknown);
     }
 
     #[test]

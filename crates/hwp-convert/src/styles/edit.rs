@@ -29,6 +29,7 @@ pub enum StyleEditError {
     Capacity { table: &'static str },
     InvalidAddress,
     UnsupportedKind(u8),
+    UnknownStyleKind,
     CharacterStylesUnsupported,
     InvalidCharacterProperties,
 }
@@ -67,6 +68,10 @@ impl std::fmt::Display for StyleEditError {
             Self::CharacterStylesUnsupported => write!(
                 f,
                 "문자 스타일 편집은 현재 지원하지 않습니다. hwp styles에서 문단 스타일을 선택하세요. 문자 스타일 편집은 #427 후속 작업입니다(HWPX 스타일 종류 보존: PR #442)"
+            ),
+            Self::UnknownStyleKind => write!(
+                f,
+                "원본에 스타일 종류가 명시되지 않아 문단 스타일로 적용할 수 없습니다. hwp styles에서 kind가 paragraph인 스타일을 선택하세요"
             ),
             Self::UnsupportedKind(kind) => write!(
                 f,
@@ -241,6 +246,7 @@ pub fn create_style(doc: &mut Document, request: &CreateStyle) -> Result<StyleId
     style.name = request.name.clone();
     style.english_name = request.name.clone();
     style.attr &= !0x7;
+    style.kind_unknown = false;
     header.styles.push(style);
     doc.header = header;
     Ok(StyleId(id))
@@ -257,11 +263,11 @@ pub fn apply_style_at(
 ) -> Result<bool, StyleEditError> {
     let target_id = selector.resolve(doc)?;
     let target = doc.header.styles[usize::from(target_id.0)].clone();
-    if target.attr & 0x7 == 1 {
-        return Err(StyleEditError::CharacterStylesUnsupported);
-    }
-    if target.attr & 0x7 != 0 {
-        return Err(StyleEditError::UnsupportedKind(target.attr & 0x7));
+    match super::style_kind(&target) {
+        Some(StyleKind::Paragraph) => {}
+        Some(StyleKind::Character) => return Err(StyleEditError::CharacterStylesUnsupported),
+        None if target.kind_unknown => return Err(StyleEditError::UnknownStyleKind),
+        None => return Err(StyleEditError::UnsupportedKind(target.attr & 0x7)),
     }
     check_shapes(doc, &target)?;
     let (before_style, before_para_shape, before_runs) = {

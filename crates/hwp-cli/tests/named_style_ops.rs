@@ -273,7 +273,7 @@ fn para_id(path: &Path, text: &str) -> String {
         String::from_utf8_lossy(&result.stderr)
     );
     let envelope: Value = serde_json::from_slice(&result.stdout).unwrap();
-    let markdown: Vec<_> = envelope["markdown"].as_str().unwrap().chars().collect();
+    let mut document = read(path);
     let matches: Vec<_> = envelope["segments"]
         .as_array()
         .unwrap()
@@ -282,9 +282,17 @@ fn para_id(path: &Path, text: &str) -> String {
             if segment["kind"] != "para" {
                 return false;
             }
-            let start = segment["char_range"]["start"].as_u64().unwrap() as usize;
-            let end = segment["char_range"]["end"].as_u64().unwrap() as usize;
-            markdown[start..end].iter().collect::<String>().trim() == text
+            let path = hwp_convert::segment_id::SegmentPath {
+                section: segment["path"]["section"].as_u64().unwrap() as usize,
+                indices: segment["path"]["indices"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|index| index.as_u64().unwrap() as usize)
+                    .collect(),
+            };
+            hwp_convert::address::paragraph_at_mut(&mut document, &path)
+                .is_some_and(|paragraph| paragraph.plain_text() == text)
         })
         .collect();
     assert_eq!(
@@ -845,4 +853,60 @@ fn character_style_requests_refuse_and_existing_character_styles_are_preserved_i
         assert!(String::from_utf8_lossy(&run.stderr).contains("#427"));
         assert_eq!(std::fs::read(destination).unwrap(), b"sentinel");
     }
+}
+
+#[test]
+fn unknown_hwpx_kind_refuses_application_and_explicit_creation_verifies() {
+    let fixture = Fixture::new("unknown-kind", "hwpx");
+    let mut doc = read(&fixture.base);
+    let (body_id, _) = named(&doc, "body");
+    doc.header.styles[body_id].kind_unknown = true;
+    let source = fixture.path("unknown-source");
+    hwpx::write_document(&doc, &source).unwrap();
+    let before = read(&source);
+    assert!(named(&before, "body").1.kind_unknown);
+    let address = at(&before, INHERITED);
+    let output = fixture.path("unknown-refused");
+    std::fs::write(&output, b"sentinel").unwrap();
+    let (_, run) = fixture.edit(
+        &source,
+        "unknown-refused",
+        json!([apply(address.clone(), json!("body"), None)]),
+    );
+    assert!(
+        !run.status.success(),
+        "an unknown kind cannot be applied as a paragraph style"
+    );
+    assert!(String::from_utf8_lossy(&run.stderr).contains("hwp styles"));
+    assert_eq!(std::fs::read(output).unwrap(), b"sentinel");
+
+    let operations = fixture.directory.join("unknown-ops.json");
+    std::fs::write(
+        &operations,
+        serde_json::to_vec(&json!([
+            create(CREATED, json!("body")),
+            apply(address, json!(CREATED), None)
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = fixture.path("explicit-created");
+    success(
+        hwp()
+            .arg("edit")
+            .arg(&source)
+            .arg("-o")
+            .arg(&output)
+            .arg("--ops")
+            .arg(&operations)
+            .arg("--verify")
+            .output()
+            .unwrap(),
+        "explicit paragraph creation from unknown HWPX base passes verification",
+    );
+    let after = read(&output);
+    assert!(!named(&after, CREATED).1.kind_unknown);
+    assert_eq!(named(&after, CREATED).1.attr & 7, 0);
+    assert!(named(&after, "body").1.kind_unknown);
+    assert_public_style_listing(&output, CREATED, &[INHERITED]);
 }
