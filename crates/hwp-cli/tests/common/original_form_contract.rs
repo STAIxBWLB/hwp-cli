@@ -495,6 +495,7 @@ pub fn compare_table_payload(
 }
 
 /// Compares a picture's payload hash and geometry, never its address key.
+#[allow(dead_code)] // used by `split_range`; the other trees that include this file skip it
 pub fn compare_image_payload(
     before: &ImageProjection,
     after: &ImageProjection,
@@ -511,6 +512,7 @@ pub fn compare_image_payload(
 /// Compares the top-level body paragraphs `source_range` of `source` with the paragraphs of
 /// `fragment` starting at `fragment_offset`: text atoms, style and page-break bit, never the
 /// address. `source` and `fragment` are single-section for this check.
+#[allow(dead_code)] // used by `split_range`; the other trees that include this file skip it
 pub fn compare_body_run(
     source: &FormProjection,
     source_range: std::ops::Range<usize>,

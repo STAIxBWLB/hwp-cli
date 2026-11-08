@@ -54,12 +54,12 @@ syntax (used by `fill`, `slots` and the template tools).
 - `hwp split {input} --out-dir {dir}` — divide one document into fragments, one per Section by
   default (named `{stem}-NNN.{lowercased ext}`). `--pages "N"|"N-M"` (repeatable) splits on page
   ranges instead; those boundaries come from the layout cache Hancom saved, so they are an
-  estimate that may not match Hancom's own pagination. `--from "heading:<text>"|"bookmark:<name>"|
-  "at:<section>.<paragraph>"` with optional `--to`, `--end-exclusive` and `--source-sha256 <hex>`
-  instead extracts ONE typed range: top-level body paragraphs of one section (a table is taken
+  estimate that may not match Hancom's own pagination. `--from` with `heading:TEXT`,
+  `bookmark:NAME` or `at:SECTION.PARAGRAPH` (0-based), plus optional `--to`, `--end-exclusive` and
+  `--source-sha256 HEX`, instead extracts ONE typed range: top-level body paragraphs of one section (a table is taken
   whole), with the section setup and every binary the range uses. A heading must equal the whole
   paragraph text, so cell text is not an anchor, and an anchor matching twice is refused. Nothing
-  is written on a refusal. `--range-report <file>` publishes `hwp-range-extraction-v1` (source
+  is written on a refusal. `--range-report FILE` publishes `hwp-range-extraction-v1` (source
   hash, source-to-output addresses, kept and excluded binaries) together with the fragment.
   `--strict` and `--loss-report` behave as
   in `merge`.
