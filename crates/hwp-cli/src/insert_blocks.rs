@@ -174,9 +174,9 @@ fn hwpunit_to_mm(units: i64) -> f32 {
 /// gaps). Columns of unequal width list their own widths; which of them a block lands in is not
 /// known here, so the narrowest is the safe measure.
 ///
-/// Every number here comes from the document, so the arithmetic is widened to i64 and an
-/// impossible layout (a negative gap, gaps wider than the body) yields `None` rather than a
-/// wrapped or negative width.
+/// Every number here comes from the document, so the arithmetic is widened to i64 and a
+/// negative gap, which has no meaning, yields `None`. A width of zero or less (gaps wider than
+/// the body) is refused by the caller's positivity check.
 fn column_width_hwp(
     section: &hwp_model::Section,
     at: usize,
@@ -206,9 +206,9 @@ fn column_width_hwp(
     if def.gap < 0 {
         return None;
     }
-    let gaps = i64::from(def.gap).checked_mul(count - 1)?;
-    let columns = body.checked_sub(gaps)?;
-    (columns > 0).then_some(columns / count)
+    // `count` is a u16 and `gap` an i32, so the product stays below 2^48 and cannot overflow an
+    // i64. Gaps wider than the body give a width of zero or less, which `check_target` refuses.
+    Some((body - i64::from(def.gap) * (count - 1)) / count)
 }
 
 /// Limit this phase to the body and table cells, and return the width in mm of the text column
