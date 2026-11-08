@@ -12,6 +12,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- `hwp_edit` exposes `create_style`, `update_style` and `apply_style` arrays using the
+  same closed property/address vocabulary as `hwp edit --ops`. Named-style requests run
+  in create/update/apply order; direct formatting stays unless `clear_direct` is explicit.
+  Bilingual manual and bundled-skill recipes cover listing, restyling and supplied-policy
+  native certification. Repeated apply/update outputs are byte-stable in both native formats;
+  duplicate creation keeps its atomic refusal contract
+  ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
+
 - `hwp edit --ops` accepts `insert_blocks` for DocumentSpec v1 paragraphs, text/line-break
   runs, named lists and page/column breaks in body or table-cell lists. Existing target
   paragraph styles take precedence; missing styles use component definitions under the

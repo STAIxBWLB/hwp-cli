@@ -1,13 +1,13 @@
-//! `hwp` CLI 정의 — clap derive 기반 명령/플래그 선언.
+//! `hwp` CLI definitions: clap derive command and flag declarations.
 //!
-//! 이 모듈은 lib 타깃으로 노출된다(`hwp_cli::cli`). bin(`main.rs`)이 파싱·디스패치에
-//! 쓰고, `tests/cli_reference.rs`가 `clap::CommandFactory`로 명령 트리를 introspect해
-//! `docs/manual/cli-reference.md`(영문 정본)와 `cli-reference.ko.md`(한국어)를 자동 생성한다
-//! (코드-문서 동기화 게이트).
+//! This module is exposed by the library target (`hwp_cli::cli`). The binary (`main.rs`)
+//! uses it for parsing and dispatch. `tests/cli_reference.rs` introspects the command tree
+//! through `clap::CommandFactory` to generate `docs/manual/cli-reference.md` (canonical English)
+//! and `cli-reference.ko.md` (Korean), keeping code and documentation synchronized.
 //!
-//! **도움말 텍스트는 영문이 정본이다.** 한국어는 [`crate::i18n`]의 오버레이 표가 정본이며,
-//! 런타임에 로케일이나 `--lang`에 따라 덮어쓴다. 여기 doc comment를 고치면 i18n 표도 같이
-//! 고쳐야 한다(테스트가 누락을 잡는다).
+//! **English help text is canonical.** The Korean overlay table in [`crate::i18n`] is canonical
+//! for Korean and is applied at runtime according to the locale or `--lang`. When changing
+//! doc comments here, update the i18n table too; the tests detect missing entries.
 
 use std::path::PathBuf;
 

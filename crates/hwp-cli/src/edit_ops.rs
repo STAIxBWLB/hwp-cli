@@ -69,6 +69,11 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     let raw = read_ops_source(path)?;
     let value: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|error| anyhow::anyhow!("편집 연산 JSON을 해석할 수 없습니다: {error}"))?;
+    parse_ops_value(value)
+}
+
+/// Validate every JSON channel against the same closed vocabulary before normalization.
+pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<TypedEditOperation>> {
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json"))
             .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;
@@ -101,6 +106,112 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
         .map(OpsEntry::into_typed)
         .collect::<Result<Vec<_>, String>>()
         .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+/// Tag one named-style payload. The transport chooses its operation, not a nested `op`.
+pub(crate) fn named_style_item(
+    mut value: serde_json::Value,
+    operation: &str,
+) -> anyhow::Result<serde_json::Value> {
+    let object = value.as_object_mut().ok_or_else(|| anyhow::anyhow!(
+        "{operation} 항목은 JSON 객체여야 합니다. edit-ops-v1의 해당 연산에서 op를 뺀 속성 객체를 사용하세요"
+    ))?;
+    if object.contains_key("op") {
+        anyhow::bail!(
+            "{operation} 항목에 op를 넣을 수 없습니다. 연산은 바깥 필드가 지정하므로 내부 op를 제거하세요"
+        );
+    }
+    object.insert("op".into(), serde_json::Value::String(operation.into()));
+    Ok(value)
+}
+
+/// Publish the same style-item vocabulary over MCP without exposing external schema refs.
+/// Only the three embedded named-style schemas are selected; every local reference is inlined.
+pub(crate) fn named_style_schema(operation: &str) -> serde_json::Value {
+    use serde_json::Value;
+    fn expand(value: &Value, root: &Value, depth: usize) -> Value {
+        assert!(depth < 32, "embedded style schema reference cycle");
+        match value {
+            Value::Object(object) => {
+                if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                    let pointer = reference
+                        .strip_prefix('#')
+                        .expect("style schema refs must be local");
+                    let mut expanded = expand(
+                        root.pointer(pointer)
+                            .expect("embedded style schema reference exists"),
+                        root,
+                        depth + 1,
+                    );
+                    for (key, value) in object {
+                        if key != "$ref" {
+                            expanded[key] = expand(value, root, depth + 1);
+                        }
+                    }
+                    return expanded;
+                }
+                let mut result = serde_json::Map::new();
+                for (key, value) in object {
+                    if key == "properties" {
+                        let mut properties =
+                            value.as_object().expect("schema properties object").clone();
+                        properties.remove("op");
+                        result.insert(
+                            key.clone(),
+                            expand(&Value::Object(properties), root, depth + 1),
+                        );
+                    } else if key == "required" {
+                        result.insert(
+                            key.clone(),
+                            Value::Array(
+                                value
+                                    .as_array()
+                                    .expect("schema required array")
+                                    .iter()
+                                    .filter(|item| item.as_str() != Some("op"))
+                                    .cloned()
+                                    .collect(),
+                            ),
+                        );
+                    } else {
+                        result.insert(key.clone(), expand(value, root, depth + 1));
+                    }
+                }
+                Value::Object(result)
+            }
+            Value::Array(array) => Value::Array(
+                array
+                    .iter()
+                    .map(|value| expand(value, root, depth + 1))
+                    .collect(),
+            ),
+            _ => value.clone(),
+        }
+    }
+    let root: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json"))
+            .expect("embedded ops schema JSON");
+    let schema = root["$defs"]["editOp"]["oneOf"]
+        .as_array()
+        .expect("ops schema alternatives")
+        .iter()
+        .find(|schema| {
+            schema
+                .pointer("/properties/op/const")
+                .and_then(Value::as_str)
+                == Some(operation)
+                || schema
+                    .get("allOf")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().any(|item| {
+                            item.pointer("/properties/op/const").and_then(Value::as_str)
+                                == Some(operation)
+                        })
+                    })
+        })
+        .expect("named-style schema exists");
+    serde_json::json!({"type":"array", "maxItems":MAX_OPS_ITEMS, "items":expand(schema, &root, 0)})
 }
 
 /// Parse 10.5mm into an f32 millimeter value, the unit-string grammar for *_mm fields.
@@ -1169,6 +1280,59 @@ fn string_error<T>(result: anyhow::Result<T>) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_style_transport_schemas_remain_closed_and_match_ops() {
+        use serde_json::json;
+        for (operation, item) in [
+            (
+                "create_style",
+                json!({"name":"Body", "kind":"paragraph", "size":"13pt"}),
+            ),
+            ("update_style", json!({"style":0, "size":"13pt"})),
+            (
+                "apply_style",
+                json!({"style":0, "address":{"at":{"section":0,"paragraph":0}}}),
+            ),
+        ] {
+            let schema = named_style_schema(operation);
+            let validator = jsonschema::options()
+                .with_draft(jsonschema::Draft::Draft202012)
+                .build(&schema)
+                .unwrap();
+            assert!(
+                validator.is_valid(&json!([item.clone()])),
+                "{operation} advertised schema must accept canonical payload"
+            );
+            assert!(
+                parse_ops_value(json!([named_style_item(item.clone(), operation).unwrap()]))
+                    .is_ok()
+            );
+            let mut extra = item.clone();
+            extra["surprise"] = json!(true);
+            assert!(
+                !validator.is_valid(&json!([extra.clone()])),
+                "{operation} schema must reject unknown fields"
+            );
+            assert!(parse_ops_value(json!([named_style_item(extra, operation).unwrap()])).is_err());
+            let mut spoofed = item;
+            spoofed["op"] = json!("replace");
+            assert!(!validator.is_valid(&json!([spoofed.clone()])));
+            assert!(named_style_item(spoofed, operation).is_err());
+        }
+        let schema = named_style_schema("apply_style");
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap();
+        for address in [
+            json!({"at":{"section":0,"paragraph":0,"run":0}}),
+            json!({"at":{"section":0,"paragraph":0}, "chars":[0,1]}),
+            json!({"at":{"section":-1,"paragraph":0}}),
+        ] {
+            assert!(!validator.is_valid(&json!([{"style":0,"address":address}])));
+        }
+    }
 
     /// Read-path checks at the ops boundary: refuse parent-directory components with Korean errors.
     /// Integration tests cannot reach pub(crate) checked_cli_read_path, so test it

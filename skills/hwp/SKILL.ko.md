@@ -112,8 +112,8 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열. `hwp slots --forms`는
   한국 공문서 양식 필드(레이블 셀, 본문의 `라벨: 값`)를 키·레이블·출처·신뢰도·등장 횟수·필수
   여부와 함께 추가.
-- `hwp styles {file} [--format text|json]` — 이름 있는 스타일 목록: id, 이름, 종류(문서가 밝히지 않으면
-  `null`, HWPX는 항상), 해석된 글자/문단 속성, `used_by`(`hwp cat --with-segments --segments v2`가 내는
+- `hwp styles {file} [--format text|json]` — 이름 있는 스타일 목록: id, 이름, 종류(문서에 없거나 지원하지 않는 값이면
+  `null`), 해석된 글자/문단 속성, `used_by`(`hwp cat --with-segments --segments v2`가 내는
   `para` 세그먼트 id). `--format json`은 `hwp-styles-v1`.
 - `hwp validate {file} [--json]` — 구조 검증 (mimetype, 필수 엔트리, XML 파싱);
   유효하면 종료 코드 0.
@@ -185,7 +185,8 @@ retired `hwpx` 워크플로우의 정직한 한계를 포함한 이중 언어 �
 [references/editing-recipes.ko.md](references/editing-recipes.ko.md)에 있습니다. 분석, anchor 기반
 문단 편집, 데이터 기반 표 채우기, label-value 양식, validate-plus-render guard 순서에 사용하십시오.
 
-아래 세 워크플로우는 기록하기 전에 `fixtures/samples/report-tables.hwpx`를 대상으로
+아래 문서 분석·섹션 단위 편집·편집 감시 워크플로우는 기록하기 전에
+`fixtures/samples/report-tables.hwpx`를 대상으로
 그대로 실행해 검증했습니다 (hwp 0.12.1, 2026-08-29).
 
 ### 문서 분석 (analyze)
@@ -241,6 +242,74 @@ hwp render edited.hwpx -o after.png --report after.render.json
 반면 바이트 보존 `--replace` 고속 경로는 원래 페이지 수를 유지했습니다. 레이아웃을
 그대로 유지해야 한다면 `--replace` 전용 편집(패키지 보존 경로)을 우선하고, 페이지 수가
 바뀌면 검증을 약화시키지 말고 렌더링된 페이지를 직접 살펴보십시오.
+
+### 이름 있는 문단 스타일 바꾸기
+
+편집 전에 현재 스타일과 문단 주소를 확인한다.
+
+```bash
+hwp styles doc.hwpx --format json
+hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
+```
+
+`kind: "paragraph"`인 스타일을 선택한다. 아래 예시의 `body`는 기존 기본 이름이고,
+`at: {section: 0, paragraph: 1}`은 선택한 문단이다. 둘 다 현재 문서에서 확인한 값으로
+바꾼다. 주소에는 v2 또는 스타일의 `used_by`에서 얻은
+`{"id":"CURRENT_PARA_SEGMENT_ID"}`도 쓸 수 있다. ID는 원본 스냅샷에 속하므로 편집 뒤에는
+새로 조회한다.
+
+다음 배열을 `restyle.json`으로 저장한다.
+
+```json
+[
+  {"op":"create_style","name":"Body restyled","based_on":"body","kind":"paragraph","size":"13pt"},
+  {"op":"apply_style","address":{"at":{"section":0,"paragraph":1}},"style":"Body restyled","clear_direct":false}
+]
+```
+
+```bash
+hwp edit doc.hwpx -o styled.hwpx --ops restyle.json
+```
+
+같은 배열을 `hwp edit doc.hwpx -o styled.hwpx --ops -`의 stdin으로 전달할 수도 있다.
+이름 있는 스타일 연산에는 별도 플래그가 없다. MCP는 다른 편집 배열보다 먼저
+create/update/apply 순서로 스타일 배열을 실행한다. 다른 순서가 필요하면 순서가 있는
+`--ops` 배열을 사용한다.
+
+새 스타일의 사용 문단을 함께 바꾸려면
+`[{"op":"update_style","style":"Body restyled","size":"14pt"}]`를 `update-style.json`으로
+저장하고 `hwp edit styled.hwpx -o updated.hwpx --ops update-style.json`을 실행한다.
+스타일 선택자는 정확한 기본 이름 또는 정수 ID를 받는다. `update_style`은 바뀐 정의를
+copy-on-write로 추가하므로 다른 스타일과 직접 서식은 자체 모양을 유지한다.
+`apply_style`은 기본적으로 직접 지정한 글자·문단 서식을 보존한다. `clear_direct: true`를
+명시하면 둘 다 대상 스타일로 초기화한다. 현재 이 연산은 글자 스타일이 아닌 문단 스타일을
+편집한다.
+
+두 호출에 대응하는 `hwp_edit` MCP 인수는 다음과 같다.
+
+```json
+{"input":"doc.hwpx","output":"styled.hwpx","create_style":[{"name":"Body restyled","based_on":"body","kind":"paragraph","size":"13pt"}],"apply_style":[{"address":{"at":{"section":0,"paragraph":1}},"style":"Body restyled","clear_direct":false}]}
+```
+
+```json
+{"input":"styled.hwpx","output":"updated.hwpx","update_style":[{"style":"Body restyled","size":"14pt"}]}
+```
+
+동일한 적용·갱신 요청을 반복하면 의미 변경 없이 성공한다. 생성을 반복하면 중복 이름으로
+원자적으로 거부한다. 오래된 ID도 발행 전에 거부한다. 영향을 받는 사용 문단이 재생성할 수
+없는 원본 레코드나 XML 안에 있으면 위치를 알리고 거부한다. `hwp styles`로 다른 스타일을
+선택하거나 원본을 복구한 뒤 다시 시도한다.
+
+```bash
+hwp validate updated.hwpx
+hwp certify updated.hwpx --policy policy.json --report ./style-certification
+```
+
+문서에 맞는 정책 파일과 아직 없는 리포트 디렉터리를 지정한다. 현재 `certify`에는
+`--policy`가 필수이며 정책을 생략한 기본 정책 명령은 없다. 리포트를 읽고 모양이 중요하면
+렌더 결과도 확인한다. `native_only` 통과는 해당 정책 아래 네이티브 구현의 검사 결과이며,
+한컴에서 파일을 열거나 렌더했다는 증거가 아니다. 한컴 열기 증거는 별도 영수증으로 제공한다.
+`.hwp` 경로에도 같은 순서를 쓸 수 있으며 출력 형식 제한과 거부 진단은 계속 적용된다.
 
 ## MCP 서버
 
