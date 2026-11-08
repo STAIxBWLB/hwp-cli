@@ -34,7 +34,9 @@ impl Fixture {
         let source = root.join(format!("base.{extension}"));
         let doc = hwp_convert::from_markdown("Style probe.");
         match extension {
-            "hwp" => hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap(),
+            "hwp" => {
+                hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap();
+            }
             _ => {
                 hwpx::write_document(&doc, &source).unwrap();
             }
@@ -189,4 +191,72 @@ fn update_mcp_matches_ops_hwp() {
 #[test]
 fn update_mcp_matches_ops_hwpx() {
     channel_parity("hwpx", update());
+}
+
+fn repeated(extension: &'static str, operation: Value) {
+    let op = operation["op"].as_str().unwrap();
+    let fixture = Fixture::new(&format!("repeat-{op}"), extension);
+    let source = if op == "apply_style" {
+        fixture.ops(&fixture.source, "created", json!([create()]))
+    } else {
+        fixture.source.clone()
+    };
+    let once = fixture.ops(&source, "once", json!([operation.clone()]));
+    let twice = fixture.ops(&once, "twice", json!([operation]));
+    assert_eq!(
+        std::fs::read(once).unwrap(),
+        std::fs::read(&twice).unwrap(),
+        "repeating {op} must not allocate shapes or rewrite native bytes"
+    );
+    success(hwp().arg("validate").arg(twice).output().unwrap());
+}
+
+fn duplicate_create(extension: &'static str) {
+    let fixture = Fixture::new("duplicate-create", extension);
+    let once = fixture.ops(&fixture.source, "once", json!([create()]));
+    let before = std::fs::read(&once).unwrap();
+    let request = fixture.root.join("duplicate.json");
+    std::fs::write(&request, serde_json::to_vec(&json!([create()])).unwrap()).unwrap();
+    let destination = fixture.output("duplicate-refused");
+    std::fs::write(&destination, b"previous output must survive").unwrap();
+    let result = hwp()
+        .arg("edit")
+        .arg(&once)
+        .arg("-o")
+        .arg(&destination)
+        .arg("--ops")
+        .arg(request)
+        .output()
+        .unwrap();
+    assert!(!result.status.success(), "duplicate creation must refuse");
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"previous output must survive"
+    );
+    assert_eq!(std::fs::read(once).unwrap(), before);
+}
+
+#[test]
+fn identical_apply_is_byte_stable_hwp() {
+    repeated("hwp", apply());
+}
+#[test]
+fn identical_apply_is_byte_stable_hwpx() {
+    repeated("hwpx", apply());
+}
+#[test]
+fn identical_update_is_byte_stable_hwp() {
+    repeated("hwp", update());
+}
+#[test]
+fn identical_update_is_byte_stable_hwpx() {
+    repeated("hwpx", update());
+}
+#[test]
+fn duplicate_create_refuses_atomically_hwp() {
+    duplicate_create("hwp");
+}
+#[test]
+fn duplicate_create_refuses_atomically_hwpx() {
+    duplicate_create("hwpx");
 }
