@@ -136,6 +136,10 @@ pub(crate) enum TypedEditOperation {
         /// Address selector (D-12), alternative to `pattern`.
         address: Option<hwp_convert::address::Address>,
     },
+    InsertBlocks {
+        address: hwp_convert::address::Address,
+        request: hwp_cli::insert_blocks::InsertBlocks,
+    },
     InsertPara {
         anchor: String,
         text: String,
@@ -271,6 +275,7 @@ impl TypedEditOperation {
             Self::InsertImage { .. }
                 | Self::Seal { .. }
                 | Self::InsertPara { .. }
+                | Self::InsertBlocks { .. }
                 | Self::DeletePara { .. }
                 | Self::MoveParagraph { .. }
                 | Self::AddRow { .. }
@@ -406,6 +411,7 @@ fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
         TypedEditOperation::SetFormat { .. } => "set_format",
         TypedEditOperation::SetAlign { .. } => "set_align",
         TypedEditOperation::InsertPara { .. } => "insert_para",
+        TypedEditOperation::InsertBlocks { .. } => "insert_blocks",
         TypedEditOperation::DeletePara { .. } => "delete_para",
         TypedEditOperation::MoveParagraph { .. } => "move_para",
         TypedEditOperation::IndentPara { .. } => "indent_para",
@@ -1637,7 +1643,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         let target_before = resolved_addresses_for_report[index].clone();
         let to_target_before = resolved_move_destinations_for_report[index].clone();
         // Snapshot BEFORE calling apply_typed_operation: for a structural op (insert_para/
-        // move_para), this call's own `offsets.record_insert`/`record_move` below would
+        // insert_blocks/move_para), this call's own `offsets.record_insert`/`record_move` below would
         // otherwise self-shift the very anchor/reference path we need — capturing it now is
         // the SAME state `apply_typed_operation` itself reads internally when it runs this op.
         let target_current_path = target_before
@@ -1777,14 +1783,23 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             doc_before_typed_ops.as_mut(),
             &mut doc,
         );
-        let pieces_touched = changed.len().max(1);
+        let pieces_touched = match operation {
+            TypedEditOperation::InsertBlocks { request, .. } => request.blocks.len(),
+            _ => changed.len().max(1),
+        };
         ops_outcomes.push(OpOutcome {
             index,
             op,
             status: OpStatus::Applied,
             pieces_touched,
             changed,
-            reason: None,
+            reason: match operation {
+                TypedEditOperation::InsertBlocks { request, .. } => Some(format!(
+                    "insert_blocks: missing_style={}",
+                    request.missing_style.as_str()
+                )),
+                _ => None,
+            },
         });
     }
 
@@ -2044,6 +2059,7 @@ fn preflight_addressed_ops(
             | TypedEditOperation::MoveParagraph { address, .. }
             | TypedEditOperation::IndentPara { address }
             | TypedEditOperation::OutdentPara { address }
+            | TypedEditOperation::InsertBlocks { address, .. }
             | TypedEditOperation::ApplyStyle { address, .. } => {
                 Some((address, hwp_convert::address::Granularity::Paragraph))
             }
@@ -2412,9 +2428,10 @@ fn default_shape_at(
 /// `doc_before_typed_ops` is the document state addresses were resolved against (D-06), needed
 /// to re-derive the pre-batch run-id list for the run-split cascade (Pitfall 2).
 ///
-/// Structural ops (`insert_para`/`delete_para`/`move_para`) are handled directly here, using the
-/// SAME private helpers (`move_to_index`, `moved_paragraph_path`) their own
-/// `apply_typed_operation` arms use; the ids are the ones right after this op. Every
+/// Structural ops (`insert_para`/`delete_para`/`move_para`) use the same private helpers
+/// (`move_to_index`, `moved_paragraph_path`) as their `apply_typed_operation` arms, so
+/// the ids describe the state immediately after this op. `insert_blocks` deliberately
+/// defers inserted-id reporting to #428 T4. Every
 /// non-structural addressed kind uses
 /// `target_current_path` directly (already correct for any EARLIER structural op in the batch,
 /// since none of these kinds change list length themselves).
@@ -2430,6 +2447,7 @@ fn report_changed_ids(
         return Vec::new();
     };
     match operation {
+        TypedEditOperation::InsertBlocks { .. } => Vec::new(),
         TypedEditOperation::DeletePara {
             address: Some(_), ..
         } => {
@@ -2839,7 +2857,8 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         | Op::SetPage { .. } => "no change",
         // These fail with an error rather than an unapplied request; listed so a new op kind
         // has to pick its cause here.
-        Op::CreateStyle { .. }
+        Op::InsertBlocks { .. }
+        | Op::CreateStyle { .. }
         | Op::ApplyStyle { .. }
         | Op::InsertImage { .. }
         | Op::Seal { .. }
@@ -3331,6 +3350,37 @@ fn apply_typed_operation(
                     );
                 }
             }
+        }
+        TypedEditOperation::InsertBlocks { request, .. } => {
+            let target = resolved_target.expect("insert_blocks address preflight");
+            let current = offsets.current_path(&target.path)?;
+            let max_style = if output_format == OutputFormat::Hwp {
+                u16::from(u8::MAX)
+            } else {
+                u16::MAX
+            };
+            let count = hwp_cli::insert_blocks::apply(doc, &current, request, max_style)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            let mut inserted = current;
+            let start = inserted
+                .indices
+                .last_mut()
+                .expect("preflight paragraph path");
+            if !request.before() {
+                *start += 1;
+            }
+            for _ in 0..count {
+                offsets.record_insert(&inserted);
+                *inserted
+                    .indices
+                    .last_mut()
+                    .expect("preflight paragraph path") += 1;
+            }
+            eprintln!(
+                "블록 삽입: {count}개 문단 (missing_style={})",
+                request.missing_style.as_str()
+            );
+            *edits += count;
         }
         TypedEditOperation::InsertPara {
             anchor,

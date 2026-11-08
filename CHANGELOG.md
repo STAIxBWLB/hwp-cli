@@ -12,6 +12,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- `hwp edit --ops` accepts `insert_blocks` for DocumentSpec v1 paragraphs, text/line-break
+  runs, named lists and page/column breaks in body or table-cell lists. Existing target
+  paragraph styles take precedence; missing styles use component definitions under the
+  default `create` policy or refuse under `refuse`. The report states the selected policy.
+  Missing styles/lists, stale addresses and unsupported resource blocks refuse before
+  publication. Tables, images, fields, equations and inserted-id reporting remain follow-ups
+  ([#428](https://github.com/STAIxBWLB/hwp-cli/issues/428)).
+
 - `hwp edit --ops` accepts `create_style` (copy a named or numbered base and override
   character/paragraph properties) and paragraph-addressed `apply_style` (name or number).
   Both operations support paragraph-kind styles only; character-style editing is refused with

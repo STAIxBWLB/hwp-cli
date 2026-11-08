@@ -176,6 +176,23 @@
       "oneOf": [
         {
           "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "address", "position", "blocks"],
+          "properties": {
+            "op": { "const": "insert_blocks" },
+            "address": { "$ref": "#/$defs/paragraphAddress" },
+            "position": { "enum": ["before", "after"] },
+            "missing_style": { "enum": ["create", "refuse"], "default": "create" },
+            "styles": { "$ref": "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json#/properties/styles" },
+            "lists": { "$ref": "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json#/properties/lists" },
+            "blocks": {
+              "type": "array", "minItems": 1, "maxItems": 20000,
+              "items": { "$ref": "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json#/$defs/block" }
+            }
+          }
+        },
+        {
+          "type": "object",
           "unevaluatedProperties": false,
           "required": [
             "op",

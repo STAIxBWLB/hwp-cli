@@ -294,24 +294,31 @@ fn paragraphs_and_page_column_breaks_insert_before_after_original_addresses_in_b
 fn existing_target_style_wins_over_supplied_definition_and_lists_new_user() {
     for extension in ["hwp", "hwpx"] {
         let fixture = Fixture::new("target-style", extension);
-        let before = read(&fixture.base);
+        let (source, setup) = fixture.edit(
+            &fixture.base,
+            "target-created",
+            json!([{"op":"create_style","name":"target-created","kind":"paragraph","based_on":"body","size":"11pt"}]),
+            false,
+        );
+        success(setup, "existing create_style target setup");
+        let before = read(&source);
         let (body_id, body) = before
             .header
             .styles
             .iter()
             .enumerate()
-            .find(|(_, s)| s.name == "body")
+            .find(|(_, s)| s.name == "target-created")
             .unwrap();
         let inserted = "Literal {{name}} => & value.";
         let (output, run) = fixture.edit(
-            &fixture.base,
+            &source,
             "target-wins",
             json!([insert(
                 at(&before, ANCHOR),
                 "after",
                 "create",
-                json!({"body":{"font_size_pt":27,"bold":true,"align":"right"}}),
-                json!([block("body", inserted)])
+                json!({"target-created":{"font_size_pt":27,"bold":true,"align":"right"}}),
+                json!([block("target-created", inserted)])
             )]),
             false,
         );
@@ -346,10 +353,10 @@ fn existing_target_style_wins_over_supplied_definition_and_lists_new_user() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| row["name"] == "body")
+            .find(|row| row["name"] == "target-created")
             .unwrap();
         assert_eq!(row["id"], body_id);
-        assert_eq!(row["attrs"]["char"]["size_pt"], 10.0);
+        assert_eq!(row["attrs"]["char"]["size_pt"], 11.0);
         assert_eq!(row["attrs"]["para"]["alignment"], "left");
         let inserted_id = para_id(&output, inserted);
         assert!(
@@ -560,12 +567,12 @@ fn cell_component_insertion_preserves_other_cell_and_body_paragraphs() {
             before.sections[0]
                 .paragraphs
                 .iter()
-                .map(Paragraph::plain_text)
+                .map(|paragraph| paragraph.chars.clone())
                 .collect::<Vec<_>>(),
             after.sections[0]
                 .paragraphs
                 .iter()
-                .map(Paragraph::plain_text)
+                .map(|paragraph| paragraph.chars.clone())
                 .collect::<Vec<_>>(),
             "cell insertion must not splice into the body list"
         );
@@ -776,6 +783,308 @@ fn missing_component_list_definition_refuses_with_specific_remedy() {
                 && diagnostic.contains("추가")
                 && diagnostic.contains("다시"),
             "missing-list error must identify the cause and definition/retry remedy: {diagnostic}"
+        );
+    }
+}
+
+fn char_shape_at<'a>(doc: &'a Document, para: &Paragraph, wchar: u32) -> &'a hwp_model::CharShape {
+    let id = para
+        .char_shape_runs
+        .iter()
+        .rev()
+        .find(|(position, _)| *position <= wchar)
+        .unwrap()
+        .1;
+    &doc.header.char_shapes[usize::from(id.0)]
+}
+
+#[test]
+fn line_break_and_direct_run_properties_preserve_target_named_run_style() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("inline-format", extension);
+        let before = read(&fixture.base);
+        let (body_id, body) = before
+            .header
+            .styles
+            .iter()
+            .enumerate()
+            .find(|(_, style)| style.name == "body")
+            .unwrap();
+        let (_, note) = before
+            .header
+            .styles
+            .iter()
+            .enumerate()
+            .find(|(_, style)| style.name == "note")
+            .unwrap();
+        let (output, run) = fixture.edit(&fixture.base, "inline-inserted", json!([
+            insert(at(&before, ANCHOR), "after", "refuse", json!({"note":{"font_size_pt":27}}), json!([
+                {"type":"paragraph","style":"body","runs":[
+                    {"type":"text","style":"note","text":"Styled","font_size_pt":12,"bold":true,"italic":true,"color":"#123456"},
+                    {"type":"line_break"},
+                    {"type":"text","style":"note","text":"Second line."}
+                ]}
+            ]))
+        ]), false);
+        success(
+            run,
+            "insert_blocks line break and direct run properties over a target named run style",
+        );
+        let after = read(&output);
+        let inserted = paragraph(&after, "Styled\nSecond line.");
+        assert_eq!(inserted.style.0 as usize, body_id);
+        assert_eq!(inserted.para_shape, body.para_shape);
+        assert!(
+            inserted
+                .chars
+                .iter()
+                .any(|ch| *ch == hwp_model::HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK))
+        );
+        let direct = char_shape_at(&after, inserted, 0);
+        assert_eq!(direct.base_size, 1200);
+        assert!(direct.is_bold() && direct.is_italic());
+        assert_eq!(direct.text_color, 0x0056_3412);
+        assert_eq!(
+            direct.face_ids,
+            before.header.char_shapes[usize::from(note.char_shape.0)].face_ids
+        );
+        assert_eq!(
+            char_shape_at(&after, inserted, 7),
+            &after.header.char_shapes[usize::from(note.char_shape.0)],
+            "the following run must use target note=9pt rather than conflicting supplied note=27pt"
+        );
+        for text in [PREFIX, ANCHOR, TAIL] {
+            assert_eq!(
+                resolved(&before, paragraph(&before, text)),
+                resolved(&after, paragraph(&after, text))
+            );
+        }
+    }
+}
+
+fn nested_fixture(extension: &'static str) -> Fixture {
+    let mut fixture = Fixture::new("deep-cell", extension);
+    let mut spec: Value =
+        serde_json::from_slice(&std::fs::read(fixture.dir.join("spec.json")).unwrap()).unwrap();
+    spec["sections"][0]["blocks"][3]["rows"][0]["cells"][0]["blocks"] = json!([
+        block("body", CELL),
+        {"type":"table","columns":[{"width_mm":20}],"rows":[{"cells":[{"blocks":[block("body","Deep cell anchor.")]}]}]}
+    ]);
+    let spec_path = fixture.dir.join("nested-spec.json");
+    std::fs::write(&spec_path, serde_json::to_vec(&spec).unwrap()).unwrap();
+    let hwpx = fixture.dir.join("nested-base.hwpx");
+    success(
+        hwp()
+            .arg("compose")
+            .arg(spec_path)
+            .arg("-o")
+            .arg(&hwpx)
+            .output()
+            .unwrap(),
+        "existing compose creates nested table-cell fixture",
+    );
+    fixture.base = if extension == "hwp" {
+        let native = fixture.dir.join("nested-base.hwp");
+        success(
+            hwp()
+                .arg("convert")
+                .arg(hwpx)
+                .arg("-o")
+                .arg(&native)
+                .output()
+                .unwrap(),
+            "existing conversion of nested-cell fixture",
+        );
+        native
+    } else {
+        hwpx
+    };
+    fixture
+}
+
+fn deep_table(doc: &Document) -> &Table {
+    table(doc).cells[0]
+        .paragraphs
+        .iter()
+        .flat_map(|para| &para.controls)
+        .find_map(|control| {
+            if let Control::Table(table) = control {
+                Some(table)
+            } else {
+                None
+            }
+        })
+        .unwrap()
+}
+
+#[test]
+fn insertion_traverses_two_table_cell_depths_without_splicing_ancestor_lists() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = nested_fixture(extension);
+        let before = read(&fixture.base);
+        let id = para_id(&fixture.base, "Deep cell anchor.");
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "deep-inserted",
+            json!([insert(
+                json!({"id":id}),
+                "after",
+                "refuse",
+                json!({}),
+                json!([block("body", "Deep inserted.")])
+            )]),
+            false,
+        );
+        success(
+            run,
+            "insert_blocks traverses every table-cell address depth",
+        );
+        let after = read(&output);
+        assert_eq!(
+            deep_table(&after).cells[0]
+                .paragraphs
+                .iter()
+                .map(Paragraph::plain_text)
+                .collect::<Vec<_>>(),
+            ["Deep cell anchor.", "Deep inserted."]
+        );
+        assert_eq!(
+            before.sections[0]
+                .paragraphs
+                .iter()
+                .map(|p| p.chars.clone())
+                .collect::<Vec<_>>(),
+            after.sections[0]
+                .paragraphs
+                .iter()
+                .map(|p| p.chars.clone())
+                .collect::<Vec<_>>(),
+            "body-owned characters/control indices and paragraph order must remain unchanged"
+        );
+        assert_eq!(
+            table(&before).cells[0]
+                .paragraphs
+                .iter()
+                .map(|p| p.chars.clone())
+                .collect::<Vec<_>>(),
+            table(&after).cells[0]
+                .paragraphs
+                .iter()
+                .map(|p| p.chars.clone())
+                .collect::<Vec<_>>(),
+            "outer cell list must not receive the deep insertion"
+        );
+        assert_eq!(
+            resolved(&before, &table(&before).cells[1].paragraphs[0]),
+            resolved(&after, &table(&after).cells[1].paragraphs[0])
+        );
+        assert_eq!(
+            resolved(&before, &table(&before).cells[0].paragraphs[0]),
+            resolved(&after, &table(&after).cells[0].paragraphs[0])
+        );
+    }
+}
+
+#[test]
+fn cyclic_component_style_inheritance_refuses_with_repair_step() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("style-cycle", extension);
+        let before = read(&fixture.base);
+        let diagnostic = fixture.refuse(
+            &fixture.base,
+            "cycle-refused",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({
+                    "cycle-a":{"based_on":"cycle-b"}, "cycle-b":{"based_on":"cycle-a"}
+                }),
+                json!([block("cycle-a", "Cycle must not publish.")])
+            )]),
+            true,
+        );
+        assert!(
+            diagnostic.contains("based_on")
+                && diagnostic.contains("순환")
+                && diagnostic.contains("제거")
+                && diagnostic.contains("다시"),
+            "style inheritance cycle must fail with its repair step rather than unknown-op rejection: {diagnostic}"
+        );
+    }
+}
+
+#[test]
+fn generic_paragraph_target_refuses_early_with_body_cell_remedy() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("generic-target", extension);
+        let mut doc = read(&fixture.base);
+        let anchor = index(&doc, ANCHOR);
+        let leaf = paragraph(&doc, PREFIX).clone();
+        let control_index = doc.sections[0].paragraphs[anchor].controls.len();
+        let object: hwp_model::GenericControl = serde_json::from_value(json!({
+            "ctrl_id":[104,101,97,100], "data":"0000000000000000", "extras":[],
+            "paragraph_lists":[{"header_data":"","paragraphs":[leaf]}]
+        }))
+        .unwrap();
+        doc.sections[0].paragraphs[anchor]
+            .controls
+            .push(Control::Generic(object));
+        let own = &mut doc.sections[0].paragraphs[anchor].chars;
+        let end = if own.last()
+            == Some(&hwp_model::HwpChar::CharCtrl(
+                hwp_model::ctrl_char::PARA_BREAK,
+            )) {
+            own.len() - 1
+        } else {
+            own.len()
+        };
+        own.insert(
+            end,
+            hwp_model::HwpChar::ExtCtrl {
+                code: 16,
+                ctrl_id: *b"head",
+                payload: vec![0; 12],
+                ctrl_index: Some(u32::try_from(control_index).unwrap()),
+            },
+        );
+        let source = fixture.dir.join("generic-input.hwpx");
+        hwpx::write_document(&doc, &source).unwrap();
+        let reread = read(&source);
+        let anchor = index(&reread, ANCHOR);
+        let control_index = reread.sections[0].paragraphs[anchor]
+            .controls
+            .iter()
+            .position(
+                |control| matches!(control, Control::Generic(object) if object.ctrl_id == *b"head"),
+            )
+            .unwrap();
+        let path = hwp_convert::SegmentPath {
+            section: 0,
+            indices: vec![anchor, control_index, 0],
+        };
+        let Control::Generic(object) =
+            &reread.sections[0].paragraphs[anchor].controls[control_index]
+        else {
+            panic!("fixture Generic control");
+        };
+        let id = hwp_convert::paragraph_id(&path, &object.paragraph_lists[0].paragraphs[0]);
+        let diagnostic = fixture.refuse(
+            &source,
+            "generic-refused",
+            json!([insert(
+                json!({"id":id}),
+                "after",
+                "refuse",
+                json!({}),
+                json!([block("body", "Not inserted in Generic.")])
+            )]),
+            true,
+        );
+        assert!(
+            diagnostic.contains("본문 또는 표 셀 문단이 아닙니다")
+                && diagnostic.contains("다시 선택"),
+            "Generic insertion must fail at the explicit target-kind gate before writing: {diagnostic}"
         );
     }
 }

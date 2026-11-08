@@ -72,7 +72,14 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json"))
             .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;
+    let document_spec: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/document-spec-v1.schema.json"
+    ))?;
     let validator = jsonschema::options()
+        .with_resource(
+            "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
+            jsonschema::Resource::from_contents(document_spec)?,
+        )
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)
         .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 컴파일할 수 없습니다: {error}"))?;
@@ -445,6 +452,11 @@ pub(crate) enum OpsEntry {
         address: Option<AddressSpec>,
         align: String,
     },
+    InsertBlocks {
+        address: AddressSpec,
+        #[serde(flatten)]
+        request: hwp_cli::insert_blocks::InsertBlocks,
+    },
     InsertPara {
         /// Exactly one of anchor or address is required — the same D-12 selector shape
         /// SetPara/SetAlign already use.
@@ -753,6 +765,13 @@ impl OpsEntry {
                     align: parse_align(&align).map_err(|error| error.to_string())?,
                     address,
                 })
+            }
+            OpsEntry::InsertBlocks { address, request } => {
+                let address = address.into_address()?;
+                if address.chars.is_some() {
+                    return Err("insert_blocks는 문단 주소만 지원합니다. chars 범위를 제거한 뒤 다시 시도하세요".into());
+                }
+                Ok(TypedEditOperation::InsertBlocks { address, request })
             }
             OpsEntry::InsertPara {
                 anchor,

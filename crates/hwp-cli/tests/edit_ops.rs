@@ -302,7 +302,15 @@ fn kind_coverage_all_33() {
     // Schema gate mirrors load_ops: Draft 2020-12 against the committed schema.
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json")).unwrap();
+    let document_spec: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/document-spec-v1.schema.json"
+    ))
+    .unwrap();
     let validator = jsonschema::options()
+        .with_resource(
+            "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
+            jsonschema::Resource::from_contents(document_spec).unwrap(),
+        )
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)
         .unwrap();
@@ -1143,7 +1151,15 @@ fn paragraph_granularity_rejects_a_char_range() {
         "$ref": "#/$defs/paragraphAddress",
         "$defs": defs,
     });
+    let document_spec: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/document-spec-v1.schema.json"
+    ))
+    .unwrap();
     let validator = jsonschema::options()
+        .with_resource(
+            "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
+            jsonschema::Resource::from_contents(document_spec).unwrap(),
+        )
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&wrapped)
         .unwrap();
@@ -2455,7 +2471,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "657188b1f7a3eb6767b7bd089119f21c40512bdd195fc58b5b9a1921e3c0d194",
+        actual, "5cd0945ad0f6d7d38b185a12aeed7f2e22ae62cc2dab7c31c241e4f628698a35",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
