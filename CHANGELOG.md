@@ -17,7 +17,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Both operations support paragraph-kind styles only; character-style editing is refused with
   an actionable message and remains a follow-up after HWPX style-type support (PR #442).
   Creation preserves existing shared shape definitions; application preserves direct paragraph
-  and run formatting independently unless `clear_direct` is true. Duplicate/unknown styles,
+  and run formatting independently unless `clear_direct` is true. Empty character runs use
+  the HWPX writer's effective shape 0, following the target only when 0 was inherited.
+  Duplicate/unknown styles,
   unknown style kinds, stale addresses and HWP style numbers above 255 are refused before
   output publication
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).

@@ -1,6 +1,6 @@
 //! Copy-on-write named-style creation and paragraph-scoped application (#427 T3).
 //! Native publication guards and format-specific style limits belong to callers.
-use hwp_model::{Document, StyleId};
+use hwp_model::{CharShapeId, Document, StyleId};
 
 use super::StyleKind;
 use crate::format::{
@@ -16,6 +16,15 @@ const MAX_ROWS: usize = u16::MAX as usize + 1;
 pub enum StyleSelector {
     Name(String),
     Id(u16),
+}
+
+impl std::fmt::Display for StyleSelector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Name(name) => f.write_str(name),
+            Self::Id(id) => write!(f, "#{id}"),
+        }
+    }
 }
 
 /// A named-style request failed without changing the document.
@@ -47,7 +56,7 @@ impl std::fmt::Display for StyleEditError {
             ),
             Self::UnknownStyle(selector) => write!(
                 f,
-                "스타일 {selector:?}을 찾을 수 없습니다. 문서의 스타일 이름이나 번호를 확인해 보세요"
+                "스타일 {selector}을 찾을 수 없습니다. 문서의 스타일 이름이나 번호를 확인해 보세요"
             ),
             Self::AmbiguousName(name) => write!(
                 f,
@@ -293,7 +302,16 @@ pub fn apply_style_at(
             id: before_para_shape.0,
         });
     }
-    for (_, id) in &before_runs {
+    // hwpx/src/write/section.rs defaults both first_shape and shape_id_at to shape 0
+    // when runs are absent. Apply the same inheritance decision to that effective run:
+    // shape 0 stays direct when the old style uses another character shape.
+    let implicit_run = [(0, CharShapeId(0))];
+    let effective_runs = if before_runs.is_empty() {
+        implicit_run.as_slice()
+    } else {
+        before_runs.as_slice()
+    };
+    for (_, id) in effective_runs {
         if doc.header.char_shapes.get(usize::from(id.0)).is_none() {
             return Err(StyleEditError::MissingShape {
                 table: "char_shapes",
@@ -309,7 +327,7 @@ pub fn apply_style_at(
     let runs = if clear_direct {
         vec![(0, target.char_shape)]
     } else {
-        before_runs
+        effective_runs
             .iter()
             .map(|&(position, id)| {
                 (
