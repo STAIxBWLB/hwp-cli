@@ -22,6 +22,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Changed**
 
+- CI publishes a stable `ci-ok` gate for every PR, including lightweight docs/formula changes.
+  Bundled skill and corpus Markdown always run full gates. The aggregate rejects failed,
+  cancelled or unexpectedly skipped jobs; releases require it,
+  and formula PR auto-merge waits for its successful exact-head CI. GitHub's clean-status
+  auto-merge refusal uses a checked head-matched merge only after a fresh clean/mergeable proof
+  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+
 - Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)
   and `--locked`, with `cargo-zigbuild` 0.23.4 and zig 0.16.0 pinned. The release `verify-ci`
   gate now waits (up to 45 minutes) for a tag commit's still-running CI instead of failing, and
