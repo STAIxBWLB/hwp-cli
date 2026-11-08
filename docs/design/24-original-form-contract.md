@@ -28,6 +28,10 @@ these names do not advertise a shipped CLI or MCP command.
 single-style paragraphs. Paragraph insertion or mixed-style replacement requires an explicit
 expected document/projection rather than a wider text allowance.
 
+The string-valued cell budget supports ordinary text, tabs and line breaks. Control-rich cell
+values retain typed control atoms in the projection and require an explicit expected document;
+they cannot be flattened into a string match or silently replaced.
+
 The generated-source test compares full HWPX twin projections. Both formats independently check
 manifest cell values, grid widths/spans, form markers/breaks and resource roles. HWP5 then has its
 own full projection baseline and byte-identical native round-trip check. This does not assert
@@ -179,7 +183,3 @@ relevant mutations rather than relying on one aggregate document-text equality. 
 copies demonstrate the helper's rejection boundary; they are not production extraction or binding
 features. Full `scripts/check.sh`, hosted CI, fixture skips and native/oracle evidence are reported
 separately for the final tested head. No P0 result supplies universal native-table PDF support.
-
-The string-valued cell budget supports ordinary text, tabs and line breaks. Control-rich cell
-values retain typed control atoms in the projection and require an explicit expected document;
-they cannot be flattened into a string match or silently replaced.

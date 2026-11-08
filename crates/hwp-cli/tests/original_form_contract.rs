@@ -71,7 +71,7 @@ fn generate(dir: &Path) -> bool {
     };
     assert!(
         result.status.success(),
-        "fixture generator failed: {}",
+        "fixture generator failed; check PYTHON and the generator diagnostics: {}",
         String::from_utf8_lossy(&result.stderr)
     );
     true

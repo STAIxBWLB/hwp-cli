@@ -666,6 +666,9 @@ pub fn expect_cell_values(
     baseline: &FormProjection,
     changes: &[ExpectedCell],
 ) -> Result<FormProjection, ContractViolation> {
+    if let Some(invalid) = baseline.invalid_references.first() {
+        return Err(invalid.clone());
+    }
     let mut expected = baseline.clone();
     let mut unique = BTreeMap::new();
     for change in changes {
