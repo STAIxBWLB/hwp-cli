@@ -118,8 +118,11 @@ pub struct BinStream {
 }
 
 impl Document {
-    /// Picture의 BinRef를 실제 바이트로 해석한다.
-    pub fn resolve_bin(&self, bin_ref: &BinRef) -> Option<&[u8]> {
+    /// Index into [`Document::bin_streams`] of the stream a `BinRef` names, or `None` when the
+    /// document carries no such stream. [`Document::resolve_bin`] is this lookup plus the bytes,
+    /// so a caller that needs to know WHICH stream a picture uses (resource closure of an
+    /// extracted range) cannot drift from the rule the renderer and writers use.
+    pub fn bin_stream_index(&self, bin_ref: &BinRef) -> Option<usize> {
         match bin_ref {
             BinRef::Id(id) => {
                 let item = self.header.bin_data.get((id.0 as usize).checked_sub(1)?)?;
@@ -128,23 +131,24 @@ impl Document {
                 let name = format!("BIN{storage_id:04X}.{ext}");
                 self.bin_streams
                     .iter()
-                    .find(|s| s.name.eq_ignore_ascii_case(&name))
-                    .map(|s| s.data.as_slice())
+                    .position(|s| s.name.eq_ignore_ascii_case(&name))
             }
-            BinRef::ItemRef(item) => self
-                .bin_streams
-                .iter()
-                .find(|s| {
-                    s.name == *item
-                        || s.name.ends_with(&format!("/{item}"))
-                        || s.name
-                            .rsplit('/')
-                            .next()
-                            .and_then(|f| f.split('.').next())
-                            .is_some_and(|stem| stem == item)
-                })
-                .map(|s| s.data.as_slice()),
+            BinRef::ItemRef(item) => self.bin_streams.iter().position(|s| {
+                s.name == *item
+                    || s.name.ends_with(&format!("/{item}"))
+                    || s.name
+                        .rsplit('/')
+                        .next()
+                        .and_then(|f| f.split('.').next())
+                        .is_some_and(|stem| stem == item)
+            }),
         }
+    }
+
+    /// Picture의 BinRef를 실제 바이트로 해석한다.
+    pub fn resolve_bin(&self, bin_ref: &BinRef) -> Option<&[u8]> {
+        self.bin_stream_index(bin_ref)
+            .map(|index| self.bin_streams[index].data.as_slice())
     }
 }
 

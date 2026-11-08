@@ -188,11 +188,67 @@ pub(crate) struct SplitSummary {
     pub report: WriteReport,
 }
 
+/// The `hwp-range-extraction-v1` report: what was selected, against which source, where each
+/// kept object went, and what happened to every binary stream. Closed and content-free: it
+/// carries addresses, hashes and stream names, never document text.
+fn range_report_json(
+    request: &RangeRequest,
+    source_sha256: &str,
+    fragment_sha256: &str,
+    extracted: &hwp_convert::document_split::RangeOutcome,
+) -> serde_json::Value {
+    use hwp_convert::document_split::AddressKind;
+    let addresses: Vec<serde_json::Value> = extracted
+        .address_map
+        .iter()
+        .map(|address| match address.kind {
+            AddressKind::Paragraph => serde_json::json!({
+                "kind": "paragraph",
+                "source": {"section": address.source.0, "paragraph": address.source.1},
+                "output": {"section": address.output.0, "paragraph": address.output.1},
+            }),
+            AddressKind::Table => serde_json::json!({
+                "kind": "table",
+                "source": {
+                    "section": address.source.0,
+                    "paragraph": address.source.1,
+                    "table": address.source_table,
+                },
+                "output": {
+                    "section": address.output.0,
+                    "paragraph": address.output.1,
+                    "table": address.output_table,
+                },
+            }),
+        })
+        .collect();
+    serde_json::json!({
+        "contract": "hwp-range-extraction-v1",
+        "schema_version": "1.0",
+        "source_sha256": source_sha256,
+        "fragment_sha256": fragment_sha256,
+        "selection": {
+            "from": request.from,
+            "to": request.to,
+            "end_inclusive": !request.end_exclusive,
+            "section": extracted.section,
+            "first_paragraph": extracted.start,
+            "end_paragraph": extracted.end,
+        },
+        "addresses": addresses,
+        "resources": {
+            "kept": extracted.resources.kept,
+            "excluded": extracted.resources.excluded,
+        },
+    })
+}
+
 /// `hwp split` entry point.
 pub fn run(
     input: &Path,
     out_dir: &Path,
     pages: &[String],
+    range: Option<RangeRequest>,
     strict: bool,
     loss_report: Option<&Path>,
     password: PasswordArgs,
@@ -202,6 +258,7 @@ pub fn run(
         input,
         out_dir,
         pages,
+        range.as_ref(),
         strict,
         loss_report,
         &LoadOptions {
@@ -209,6 +266,41 @@ pub fn run(
         },
     )?;
     Ok(())
+}
+
+/// A typed range request: `--from`/`--to`/`--end-exclusive`/`--source-sha256`/`--range-report`
+/// as the CLI and the MCP tool receive them, before any of it is parsed.
+#[derive(Debug, Clone, Default)]
+pub struct RangeRequest {
+    pub from: String,
+    pub to: Option<String>,
+    pub end_exclusive: bool,
+    pub source_sha256: Option<String>,
+    pub report: Option<PathBuf>,
+}
+
+/// Parses `heading:<text>`, `bookmark:<name>` or `at:<section>.<paragraph>`. A value with no
+/// recognized prefix is refused by name rather than guessed to be a heading, because a typo in
+/// the prefix would otherwise silently select by text.
+fn parse_anchor(value: &str) -> anyhow::Result<hwp_convert::document_split::RangeAnchor> {
+    use hwp_convert::document_split::RangeAnchor;
+    if let Some(text) = value.strip_prefix("heading:") {
+        return Ok(RangeAnchor::Heading(text.to_string()));
+    }
+    if let Some(name) = value.strip_prefix("bookmark:") {
+        return Ok(RangeAnchor::Bookmark(name.to_string()));
+    }
+    if let Some(address) = value.strip_prefix("at:") {
+        let parsed = address.split_once('.').and_then(|(section, paragraph)| {
+            Some((section.trim().parse().ok()?, paragraph.trim().parse().ok()?))
+        });
+        if let Some((section, paragraph)) = parsed {
+            return Ok(RangeAnchor::Address { section, paragraph });
+        }
+    }
+    anyhow::bail!(
+        "잘못된 범위 지점: '{value}' (허용 형식: heading:<제목>, bookmark:<이름>, at:<구역>.<문단>) — 예: --from \"heading:신청서\""
+    )
 }
 
 /// The split itself, with the password already resolved. Split out of [`run`]
@@ -220,6 +312,7 @@ pub(crate) fn execute(
     input: &Path,
     out_dir: &Path,
     pages: &[String],
+    range: Option<&RangeRequest>,
     strict: bool,
     loss_report: Option<&Path>,
     options: &LoadOptions<'_>,
@@ -251,13 +344,47 @@ pub(crate) fn execute(
 
     let document = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
 
-    let outcome: SplitOutcome = if pages.is_empty() {
+    // The range report is a second output of the same transaction, so it gets the same alias
+    // guard the loss report does, before any work.
+    let mut range_extraction = None;
+    if let Some(request) = range {
+        if let Some(report_path) = &request.report {
+            crate::commands::merge::reject_loss_report_aliases(
+                report_path,
+                &[input.to_path_buf()],
+                out_dir,
+            )?;
+        }
+        // Parse and resolve everything first: a bad anchor, a stale hash, an out-of-order end
+        // or a lost resource refuses here, before a single file is built or written.
+        let selector = hwp_convert::document_split::RangeSelector {
+            start: parse_anchor(&request.from)?,
+            end: request.to.as_deref().map(parse_anchor).transpose()?,
+            end_inclusive: !request.end_exclusive,
+            source_sha256: request.source_sha256.clone(),
+        };
+        let source_bytes = std::fs::read(input)
+            .with_context(|| format!("입력 파일을 읽을 수 없습니다: {}", input.display()))?;
+        let actual_sha256 = hwp_convert::document_split::source_sha256(&source_bytes);
+        let extracted =
+            hwp_convert::document_split::extract_range(&document, &actual_sha256, &selector)
+                .map_err(|error| anyhow::anyhow!("범위 추출 실패: {error}"))?;
+        range_extraction = Some((selector, actual_sha256, extracted));
+    }
+
+    let outcome: SplitOutcome = if let Some((_, _, extracted)) = &range_extraction {
+        SplitOutcome {
+            fragments: vec![extracted.fragment.clone()],
+            roundings: Vec::new(),
+        }
+    } else if pages.is_empty() {
         hwp_convert::document_split::split_sections(&document)
+            .map_err(|error| anyhow::anyhow!("분할 실패: {error}"))?
     } else {
         let ranges = parse_page_ranges(pages)?;
         hwp_convert::document_split::split_page_ranges(&document, &ranges)
-    }
-    .map_err(|error| anyhow::anyhow!("분할 실패: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("분할 실패: {error}"))?
+    };
     print_rounding_lines(&outcome.roundings);
 
     let destinations: Vec<PathBuf> = (1..=outcome.fragments.len())
@@ -320,6 +447,19 @@ pub(crate) fn execute(
     // D-17: unconditional stderr summary, independent of --strict/--loss-report.
     if let Some(line) = preservation_summary_line(&strict_view) {
         eprintln!("{line}");
+    }
+
+    // A range report is published in the SAME transaction as the fragment: a reader that finds
+    // the fragment finds the addresses that explain it, and a failed publish leaves neither.
+    if let (Some(request), Some((_, source_sha256, extracted))) = (range, &range_extraction)
+        && let Some(report_path) = &request.report
+    {
+        let fragment_sha256 = hwp_convert::document_split::source_sha256(&fragment_bytes[0].1);
+        let report_json = range_report_json(request, source_sha256, &fragment_sha256, extracted);
+        let mut text = serde_json::to_string_pretty(&report_json)?;
+        text.push('\n');
+        crate::commands::output::reject_output_aliases(report_path, &[input])?;
+        fragment_bytes.push((report_path.clone(), text.into_bytes()));
     }
 
     // D-16: publish the whole fragment set in one transaction — never per

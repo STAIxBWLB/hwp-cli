@@ -16,11 +16,27 @@
 //! sections (intermediate sections carried whole), so no content between the
 //! two boundaries is dropped.
 //!
+//! **Typed range extraction (`--from`/`--to`, #417).** [`extract_range`] takes the paragraphs
+//! between two anchors (a unique heading text, a bookmark name, or a body address) instead of
+//! a page range, which needs a saved layout cache a composed or freshly edited document does
+//! not have. The selection is validated against the source hash and refused before anything
+//! is built when an anchor is missing, ambiguous, stale or out of order. The fragment carries
+//! the section setup of the source section (page, columns, header and footer), the whole
+//! `DocHeader` (D-06, no id remapping), and a resource closure that keeps every binary stream
+//! the selection references. Streams the selection does not reference are *reported* as
+//! excluded, never silently pruned, and a reference to a stream the source does not carry is
+//! a refusal, so a deliberate exclusion can never be confused with a lost asset. Every kept
+//! body paragraph and table gets a source-to-output address so a later binding does not guess
+//! shifted indices.
+//!
 //! This module must not depend on the sibling merge-grafting module: D-06's
 //! "whole DocHeader unchanged" is exactly the direction that needs no offset
 //! arithmetic.
 
-use hwp_model::{Document, Paragraph, Section};
+use std::collections::BTreeSet;
+
+use hwp_model::{BinRef, Control, Document, HwpChar, Paragraph, Section};
+use sha2::{Digest as _, Sha256};
 
 /// A 1-based, inclusive page range for [`split_page_ranges`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +297,513 @@ pub fn split_page_ranges(doc: &Document, ranges: &[PageRange]) -> Result<SplitOu
     Ok(SplitOutcome {
         fragments,
         roundings,
+    })
+}
+
+// ───────────────────────── typed range extraction (#417) ─────────────────────────
+
+/// Where a range starts or ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RangeAnchor {
+    /// The one top-level body paragraph whose text equals this string (compared after trimming
+    /// surrounding whitespace). Two paragraphs with the same text are an ambiguous anchor.
+    Heading(String),
+    /// The one top-level body paragraph that holds a bookmark of this name.
+    Bookmark(String),
+    /// A body paragraph by position: `section.paragraph`, both 0-based.
+    Address { section: usize, paragraph: usize },
+}
+
+impl RangeAnchor {
+    fn describe(&self) -> String {
+        match self {
+            RangeAnchor::Heading(text) => format!("제목 {text:?}"),
+            RangeAnchor::Bookmark(name) => format!("책갈피 {name:?}"),
+            RangeAnchor::Address { section, paragraph } => {
+                format!("주소 {section}.{paragraph}")
+            }
+        }
+    }
+}
+
+/// A typed range selection.
+///
+/// The start paragraph is always included. The end anchor, when given, is included unless
+/// `end_inclusive` is false; without an end anchor the range runs to the end of the start's
+/// section. The range is a contiguous run of top-level body paragraphs of ONE section, so a
+/// table (or any other container) is taken whole or not at all: an anchor inside a table cell
+/// is not addressable, and a range can never cut a table in half.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RangeSelector {
+    pub start: RangeAnchor,
+    pub end: Option<RangeAnchor>,
+    pub end_inclusive: bool,
+    /// Lower-case hex SHA-256 of the source file the caller selected against. When present it
+    /// must equal the hash of the file actually loaded, so a selection made against an older
+    /// version of the document is refused instead of silently applied to the new one.
+    pub source_sha256: Option<String>,
+}
+
+/// Why a range could not be extracted. Each variant names the cause and the next step in
+/// [`std::fmt::Display`], and none of them is raised after anything was built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RangeError {
+    /// The selector carries a hash and the loaded source has another one.
+    StaleSource { expected: String, actual: String },
+    /// No body paragraph matches the anchor.
+    AnchorMissing { anchor: String },
+    /// More than one body paragraph matches the anchor.
+    AnchorAmbiguous {
+        anchor: String,
+        matches: Vec<(usize, usize)>,
+    },
+    /// The start and end anchors resolve to different sections.
+    AcrossSections { start: usize, end: usize },
+    /// The end anchor resolves before the start.
+    EndBeforeStart,
+    /// A kept object points at a binary the source does not carry.
+    LostResource { reference: String },
+    /// The document has no sections.
+    EmptyDocument,
+}
+
+impl std::fmt::Display for RangeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RangeError::StaleSource { expected, actual } => write!(
+                f,
+                "선택이 만들어진 원본과 지금 읽은 원본이 다릅니다 (선택 기준 sha256 {expected}, 현재 {actual}). 문서가 바뀌었으니 현재 문서에서 다시 선택하세요"
+            ),
+            RangeError::AnchorMissing { anchor } => write!(
+                f,
+                "{anchor}에 해당하는 본문 문단이 없습니다. 표 안의 문단은 지정할 수 없고 제목은 문단 전체 텍스트와 같아야 합니다. `hwp cat`으로 정확한 텍스트나 책갈피 이름을 확인하세요"
+            ),
+            RangeError::AnchorAmbiguous { anchor, matches } => {
+                let places: Vec<String> = matches
+                    .iter()
+                    .map(|(section, paragraph)| format!("{section}.{paragraph}"))
+                    .collect();
+                write!(
+                    f,
+                    "{anchor}이(가) 본문 문단 {}곳({})과 일치합니다. 하나만 가리키도록 주소(구역.문단)로 지정하세요",
+                    matches.len(),
+                    places.join(", ")
+                )
+            }
+            RangeError::AcrossSections { start, end } => write!(
+                f,
+                "시작({start}번 구역)과 끝({end}번 구역)이 서로 다른 구역입니다. 범위는 한 구역 안에서만 고를 수 있으니 구역마다 나누어 추출하세요"
+            ),
+            RangeError::EndBeforeStart => write!(
+                f,
+                "끝 지점이 시작 지점보다 앞에 있습니다. --from과 --to를 서로 바꾸거나 --to를 생략하세요"
+            ),
+            RangeError::LostResource { reference } => write!(
+                f,
+                "선택한 범위가 원본에 없는 바이너리({reference})를 참조합니다. 원본이 불완전합니다. `hwp convert --to json --embed-bin`으로 내보낸 자급식 JSON인지 확인하세요"
+            ),
+            RangeError::EmptyDocument => write!(f, "문서에 구역이 없어 범위를 추출할 수 없습니다"),
+        }
+    }
+}
+
+impl std::error::Error for RangeError {}
+
+/// Where a kept source object ended up in the fragment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceToOutputAddress {
+    pub kind: AddressKind,
+    /// Section and body-paragraph index in the source.
+    pub source: (usize, usize),
+    /// Section and body-paragraph index in the fragment.
+    pub output: (usize, usize),
+    /// 0-based table ordinal in document order (the numbering `hwp edit --set-cell` uses,
+    /// nested tables included), in the source and in the fragment. `None` for paragraphs.
+    pub source_table: Option<usize>,
+    pub output_table: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressKind {
+    Paragraph,
+    Table,
+}
+
+/// What happened to each binary stream of the source.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceClosureReport {
+    /// Streams the selection references, so the fragment carries them.
+    pub kept: Vec<String>,
+    /// Streams the source carries that the selection does not reference. The fragment does not
+    /// carry them, and this is a deliberate exclusion, not a loss.
+    pub excluded: Vec<String>,
+}
+
+/// The extracted fragment and the evidence about it.
+#[derive(Debug)]
+pub struct RangeOutcome {
+    pub fragment: Document,
+    pub address_map: Vec<SourceToOutputAddress>,
+    pub resources: ResourceClosureReport,
+    /// The source paragraph range that was taken: `[start, end)` in `section`.
+    pub section: usize,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Lower-case hex SHA-256 of `bytes`: the source identity a selector is checked against.
+pub fn source_sha256(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn paragraph_text(paragraph: &Paragraph) -> String {
+    paragraph
+        .chars
+        .iter()
+        .filter_map(|ch| match ch {
+            HwpChar::Text(c) => Some(*c),
+            _ => None,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Whether `paragraph` itself (not a nested one) holds a bookmark named `name`.
+fn holds_bookmark(paragraph: &Paragraph, name: &str) -> bool {
+    paragraph.chars.iter().any(|ch| {
+        matches!(
+            ch,
+            HwpChar::ExtCtrl { code, ctrl_id, ctrl_index: Some(index), .. }
+                if *code == hwp_model::ctrl_char::BOOKMARK
+                    && ctrl_id == b"bokm"
+                    && paragraph
+                        .controls
+                        .get(*index as usize)
+                        .and_then(crate::bookmark::bookmark_name)
+                        .as_deref()
+                        == Some(name)
+        )
+    })
+}
+
+fn resolve_anchor(doc: &Document, anchor: &RangeAnchor) -> Result<(usize, usize), RangeError> {
+    let described = anchor.describe();
+    let matches: Vec<(usize, usize)> = match anchor {
+        RangeAnchor::Address { section, paragraph } => {
+            let exists = doc
+                .sections
+                .get(*section)
+                .is_some_and(|section| *paragraph < section.paragraphs.len());
+            return if exists {
+                Ok((*section, *paragraph))
+            } else {
+                Err(RangeError::AnchorMissing { anchor: described })
+            };
+        }
+        RangeAnchor::Heading(text) => {
+            let wanted = text.trim();
+            body_paragraphs(doc)
+                .filter(|(_, _, paragraph)| {
+                    !wanted.is_empty() && paragraph_text(paragraph) == wanted
+                })
+                .map(|(section, index, _)| (section, index))
+                .collect()
+        }
+        RangeAnchor::Bookmark(name) => body_paragraphs(doc)
+            .filter(|(_, _, paragraph)| holds_bookmark(paragraph, name))
+            .map(|(section, index, _)| (section, index))
+            .collect(),
+    };
+    match matches.as_slice() {
+        [] => Err(RangeError::AnchorMissing { anchor: described }),
+        [only] => Ok(*only),
+        _ => Err(RangeError::AnchorAmbiguous {
+            anchor: described,
+            matches,
+        }),
+    }
+}
+
+fn body_paragraphs(doc: &Document) -> impl Iterator<Item = (usize, usize, &Paragraph)> {
+    doc.sections.iter().enumerate().flat_map(|(section, body)| {
+        body.paragraphs
+            .iter()
+            .enumerate()
+            .map(move |(index, paragraph)| (section, index, paragraph))
+    })
+}
+
+/// Visits every `BinRef` reachable from `paragraph`: pictures in the body, in table cells, in
+/// captions and in the paragraph lists of generic objects (text boxes, headers, footers).
+fn collect_bin_refs(paragraph: &Paragraph, out: &mut Vec<BinRef>) {
+    for control in &paragraph.controls {
+        match control {
+            Control::Picture(picture) => {
+                out.push(picture.bin_ref.clone());
+                if let Some(caption) = &picture.caption {
+                    caption
+                        .paragraphs
+                        .iter()
+                        .for_each(|p| collect_bin_refs(p, out));
+                }
+            }
+            Control::Table(table) => {
+                if let Some(caption) = &table.caption {
+                    caption
+                        .paragraphs
+                        .iter()
+                        .for_each(|p| collect_bin_refs(p, out));
+                }
+                for cell in &table.cells {
+                    cell.paragraphs
+                        .iter()
+                        .for_each(|p| collect_bin_refs(p, out));
+                }
+            }
+            Control::Generic(generic) => {
+                for list in &generic.paragraph_lists {
+                    list.paragraphs
+                        .iter()
+                        .for_each(|p| collect_bin_refs(p, out));
+                }
+            }
+            Control::SectionDef(_) => {}
+        }
+    }
+}
+
+/// Tables in `paragraph`, in the order `hwp edit` numbers them: a table, then the tables
+/// nested in its cells, then the next control.
+fn count_tables(paragraph: &Paragraph) -> usize {
+    paragraph
+        .controls
+        .iter()
+        .map(|control| match control {
+            Control::Table(table) => {
+                1 + table
+                    .cells
+                    .iter()
+                    .flat_map(|cell| &cell.paragraphs)
+                    .map(count_tables)
+                    .sum::<usize>()
+            }
+            Control::Generic(generic) => generic
+                .paragraph_lists
+                .iter()
+                .flat_map(|list| &list.paragraphs)
+                .map(count_tables)
+                .sum(),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Whether a control of the section's first paragraph sets the section up (page, columns,
+/// header, footer, numbering) rather than being content.
+fn is_section_setup_char(paragraph: &Paragraph, ch: &HwpChar) -> bool {
+    let HwpChar::ExtCtrl { ctrl_index, .. } = ch else {
+        return false;
+    };
+    matches!(
+        ctrl_index.and_then(|index| paragraph.controls.get(index as usize)),
+        Some(Control::SectionDef(_))
+    ) || matches!(
+        ctrl_index.and_then(|index| paragraph.controls.get(index as usize)),
+        Some(Control::Generic(generic))
+            if matches!(&generic.ctrl_id, b"cold" | b"head" | b"foot" | b"pgnp" | b"nwno")
+    )
+}
+
+/// Extracts the paragraphs the selector names from one section of `doc`.
+///
+/// `actual_sha256` is the identity of the source the caller loaded ([`source_sha256`] of its
+/// bytes); it is compared with `selector.source_sha256` when the selector carries one. Every
+/// refusal happens before the fragment is built, so a caller that gets an `Err` has nothing
+/// to clean up.
+pub fn extract_range(
+    doc: &Document,
+    actual_sha256: &str,
+    selector: &RangeSelector,
+) -> Result<RangeOutcome, RangeError> {
+    if doc.sections.is_empty() {
+        return Err(RangeError::EmptyDocument);
+    }
+    if let Some(expected) = &selector.source_sha256
+        && !expected.eq_ignore_ascii_case(actual_sha256)
+    {
+        return Err(RangeError::StaleSource {
+            expected: expected.to_ascii_lowercase(),
+            actual: actual_sha256.to_string(),
+        });
+    }
+
+    let (section_index, start) = resolve_anchor(doc, &selector.start)?;
+    let section = &doc.sections[section_index];
+    let end = match &selector.end {
+        None => section.paragraphs.len(),
+        Some(anchor) => {
+            let (end_section, end_paragraph) = resolve_anchor(doc, anchor)?;
+            if end_section != section_index {
+                return Err(RangeError::AcrossSections {
+                    start: section_index,
+                    end: end_section,
+                });
+            }
+            end_paragraph + usize::from(selector.end_inclusive)
+        }
+    };
+    // One check covers a reversed range and `--end-exclusive` on the start paragraph itself:
+    // both leave nothing to extract.
+    if end <= start {
+        return Err(RangeError::EndBeforeStart);
+    }
+
+    // Resource closure, decided from the selection alone and before anything is built.
+    let mut references = Vec::new();
+    for paragraph in &section.paragraphs[start..end] {
+        collect_bin_refs(paragraph, &mut references);
+    }
+    let mut kept_indices = BTreeSet::new();
+    for reference in &references {
+        match doc.bin_stream_index(reference) {
+            Some(index) => {
+                kept_indices.insert(index);
+            }
+            None => {
+                return Err(RangeError::LostResource {
+                    reference: match reference {
+                        BinRef::Id(id) => format!("BinData #{}", id.0),
+                        BinRef::ItemRef(item) => item.clone(),
+                    },
+                });
+            }
+        }
+    }
+
+    // The section setup rides on the first paragraph of the source section. When the range
+    // does not start there, that paragraph's setup controls are carried in front, as the
+    // page-range split does, but only the setup controls: its text and objects are not in the
+    // selection.
+    let mut paragraphs: Vec<Paragraph> = Vec::new();
+    let mut offset = 0usize;
+    if start != 0
+        && let Some(first) = section.paragraphs.first()
+    {
+        let mut setup = first.clone();
+        setup.chars.retain(|ch| is_section_setup_char(first, ch));
+        let kept: Vec<usize> = setup
+            .chars
+            .iter()
+            .filter_map(|ch| match ch {
+                HwpChar::ExtCtrl {
+                    ctrl_index: Some(index),
+                    ..
+                } => Some(*index as usize),
+                _ => None,
+            })
+            .collect();
+        setup.controls = kept
+            .iter()
+            .filter_map(|i| first.controls.get(*i).cloned())
+            .collect();
+        for (new_index, ch) in setup.chars.iter_mut().enumerate() {
+            if let HwpChar::ExtCtrl { ctrl_index, .. } = ch {
+                *ctrl_index = Some(new_index as u32);
+            }
+        }
+        // The paragraph keeps no text, line cache or run map of the original.
+        setup
+            .chars
+            .push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
+        setup.line_segs.clear();
+        setup.char_shape_runs = vec![(
+            0,
+            first
+                .char_shape_runs
+                .first()
+                .map_or_else(Default::default, |run| run.1),
+        )];
+        setup.header.ctrl_mask = 0;
+        setup.header.hwp5_child_order.clear();
+        paragraphs.push(setup);
+        offset = 1;
+    }
+    paragraphs.extend(section.paragraphs[start..end].iter().cloned());
+
+    // Source-to-output addresses for the kept body paragraphs and the tables they hold.
+    let mut address_map = Vec::new();
+    let mut source_table = doc
+        .sections
+        .iter()
+        .take(section_index)
+        .flat_map(|section| &section.paragraphs)
+        .map(count_tables)
+        .sum::<usize>()
+        + section.paragraphs[..start]
+            .iter()
+            .map(count_tables)
+            .sum::<usize>();
+    // Output tables are numbered from the start of the fragment, which has one section.
+    let mut output_table = paragraphs[..offset].iter().map(count_tables).sum::<usize>();
+    for (position, source_index) in (start..end).enumerate() {
+        let paragraph = &section.paragraphs[source_index];
+        let output_index = offset + position;
+        address_map.push(SourceToOutputAddress {
+            kind: AddressKind::Paragraph,
+            source: (section_index, source_index),
+            output: (0, output_index),
+            source_table: None,
+            output_table: None,
+        });
+        let tables = count_tables(paragraph);
+        for table in 0..tables {
+            address_map.push(SourceToOutputAddress {
+                kind: AddressKind::Table,
+                source: (section_index, source_index),
+                output: (0, output_index),
+                source_table: Some(source_table + table),
+                output_table: Some(output_table + table),
+            });
+        }
+        source_table += tables;
+        output_table += tables;
+    }
+
+    let mut fragment = doc.clone();
+    fragment.sections = vec![Section {
+        paragraphs,
+        extras: section.extras.clone(),
+    }];
+    fragment.header.properties.section_count = 1;
+    fragment.header.properties.caret = (0, 0, 0);
+
+    // Keep exactly the referenced streams, in source order. The streams are removed from the
+    // fragment only after the closure above proved every reference resolves.
+    let mut report = ResourceClosureReport::default();
+    let mut streams = Vec::new();
+    for (index, stream) in doc.bin_streams.iter().enumerate() {
+        if kept_indices.contains(&index) {
+            report.kept.push(stream.name.clone());
+            streams.push(stream.clone());
+        } else {
+            report.excluded.push(stream.name.clone());
+        }
+    }
+    fragment.bin_streams = streams;
+    // A preview rendered from the whole source would show content the fragment does not have.
+    fragment.hwpx_preview_image = None;
+
+    Ok(RangeOutcome {
+        fragment,
+        address_map,
+        resources: report,
+        section: section_index,
+        start,
+        end,
     })
 }
 
@@ -599,5 +1122,295 @@ mod tests {
         assert_eq!(fragment.sections.len(), 1);
         assert!(plain_text(fragment).contains("첫 구역"));
         assert!(!plain_text(fragment).contains("둘째 구역"));
+    }
+
+    // ───────────── typed range extraction (#417) ─────────────
+
+    fn plain_text_of(paragraph: &Paragraph) -> String {
+        paragraph_text(paragraph)
+    }
+
+    fn text_paragraph(text: &str) -> Paragraph {
+        crate::from_markdown(&format!("{text}\n")).sections[0].paragraphs[0].clone()
+    }
+
+    fn picture_paragraph(reference: &str) -> Paragraph {
+        let mut paragraph = text_paragraph("");
+        paragraph
+            .controls
+            .push(Control::Picture(hwp_model::Picture {
+                common_data: Vec::new(),
+                width: hwp_model::HwpUnit(100),
+                height: hwp_model::HwpUnit(100),
+                treat_as_char: true,
+                z_order: 0,
+                vert_offset: 0,
+                horz_offset: 0,
+                description: None,
+                crop: None,
+                flip: 0,
+                rotation: None,
+                brightness: 0,
+                contrast: 0,
+                effect_flags: 0,
+                effects_raw: Vec::new(),
+                caption: None,
+                bin_ref: BinRef::ItemRef(reference.to_string()),
+                extras: Vec::new(),
+            }));
+        paragraph
+    }
+
+    /// Section 0: `[setup, A, a-body, B, b-picture(b.png), C, c-picture(c.png)]`, two streams
+    /// plus an unreferenced third one.
+    fn range_doc() -> Document {
+        let mut doc = crate::from_markdown("setup\n");
+        let section = &mut doc.sections[0];
+        section.paragraphs.truncate(1);
+        for paragraph in [
+            text_paragraph("A"),
+            text_paragraph("a body"),
+            text_paragraph("B"),
+            picture_paragraph("b.png"),
+            text_paragraph("C"),
+            picture_paragraph("c.png"),
+        ] {
+            section.paragraphs.push(paragraph);
+        }
+        doc.bin_streams = ["b.png", "c.png", "unused.png"]
+            .iter()
+            .map(|name| hwp_model::BinStream {
+                name: format!("BinData/{name}"),
+                data: name.as_bytes().to_vec(),
+            })
+            .collect();
+        doc
+    }
+
+    fn heading(text: &str) -> RangeAnchor {
+        RangeAnchor::Heading(text.to_string())
+    }
+
+    fn selector(
+        start: RangeAnchor,
+        end: Option<RangeAnchor>,
+        end_inclusive: bool,
+    ) -> RangeSelector {
+        RangeSelector {
+            start,
+            end,
+            end_inclusive,
+            source_sha256: None,
+        }
+    }
+
+    #[test]
+    fn 범위는_시작부터_끝_문단까지_포함하고_주소를_원본에서_출력으로_옮긴다() {
+        let doc = range_doc();
+        let outcome =
+            extract_range(&doc, "h", &selector(heading("A"), Some(heading("B")), true)).unwrap();
+        assert_eq!((outcome.section, outcome.start, outcome.end), (0, 1, 4));
+        // setup paragraph + A + a body + B
+        assert_eq!(outcome.fragment.sections.len(), 1);
+        assert_eq!(outcome.fragment.sections[0].paragraphs.len(), 4);
+        // The range does not start at the section's first paragraph, so the section setup
+        // rides on a carried-in setup paragraph with none of the original's text.
+        let carried = &outcome.fragment.sections[0].paragraphs[0];
+        assert!(has_section_def(carried));
+        assert!(!plain_text_of(carried).contains("setup"));
+        let moved: Vec<_> = outcome
+            .address_map
+            .iter()
+            .map(|a| (a.source.1, a.output.1))
+            .collect();
+        assert_eq!(moved, vec![(1, 1), (2, 2), (3, 3)]);
+    }
+
+    #[test]
+    fn 끝_제외는_끝_문단을_범위에서_뺀다() {
+        let doc = range_doc();
+        let outcome = extract_range(
+            &doc,
+            "h",
+            &selector(heading("A"), Some(heading("B")), false),
+        )
+        .unwrap();
+        assert_eq!((outcome.start, outcome.end), (1, 3));
+    }
+
+    #[test]
+    fn 끝이_없으면_시작_구역의_끝까지다() {
+        let doc = range_doc();
+        let outcome = extract_range(&doc, "h", &selector(heading("B"), None, true)).unwrap();
+        assert_eq!((outcome.start, outcome.end), (3, 7));
+    }
+
+    #[test]
+    fn 범위_안_그림의_바이너리만_유지하고_나머지는_제외로_보고한다() {
+        let doc = range_doc();
+        let outcome = extract_range(
+            &doc,
+            "h",
+            &selector(heading("B"), Some(heading("C")), false),
+        )
+        .unwrap();
+        assert_eq!(outcome.resources.kept, vec!["BinData/b.png"]);
+        assert_eq!(
+            outcome.resources.excluded,
+            vec!["BinData/c.png", "BinData/unused.png"]
+        );
+        let names: Vec<_> = outcome
+            .fragment
+            .bin_streams
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["BinData/b.png"]);
+        assert_eq!(outcome.fragment.bin_streams[0].data, b"b.png");
+    }
+
+    #[test]
+    fn 범위_밖_그림만_있는_조각은_바이너리를_하나도_갖지_않는다() {
+        let doc = range_doc();
+        let outcome = extract_range(
+            &doc,
+            "h",
+            &selector(heading("A"), Some(heading("a body")), true),
+        )
+        .unwrap();
+        assert!(outcome.fragment.bin_streams.is_empty());
+        assert!(outcome.resources.kept.is_empty());
+        assert_eq!(outcome.resources.excluded.len(), 3);
+    }
+
+    #[test]
+    fn 원본에_없는_바이너리를_참조하면_아무것도_만들지_않고_거부한다() {
+        let mut doc = range_doc();
+        doc.bin_streams.retain(|s| s.name != "BinData/b.png");
+        let error = extract_range(
+            &doc,
+            "h",
+            &selector(heading("B"), Some(heading("C")), false),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            RangeError::LostResource {
+                reference: "b.png".into()
+            }
+        );
+    }
+
+    #[test]
+    fn 선택_해시가_다르면_낡은_원본으로_거부한다() {
+        let doc = range_doc();
+        let mut chosen = selector(heading("A"), None, true);
+        chosen.source_sha256 = Some("ABCD".into());
+        let error = extract_range(&doc, "abcd", &chosen);
+        assert!(error.is_ok(), "hash comparison ignores hex case");
+        chosen.source_sha256 = Some("abce".into());
+        let error = extract_range(&doc, "abcd", &chosen).unwrap_err();
+        assert!(matches!(error, RangeError::StaleSource { .. }));
+    }
+
+    #[test]
+    fn 없는_제목과_중복_제목과_빈_제목은_앵커로_거부한다() {
+        let mut doc = range_doc();
+        let missing = extract_range(&doc, "h", &selector(heading("없음"), None, true));
+        assert!(matches!(missing, Err(RangeError::AnchorMissing { .. })));
+        let empty = extract_range(&doc, "h", &selector(heading("  "), None, true));
+        assert!(matches!(empty, Err(RangeError::AnchorMissing { .. })));
+        doc.sections[0].paragraphs.push(text_paragraph("A"));
+        match extract_range(&doc, "h", &selector(heading("A"), None, true)) {
+            Err(RangeError::AnchorAmbiguous { matches, .. }) => {
+                assert_eq!(matches, vec![(0, 1), (0, 7)]);
+            }
+            other => panic!("expected an ambiguous anchor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 범위_밖_주소와_구역_밖_주소는_없는_앵커다() {
+        let doc = range_doc();
+        for (section, paragraph) in [(0, 99), (3, 0)] {
+            let result = extract_range(
+                &doc,
+                "h",
+                &selector(RangeAnchor::Address { section, paragraph }, None, true),
+            );
+            assert!(matches!(result, Err(RangeError::AnchorMissing { .. })));
+        }
+    }
+
+    #[test]
+    fn 시작과_끝이_다른_구역이면_거부한다() {
+        let mut doc = range_doc();
+        doc.sections.push(Section {
+            paragraphs: vec![text_paragraph("Z")],
+            extras: Vec::new(),
+        });
+        let error = extract_range(&doc, "h", &selector(heading("A"), Some(heading("Z")), true))
+            .unwrap_err();
+        assert_eq!(error, RangeError::AcrossSections { start: 0, end: 1 });
+    }
+
+    #[test]
+    fn 끝이_시작보다_앞이거나_빈_범위면_거부한다() {
+        let doc = range_doc();
+        let reversed = extract_range(&doc, "h", &selector(heading("C"), Some(heading("A")), true));
+        assert_eq!(reversed.unwrap_err(), RangeError::EndBeforeStart);
+        let empty = extract_range(
+            &doc,
+            "h",
+            &selector(heading("A"), Some(heading("A")), false),
+        );
+        assert_eq!(empty.unwrap_err(), RangeError::EndBeforeStart);
+    }
+
+    #[test]
+    fn 범위가_첫_문단에서_시작하면_구역_설정_문단을_따로_붙이지_않는다() {
+        let doc = range_doc();
+        let outcome = extract_range(
+            &doc,
+            "h",
+            &selector(
+                RangeAnchor::Address {
+                    section: 0,
+                    paragraph: 0,
+                },
+                Some(heading("A")),
+                true,
+            ),
+        )
+        .unwrap();
+        assert_eq!(outcome.fragment.sections[0].paragraphs.len(), 2);
+        assert_eq!(outcome.address_map[0].output, (0, 0));
+    }
+
+    #[test]
+    fn 원본_문서는_추출해도_바뀌지_않는다() {
+        let doc = range_doc();
+        let before = format!("{:?}", doc.sections);
+        let streams = doc.bin_streams.len();
+        extract_range(&doc, "h", &selector(heading("B"), None, true)).unwrap();
+        assert_eq!(format!("{:?}", doc.sections), before);
+        assert_eq!(doc.bin_streams.len(), streams);
+    }
+
+    #[test]
+    fn 거부_메시지는_원인과_다음_행동을_말한다() {
+        let doc = range_doc();
+        let cases = [
+            extract_range(&doc, "h", &selector(heading("없음"), None, true)).unwrap_err(),
+            extract_range(&doc, "h", &selector(heading("C"), Some(heading("A")), true))
+                .unwrap_err(),
+        ];
+        for error in cases {
+            let message = error.to_string();
+            assert!(
+                message.contains("hwp cat") || message.contains("--from"),
+                "{message}"
+            );
+        }
     }
 }

@@ -210,6 +210,30 @@ pub enum Cmd {
         /// and the estimate may not match what Hancom itself would paginate
         #[arg(long)]
         pages: Vec<String>,
+        /// Extract one typed range instead of splitting: where it starts, as
+        /// "heading:<text>" (the one body paragraph whose whole text equals it),
+        /// "bookmark:<name>" or "at:<section>.<paragraph>" (both 0-based). The
+        /// range is a run of top-level body paragraphs of one section, so a table
+        /// is taken whole; the fragment keeps the section setup, the whole header
+        /// and every binary the range references, and lists the rest as excluded
+        #[arg(long, conflicts_with = "pages")]
+        from: Option<String>,
+        /// Where the range ends, same syntax as --from (default: the end of the
+        /// start's section)
+        #[arg(long, requires = "from")]
+        to: Option<String>,
+        /// Leave the --to paragraph out of the range (it is included by default)
+        #[arg(long, requires = "to")]
+        end_exclusive: bool,
+        /// SHA-256 (hex) of the source file the selection was made against; a
+        /// different file is refused before anything is written
+        #[arg(long, requires = "from")]
+        source_sha256: Option<String>,
+        /// Write the range report (hwp-range-extraction-v1: source hash,
+        /// selection, source-to-output addresses and the kept and excluded
+        /// resources) as JSON to this path, published together with the fragment
+        #[arg(long, requires = "from")]
+        range_report: Option<PathBuf>,
         /// Fail when data that cannot be preserved (opaque) is found while splitting
         #[arg(long)]
         strict: bool,

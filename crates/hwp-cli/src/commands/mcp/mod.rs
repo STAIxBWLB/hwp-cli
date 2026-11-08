@@ -1164,12 +1164,43 @@ fn tool_split_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult
     // strict follows the CLI default (false) for the same reason hwp_merge does;
     // the preservation ledger comes back on every call.
     let strict = arg_bool(args, "strict", false)?;
+    let range = match arg_str_opt(args, "from")? {
+        Some(from) => Some(crate::commands::split::RangeRequest {
+            from: from.to_string(),
+            to: arg_str_opt(args, "to")?.map(str::to_string),
+            end_exclusive: arg_bool(args, "end_exclusive", false)?,
+            source_sha256: arg_str_opt(args, "source_sha256")?.map(str::to_string),
+            report: arg_str_opt(args, "range_report")?
+                .map(|raw| checked_write_path(ctx, raw))
+                .transpose()?,
+        }),
+        None => {
+            for key in ["to", "end_exclusive", "source_sha256", "range_report"] {
+                if args.get(key).is_some() {
+                    return Err(McpToolError::from(format!(
+                        "{key}는 from과 함께만 쓸 수 있습니다"
+                    )));
+                }
+            }
+            None
+        }
+    };
+    if range.is_some() && !pages.is_empty() {
+        return Err(McpToolError::from(
+            "from과 pages는 함께 쓸 수 없습니다".to_string(),
+        ));
+    }
     let password = take_scoped_password(
         args,
         &[
             "input",
             "out_dir",
             "pages",
+            "from",
+            "to",
+            "end_exclusive",
+            "source_sha256",
+            "range_report",
             "loss_report",
             "strict",
             "password",
@@ -1179,6 +1210,7 @@ fn tool_split_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult
         &input,
         &out_dir,
         &pages,
+        range.as_ref(),
         strict,
         loss_report.as_deref(),
         &LoadOptions {
@@ -2885,6 +2917,11 @@ fn tool_defs() -> Vec<Value> {
                     "input": {"type": "string"},
                     "out_dir": {"type": "string", "description": "조각 출력 디렉터리 (파일명은 \"<입력스템>-NNN.<소문자 확장자>\")"},
                     "pages": {"type": "array", "items": {"type": "string"}, "description": "구역 대신 사용할 쪽 범위 \"N\" 또는 \"N-M\" 목록(1-based, 양끝 포함, 선택)"},
+                    "from": {"type": "string", "description": "분할 대신 형식 있는 범위를 추출할 시작 지점: \"heading:<제목>\", \"bookmark:<이름>\", \"at:<구역>.<문단>\"(0-based). pages와 함께 쓸 수 없다. 범위는 한 구역의 최상위 본문 문단 연속 구간이며 표는 통째로 포함된다"},
+                    "to": {"type": "string", "description": "범위 끝 지점(from과 같은 문법, 기본은 시작 구역의 끝). from과 함께만 사용"},
+                    "end_exclusive": {"type": "boolean", "description": "to 문단을 범위에서 제외; 기본 false"},
+                    "source_sha256": {"type": "string", "description": "선택을 만든 원본 파일의 SHA-256(16진수); 다르면 아무것도 쓰지 않고 거부"},
+                    "range_report": {"type": "string", "description": "hwp-range-extraction-v1 JSON(원본 해시, 원본→출력 주소, 유지·제외 자원)을 조각과 함께 게시할 경로"},
                     "strict": {"type": "boolean", "description": "보존 불가(opaque) 데이터가 있으면 게시하지 않고 실패; 기본 false (CLI와 동일) — 응답의 preservation 원장으로 손실을 판단하라"},
                     "loss_report": {"type": "string", "description": "hwp-preservation-report-v1 JSON을 기록할 경로(선택)"},
                     "password": {"type": "string", "description": "이번 hwp_split 호출에만 사용할 문서 암호"}
