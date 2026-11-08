@@ -43,7 +43,7 @@ hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
 
 Select a style with `kind: "paragraph"`. In this example, `body` is an existing primary style
 name and `at: {section: 0, paragraph: 1}` is the chosen paragraph; replace both with values from
-this document. An address can instead be `{"id":"<current para segment id>"}` from v2 or a
+this document. An address can instead be `{"id":"CURRENT_PARA_SEGMENT_ID"}` from v2 or a
 style's `used_by`. IDs belong to the source snapshot: obtain fresh ones after editing.
 
 Save this array as `restyle.json`:

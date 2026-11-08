@@ -255,7 +255,7 @@ hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
 `kind: "paragraph"`인 스타일을 선택한다. 아래 예시의 `body`는 기존 기본 이름이고,
 `at: {section: 0, paragraph: 1}`은 선택한 문단이다. 둘 다 현재 문서에서 확인한 값으로
 바꾼다. 주소에는 v2 또는 스타일의 `used_by`에서 얻은
-`{"id":"<현재 para 세그먼트 id>"}`도 쓸 수 있다. ID는 원본 스냅샷에 속하므로 편집 뒤에는
+`{"id":"CURRENT_PARA_SEGMENT_ID"}`도 쓸 수 있다. ID는 원본 스냅샷에 속하므로 편집 뒤에는
 새로 조회한다.
 
 다음 배열을 `restyle.json`으로 저장한다.
