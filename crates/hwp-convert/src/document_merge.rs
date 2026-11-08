@@ -2851,4 +2851,77 @@ mod tests {
         assert!(table_field > 9 && picture_field > 9);
         assert_ne!(table_field, picture_field);
     }
+
+    fn shape_with_caption(controls: Vec<Control>) -> Control {
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: Some(caption_with(controls)),
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    /// #446 made merge walk `GenericControl::caption`. Identities held there by the target are
+    /// taken ids, and objects inserted there need fresh ones, exactly like those in cells.
+    #[test]
+    fn identities_in_shape_captions_are_counted_in_the_target_and_renumbered_when_inserted() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![shape_with_caption(vec![
+                    table_with_common_id(0x5000_0001),
+                    field_control(77, "in-shape-caption"),
+                    placement_table(5),
+                ])],
+                ..Default::default()
+            },
+        );
+        let mut inserted = vec![
+            Paragraph {
+                controls: vec![placement_table(0)],
+                ..Default::default()
+            },
+            Paragraph {
+                controls: vec![shape_with_caption(vec![
+                    placement_table(0),
+                    field_control(0, "inserted-in-shape-caption"),
+                ])],
+                ..Default::default()
+            },
+        ];
+        let renumbered = renumber_inserted_objects(&target, &mut inserted).unwrap();
+        assert_eq!(
+            renumbered, 3,
+            "two tables and a field, one table inside a shape caption"
+        );
+        let existing = crate::edit::doc_object_ids(&target);
+        assert!(existing.contains(&0x5000_0001) && existing.contains(&0x5000_0005));
+        let top = crate::edit::synthesized_table_object_id(placement_z(&inserted[0].controls[0]));
+        let Control::Generic(shape) = &inserted[1].controls[0] else {
+            unreachable!()
+        };
+        let caption = shape.caption.as_ref().unwrap();
+        let nested = crate::edit::synthesized_table_object_id(placement_z(
+            &caption.paragraphs[0].controls[0],
+        ));
+        for id in [top, nested] {
+            assert!(
+                !existing.contains(&id),
+                "{id:x} collides with a target caption table"
+            );
+        }
+        assert_ne!(top, nested);
+        assert!(
+            stored_field_id(&caption.paragraphs[0].controls[1]) > 77,
+            "the inserted caption field must clear the target caption's field id 77"
+        );
+    }
 }
