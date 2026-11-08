@@ -1,4 +1,6 @@
-//! Text-block insertion using the existing DocumentSpec compiler against target header tables.
+//! DocumentSpec v1 block insertion (paragraphs, lists, breaks, tables, images, fields and
+//! equations) using the existing compiler against a header-only copy of the target, then the
+//! merge remapper's identity rules before the splice.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
