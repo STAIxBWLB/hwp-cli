@@ -215,6 +215,12 @@ impl Fixture {
     }
 }
 
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 fn para_id(path: &Path, text: &str) -> String {
     let run = hwp()
         .arg("cat")
@@ -1212,4 +1218,236 @@ fn high_named_style_refuses_hwp_without_publication_but_inserts_into_hwpx() {
             "style-bound check must never change the source HWPX"
         );
     }
+}
+
+fn section_owner_case(component: bool) {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new(
+            if component {
+                "section-def-component"
+            } else {
+                "section-def-paragraph"
+            },
+            extension,
+        );
+        let original = read(&fixture.base);
+        assert!(
+            original.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::SectionDef(_))),
+            "fixture must exercise the real section definition owner"
+        );
+        let operation = if component {
+            insert(
+                json!({"at":{"section":0,"paragraph":0}}),
+                "before",
+                "refuse",
+                json!({}),
+                json!([block("body", "Before section owner.")]),
+            )
+        } else {
+            json!({"op":"insert_para","address":{"at":{"section":0,"paragraph":0}},"before":true,"text":"Before section owner."})
+        };
+        let diagnostic = fixture.refuse(
+            &fixture.base,
+            &format!("section-before-{component}"),
+            json!([operation]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("구역")
+                && diagnostic.contains("앞")
+                && diagnostic.contains("after"),
+            "section-owner refusal must explain the boundary and after remedy: {diagnostic}"
+        );
+        let operation = if component {
+            insert(
+                json!({"at":{"section":0,"paragraph":0}}),
+                "after",
+                "refuse",
+                json!({}),
+                json!([block("body", "After section owner.")]),
+            )
+        } else {
+            json!({"op":"insert_para","address":{"at":{"section":0,"paragraph":0}},"before":false,"text":"After section owner."})
+        };
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            &format!("section-after-{component}"),
+            json!([operation]),
+            false,
+        );
+        success(run, "insertion after section definition owner");
+        let after = read(&output);
+        assert_eq!(index(&after, "After section owner."), 1);
+        assert!(
+            after.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::SectionDef(_)))
+        );
+    }
+}
+
+#[test]
+fn insert_blocks_before_section_definition_refuses_and_after_succeeds() {
+    section_owner_case(true);
+}
+
+#[test]
+fn insert_para_before_section_definition_refuses_and_after_succeeds() {
+    section_owner_case(false);
+}
+
+fn ordered_custom_case(label: &str, marker: &str, start: u32, template: &str) {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new(&format!("ordered-{label}"), extension);
+        let before = read(&fixture.base);
+        let mut operation = insert(
+            at(&before, ANCHOR),
+            "after",
+            "refuse",
+            json!({}),
+            json!([
+                {"type":"paragraph","style":"body","list":{"name":"custom-ordered","level":0},"runs":[{"type":"text","text":"Custom ordered item."}]}
+            ]),
+        );
+        operation["lists"] =
+            json!({"custom-ordered":{"kind":"ordered","levels":[{"marker":marker,"start":start}]}});
+        if extension == "hwp" {
+            let diagnostic =
+                fixture.refuse(&fixture.base, "ordered-refused", json!([operation]), false);
+            assert!(
+                diagnostic.contains("custom-ordered")
+                    && diagnostic.contains("0")
+                    && diagnostic.contains("HWPX")
+                    && diagnostic.contains("{n}.")
+                    && diagnostic.contains('1'),
+                "lossy HWP list refusal must identify list/level and HWPX/default marker/start remedies: {diagnostic}"
+            );
+        } else {
+            let (output, run) =
+                fixture.edit(&fixture.base, "ordered-retained", json!([operation]), false);
+            success(run, "HWPX retains custom ordered definition");
+            let after = read(&output);
+            let item = paragraph(&after, "Custom ordered item.");
+            let shape = &after.header.para_shapes[item.para_shape.0 as usize];
+            assert_eq!(shape.head_type(), 2);
+            let level = &after.header.numbering_levels[usize::from(shape.numbering_id)][0];
+            assert_eq!(level.template, template);
+            assert_eq!(level.start, start);
+        }
+    }
+}
+
+#[test]
+fn ordered_component_custom_marker_requires_hwpx() {
+    ordered_custom_case("marker", "({n})", 1, "(^1)");
+}
+
+#[test]
+fn ordered_component_nondefault_start_requires_hwpx() {
+    ordered_custom_case("start", "{n}.", 3, "^1.");
+}
+
+#[test]
+fn ordered_component_default_marker_and_start_is_accepted_by_both_formats() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("ordered-default", extension);
+        let before = read(&fixture.base);
+        let mut operation = insert(
+            at(&before, ANCHOR),
+            "after",
+            "refuse",
+            json!({}),
+            json!([
+                {"type":"paragraph","style":"body","list":{"name":"default-ordered","level":0},"runs":[{"type":"text","text":"Default ordered item."}]}
+            ]),
+        );
+        operation["lists"] =
+            json!({"default-ordered":{"kind":"ordered","levels":[{"marker":"{n}.","start":1}]}});
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "ordered-default-inserted",
+            json!([operation]),
+            false,
+        );
+        success(run, "default ordered component remains supported");
+        let after = read(&output);
+        let item = paragraph(&after, "Default ordered item.");
+        let shape = &after.header.para_shapes[item.para_shape.0 as usize];
+        assert_eq!(shape.head_type(), 2);
+        assert_eq!(shape.head_level(), 1);
+        let level = &after.header.numbering_levels[usize::from(shape.numbering_id)][0];
+        assert_eq!(level.template, "^1.");
+        assert_eq!(level.start, 1);
+    }
+}
+
+fn ordered_used_level_case(level: usize) {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new(&format!("ordered-used-level-{level}"), extension);
+        let before = read(&fixture.base);
+        let mut operation = insert(
+            at(&before, ANCHOR),
+            "after",
+            "refuse",
+            json!({}),
+            json!([
+                {"type":"paragraph","style":"body","list":{"name":"ladder-ordered","level":level},"runs":[{"type":"text","text":"Ordered ladder item."}]}
+            ]),
+        );
+        let definitions = if level == 2 {
+            json!([{"marker":"{n}.","start":1},{"marker":"{n}.","start":1},{"marker":"{n})","start":1}])
+        } else {
+            json!([{"marker":"{n}.","start":1},{"marker":"{n}.","start":1}])
+        };
+        operation["lists"] = json!({"ladder-ordered":{"kind":"ordered","levels":definitions}});
+        if level == 1 && extension == "hwp" {
+            let diagnostic = fixture.refuse(
+                &fixture.base,
+                "ordered-format-refused",
+                json!([operation]),
+                false,
+            );
+            assert!(
+                diagnostic.contains("ladder-ordered")
+                    && diagnostic.contains('1')
+                    && diagnostic.contains("HWPX")
+                    && diagnostic.contains("번호 형식"),
+                "used level format mismatch must identify list/level and format cause with HWPX remedy: {diagnostic}"
+            );
+        } else {
+            let (output, run) = fixture.edit(
+                &fixture.base,
+                "ordered-ladder-inserted",
+                json!([operation]),
+                false,
+            );
+            success(
+                run,
+                "representable used list level or HWPX authored numbering",
+            );
+            let after = read(&output);
+            let item = paragraph(&after, "Ordered ladder item.");
+            let shape = &after.header.para_shapes[item.para_shape.0 as usize];
+            assert_eq!(shape.head_type(), 2);
+            assert_eq!(usize::from(shape.head_level()), level + 1);
+            let actual = &after.header.numbering_levels[usize::from(shape.numbering_id)][level];
+            assert_eq!(actual.template, if level == 2 { "^3)" } else { "^2." });
+            assert_eq!(actual.start, 1);
+            assert_eq!(actual.fmt, hwp_model::NumFmt::Digit);
+        }
+    }
+}
+
+#[test]
+fn ordered_component_used_level_two_matching_default_ladder_succeeds() {
+    ordered_used_level_case(2);
+}
+
+#[test]
+fn ordered_component_used_level_one_digit_format_requires_hwpx() {
+    ordered_used_level_case(1);
 }
