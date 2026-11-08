@@ -12,7 +12,9 @@
 #   2. HWP_REQUIRE_FIXTURES=1 fails the absent case and passes the present one;
 #   3. an optional fixture (a ground-truth set fixtures/README.md lists as not currently held) is
 #      counted and tagged `optional` when absent, and strict mode does not fail it;
-#   4. the invariant-2 gate (crates/hwp5/tests/identity.rs) reports through the helper against
+#   4. an unavailable host resource uses the same required log column and fails in strict
+#      mode with an actionable remedy;
+#   5. the invariant-2 gate (crates/hwp5/tests/identity.rs) reports through the helper against
 #      this checkout's real fixtures: one or more lines without fixtures/hwp5/, none with it. On
 #      CI, which has no fixtures, this is what fails if a guard stops being counted.
 set -uo pipefail
@@ -80,6 +82,45 @@ rc="$(probe "$tmp/optional-strict.log" 1 1 "$absent")"
 check "strict mode does not fail an absent optional fixture" "$rc"
 check "strict mode still counts it, as optional" "$([ "$(lines "$tmp/optional-strict.log")" = 1 ] &&
     [ "$(optional_lines "$tmp/optional-strict.log")" = 1 ] && echo 0 || echo 1)"
+
+echo "-- required host resources"
+cat >"$tmp/resource-probe.rs" <<EOF
+#[path = "$PWD/crates/hwp-cli/tests/common/fixture_skip.rs"]
+mod fixture_skip;
+
+#[test]
+fn resource_unavailable_probe() {
+    assert!(fixture_skip::resource_unavailable(
+        "host ASCII font",
+        "install a system font with ASCII glyphs",
+    ));
+}
+EOF
+rustc --edition=2024 --crate-name resource_skip_probe --test "$tmp/resource-probe.rs" -o "$tmp/resource-probe" \
+    >"$tmp/resource-build.out" 2>&1
+check "resource accounting probe compiles" "$?"
+resource_probe() {
+    local log="$1" strict="$2" status=0
+    env HWP_FIXTURE_SKIP_LOG="$log" HWP_REQUIRE_FIXTURES="$strict" \
+        "$tmp/resource-probe" --test-threads=2 >"$log.out" 2>&1 || status=$?
+    printf '%s' "$status"
+}
+rc="$(resource_probe "$tmp/resource.log" 0)"
+check "an unavailable required resource skips" "$rc"
+check "the resource adds exactly one required line" \
+    "$([ "$(lines "$tmp/resource.log")" = 1 ] &&
+    [ "$(optional_lines "$tmp/resource.log")" = 0 ] &&
+    awk -F'\t' '$3 != "required" {exit 1}' "$tmp/resource.log" && echo 0 || echo 1)"
+check "the resource log names the unavailable resource" \
+    "$(grep -F 'host ASCII font' "$tmp/resource.log" >/dev/null 2>&1 && echo 0 || echo 1)"
+rc="$(resource_probe "$tmp/resource-strict.log" 1)"
+check "strict mode fails an unavailable required resource" "$([ "$rc" != 0 ] && echo 0 || echo 1)"
+check "the resource failure names strict mode and its remedy" \
+    "$(grep -F 'HWP_REQUIRE_FIXTURES=1' "$tmp/resource-strict.log.out" >/dev/null &&
+    grep -F 'host ASCII font' "$tmp/resource-strict.log.out" >/dev/null &&
+    grep -F 'install a system font with ASCII glyphs' "$tmp/resource-strict.log.out" >/dev/null && echo 0 || echo 1)"
+check "a strict resource failure does not count as a skip" \
+    "$([ "$(lines "$tmp/resource-strict.log")" = 0 ] && echo 0 || echo 1)"
 
 echo "-- the invariant-2 gate against this checkout's fixtures"
 rc="$(identity "$tmp/gate.log" 0 0 "$absent")"
