@@ -1677,3 +1677,213 @@ fn a_range_report_spelled_like_the_loss_report_cannot_replace_it() {
         assert_eq!(range["contract"], "hwp-range-extraction-v1");
     }
 }
+
+fn native_flag_source(dir: &Path) -> Document {
+    let source = hwp_convert::from_markdown(
+        "Flag paragraph zero.\n\nFlag paragraph one.\n\nFlag paragraph two.\n\nFlag paragraph three.\n\nFlag paragraph four.\n\nFlag paragraph five.\n",
+    );
+    let seed = dir.join("flag-seed.hwp");
+    hwp5::write_document(&source, &seed, &hwp5::WriteOptions::default()).unwrap();
+    let mut native = hwp5::read_document(&seed).unwrap().document;
+    assert_eq!(native.meta.source_format, "hwp5");
+    assert_eq!(native.sections[0].paragraphs.len(), 6);
+    for (index, paragraph) in native.sections[0].paragraphs.iter_mut().enumerate() {
+        paragraph.header.chars_flags = if index == 5 { 0x80 } else { 0 };
+        paragraph.line_segs = vec![hwp_model::LineSeg {
+            text_start: 0,
+            v_pos: if index % 2 == 0 { 0 } else { 1200 },
+            line_height: 1000,
+            text_height: 1000,
+            baseline_gap: 800,
+            line_spacing: 200,
+            col_start: 0,
+            seg_width: 40000,
+            flags: if index % 2 == 0 { 1 } else { 0 },
+        }];
+    }
+    hwp5::write_document(
+        &native,
+        &dir.join("flags.hwp"),
+        &hwp5::WriteOptions {
+            preserve_linesegs: true,
+            edited: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let reread = hwp5::read_document(&dir.join("flags.hwp"))
+        .unwrap()
+        .document;
+    assert_eq!(reread.sections[0].paragraphs.len(), 6);
+    for (index, paragraph) in reread.sections[0].paragraphs.iter().enumerate() {
+        assert_eq!(
+            paragraph.header.chars_flags,
+            if index == 5 { 0x80 } else { 0 }
+        );
+        assert_eq!(paragraph.line_segs.len(), 1);
+        assert_eq!(
+            paragraph.line_segs[0].flags & 1,
+            if index % 2 == 0 { 1 } else { 0 }
+        );
+    }
+    reread
+}
+
+fn assert_fragment_last_flag(
+    fragment: &Document,
+    original: &Document,
+    retained: std::ops::Range<usize>,
+) {
+    let paragraphs = &fragment.sections[0].paragraphs;
+    assert_eq!(
+        paragraphs.len(),
+        retained.len() + 1,
+        "only carried section setup plus selected paragraphs, without a phantom tail"
+    );
+    let last = paragraphs.len() - 1;
+    for (index, paragraph) in paragraphs.iter().enumerate() {
+        assert_eq!(
+            paragraph.header.chars_flags & 0x80,
+            if index == last { 0x80 } else { 0 },
+            "exactly the final fragment paragraph must carry nchars bit31 (paragraph {index})"
+        );
+    }
+    for (paragraph, source_index) in paragraphs[1..].iter().zip(retained) {
+        let source = &original.sections[0].paragraphs[source_index];
+        assert_eq!(paragraph.plain_text(), source.plain_text());
+        assert_eq!(paragraph.para_shape, source.para_shape);
+        assert_eq!(paragraph.style, source.style);
+        assert_eq!(paragraph.header.ctrl_mask, source.header.ctrl_mask);
+        assert_eq!(paragraph.header.instance_id, source.header.instance_id);
+        assert_eq!(paragraph.header.break_type, source.header.break_type);
+        assert_eq!(paragraph.header.tail, source.header.tail);
+    }
+}
+
+#[test]
+fn native_range_midsection_normalizes_only_last_paragraph_flag() {
+    let dir = temp_path::TempPath::new("hwp417", "range-last-flag");
+    std::fs::create_dir_all(&*dir).unwrap();
+    let source = native_flag_source(&dir);
+    hwp_ok(
+        &dir,
+        &[
+            "split",
+            "flags.hwp",
+            "--out-dir",
+            "range-flags",
+            "--from",
+            "at:0.1",
+            "--to",
+            "at:0.3",
+        ],
+    );
+    let fragment = hwp5::read_document(&dir.join("range-flags/flags-001.hwp"))
+        .unwrap()
+        .document;
+    assert_fragment_last_flag(&fragment, &source, 1..4);
+}
+
+#[test]
+fn native_saved_lineseg_page_midsection_normalizes_only_last_paragraph_flag() {
+    let dir = temp_path::TempPath::new("hwp417", "pages-last-flag");
+    std::fs::create_dir_all(&*dir).unwrap();
+    let source = native_flag_source(&dir);
+    hwp_ok(
+        &dir,
+        &[
+            "split",
+            "flags.hwp",
+            "--out-dir",
+            "page-flags",
+            "--pages",
+            "2",
+        ],
+    );
+    let fragment = hwp5::read_document(&dir.join("page-flags/flags-001.hwp"))
+        .unwrap()
+        .document;
+    assert_fragment_last_flag(&fragment, &source, 2..4);
+}
+
+#[test]
+fn same_point_end_exclusive_reports_empty_range_with_actionable_remedies() {
+    let Some(ws) = Workspace::new("empty-same-point") else {
+        return;
+    };
+    for extension in ["hwp", "hwpx"] {
+        let source = format!("source.{extension}");
+        let source_hash = ws.sha256(&source);
+        let output = format!("empty-{extension}");
+        let report = format!("empty-{extension}.json");
+        let result = hwp(
+            &ws.dir,
+            &[
+                "split",
+                &source,
+                "--out-dir",
+                &output,
+                "--from",
+                "at:0.4",
+                "--to",
+                "at:0.4",
+                "--end-exclusive",
+                "--range-report",
+                &report,
+            ],
+        );
+        assert!(!result.status.success());
+        let diagnostic = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            diagnostic.contains("범위가 비어")
+                && diagnostic.contains("끝 지점을 제외")
+                && diagnostic.contains("--end-exclusive")
+                && diagnostic.contains("빼거나")
+                && diagnostic.contains("더 뒤")
+                && diagnostic.contains("--to"),
+            "same-point excluded end needs empty-range cause and both remedies: {diagnostic}"
+        );
+        assert!(
+            !diagnostic.contains("서로 바꾸"),
+            "identical anchors are not reversed: {diagnostic}"
+        );
+        assert!(!ws.dir.join(&output).exists());
+        assert!(!ws.dir.join(&report).exists());
+        assert_eq!(ws.sha256(&source), source_hash);
+        let inclusive = format!("inclusive-{extension}");
+        hwp_ok(
+            &ws.dir,
+            &[
+                "split",
+                &source,
+                "--out-dir",
+                &inclusive,
+                "--from",
+                "at:0.4",
+                "--to",
+                "at:0.4",
+            ],
+        );
+        let reversed = hwp(
+            &ws.dir,
+            &[
+                "split",
+                &source,
+                "--out-dir",
+                &output,
+                "--from",
+                "at:0.5",
+                "--to",
+                "at:0.4",
+            ],
+        );
+        assert!(!reversed.status.success());
+        let diagnostic = String::from_utf8_lossy(&reversed.stderr);
+        assert!(
+            diagnostic.contains("서로 바꾸"),
+            "genuinely reversed inclusive anchors retain their own remedy: {diagnostic}"
+        );
+        assert!(!ws.dir.join(&output).exists());
+        assert_eq!(ws.sha256(&source), source_hash);
+    }
+}
