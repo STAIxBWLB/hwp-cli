@@ -397,12 +397,12 @@ pub fn compare_expected_cells(
         let Some(cell) = cell else {
             return Err(violation("cell_values", &format!("{key:?}")));
         };
-        same(
-            &expected.paragraphs,
-            &cell.paragraphs,
-            "cell_values",
-            &format!("{key:?}"),
-        )?;
+        let values: Vec<_> = expected
+            .paragraphs
+            .iter()
+            .map(|text| string_atoms(text))
+            .collect();
+        same(&values, &cell.values, "cell_values", &format!("{key:?}"))?;
     }
     Ok(())
 }
@@ -650,6 +650,16 @@ pub fn compare_font_identity(
     same(expected, actual, "fonts", "resolved_identity")
 }
 
+fn string_atoms(text: &str) -> Vec<Atom> {
+    text.chars()
+        .map(|ch| match ch {
+            '\n' => Atom::Control(hwp_model::ctrl_char::LINE_BREAK),
+            '\t' => Atom::Control(hwp_model::ctrl_char::TAB),
+            _ => Atom::Text(ch),
+        })
+        .collect()
+}
+
 /// Build an expected-value budget; this edits an expectation, never a document or native bytes.
 /// Paragraph insertion and mixed-style replacement require an explicit expected document instead.
 pub fn expect_cell_values(
@@ -679,6 +689,9 @@ pub fn expect_cell_values(
                 &format!("{key:?}"),
             ));
         };
+        if cell.values.iter().flatten().any(|atom|matches!(atom,Atom::Control(code) if *code!=hwp_model::ctrl_char::LINE_BREAK && *code!=hwp_model::ctrl_char::TAB)) {
+            return Err(condition("expected_cells","control_rich_requires_expected_document",&format!("{key:?}")));
+        }
         if cell.paragraph_keys.len() != change.paragraphs.len() {
             return Err(condition(
                 "expected_cells",
@@ -702,14 +715,7 @@ pub fn expect_cell_values(
                     paragraph_key,
                 ));
             }
-            para.values = text
-                .chars()
-                .map(|ch| match ch {
-                    '\n' => Atom::Control(hwp_model::ctrl_char::LINE_BREAK),
-                    '\t' => Atom::Control(hwp_model::ctrl_char::TAB),
-                    _ => Atom::Text(ch),
-                })
-                .collect();
+            para.values = string_atoms(text);
         }
         cell.paragraphs = change.paragraphs.clone();
         cell.values = cell

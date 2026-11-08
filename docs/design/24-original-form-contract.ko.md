@@ -166,3 +166,7 @@ SHA-256, face index와 matched/substituted/missing 결과를 기록한다. 반�
 용도이며 운영용 추출·바인딩 기능이 아니다. 최종 검사 HEAD에 대한 전체 `scripts/check.sh`,
 호스팅 CI, fixture skip, 네이티브·oracle 근거는 별도로 보고한다. P0 결과는 모든 네이티브 표의
 PDF 지원을 보장하지 않는다.
+
+문자열 기반 셀 예산은 일반 텍스트, 탭, 줄바꿈을 지원한다. 그 밖의 제어 코드가 있는 셀 값은
+projection에 타입이 있는 제어 atom으로 보존하며 명시적인 expected 문서를 요구한다.
+이를 평탄화한 문자열로 일치 처리하거나 암묵적으로 교체하지 않는다.

@@ -351,6 +351,24 @@ fn contract_rejects_changed_values_grid_styles_resources_and_unknown_references(
     assert!(error.id.chars().all(|c| c.is_ascii_hexdigit()));
     assert!(!error.to_string().contains("Synthetic Methods"));
     assert!(!error.to_string().contains("s0/p"));
+    let mut controlled = fixture.doc.clone();
+    cell_mut(&mut controlled, 0, 1, 1).paragraphs[0]
+        .chars
+        .insert(1, HwpChar::CharCtrl(hwp_model::ctrl_char::NB_SPACE));
+    let controlled = contract::project_form(&controlled);
+    let text = ExpectedCell {
+        table: 0,
+        row: 1,
+        col: 1,
+        paragraphs: vec!["Synthetic Methods".into()],
+    };
+    assert_eq!(
+        contract::compare_expected_cells(std::slice::from_ref(&text), &controlled)
+            .unwrap_err()
+            .layer,
+        "cell_values"
+    );
+    assert!(contract::expect_cell_values(&controlled, &[text]).is_err());
     let mut broken = fixture.doc.clone();
     cell_mut(&mut broken, 0, 0, 0).col_span -= 1;
     assert_eq!(

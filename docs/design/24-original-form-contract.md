@@ -179,3 +179,7 @@ relevant mutations rather than relying on one aggregate document-text equality. 
 copies demonstrate the helper's rejection boundary; they are not production extraction or binding
 features. Full `scripts/check.sh`, hosted CI, fixture skips and native/oracle evidence are reported
 separately for the final tested head. No P0 result supplies universal native-table PDF support.
+
+The string-valued cell budget supports ordinary text, tabs and line breaks. Control-rich cell
+values retain typed control atoms in the projection and require an explicit expected document;
+they cannot be flattened into a string match or silently replaced.
