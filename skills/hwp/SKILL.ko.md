@@ -112,6 +112,9 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열. `hwp slots --forms`는
   한국 공문서 양식 필드(레이블 셀, 본문의 `라벨: 값`)를 키·레이블·출처·신뢰도·등장 횟수·필수
   여부와 함께 추가.
+- `hwp styles {file} [--format text|json]` — 이름 있는 스타일 목록: id, 이름, 종류(문서가 밝히지 않으면
+  `null`, HWPX는 항상), 해석된 글자/문단 속성, `used_by`(`hwp cat --with-segments --segments v2`가 내는
+  `para` 세그먼트 id). `--format json`은 `hwp-styles-v1`.
 - `hwp validate {file} [--json]` — 구조 검증 (mimetype, 필수 엔트리, XML 파싱);
   유효하면 종료 코드 0.
 - `hwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
@@ -283,7 +286,7 @@ Quick의 로컬 폴터 권한에 추가된 폴터는 내장 읽기/검색 도구
 
 Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 셸 인용 문자를 넣지 마세요.
 세 계층을 순서대로 검증하세요: 정확한 절대 경로 바이너리가 버전을 반환하는지; Quick이
-22개 도구를 보고하고 새로고침 후에도 활성 상태인지; 마지막으로 `hwp_new`와 이어진
+23개 도구를 보고하고 새로고침 후에도 활성 상태인지; 마지막으로 `hwp_new`와 이어진
 `hwp_validate`가 설정된 LocalLow 루트 아래 절대 경로에서 성공하는지 (예:
 `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace\quick-hwp-smoke.hwpx`).
 디스커버리만으로 파일 접근이 증명된다고 주장하지 마세요.
@@ -292,7 +295,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 복사-붙여넣기 운영자 및 AI 런북:
 `https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
 
-도구 (22):
+도구 (23):
 
 | 도구 | 필수 인수 | 용도 |
 |---|---|---|
@@ -301,6 +304,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | `hwp_grep` | `path`, `pattern` | 문단 부분 문자열 검색; `{matches, count, truncated}`; 0걻도 정상 결과 |
 | `hwp_list_fields` | `path` | 필드 나열 |
 | `hwp_list_bookmarks` | `path` | 책갈피 (bokm) 나열 |
+| `hwp_styles` | `path` | 이름 있는 스타일 목록 (해석된 속성, `used_by` 세그먼트 id), `hwp-styles-v1` 형식 |
 | `hwp_slots` | `path` | `{{name}}` 자리 표시자 나열 |
 | `hwp_render` | `path` | 페이지 렌더링 (선택적 호출별 `password`; `format`: png/svg/pdf, `pages` 범위); 단일 페이지 PNG는 base64 반환, 더 큰 결과는 `output_path`로 파일 기록 |
 | `hwp_edit` | `input`, `output` | 타입화된 JSON 연산을 통한 엄격한 원자적 편집 (모든 `hwp edit` 플래그 미러, `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*` 포함) |
@@ -321,7 +325,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 
 ## 컨테이너용 HTTP 모드
 
-`hwp serve`는 `hwp mcp`와 같은 프로토콜을 stdio 대신 HTTP로 제공하므로, 같은 22종 도구를
+`hwp serve`는 `hwp mcp`와 같은 프로토콜을 stdio 대신 HTTP로 제공하므로, 같은 23종 도구를
 컨테이너에서 사용할 수 있습니다. 인터넷에 직접 노출하는 용도가 아니라, TLS 종단·인증·본문
 크기 제한을 이미 수행한 신뢰된 edge 뒤에 두는 것을 전제로 합니다.
 

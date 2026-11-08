@@ -260,6 +260,8 @@ fn call_tool(name: &str, args: &mut Value, ctx: &dyn FileAuthority) -> Value {
             .and_then(|_| tool_list_fields(args, ctx).map_err(Into::into)),
         "hwp_list_bookmarks" => reject_password_outside_scope(args)
             .and_then(|_| tool_list_bookmarks(args, ctx).map_err(Into::into)),
+        "hwp_styles" => reject_password_outside_scope(args)
+            .and_then(|_| tool_styles(args, ctx).map_err(Into::into)),
         "hwp_edit" => reject_password_outside_scope(args)
             .and_then(|_| tool_edit(args, ctx).map_err(Into::into)),
         "hwp_new" => reject_password_outside_scope(args)
@@ -704,6 +706,16 @@ fn tool_list_bookmarks(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Valu
         .collect();
     Ok(vec![text_content(
         &serde_json::to_string_pretty(&bookmarks).unwrap_or_default(),
+    )])
+}
+
+fn tool_styles(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
+    let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    let doc = load_document(&path).map_err(|e| e.to_string())?;
+    let styles = hwp_cli::styles_report::list(&doc).map_err(|e| e.to_string())?;
+    Ok(vec![text_content(
+        &serde_json::to_string_pretty(&hwp_cli::styles_report::styles_json(&styles))
+            .unwrap_or_default(),
     )])
 }
 
@@ -2390,6 +2402,13 @@ fn tool_defs() -> Vec<Value> {
             }, "required": ["path"]}
         }),
         json!({
+            "name": "hwp_styles",
+            "description": "이름 있는 스타일 목록을 hwp-styles-v1 JSON으로. 스타일마다 id·이름·종류·해석된 글자/문단 속성과, 그 스타일을 쓰는 문단의 세그먼트 id(used_by, `hwp cat --with-segments --segments v2`가 내는 id와 동일)를 담는다.",
+            "inputSchema": {"type": "object", "properties": {
+                "path": {"type": "string"}
+            }, "required": ["path"]}
+        }),
+        json!({
             "name": "hwp_render",
             "description": "페이지를 렌더한다. 기본은 단일 페이지 PNG를 base64 이미지로 반환(에이전트가 문서를 직접 본다). format=svg/pdf 또는 다중 페이지 선택(pages)은 output_path가 필요하고, 파일로 저장 뒤 {files, pages, dpi} JSON을 반환한다(16MiB 응답 상한 우회). 페이지별 파일명은 CLI와 같이 <stem>-<N>.<ext>(단일 페이지면 경로 그대로), pdf는 단일 멀티페이지 파일.",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
@@ -3139,6 +3158,7 @@ mod tests {
             "hwp_validate",
             "hwp_certify",
             "hwp_list_bookmarks",
+            "hwp_styles",
             "hwp_merge",
             "hwp_split",
             "hwp_compare",
