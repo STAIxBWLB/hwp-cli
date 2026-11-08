@@ -1228,7 +1228,15 @@ fn renumber_inserted_in_para(
                 if t.common_data.is_empty()
                     && let Some(placement) = &mut t.placement
                 {
+                    // `synthesized_table_object_id` keeps 16 bits of the z-order, so only 65,536
+                    // ids exist. One full cycle of z-orders visits all of them; if none is
+                    // free the target has none left, and walking further cannot find one.
+                    let mut tried = 0u32;
                     loop {
+                        if tried > 0xffff {
+                            return Err("표 개체 id 공간(65536개)을 모두 사용 중이라 새 표에 줄 id가 없습니다. 대상 문서에서 표를 줄이거나 삽입할 표 개수를 줄인 뒤 다시 시도하세요".to_string());
+                        }
+                        tried += 1;
                         let z = *next_z;
                         *next_z = z
                             .checked_add(1)

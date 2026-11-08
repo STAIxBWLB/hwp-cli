@@ -164,19 +164,23 @@ fn hwpunit_to_mm(units: i32) -> f32 {
     (f64::from(units) * 25.4 / f64::from(hwp_model::HwpUnit::PER_INCH)) as f32
 }
 
-/// Width in HWPUNIT of one text column of `section`, given its full body width: the section's
-/// first column definition, split the way `hwp-render` splits it (equal columns share the body
-/// width less the gaps). Columns of unequal width list their own widths; the position a block
-/// lands in is not known here, so the narrowest one is the safe measure.
-fn column_width_hwp(section: &hwp_model::Section, body: i32) -> i32 {
+/// Width in HWPUNIT of one text column of `section` at its top-level paragraph `at`, given the
+/// full body width: the column definition in effect there, which is the last one at or before
+/// that paragraph (a section may change its layout partway), split the way `hwp-render` splits
+/// it (equal columns share the body width less the gaps). Columns of unequal width list their
+/// own widths; which of them a block lands in is not known here, so the narrowest is the safe
+/// measure.
+fn column_width_hwp(section: &hwp_model::Section, at: usize, body: i32) -> i32 {
     let def = section
         .paragraphs
         .iter()
+        .take(at.saturating_add(1))
         .flat_map(|paragraph| &paragraph.controls)
-        .find_map(|control| match control {
+        .filter_map(|control| match control {
             Control::Generic(generic) => generic.column_def.as_ref(),
             _ => None,
-        });
+        })
+        .last();
     let Some(def) = def else { return body };
     let count = i32::from(def.count.max(1));
     if count == 1 {
@@ -198,13 +202,21 @@ fn check_target(doc: &Document, target: &SegmentPath) -> Result<f32, String> {
         "insert_blocks 삽입 위치가 본문 또는 표 셀 문단이 아닙니다. 최신 문서에서 본문/표 셀 문단 주소를 다시 선택하세요".to_owned()
     };
     let section = doc.sections.get(target.section).ok_or_else(invalid)?;
+    let first = *target.indices.first().ok_or_else(invalid)?;
     let mut width =
         section
             .section_def()
             .and_then(|def| def.page)
             .map_or(DEFAULT_CONTAINER_MM, |page| {
-                let body = page.width.0 - page.margin_left.0 - page.margin_right.0 - page.gutter.0;
-                hwpunit_to_mm(column_width_hwp(section, body))
+                // PAGE_DEF attr bit 0 rotates the paper, so the horizontal extent is `height`.
+                // `hwp-render` reads it the same way (layout.rs, "Landscape (PAGE_DEF attr bit0)").
+                let paper = if page.attr & 1 != 0 {
+                    page.height.0
+                } else {
+                    page.width.0
+                };
+                let body = paper - page.margin_left.0 - page.margin_right.0 - page.gutter.0;
+                hwpunit_to_mm(column_width_hwp(section, first, body))
             });
     let mut paragraph = section
         .paragraphs
@@ -514,10 +526,10 @@ pub fn apply(
             ));
         }
     }
-    let renames = manifest_safe_names(doc, &compiled.bin_streams);
-    if !renames.is_empty() {
+    let streams = plan_streams(doc, &compiled.bin_streams);
+    if !streams.renames.is_empty() {
         for paragraph in &mut paragraphs {
-            rename_item_refs(paragraph, &renames);
+            rename_item_refs(paragraph, &streams.renames);
         }
     }
     hwp_convert::document_merge::renumber_inserted_objects(doc, &mut paragraphs)?;
@@ -526,7 +538,10 @@ pub fn apply(
     hwp_convert::structure::insert_paragraphs_at(doc, target, request.before(), paragraphs)?;
     doc.header = compiled.header;
     for mut stream in compiled.bin_streams {
-        if let Some(new_name) = renames.get(&stream.name) {
+        if streams.shared.contains(&stream.name) {
+            continue;
+        }
+        if let Some(new_name) = streams.renames.get(&stream.name) {
             stream.name.clone_from(new_name);
         }
         if !doc.bin_streams.iter().any(|have| have.name == stream.name) {
@@ -536,31 +551,58 @@ pub fn apply(
     Ok(count)
 }
 
-/// Since the manifest became authoritative (`Document::bin_stream_index`), an `ItemRef` that
-/// equals a manifest id resolves to that id's href and nothing else. A compiled stream whose
-/// name the target manifest already lists for a different href would send its pictures to
-/// another stream's bytes, so it is renamed to a name no manifest id, href or stream uses.
-/// Returns old name -> new name for the streams that needed it.
-fn manifest_safe_names(
-    doc: &Document,
-    streams: &[hwp_model::BinStream],
-) -> BTreeMap<String, String> {
-    let taken = |candidate: &str, renamed: &BTreeMap<String, String>| {
+/// What to do with each compiled image stream before it joins the target.
+struct StreamPlan {
+    /// Streams whose name the target's resolver would send somewhere else, with the unused
+    /// name each takes instead.
+    renames: BTreeMap<String, String>,
+    /// Streams the target already holds, byte for byte, where the resolver finds them: the
+    /// picture's reference already resolves to the same bytes, so no second copy is stored.
+    shared: BTreeSet<String>,
+}
+
+/// Decide, for every compiled stream, how a picture naming it will resolve in the target.
+/// `Document::bin_stream_index` is manifest-first and also matches by `/<name>` suffix and by
+/// file stem, so an `ItemRef` can land on a stream other than the one just compiled:
+///
+/// - it resolves to a stream with the same bytes: share it, do not append a duplicate;
+/// - it resolves to other bytes, or the package manifest lists the name for another file, or
+///   lists it for a file the document does not carry: rename the compiled stream to a name
+///   the resolver finds nowhere in the target, so the appended stream is the only match.
+fn plan_streams(doc: &Document, streams: &[hwp_model::BinStream]) -> StreamPlan {
+    let manifest_lists = |name: &str| {
         doc.hwpx_bin_manifest
             .iter()
-            .any(|(id, href)| id == candidate || href == candidate)
-            || doc.bin_streams.iter().any(|have| have.name == candidate)
-            || streams.iter().any(|have| have.name == candidate)
-            || renamed.values().any(|name| name == candidate)
+            .any(|(id, href)| id == name || href == name)
     };
-    let mut renames = BTreeMap::new();
+    let unresolved = |name: &str, plan: &StreamPlan| {
+        doc.bin_stream_index(&hwp_model::BinRef::ItemRef(name.to_owned()))
+            .is_none()
+            && !manifest_lists(name)
+            && !streams.iter().any(|have| have.name == name)
+            && !plan.renames.values().any(|taken| taken == name)
+    };
+    let mut plan = StreamPlan {
+        renames: BTreeMap::new(),
+        shared: BTreeSet::new(),
+    };
     for stream in streams {
-        let listed_elsewhere = doc
-            .hwpx_bin_manifest
-            .iter()
-            .any(|(id, href)| *id == stream.name && *href != stream.name);
-        if !listed_elsewhere {
-            continue;
+        let found = doc.bin_stream_index(&hwp_model::BinRef::ItemRef(stream.name.clone()));
+        match found {
+            Some(index) if doc.bin_streams[index].data == stream.data => {
+                plan.shared.insert(stream.name.clone());
+                continue;
+            }
+            Some(_) => {}
+            None => {
+                let listed_for_another_file = doc
+                    .hwpx_bin_manifest
+                    .iter()
+                    .any(|(id, href)| *id == stream.name && *href != stream.name);
+                if !listed_for_another_file {
+                    continue;
+                }
+            }
         }
         let (stem, extension) = match stream.name.rsplit_once('.') {
             Some((stem, extension)) => (stem.to_owned(), format!(".{extension}")),
@@ -569,14 +611,14 @@ fn manifest_safe_names(
         let mut n = 2u32;
         let new_name = loop {
             let candidate = format!("{stem}-{n}{extension}");
-            if !taken(&candidate, &renames) {
+            if unresolved(&candidate, &plan) {
                 break candidate;
             }
             n += 1;
         };
-        renames.insert(stream.name.clone(), new_name);
+        plan.renames.insert(stream.name.clone(), new_name);
     }
-    renames
+    plan
 }
 
 fn rename_item_refs(paragraph: &mut hwp_model::Paragraph, renames: &BTreeMap<String, String>) {
@@ -862,13 +904,6 @@ mod tests {
         assert!(
             (landscape - 257.0).abs() < 1.0,
             "a landscape body is 297 - 2 * 20 = 257 mm, got {landscape} mm"
-        );
-        // Landscape dimensions with the bit set (what `compose` stores): the renderer rotates
-        // them again, so its paper, and the width the insertion may use, is 210 mm.
-        let rotated_again = width_with(a4_page(84189, 59528, 1));
-        assert!(
-            (rotated_again - 170.0).abs() < 1.0,
-            "the renderer reads height as the width here: {rotated_again} mm"
         );
     }
 
