@@ -5,7 +5,8 @@
 #   scripts/ci-apt-install.sh <deb-cache-dir> <package>...
 #
 # 1. If <deb-cache-dir> holds .deb files from an earlier run (CI restores it with actions/cache),
-#    install from them with downloads forbidden. Success needs no network at all.
+#    put them in apt's archive directory and install the packages with downloads forbidden.
+#    Success needs no network at all.
 # 2. Otherwise, or when the cached set no longer fits this runner image (a dependency moved,
 #    apt would have to download or downgrade), fall back to the mirror with the bounds the
 #    inline steps used: the official archive pinned, short per-request timeouts, three attempts,
@@ -33,11 +34,24 @@ shift
 shopt -s nullglob
 cached=("$cache_dir"/*.deb)
 if [ "${#cached[@]}" -gt 0 ]; then
-    if sudo apt-get install -y --no-download --no-install-recommends "${cached[@]}"; then
+    # `--no-download` makes apt look for every archive it needs in its own archive directory,
+    # even for a .deb named on the command line, and a fresh runner's directory is empty. Given
+    # only paths, apt fails with "Unable to fetch some archives" (reproduced on Ubuntu 24.04:
+    # exit 100), so the cached files are placed there first and apt finds them as if it had
+    # fetched them. The package list is also given by name so apt resolves the same dependency
+    # set the cached run installed.
+    sudo mkdir -p "$archives"
+    sudo cp -- "${cached[@]}" "$archives"/
+    if sudo apt-get install -y --no-download --no-install-recommends "$@"; then
         echo "installed from the ${#cached[@]} cached .deb files in $cache_dir: $*"
         exit 0
     fi
     echo "cached .deb files do not fit this runner image; using the network" >&2
+    # Take back what was placed: left in the archive directory, the stale files would be copied
+    # into the cache again after the network install below.
+    for file in "${cached[@]}"; do
+        sudo rm -f -- "$archives/$(basename "$file")"
+    done
 fi
 
 echo "https://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null

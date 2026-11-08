@@ -47,6 +47,17 @@ echo "$verb $args" >>"$STUB_LOG"
 case "$args" in
 *--no-download*)
     [ "${STUB_FAIL_INSTALL_NO_DOWNLOAD:-0}" = 1 ] && exit 100
+    # Real apt behaviour, reproduced on Ubuntu 24.04 (exit 100, "Unable to fetch some archives"):
+    # with --no-download, every archive the install needs must already sit in apt's archive
+    # directory, whether or not a path to it is also given. A stub that says yes to anything
+    # let the broken invocation pass this test while the hosted runner refused it.
+    have=0
+    for f in "$STUB_CACHE_DIR"/*.deb; do
+        [ -e "$f" ] || continue
+        [ -f "$APT_ARCHIVES/$(basename "$f")" ] || { echo "E: Unable to fetch some archives" >&2; exit 100; }
+        have=$((have + 1))
+    done
+    [ "$have" -gt 0 ] || { echo "E: nothing cached" >&2; exit 100; }
     exit 0
     ;;
 esac
@@ -69,7 +80,7 @@ run() {
     done
     shift
     mkdir -p "$dir/archives"
-    env PATH="$bin:$PATH" STUB_LOG="$dir/apt.log" APT_ARCHIVES="$dir/archives" APT_RETRY_SLEEP=0 \
+    env PATH="$bin:$PATH" STUB_LOG="$dir/apt.log" STUB_CACHE_DIR="$dir/cache" APT_ARCHIVES="$dir/archives" APT_RETRY_SLEEP=0 \
         "${envs[@]}" bash "$script" "$dir/cache" "$@" >"$dir/out" 2>&1
     echo $?
 }
@@ -92,6 +103,8 @@ rc="$(run "$d" -- poppler-utils)"
 check "installs" "$rc"
 check "one offline install and nothing else" "$([ "$(wc -l <"$d/apt.log" | tr -d ' ')" = 1 ] && [ "$(count "$d/apt.log" --no-download)" = 1 ] && echo 0 || echo 1)"
 check "does not refresh the cache from the archives" "$([ ! -f "$d/cache/fetched.deb" ] && echo 0 || echo 1)"
+check "puts the cached .deb into apt's archive directory first" "$([ -f "$d/archives/poppler.deb" ] && echo 0 || echo 1)"
+check "installs by package name, not by .deb path" "$(grep -q 'install .* poppler-utils' "$d/apt.log" && ! grep -q '\.deb' "$d/apt.log" && echo 0 || echo 1)"
 
 echo "-- stale cache: the offline install fails, the network path takes over"
 d="$tmp/stale"
