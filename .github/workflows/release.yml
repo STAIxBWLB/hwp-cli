@@ -179,12 +179,19 @@ jobs:
             exit 1
           fi
 
+  # Dependency policy (cargo-deny: advisories, bans, licenses, sources) is a release
+  # prerequisite only; deny.yml is not a pull request check.
+  deny:
+    uses: ./.github/workflows/deny.yml
+    permissions:
+      contents: read
+
   # Create the release shell once (notes come from the CHANGELOG section). Skipped if it
   # already exists (rerun-safe). Created as a draft: `releases/latest` ignores drafts, so
   # install.sh and `hwp update` cannot pick the release up until publish-release flips it,
   # which happens only after every asset gate has passed.
   create-release:
-    needs: [verify-ci, verify-version]
+    needs: [verify-ci, verify-version, deny]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

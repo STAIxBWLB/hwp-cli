@@ -18,6 +18,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   every release archive and checksum file carries a build provenance attestation
   (`gh attestation verify <asset> -R STAIxBWLB/hwp-cli`)
   ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+- Added a `cargo-deny` dependency policy (`deny.toml`: advisories, bans, licenses, sources) in
+  `.github/workflows/deny.yml`. It runs weekly, when `Cargo.lock` or `deny.toml` changes on
+  main, and as a required prerequisite of the release workflow; it is not a pull request check.
+  Dependabot now opens weekly grouped cargo update PRs
+  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
 
 **Fixed**
 
