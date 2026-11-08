@@ -45,8 +45,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Blocks are measured against the text column or table cell they land in: the rotated paper of
   a landscape page, one column of a multi-column section under the column definition in effect
   at the target paragraph (for `position: before`, the one preceding it, since the blocks land
-  ahead of that paragraph's own column control), and, inside an inserted table, the cell's
-  column span less its side margins. A table draws its borders from a bordered fill the target header supplies or gains.
+  ahead of that paragraph's own column control), and, inside an existing table cell, the cell's width less its resolved side margins (a `0xffff`
+  or all-zero cell margin takes the table's, then Hangul's default, through
+  `hwp_model::Table::cell_margins`, which the renderer now calls too), and, inside an inserted
+  table, the cell's column span less the default side margins. A table draws its borders from a bordered fill the target header supplies or gains.
   Image paths resolve beside the `--ops` file and are bound to the MCP sandbox roots; reading
   `--ops` from stdin has no directory, so image blocks are refused there. An image the target
   already stores byte for byte is shared instead of stored twice, and one whose name the
