@@ -91,6 +91,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- HWP5 range and `--pages` fragments recompute the section-list last-paragraph marker after
+  selection, so exactly the new final paragraph carries nchars bit31 (compatibility rule B4).
+  An end-exclusive range whose two anchors resolve to the same paragraph now reports an empty
+  range and advises removing `--end-exclusive` or choosing a later end anchor; genuinely
+  reversed ranges keep their own cause and remedies
+  ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
+
 - `hwp merge` keeps the pictures of later HWPX inputs pointing at their own images. A picture
   names its image by manifest id, and the merged document carries only the first input's
   manifest, so a later input that reused an id such as `image1` for a different file used to

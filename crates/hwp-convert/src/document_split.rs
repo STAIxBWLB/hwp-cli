@@ -172,6 +172,14 @@ fn round_boundary(doc: &Document, addr: ParagraphAddress) -> ParagraphAddress {
     }
 }
 
+/// A sliced body list has a new last paragraph (compatibility rule B4). Retained cell,
+/// caption and object lists are copied whole; only the selected section lists need fixup.
+fn fix_fragment_last_paragraph_flags(fragment: &mut Document) {
+    for section in &mut fragment.sections {
+        crate::edit::fixup_last_para_flag(&mut section.paragraphs);
+    }
+}
+
 /// Divides `doc` into one fragment per requested page range, in the order the
 /// ranges were given (D-05's opt-in page-range mode).
 ///
@@ -300,6 +308,7 @@ pub fn split_page_ranges(doc: &Document, ranges: &[PageRange]) -> Result<SplitOu
         fragment.header.properties.section_count = sections.len() as u16;
         fragment.sections = sections;
         fragment.header.properties.caret = (0, 0, 0);
+        fix_fragment_last_paragraph_flags(&mut fragment);
         fragments.push(fragment);
     }
 
@@ -380,6 +389,8 @@ pub enum RangeError {
     AcrossSections { start: usize, end: usize },
     /// The end anchor resolves before the start.
     EndBeforeStart,
+    /// Excluding an end anchor at the start leaves no selected paragraphs.
+    EmptyRange,
     /// A kept object points at a binary the source does not carry.
     LostResource { reference: String },
     /// The document has no sections.
@@ -416,6 +427,10 @@ impl std::fmt::Display for RangeError {
             RangeError::EndBeforeStart => write!(
                 f,
                 "끝 지점이 시작 지점보다 앞에 있습니다. --from과 --to를 서로 바꾸거나 --to를 생략하세요"
+            ),
+            RangeError::EmptyRange => write!(
+                f,
+                "끝 지점을 제외했는데 시작과 끝이 같은 문단이라 범위가 비어 있습니다. --end-exclusive를 빼거나 더 뒤의 끝 지점을 --to로 지정하세요"
             ),
             RangeError::LostResource { reference } => write!(
                 f,
@@ -1289,10 +1304,14 @@ pub fn extract_range(
             end_paragraph + usize::from(selector.end_inclusive)
         }
     };
-    // One check covers a reversed range and `--end-exclusive` on the start paragraph itself:
-    // both leave nothing to extract.
+    // Equal exclusive endpoints select nothing. An adjacent reversed inclusive end also
+    // yields end == start after adding one, so keep that on the reversed-range path.
     if end <= start {
-        return Err(RangeError::EndBeforeStart);
+        return Err(if end == start && !selector.end_inclusive {
+            RangeError::EmptyRange
+        } else {
+            RangeError::EndBeforeStart
+        });
     }
 
     // The section setup rides on the first paragraph of the source section. When the range
@@ -1395,6 +1414,7 @@ pub fn extract_range(
     }];
     fragment.header.properties.section_count = 1;
     fragment.header.properties.caret = (0, 0, 0);
+    fix_fragment_last_paragraph_flags(&mut fragment);
 
     // The closure runs over the fragment as built, with the whole header and the carried setup
     // controls in it. A reference to a binary the source lacks is refused here, still before
@@ -1622,7 +1642,7 @@ mod tests {
         assert_eq!(outcome.roundings[0].range_index, 0);
         assert_eq!(outcome.roundings[0].from.wchar_offset, 3);
         assert_eq!(outcome.roundings[0].to.wchar_offset, 0);
-        // 문단2 straddled the boundary and must stay whole in the earlier fragment.
+        // Paragraph 2 straddled the boundary and must stay whole in the earlier fragment.
         assert!(plain_text(&outcome.fragments[0]).contains("문단1"));
         assert!(plain_text(&outcome.fragments[0]).contains("문단2"));
         assert!(!plain_text(&outcome.fragments[0]).contains("문단3"));
@@ -2015,7 +2035,7 @@ mod tests {
             "h",
             &selector(heading("A"), Some(heading("A")), false),
         );
-        assert_eq!(empty.unwrap_err(), RangeError::EndBeforeStart);
+        assert_eq!(empty.unwrap_err(), RangeError::EmptyRange);
     }
 
     #[test]

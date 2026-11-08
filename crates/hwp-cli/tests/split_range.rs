@@ -459,7 +459,7 @@ fn refusals_name_the_cause_and_write_nothing() {
             "heading:FORM_START_PROFILE_1",
             "--end-exclusive",
         ],
-        "앞에 있습니다",
+        "범위가 비어 있습니다",
     );
     assert_refused(
         &ws,
