@@ -614,4 +614,45 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// #446 made `Document::bin_stream_index` manifest-first: an id the package manifest lists
+    /// resolves to its href or to nothing, whatever a stream of the same name holds. An inserted
+    /// picture names its stream directly, so a target manifest already listing that name for
+    /// another href would send the picture to the wrong bytes (or none).
+    #[test]
+    fn inserted_picture_resolves_to_its_own_stream_when_the_target_manifest_lists_the_same_name() {
+        let dir = scratch("manifest");
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let ctx = AssetContext {
+            base_dir: Some(&canonical),
+            roots: &[],
+        };
+        let (mut probe, at) = target();
+        apply(&mut probe, &at, &request("assets/logo.png"), false, &ctx).unwrap();
+        let name = probe.bin_streams.last().unwrap().name.clone();
+
+        let (mut doc, at) = target();
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: "BinData/other.png".into(),
+            data: b"someone else's bytes".to_vec(),
+        });
+        doc.hwpx_bin_manifest = vec![(name.clone(), "BinData/other.png".into())];
+        apply(&mut doc, &at, &request("assets/logo.png"), false, &ctx).unwrap();
+
+        let picture = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .expect("inserted picture");
+        assert_eq!(
+            doc.resolve_bin(&picture.bin_ref),
+            Some(PNG),
+            "the picture must resolve to the inserted PNG, not the stream the manifest maps {name} to"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

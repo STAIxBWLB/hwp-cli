@@ -1822,6 +1822,20 @@ fn table_image_field_components_insert_in_order_with_distinct_ids_in_both_format
         );
         let pictures = pictures_of(&after);
         assert_eq!(pictures.len(), 2, "{extension}: both image blocks survive");
+        {
+            use base64::Engine as _;
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(PNG_B64)
+                .unwrap();
+            for picture in &pictures {
+                assert_eq!(
+                    after.resolve_bin(&picture.bin_ref),
+                    Some(png.as_slice()),
+                    "{extension}: an inserted picture must resolve to its own bytes through the \
+                     target's manifest-first resolver"
+                );
+            }
+        }
         assert_eq!(
             after.bin_streams.len(),
             before.bin_streams.len() + 1,
