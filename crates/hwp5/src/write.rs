@@ -1823,13 +1823,17 @@ fn has_synthesizable_picture(doc: &Document) -> bool {
 /// actually names. `BinRef::Id` mirrors `Document::resolve_bin`'s naming rule
 /// (`BIN{storage_id:04X}.{ext}` from `bin_data[id-1]`) and matches it against each name's
 /// trailing path component case-insensitively, since a stream name may or may not carry a
-/// `BinData/` prefix. `BinRef::ItemRef` first tries the same exact trailing-component match,
-/// then falls back to the substring match hwpx-origin documents rely on today. There is no
-/// index-0 fallback: an unresolvable reference returns `None`, which the caller reports as a
-/// typed loss instead of silently substituting an unrelated stream.
+/// `BinData/` prefix. `BinRef::ItemRef` is resolved through the package manifest first, the same
+/// rule `Document::bin_stream_index` applies: an id the manifest lists names its href's stream or
+/// nothing (`id="logo" href="BinData/p1.png"` need not look like its file name). An id the
+/// manifest does not list tries the exact trailing-component match, then falls back to the
+/// substring match hwpx-origin documents rely on today. There is no index-0 fallback: an
+/// unresolvable reference returns `None`, which the caller reports as a typed loss instead of
+/// silently substituting an unrelated stream.
 fn bin_stream_index(
     bin_names: &[String],
     bin_data: &[hwp_model::BinDataItem],
+    manifest: &[(String, String)],
     bin_ref: &hwp_model::BinRef,
 ) -> Option<usize> {
     fn trailing(name: &str) -> &str {
@@ -1845,10 +1849,15 @@ fn bin_stream_index(
                 .iter()
                 .position(|n| trailing(n).eq_ignore_ascii_case(&name))
         }
-        hwp_model::BinRef::ItemRef(s) if !s.is_empty() => bin_names
-            .iter()
-            .position(|n| trailing(n).eq_ignore_ascii_case(s))
-            .or_else(|| bin_names.iter().position(|n| n.contains(s.as_str()))),
+        hwp_model::BinRef::ItemRef(s) if !s.is_empty() => {
+            if let Some((_, href)) = manifest.iter().find(|(id, _)| id == s) {
+                return bin_names.iter().position(|n| n == href);
+            }
+            bin_names
+                .iter()
+                .position(|n| trailing(n).eq_ignore_ascii_case(s))
+                .or_else(|| bin_names.iter().position(|n| n.contains(s.as_str())))
+        }
         _ => None,
     }
 }
@@ -1863,7 +1872,10 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     // picture's BinRef can be resolved against the BIN_DATA table it actually
     // named without borrowing `doc` immutably and mutably at once.
     let bin_data_snapshot = doc.header.bin_data.clone();
-    let bin_index = |r: &hwp_model::BinRef| bin_stream_index(&bin_names, &bin_data_snapshot, r);
+    let manifest_snapshot = doc.hwpx_bin_manifest.clone();
+    let bin_index = |r: &hwp_model::BinRef| {
+        bin_stream_index(&bin_names, &bin_data_snapshot, &manifest_snapshot, r)
+    };
     // 각 이미지의 원본 픽셀 크기(자르기·picture_effect의 자연 크기 산출용).
     let bin_dims: Vec<Option<(u32, u32)>> = doc
         .bin_streams
@@ -5028,6 +5040,86 @@ mod tests {
             "ItemRef(\"BIN0002.png\") must consume bin_streams[1]. Preservation events: {:?}",
             report.preservation.events
         );
+        std::fs::remove_file(output).unwrap();
+    }
+
+    /// `picture_binref_repro_doc` with HWPX-style streams: the two payloads are named
+    /// `BinData/p1.png` and `BinData/p2.png` and a manifest maps `logo` to the second one, an id
+    /// that does not look like its file name.
+    fn manifest_repro_doc(item: &str, manifest: Vec<(String, String)>) -> Document {
+        let mut doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef(item.to_string()));
+        doc.bin_streams[0].name = "BinData/p1.png".to_string();
+        doc.bin_streams[1].name = "BinData/p2.png".to_string();
+        doc.hwpx_bin_manifest = manifest;
+        doc
+    }
+
+    #[test]
+    fn picture_itemref_resolves_through_the_manifest_when_the_id_is_not_the_file_name() {
+        // `id="logo" href="BinData/p2.png"`: neither the trailing name nor a substring of any
+        // stream says "logo", so only the manifest can find the second stream.
+        let doc = manifest_repro_doc(
+            "logo",
+            vec![("logo".to_string(), "BinData/p2.png".to_string())],
+        );
+        let output = picture_report_path("picture-manifest-id");
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        assert_eq!(
+            synthesized_bin_stream_bytes(&output),
+            Some(vec![4, 5, 6]),
+            "the manifest names bin_streams[1]. Events: {:?}",
+            report.preservation.events
+        );
+        assert!(
+            !report
+                .preservation
+                .events
+                .iter()
+                .any(|event| event.code == PreservationCode::BinaryAssetRemoved),
+            "a manifest id must not be ledgered as a removed asset: {:?}",
+            report.preservation.events
+        );
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn picture_itemref_listed_in_the_manifest_never_falls_back_to_a_same_named_stream() {
+        // `logo` is listed, but its href is a stream the document does not carry. A stream
+        // whose name merely contains "logo" must not stand in for it.
+        let mut doc = manifest_repro_doc(
+            "logo",
+            vec![("logo".to_string(), "BinData/missing.png".to_string())],
+        );
+        doc.bin_streams[1].name = "BinData/logo-of-someone-else.png".to_string();
+        let output = picture_report_path("picture-manifest-missing");
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        assert_eq!(
+            synthesized_bin_stream_bytes(&output),
+            None,
+            "no stream may be substituted for a listed id whose href is missing"
+        );
+        assert!(
+            report
+                .preservation
+                .events
+                .iter()
+                .any(|event| event.code == PreservationCode::BinaryAssetRemoved),
+            "the loss is reported: {:?}",
+            report.preservation.events
+        );
+        std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn picture_itemref_without_a_manifest_entry_keeps_the_name_rules() {
+        // An id the manifest does not list still resolves by name (the existing behavior).
+        let doc = manifest_repro_doc(
+            "p2.png",
+            vec![("other".to_string(), "BinData/p1.png".to_string())],
+        );
+        let output = picture_report_path("picture-manifest-unlisted");
+        write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        assert_eq!(synthesized_bin_stream_bytes(&output), Some(vec![4, 5, 6]));
         std::fs::remove_file(output).unwrap();
     }
 

@@ -2509,6 +2509,14 @@
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
+        "end_exclusive": {
+          "description": "to 문단을 범위에서 제외; 기본 false",
+          "type": "boolean"
+        },
+        "from": {
+          "description": "분할 대신 형식 있는 범위를 추출할 시작 지점: \"heading:<제목>\"(`hwp cat`이 출력하는 문단 자신의 텍스트, 탭·줄바꿈·고정 공백 포함), \"bookmark:<이름>\", \"at:<구역>.<문단>\"(0-based). pages와 함께 쓸 수 없다. 범위는 한 구역의 최상위 본문 문단 연속 구간이며 표는 통째로 포함된다",
+          "type": "string"
+        },
         "input": {
           "type": "string"
         },
@@ -2531,9 +2539,21 @@
           "description": "이번 hwp_split 호출에만 사용할 문서 암호",
           "type": "string"
         },
+        "range_report": {
+          "description": "hwp-range-extraction-v1 JSON(원본 해시, 원본→출력 주소, 유지·미검증 유지·제외·형식이 버린 바이너리, 읽을 수 없는 참조 자리; 지점은 텍스트 없이 종류와 주소로만 기록)을 조각과 함께 게시할 경로(선택, 응답의 range 필드에는 항상 들어 있다). loss_report와 같은 파일일 수 없다",
+          "type": "string"
+        },
+        "source_sha256": {
+          "description": "선택을 만든 원본 파일의 SHA-256(16진수); 다르면 아무것도 쓰지 않고 거부",
+          "type": "string"
+        },
         "strict": {
           "description": "보존 불가(opaque) 데이터가 있으면 게시하지 않고 실패; 기본 false (CLI와 동일) — 응답의 preservation 원장으로 손실을 판단하라",
           "type": "boolean"
+        },
+        "to": {
+          "description": "범위 끝 지점(from과 같은 문법, 기본은 시작 구역의 끝). from과 함께만 사용",
+          "type": "string"
         }
       },
       "required": [

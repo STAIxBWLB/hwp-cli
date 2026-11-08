@@ -210,6 +210,36 @@ pub enum Cmd {
         /// and the estimate may not match what Hancom itself would paginate
         #[arg(long)]
         pages: Vec<String>,
+        /// Extract one typed range instead of splitting: where it starts, as
+        /// "heading:<text>" (the one body paragraph whose own text equals it, as
+        /// `hwp cat` prints it: tabs, line breaks and non-breaking spaces count),
+        /// "bookmark:<name>" or "at:<section>.<paragraph>" (both 0-based). The
+        /// range is a run of top-level body paragraphs of one section, so a table
+        /// is taken whole; the fragment keeps the section setup, the whole header
+        /// and every binary it uses. A binary is left out only when nothing in
+        /// the fragment provably uses it: a reference the tool cannot read (an
+        /// image fill, a raw shape or OLE object) keeps them all and is reported
+        #[arg(long, conflicts_with = "pages")]
+        from: Option<String>,
+        /// Where the range ends, same syntax as --from (default: the end of the
+        /// start's section)
+        #[arg(long, requires = "from")]
+        to: Option<String>,
+        /// Leave the --to paragraph out of the range (it is included by default)
+        #[arg(long, requires = "to")]
+        end_exclusive: bool,
+        /// SHA-256 (hex) of the source file the selection was made against; a
+        /// different file is refused before anything is written
+        #[arg(long, requires = "from")]
+        source_sha256: Option<String>,
+        /// Write the range report (hwp-range-extraction-v1: source hash,
+        /// selection by anchor kind and address, never anchor text,
+        /// source-to-output addresses, the kept, kept-unverified, excluded and
+        /// dropped-by-format binaries and the unreadable reference sites) as JSON to this
+        /// path, published together with the fragment. Not written unless given;
+        /// it may not be the same file as --loss-report
+        #[arg(long, requires = "from")]
+        range_report: Option<PathBuf>,
         /// Fail when data that cannot be preserved (opaque) is found while splitting
         #[arg(long)]
         strict: bool,

@@ -44,8 +44,9 @@ and in CI.
   두문/결문 frames, the statutory eight-level item marks, preset table styling
   (`hwp edit --style-tables`) and a notation and structure linter (`hwp lint`, ten rules).
 - **Document-level workflows** Merge several documents into one (`hwp merge`, one Section per
-  input), split one into per-section or per-page-range fragments (`hwp split`), and report the
-  paragraph and structural differences between two documents (`hwp compare`).
+  input), split one into per-section or per-page-range fragments, or cut out one typed range such as
+  a single form with the binaries it uses (`hwp split`), and report the paragraph and structural
+  differences between two documents (`hwp compare`).
 - **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 23 tools to
   desktop clients, including Amazon Quick Desktop.
 
@@ -542,7 +543,7 @@ tenant isolation and artifact transfer remain future work in
 | `hwp_validate` | `path` | Structural validation, `{valid, errors, warnings}` |
 | `hwp_lint` | `path` | Ten official-document notation and structure rules, as an `hwp-lint-report-v1` report |
 | `hwp_merge` | `inputs`, `output` | Combine two or more documents; returns the preservation ledger |
-| `hwp_split` | `input`, `out_dir` | Split per Section (or per `pages` range); returns the published fragment paths |
+| `hwp_split` | `input`, `out_dir` | Split per Section (or per `pages` range), or extract one typed range with `from`/`to`; returns the published fragment paths and, for a range, the `hwp-range-extraction-v1` report |
 | `hwp_compare` | `a`, `b` | Read-only paragraph/structure diff as `hwp-compare-report-v1`. Differences never set `isError` — read `identical` |
 | `hwp_put_file` | `name`, `content` | Write base64 content into the session workspace. The only way to hand an existing document to a remote deployment: tool arguments take paths, so upload first and pass the name. 512 KiB decoded |
 | `hwp_get_file` | `path` | Return a workspace file as base64 (a receipt block plus an embedded resource). Refuses above 512 KiB rather than truncating. Keep intermediates in the workspace and fetch only the final artifact - the base64 lands in the client's message stream |

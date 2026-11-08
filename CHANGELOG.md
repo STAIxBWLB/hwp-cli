@@ -55,6 +55,59 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   unknown style kinds, stale addresses and HWP style numbers above 255 are refused before
   output publication
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
+- `hwp split --from <anchor> [--to <anchor>] [--end-exclusive] [--source-sha256 <hex>]
+  [--range-report <file>]` and the matching `hwp_split` arguments extract one typed range instead
+  of splitting by section or page. An anchor is `heading:<text>` (a top-level body paragraph whose
+  own text equals it, trimmed, exactly as `hwp cat` prints it: a tab is a tab, a line break a
+  line break and a non-breaking space a space, and the text of a table or other object inside
+  the paragraph is not part of it), `bookmark:<name>` or `at:<section>.<paragraph>`. The range is a run of
+  top-level body paragraphs of one section, so a table is taken whole and never cut. The fragment
+  keeps the section setup and the whole header. Its binaries come from one closure pass over the
+  built fragment: a binary is dropped only when nothing in the fragment (pictures, captions,
+  carried header and footer, raw-preserved objects, the package parts copied back verbatim)
+  provably uses it. A picture's item id resolves through the package manifest, so an id that
+  differs from its file name still finds its stream. When the fragment holds a reference the
+  tool cannot read, such as a border-fill image fill, a bullet that may be an image bullet, a
+  raw HWP5 shape, OLE or video record, a Parameter Set that may name a binary, or a carried
+  part that is not readable XML, every binary is kept and the report lists the sites. The set
+  of places the HWP 5.0 specification lets name a binary is enumerated in the code and pinned
+  by a test.
+  `--range-report` publishes `hwp-range-extraction-v1` (source hash, fragment hash,
+  source-to-output paragraph and table addresses, kept, kept-unverified, excluded and
+  dropped-by-format binaries, unverified sites) in the same transaction as the fragment, and
+  `hwp_split` returns it inline. The report is content-free: it names each anchor by kind and
+  by the address it resolved to, never by its text, and `kept` / `kept-unverified` list only
+  binaries the published file holds (HWP5 writes just the binaries its BIN_DATA table names, so
+  the others are listed as dropped by the format). Equations are covered too: the XML an
+  equation keeps for its size, position and caption (a caption may hold a picture) is read for
+  binary references, as is every other raw field. Every IR field that holds raw bytes, raw XML
+  or opaque records is classified in `VERBATIM_FIELDS` as scanned or as unable to name a
+  binary, with a reason, and a test fails when the model gains a raw field that is not
+  classified. Retained settings/version XML is scanned too; unreadable XML, truncated raw
+  reference records (including header extras) and unknown record tags keep unproven streams
+  as unverified rather than treating unreadable content as reference-free.
+  `--range-report` and `--loss-report` may not
+  name the same file, and neither may name a fragment, however the path is spelled (`..`
+  segments through a directory that does not exist yet, and on a volume that ignores case, a
+  different case; the volume is asked, not assumed). Spellings the volume folds that a name
+  comparison cannot model, such as the two Unicode normalizations of a Korean name on APFS, are
+  caught when the outputs are published: before each file replaces what its path reaches, the
+  file's own identity (device and inode, or volume serial and file index on Windows) is
+  compared with the files already published in the same set, and a match refuses the whole
+  set and restores the earlier files. The source
+  hash is taken before and after parsing; differing hashes refuse the run. Keep the source
+  stable: path-based readers cannot detect an A-B-A replacement during parsing. The fragment
+  carries the section's page, column, header, footer, page-number and new-number controls. When
+  the range starts after the section's first paragraph, a hide or odd/even adjust control on
+  that paragraph acts on its own source page and is not carried; a range that starts at the
+  first paragraph takes it whole. A mismatching `--source-sha256`, a missing or ambiguous
+  anchor, a range across sections, a reversed or empty range and a picture whose binary the
+  source lacks are each refused before anything is written (the last names the missing stream
+  and says to restore it in the source package or pick a range that does not use it), and so is
+  a report whose name looks like a fragment of the run (it would be deleted as a stale
+  fragment). Tested against every
+  form of the generated P0 form set, from HWPX and from its HWP5 conversion
+  ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
 - `hwp styles <file> [--format text|json]` and the MCP tool `hwp_styles` list a document's named
   styles with their resolved character and paragraph attributes and `used_by`, the `para`
   segment ids that `hwp cat --with-segments --segments v2` publishes. The JSON form is the new
@@ -64,6 +117,37 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Merge resolves each later input's modeled `BinRef::ItemRef` picture references in that
+  input, including unlisted and multi-component suffix spellings, instead of letting a
+  missing id bind to another input's image. Carrier names avoid existing stream names and
+  the first manifest's ids/hrefs; the first reference namespace stays unchanged during grafting,
+  and its declared missing targets stay missing. Canonical HWP5 carriers use the existing storage-id remint path, with shared extensions
+  and source orphan names checked together. Missing images produce `BinaryAssetRemoved`
+  in permissive native output; `--strict` refuses before publication
+  ([#460](https://github.com/STAIxBWLB/hwp-cli/issues/460)).
+
+- HWP5 range and `--pages` fragments recompute the section-list last-paragraph marker after
+  selection, so exactly the new final paragraph carries nchars bit31 (compatibility rule B4).
+  An end-exclusive range whose two anchors resolve to the same paragraph now reports an empty
+  range and advises removing `--end-exclusive` or choosing a later end anchor; genuinely
+  reversed ranges keep their own cause and remedies
+  ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
+
+- `hwp merge` keeps the pictures of later HWPX inputs pointing at their own images. A picture
+  names its image by manifest id, and the merged document carries only the first input's
+  manifest, so a later input that reused an id such as `image1` for a different file used to
+  resolve to the first input's image. Each later input's ids are now resolved through that
+  input's own manifest while its streams are grafted, which also keeps an id working after its
+  stream was renamed on a name collision. A shape's caption is remapped too: its pictures
+  follow their own input's manifest, and its paragraphs get the same paragraph, character and
+  style offsets as every other paragraph, where they used to keep the ids of the input they
+  came from. Resolving a picture's id now consults the package
+  manifest first, so an id that differs from its file name (`id="logo"`,
+  `href="BinData/p1.png"`) finds its image, where `hwp convert` used to drop it as a removed
+  binary asset, both to HWPX and to HWP5 (the HWP5 writer used its own resolver, which ignored
+  the manifest and matched by substring; it now follows the manifest and an id the manifest
+  lists never falls back to a same-named file of another item)
+  ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
 - The HWPX reader now reads `hh:style@type` (`PARA`/`CHAR`) into the style kind that HWP5 stores in
   the low bits of `STYLE.attr`, and the HWPX writer writes `CHAR` back for a character style
   instead of always `PARA`. Character styles such as `쪽 번호` therefore survive an HWPX to HWPX

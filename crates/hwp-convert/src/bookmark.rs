@@ -16,7 +16,7 @@ use hwp_model::{Control, Document, GenericControl, HwpChar, Paragraph};
 use crate::edit::{adjust_runs, find_match, utf16_len};
 use crate::field::{relink_ctrl_index, rev_payload};
 
-const CTRL_DATA_TAG: u16 = 0x0010 + 71; // HWPTAG_CTRL_DATA (0x57)
+pub(crate) const CTRL_DATA_TAG: u16 = 0x0010 + 71; // HWPTAG_CTRL_DATA (0x57)
 const BOKM: [u8; 4] = *b"bokm";
 
 /// 책갈피 하나의 정보.

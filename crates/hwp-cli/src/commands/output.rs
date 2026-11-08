@@ -231,17 +231,54 @@ pub(crate) fn write_validated_files(
     outputs: &[(PathBuf, Vec<u8>)],
     input: Option<&Path>,
 ) -> anyhow::Result<Option<String>> {
+    write_validated_files_avoiding(outputs, input, &[])
+}
+
+/// A file a command published EARLIER, in a transaction of its own, that a later output set must
+/// not replace. Its identity is read from the file itself, so it holds whatever spelling of the
+/// path reached it.
+pub(crate) struct PublishedFile {
+    path: PathBuf,
+    identity: FileIdentity,
+}
+
+impl PublishedFile {
+    /// Records the file now at `path`.
+    pub(crate) fn record(path: &Path) -> anyhow::Result<Self> {
+        let metadata = fs::symlink_metadata(path).with_context(|| {
+            format!("게시한 출력 파일을 확인하지 못했습니다: {}", path.display())
+        })?;
+        Ok(Self {
+            identity: FileIdentity::from_metadata(&metadata, path)?,
+            path: path.to_path_buf(),
+        })
+    }
+}
+
+/// [`write_validated_files`] for a command that already published other files on its own
+/// (`split` writes `--loss-report` before the fragments so a strict refusal still leaves it).
+/// A destination in this set that turns out to be one of `already_published` is refused before
+/// anything in the set replaces it, even when no name comparison could have told.
+pub(crate) fn write_validated_files_avoiding(
+    outputs: &[(PathBuf, Vec<u8>)],
+    input: Option<&Path>,
+    already_published: &[PublishedFile],
+) -> anyhow::Result<Option<String>> {
     if outputs.is_empty() {
         anyhow::bail!("게시할 출력 파일이 없습니다");
     }
     let mut normalized = Vec::with_capacity(outputs.len());
     for (destination, _) in outputs {
-        let absolute = std::path::absolute(destination).with_context(|| {
+        // `std::path::absolute` keeps `..`, so `out/../out/a` and `out/a` would be two files to
+        // it. The alias normalizer resolves them to one, which is what the set must not hold
+        // twice: the second write would replace the first and the publish would still succeed.
+        std::path::absolute(destination).with_context(|| {
             format!(
                 "출력 경로를 절대경로로 바꿀 수 없습니다: {}",
                 destination.display()
             )
         })?;
+        let absolute = crate::commands::convert::normalize_for_alias_compare(destination);
         if normalized.contains(&absolute) {
             anyhow::bail!(
                 "출력 집합에 중복 경로가 있습니다: {}",
@@ -276,7 +313,7 @@ pub(crate) fn write_validated_files(
             );
         }
     }
-    publish_output_set(&mut staged, |_| Ok(()))
+    publish_output_set(&mut staged, already_published, |_| Ok(()))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -287,6 +324,7 @@ enum SetPublishStep {
 
 fn publish_output_set(
     outputs: &mut [StagedOutput],
+    already_published: &[PublishedFile],
     mut hook: impl FnMut(SetPublishStep) -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<String>> {
     // Mutation을 시작하기 전에 집합 전체의 경쟁 여부와 staged 파일 상태를 확정한다.
@@ -294,7 +332,25 @@ fn publish_output_set(
         recheck_destination(&output.destination, &output.snapshot)?;
         output.sync_file()?;
     }
-
+    // A destination that already exists as one of the files this command published on its own
+    // earlier is that file, however its path is spelled. The check reads the identity recorded in
+    // the destination's snapshot, before anything is moved: once an existing destination has been
+    // backed up the path no longer reaches the file, and the comparison would find nothing.
+    for output in outputs.iter() {
+        let DestinationSnapshot::Regular { identity, .. } = &output.snapshot else {
+            continue;
+        };
+        if let Some(earlier) = already_published
+            .iter()
+            .find(|published| published.identity.same_file(identity))
+        {
+            anyhow::bail!(
+                "출력 경로가 앞서 따로 게시한 파일과 같은 파일입니다 (파일시스템이 같은 이름으로 취급): {} 와 {} — 덮어쓰게 되어 게시하지 않습니다",
+                earlier.path.display(),
+                output.destination.display()
+            );
+        }
+    }
     #[cfg(unix)]
     for output in outputs.iter() {
         if let DestinationSnapshot::Regular { permissions, .. } = &output.snapshot {
@@ -350,8 +406,29 @@ fn publish_output_set(
                 backed_up[index] = true;
             }
         }
+        let mut published_identity: Vec<Option<FileIdentity>> = vec![None; outputs.len()];
         for (index, output) in outputs.iter().enumerate() {
             hook(SetPublishStep::Publish(index))?;
+            // The rename below replaces whatever the destination path reaches. When that is a
+            // file this transaction has already published, two outputs would be one file and
+            // the later bytes would silently replace the earlier ones. Names cannot tell (case,
+            // Unicode normalization, hard links, anything else the volume folds); the file's
+            // own identity can, and it is compared here, before the replacing rename.
+            if let Ok(metadata) = fs::symlink_metadata(&output.destination) {
+                let reached = FileIdentity::from_metadata(&metadata, &output.destination)?;
+
+                for (earlier, identity) in published_identity.iter().enumerate() {
+                    if let Some(identity) = identity
+                        && identity.same_file(&reached)
+                    {
+                        anyhow::bail!(
+                            "출력 집합의 두 경로가 같은 파일입니다 (파일시스템이 같은 이름으로 취급): {} 와 {} — 나중 출력이 먼저 게시한 출력을 덮어쓰게 되어 게시하지 않습니다",
+                            outputs[earlier].destination.display(),
+                            output.destination.display()
+                        );
+                    }
+                }
+            }
             fs::rename(&output.staged, &output.destination).with_context(|| {
                 format!(
                     "검증된 출력 집합 항목을 게시하지 못했습니다: {}",
@@ -359,6 +436,14 @@ fn publish_output_set(
                 )
             })?;
             published[index] = true;
+            let metadata = fs::symlink_metadata(&output.destination).with_context(|| {
+                format!(
+                    "게시한 출력 파일을 확인하지 못했습니다: {}",
+                    output.destination.display()
+                )
+            })?;
+            published_identity[index] =
+                Some(FileIdentity::from_metadata(&metadata, &output.destination)?);
         }
         Ok(())
     })();
@@ -1721,6 +1806,11 @@ impl FileIdentity {
     fn has_multiple_links(&self) -> bool {
         self.links > 1
     }
+
+    /// Whether both identities name the same file (device and inode), whatever the link count.
+    fn same_file(&self, other: &Self) -> bool {
+        self.device == other.device && self.inode == other.inode
+    }
 }
 
 #[cfg(windows)]
@@ -1793,6 +1883,11 @@ impl FileIdentity {
     fn has_multiple_links(&self) -> bool {
         self.links > 1
     }
+
+    /// Whether both identities name the same file (volume serial and file index).
+    fn same_file(&self, other: &Self) -> bool {
+        self.volume == other.volume && self.index == other.index
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1811,6 +1906,11 @@ impl FileIdentity {
 
     fn has_multiple_links(&self) -> bool {
         false
+    }
+
+    /// Whether both identities name the same file (the canonical path).
+    fn same_file(&self, other: &Self) -> bool {
+        self.canonical_path == other.canonical_path
     }
 }
 
@@ -3079,7 +3179,7 @@ mod tests {
         fs::write(&destinations[1], b"OLD-1").unwrap();
         let mut staged = staged_file_set(&destinations);
 
-        let result = publish_output_set(&mut staged, |step| {
+        let result = publish_output_set(&mut staged, &[], |step| {
             if step == SetPublishStep::Publish(1) {
                 anyhow::bail!("강제 두 번째 게시 실패");
             }
@@ -3099,7 +3199,7 @@ mod tests {
         let destinations = [dir.join("page-1.svg"), dir.join("page-2.svg")];
         let mut staged = staged_file_set(&destinations);
 
-        let result = publish_output_set(&mut staged, |step| {
+        let result = publish_output_set(&mut staged, &[], |step| {
             if step == SetPublishStep::Publish(1) {
                 anyhow::bail!("강제 두 번째 게시 실패");
             }
@@ -3122,7 +3222,7 @@ mod tests {
         let mut staged = staged_file_set(&destinations);
         let backup = staged[0].workspace.join("destination.backup");
 
-        let result = publish_output_set(&mut staged, |step| match step {
+        let result = publish_output_set(&mut staged, &[], |step| match step {
             SetPublishStep::Publish(1) => anyhow::bail!("강제 두 번째 게시 실패"),
             SetPublishStep::Restore(0) => anyhow::bail!("강제 첫 번째 복원 실패"),
             _ => Ok(()),
@@ -3133,6 +3233,224 @@ mod tests {
         staged[0].preserve_workspace = false;
         drop(staged);
         assert_no_debris(&dir);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn output_set_rejects_one_file_spelled_two_ways_before_any_write() {
+        let dir = test_dir("set-dotdot");
+        // `out` does not exist yet: the usual case for a new --out-dir.
+        let plain = dir.join("out").join("a.bin");
+        let dotdot = dir.join("out").join("..").join("out").join("a.bin");
+        let outputs = vec![
+            (plain.clone(), b"FRAGMENT".to_vec()),
+            (dotdot, b"REPORT".to_vec()),
+        ];
+        let error = write_validated_files(&outputs, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("중복"), "{error}");
+        assert!(
+            !dir.join("out").exists(),
+            "nothing may be staged or published"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn output_set_treats_case_only_spellings_as_one_file_where_the_volume_does() {
+        let dir = test_dir("set-case");
+        fs::write(dir.join("CaseProbeFile"), b"x").unwrap();
+        let really = dir.join("caseprobefile").exists();
+        let outputs = vec![
+            (dir.join("out").join("a.bin"), b"FRAGMENT".to_vec()),
+            (dir.join("out").join("A.BIN"), b"REPORT".to_vec()),
+        ];
+        let folds = crate::commands::convert::path_is_case_insensitive(&dir);
+        assert!(folds || !really, "the probe must not miss a folding volume");
+        if folds {
+            let result = write_validated_files(&outputs, None);
+            assert!(
+                result.is_err(),
+                "one file spelled in two cases was accepted"
+            );
+            assert!(
+                !dir.join("out").exists(),
+                "nothing may be staged or published"
+            );
+        } else {
+            // A case-sensitive volume holds two files, and both are written. (The publish step
+            // stages beside each file, so its directory has to exist; the refusal above came
+            // from the preflight, before any directory was needed.)
+            fs::create_dir_all(dir.join("out")).unwrap();
+            write_validated_files(&outputs, None).unwrap();
+            assert_eq!(
+                fs::read(dir.join("out").join("a.bin")).unwrap(),
+                b"FRAGMENT"
+            );
+            assert_eq!(fs::read(dir.join("out").join("A.BIN")).unwrap(), b"REPORT");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Whether `dir`'s filesystem treats the NFC and NFD spellings of a Korean name as one file,
+    /// decided by the filesystem: write one, look it up by the other.
+    fn volume_folds_normalization(dir: &Path) -> bool {
+        let nfc = "\u{d55c}\u{ae00}"; // 한글, precomposed
+        let nfd = "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}"; // the same, decomposed
+        fs::write(dir.join(nfc), b"x").unwrap();
+        dir.join(nfd).exists()
+    }
+
+    const NFC_NAME: &str = "\u{d55c}\u{ae00}.bin";
+    const NFD_NAME: &str = "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}.bin";
+
+    /// Nothing exists yet, so `canonicalize` has no on-disk name to resolve both spellings to and
+    /// the name keys differ. Only the publish-time identity check can see that the first output,
+    /// once renamed into place, IS the file the second destination path reaches. It must refuse
+    /// before the second rename replaces it, and roll the first output back.
+    #[test]
+    fn output_set_publish_time_identity_refuses_spellings_the_volume_folds() {
+        let dir = test_dir("set-normalization-new");
+        let folds = volume_folds_normalization(&dir);
+        fs::remove_file(dir.join("\u{d55c}\u{ae00}")).unwrap();
+        let outputs = vec![
+            (dir.join(NFC_NAME), b"FRAGMENT".to_vec()),
+            (dir.join(NFD_NAME), b"REPORT".to_vec()),
+        ];
+        let result = write_validated_files(&outputs, None);
+        if folds {
+            let error = format!(
+                "{:#}",
+                result.expect_err("one file spelled two ways was accepted")
+            );
+            assert!(
+                error.contains("같은 파일"),
+                "the identity check refuses: {error}"
+            );
+            let remaining: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
+            assert!(
+                remaining.is_empty(),
+                "the first output was rolled back: {remaining:?}"
+            );
+        } else {
+            // A volume that keeps the spellings apart holds two files, and both are written.
+            result.unwrap();
+            assert_eq!(fs::read(dir.join(NFC_NAME)).unwrap(), b"FRAGMENT");
+            assert_eq!(fs::read(dir.join(NFD_NAME)).unwrap(), b"REPORT");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// With a file already there, `canonicalize` resolves both spellings to the same on-disk
+    /// name, so the early (name-key) refusal fires, and the existing file is untouched.
+    #[test]
+    fn output_set_preexisting_spellings_the_volume_folds_are_refused_early() {
+        let dir = test_dir("set-normalization-existing");
+        let folds = volume_folds_normalization(&dir);
+        fs::remove_file(dir.join("\u{d55c}\u{ae00}")).unwrap();
+        fs::write(dir.join(NFC_NAME), b"OLD").unwrap();
+        let outputs = vec![
+            (dir.join(NFC_NAME), b"FRAGMENT".to_vec()),
+            (dir.join(NFD_NAME), b"REPORT".to_vec()),
+        ];
+        let result = write_validated_files(&outputs, None);
+        if folds {
+            let error = format!(
+                "{:#}",
+                result.expect_err("one file spelled two ways was accepted")
+            );
+            assert!(
+                error.contains("중복") || error.contains("같은 파일"),
+                "{error}"
+            );
+            assert_eq!(
+                fs::read(dir.join(NFC_NAME)).unwrap(),
+                b"OLD",
+                "the original is untouched"
+            );
+            assert_no_debris(&dir);
+        } else {
+            fs::remove_file(dir.join(NFC_NAME)).unwrap();
+            result.unwrap();
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_set_refuses_two_destinations_that_are_one_file_by_identity() {
+        // The identity check must not depend on how the names differ: a second destination
+        // path that reaches the first through a symlinked directory is also one file.
+        let dir = test_dir("set-identity");
+        fs::create_dir(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+        let outputs = vec![
+            (dir.join("real").join("a.bin"), b"FRAGMENT".to_vec()),
+            (dir.join("alias").join("a.bin"), b"REPORT".to_vec()),
+        ];
+        let error = format!("{:#}", write_validated_files(&outputs, None).unwrap_err());
+        // Either the name-key preflight or the identity check refuses it; the file must not be
+        // written either way.
+        assert!(
+            error.contains("중복") || error.contains("같은 파일"),
+            "{error}"
+        );
+        assert!(!dir.join("real").join("a.bin").exists());
+        assert_no_debris(&dir.join("real"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A file published earlier by the same command, in a transaction of its own (`split`'s
+    /// `--loss-report`), that a later set names through another spelling of the same path.
+    #[test]
+    fn output_set_refuses_to_replace_a_file_the_command_published_earlier() {
+        let dir = test_dir("set-avoid");
+        let folds = volume_folds_normalization(&dir);
+        fs::remove_file(dir.join("\u{d55c}\u{ae00}")).unwrap();
+        // The earlier transaction: one file, spelled in NFC.
+        write_validated_files(&[(dir.join(NFC_NAME), b"LEDGER".to_vec())], None).unwrap();
+        let earlier = PublishedFile::record(&dir.join(NFC_NAME)).unwrap();
+        // The later set names it in NFD.
+        let outputs = vec![
+            (dir.join("fragment.bin"), b"FRAGMENT".to_vec()),
+            (dir.join(NFD_NAME), b"REPORT".to_vec()),
+        ];
+        let result = write_validated_files_avoiding(&outputs, None, &[earlier]);
+        if folds {
+            let error = format!("{:#}", result.expect_err("the earlier file was replaced"));
+            assert!(error.contains("앞서 따로 게시한 파일"), "{error}");
+            assert_eq!(
+                fs::read(dir.join(NFC_NAME)).unwrap(),
+                b"LEDGER",
+                "the earlier file is intact"
+            );
+            assert!(
+                !dir.join("fragment.bin").exists(),
+                "nothing from the refused set remains"
+            );
+            assert_no_debris(&dir);
+        } else {
+            // Two distinct names: the later set is free to write its own file.
+            result.unwrap();
+            assert_eq!(fs::read(dir.join(NFC_NAME)).unwrap(), b"LEDGER");
+            assert_eq!(fs::read(dir.join(NFD_NAME)).unwrap(), b"REPORT");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn output_set_with_unrelated_earlier_files_is_unaffected() {
+        let dir = test_dir("set-avoid-unrelated");
+        write_validated_files(&[(dir.join("ledger.bin"), b"LEDGER".to_vec())], None).unwrap();
+        let earlier = PublishedFile::record(&dir.join("ledger.bin")).unwrap();
+        let outputs = vec![
+            (dir.join("a.bin"), b"A".to_vec()),
+            (dir.join("b.bin"), b"B".to_vec()),
+        ];
+        write_validated_files_avoiding(&outputs, None, &[earlier]).unwrap();
+        assert_eq!(fs::read(dir.join("a.bin")).unwrap(), b"A");
+        assert_eq!(fs::read(dir.join("ledger.bin")).unwrap(), b"LEDGER");
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3154,7 +3472,7 @@ mod tests {
         let destinations = [first.clone(), second.clone()];
         let mut staged = staged_file_set(&destinations);
         fs::write(&second, b"RACER").unwrap();
-        assert!(publish_output_set(&mut staged, |_| Ok(())).is_err());
+        assert!(publish_output_set(&mut staged, &[], |_| Ok(())).is_err());
         assert_eq!(fs::read(&first).unwrap(), b"OLD-0");
         assert_eq!(fs::read(&second).unwrap(), b"RACER");
         drop(staged);

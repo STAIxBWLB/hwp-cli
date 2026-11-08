@@ -1,8 +1,8 @@
-//! 텍스트 추출.
+//! Text extraction.
 //!
-//! 컨트롤 포함 정책은 확장 컨트롤의 **문자 코드** 기준으로 정한다
-//! (ctrl_id보다 안정적): 표/개체(11)·각주/미주(17)는 포함,
-//! 머리말/꼬리말(16)·숨은 설명(15)은 제외가 기본값.
+//! Extended-control inclusion is based on the **character code**, which is more stable
+//! than ctrl_id: tables/objects (11) and footnotes/endnotes (17) are included by default;
+//! headers/footers (16) and hidden comments (15) are excluded by default.
 
 use crate::control::{Caption, CaptionSide, Control};
 use crate::document::{Document, Section};
@@ -10,9 +10,9 @@ use crate::paragraph::{HwpChar, Paragraph, ctrl_char};
 
 #[derive(Debug, Clone, Default)]
 pub struct TextOptions {
-    /// 머리말/꼬리말 포함 여부
+    /// Whether to include headers and footers.
     pub include_header_footer: bool,
-    /// 숨은 설명 포함 여부
+    /// Whether to include hidden comments.
     pub include_hidden: bool,
 }
 
@@ -39,22 +39,47 @@ impl Section {
     }
 }
 
+/// The text one character of a paragraph contributes by itself, which is the mapping every
+/// text projection shares (`hwp cat`, [`Paragraph::own_text`], heading anchors): a text
+/// character is itself, a line break is `\n`, a hyphen is `-`, a non-breaking and a fixed-width
+/// space are a space, a tab is `\t`. Anything else, and every extended control, contributes
+/// nothing HERE (an extended control's content is the caller's business).
+pub fn char_text(ch: &HwpChar, out: &mut String) {
+    match ch {
+        HwpChar::Text(c) => out.push(*c),
+        HwpChar::CharCtrl(code) => match *code {
+            ctrl_char::LINE_BREAK => out.push('\n'),
+            ctrl_char::HYPHEN => out.push('-'),
+            ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => out.push(' '),
+            _ => {} // Paragraph ends (13) and similar controls are handled at paragraph boundaries.
+        },
+        HwpChar::InlineCtrl { code, .. } => {
+            if *code == ctrl_char::TAB {
+                out.push('\t');
+            }
+        }
+        HwpChar::ExtCtrl { .. } => {}
+    }
+}
+
 impl Paragraph {
-    /// 이 문단의 텍스트를 out에 덧붙인다 (문단 끝 개행은 호출자 책임).
+    /// The paragraph's OWN text, exactly as `hwp cat` prints those characters, without the
+    /// content of any control in it (a table's cells, a picture's caption, a header). A heading
+    /// anchor is compared against this: it is what the paragraph reads like on its own line.
+    pub fn own_text(&self) -> String {
+        let mut out = String::new();
+        for ch in &self.chars {
+            char_text(ch, &mut out);
+        }
+        out
+    }
+
+    /// Appends this paragraph's text to out; the caller supplies the paragraph-ending newline.
     pub fn extract_into(&self, out: &mut String, opts: &TextOptions) {
         for ch in &self.chars {
             match ch {
-                HwpChar::Text(c) => out.push(*c),
-                HwpChar::CharCtrl(code) => match *code {
-                    ctrl_char::LINE_BREAK => out.push('\n'),
-                    ctrl_char::HYPHEN => out.push('-'),
-                    ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => out.push(' '),
-                    _ => {} // 문단 끝(13) 등은 문단 경계에서 처리
-                },
-                HwpChar::InlineCtrl { code, .. } => {
-                    if *code == ctrl_char::TAB {
-                        out.push('\t');
-                    }
+                HwpChar::Text(_) | HwpChar::CharCtrl(_) | HwpChar::InlineCtrl { .. } => {
+                    char_text(ch, out);
                 }
                 HwpChar::ExtCtrl {
                     code, ctrl_index, ..
@@ -77,7 +102,7 @@ impl Paragraph {
         }
     }
 
-    /// 단독 문단의 평문 (테스트/디버깅 편의).
+    /// Plain text of one paragraph, for tests and debugging.
     pub fn plain_text(&self) -> String {
         let mut s = String::new();
         self.extract_into(&mut s, &TextOptions::default());
@@ -168,7 +193,7 @@ fn extract_caption(caption: &Caption, out: &mut String, opts: &TextOptions) {
     }
 }
 
-/// 중복 개행을 만들지 않으면서 개행 추가.
+/// Appends a newline without duplicating one already present.
 fn push_newline(out: &mut String) {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');

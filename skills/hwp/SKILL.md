@@ -51,10 +51,25 @@ syntax (used by `fill`, `slots` and the template tools).
   on a clean run. Page, footnote and outline numbering keep each input's own start/continue
   settings, so re-check them after merging. One `--password` / `--password-stdin` covers the
   whole batch.
+  Later HWPX picture item references resolve in their own source. Reused ids must not bind
+  missing targets to another input's image; the first reference namespace stays unchanged
+  during grafting, including its declared missing targets.
+  Removed images are reported as `BinaryAssetRemoved`; `--strict` refuses their publication.
 - `hwp split {input} --out-dir {dir}` — divide one document into fragments, one per Section by
   default (named `{stem}-NNN.{lowercased ext}`). `--pages "N"|"N-M"` (repeatable) splits on page
   ranges instead; those boundaries come from the layout cache Hancom saved, so they are an
-  estimate that may not match Hancom's own pagination. `--strict` and `--loss-report` behave as
+  estimate that may not match Hancom's own pagination. `--from` with `heading:TEXT`,
+  `bookmark:NAME` or `at:SECTION.PARAGRAPH` (0-based), plus optional `--to`, `--end-exclusive` and
+  `--source-sha256 HEX`, instead extracts ONE typed range: top-level body paragraphs of one section (a table is taken
+  whole), with the section setup and every binary the range uses. A heading must equal the
+  paragraph's own text as `hwp cat` prints it (tabs, line breaks and non-breaking spaces count),
+  so cell text is not an anchor, and an anchor matching twice is refused. Nothing
+  is written on a refusal. `--range-report FILE` publishes `hwp-range-extraction-v1` (source
+  hash, source-to-output addresses, kept, kept-unverified, excluded and dropped-by-format
+  binaries) together with the fragment. A binary is excluded only when the fragment provably does
+  not use it, so a reference the tool cannot read keeps them all and is listed. The report names
+  anchors by kind and address, never by their text.
+  `--strict` and `--loss-report` behave as
   in `merge`.
 - `hwp new -o {out.hwpx|out.hwp}` — create a document. `--from {file.md|file.json}` imports
   markdown or a JSON IR (empty document when omitted); `--set-meta key=value` (title/author/
@@ -389,7 +404,7 @@ Tools (23):
 | `hwp_certify` | `input`, `policy`, `report` | Run certification and publish the report atomically |
 | `hwp_diff` | `input`, `ref` | Render one page and compare it to a reference PNG |
 | `hwp_merge` | `inputs`, `output` | Combine two or more documents, one Section per input; returns the preservation ledger |
-| `hwp_split` | `input`, `out_dir` | Split into per-Section (or `pages`) fragments; returns the published fragment paths |
+| `hwp_split` | `input`, `out_dir` | Split into per-Section (or `pages`) fragments, or extract one typed range with `from`/`to`; returns the published fragment paths and, for a range, the `hwp-range-extraction-v1` report |
 | `hwp_compare` | `a`, `b` | Read-only paragraph/structure diff returning `hwp-compare-report-v1`. Differences are a normal result and never set `isError` — read `identical` |
 | `hwp_put_file` | `name`, `content` | Write base64 content into the session workspace. The only way to hand an existing document to a remote deployment: tool arguments take paths, so upload first and pass the name. 512 KiB decoded |
 | `hwp_get_file` | `path` | Return a workspace file as base64 (a receipt block plus an embedded resource). Refuses above 512 KiB rather than truncating. Keep intermediates in the workspace and fetch only the final artifact - the base64 lands in the client's message stream |

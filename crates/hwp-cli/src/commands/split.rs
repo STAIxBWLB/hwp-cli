@@ -153,20 +153,12 @@ fn remove_stale_fragments(out_dir: &Path, stem: &str, extension: &str, keep: &[P
             return;
         }
     };
-    let prefix = format!("{stem}-");
-    let suffix = format!(".{extension}");
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_fragment_name =
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.strip_prefix(&prefix)
-                        .and_then(|rest| rest.strip_suffix(&suffix))
-                        .is_some_and(|index| {
-                            !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
-                        })
-                });
+        let is_fragment_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| is_fragment_file_name(name, stem, extension));
         if is_fragment_name
             && path.is_file()
             && !keep.contains(&path)
@@ -180,12 +172,146 @@ fn remove_stale_fragments(out_dir: &Path, stem: &str, extension: &str, keep: &[P
     }
 }
 
+/// Whether `name` is `{stem}-{digits}.{extension}`, the name of a fragment this command
+/// publishes. The stale-fragment cleanup deletes files with such names that a run did not
+/// write, so a report must not carry one (it would be deleted right after publication, and
+/// a JSON file with a document extension would mislead anyway).
+fn is_fragment_file_name(name: &str, stem: &str, extension: &str) -> bool {
+    name.strip_prefix(&format!("{stem}-"))
+        .and_then(|rest| rest.strip_suffix(&format!(".{extension}")))
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+/// Refuses a report path (`flag` names the option) that sits in `out_dir` under a fragment
+/// name. Compared by normalized directory, so `out/../out/x-002.hwp` is the same place.
+fn reject_report_named_like_fragment(
+    flag: &str,
+    report_path: &Path,
+    out_dir: &Path,
+    stem: &str,
+    extension: &str,
+) -> anyhow::Result<()> {
+    let Some(name) = report_path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(());
+    };
+    let report_dir = report_path.parent().unwrap_or(Path::new(""));
+    let same_dir = crate::commands::convert::normalize_for_alias_compare(report_dir)
+        == crate::commands::convert::normalize_for_alias_compare(out_dir);
+    // Exact case on purpose. The cleanup that deletes stale fragments compares names exactly,
+    // so only an exact-case name is at risk from it. A report that is the SAME FILE as a
+    // fragment of this run in another case (`SOURCE-001.HWPX` beside `source-001.hwpx`, on a
+    // volume that folds case) is a different hazard, and the case-folded alias key refuses it
+    // before anything is staged.
+    if same_dir && is_fragment_file_name(name, stem, extension) {
+        anyhow::bail!(
+            "{flag} 파일 이름 '{name}'이(가) 분할 조각 이름({stem}-NNN.{extension})과 같은 형식입니다 \
+             — 조각을 덮어쓰거나 조각으로 오인되어 다음 실행에서 지워질 수 있으니 다른 이름을 지정하세요"
+        );
+    }
+    Ok(())
+}
+
 /// Structured outcome of one split run: the published fragment paths plus the
 /// write report, returned so the MCP `hwp_split` tool can report both without
 /// re-scanning the output directory.
 pub(crate) struct SplitSummary {
     pub fragments: Vec<PathBuf>,
     pub report: WriteReport,
+    /// The `hwp-range-extraction-v1` report of a range run, whether or not `--range-report`
+    /// also wrote it to disk. `None` for section and page splits.
+    pub range: Option<serde_json::Value>,
+}
+
+/// The `hwp-range-extraction-v1` report: what was selected, against which source, where each
+/// kept object went, and what happened to every binary stream. Closed and content-free: it
+/// carries addresses, hashes, stream names and the KIND of each anchor, never document text. An
+/// anchor's own text (`heading:` text, a bookmark name) is not echoed, so what the caller typed
+/// to find a paragraph cannot leak the paragraph's content into a file or an MCP reply; the
+/// anchor is identified by its kind and by the address it resolved to.
+fn range_report_json(
+    selector: &hwp_convert::document_split::RangeSelector,
+    source_sha256: &str,
+    fragment_sha256: &str,
+    extracted: &hwp_convert::document_split::RangeOutcome,
+) -> serde_json::Value {
+    use hwp_convert::document_split::AddressKind;
+    let addresses: Vec<serde_json::Value> = extracted
+        .address_map
+        .iter()
+        .map(|address| match address.kind {
+            AddressKind::Paragraph => serde_json::json!({
+                "kind": "paragraph",
+                "source": {"section": address.source.0, "paragraph": address.source.1},
+                "output": {"section": address.output.0, "paragraph": address.output.1},
+            }),
+            AddressKind::Table => serde_json::json!({
+                "kind": "table",
+                "source": {
+                    "section": address.source.0,
+                    "paragraph": address.source.1,
+                    "table": address.source_table,
+                },
+                "output": {
+                    "section": address.output.0,
+                    "paragraph": address.output.1,
+                    "table": address.output_table,
+                },
+            }),
+        })
+        .collect();
+    serde_json::json!({
+        "contract": "hwp-range-extraction-v1",
+        "schema_version": "1.0",
+        "source_sha256": source_sha256,
+        "fragment_sha256": fragment_sha256,
+        "selection": {
+            "from_kind": selector.start.kind(),
+            "to_kind": selector.end.as_ref().map(|anchor| anchor.kind()),
+            "end_inclusive": selector.end_inclusive,
+            "section": extracted.section,
+            "first_paragraph": extracted.start,
+            "end_paragraph": extracted.end,
+        },
+        "addresses": addresses,
+        "resources": {
+            "kept": extracted.resources.kept,
+            "kept_unverified": extracted.resources.kept_unverified,
+            "excluded": extracted.resources.excluded,
+            "dropped_by_format": extracted.resources.dropped_by_format,
+            "unverified_sites": extracted
+                .resources
+                .unverified
+                .iter()
+                .map(|site| serde_json::json!({"code": site.code, "at": site.at}))
+                .collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// SHA-256 of `input`'s bytes.
+fn hash_input(input: &Path) -> anyhow::Result<String> {
+    let bytes = std::fs::read(input)
+        .with_context(|| format!("입력 파일을 읽을 수 없습니다: {}", input.display()))?;
+    Ok(hwp_convert::document_split::source_sha256(&bytes))
+}
+
+/// Runs the path-based loader between two hashes and refuses differing snapshots.
+/// This is not an in-memory snapshot: an A-B-A replacement during parsing can evade the
+/// check. The public readers take paths, so callers must keep the source stable until done.
+fn load_with_stable_hash<T>(
+    input: &Path,
+    load: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<(T, String)> {
+    let before = hash_input(input)?;
+    let loaded = load()?;
+    let after = hash_input(input)?;
+    if before != after {
+        anyhow::bail!(
+            "입력 파일이 읽는 도중 바뀌었습니다: {} — 파일이 더 이상 바뀌지 않을 때 다시 실행하세요",
+            input.display()
+        );
+    }
+    Ok((loaded, before))
 }
 
 /// `hwp split` entry point.
@@ -193,6 +319,7 @@ pub fn run(
     input: &Path,
     out_dir: &Path,
     pages: &[String],
+    range: Option<RangeRequest>,
     strict: bool,
     loss_report: Option<&Path>,
     password: PasswordArgs,
@@ -202,6 +329,7 @@ pub fn run(
         input,
         out_dir,
         pages,
+        range.as_ref(),
         strict,
         loss_report,
         &LoadOptions {
@@ -209,6 +337,41 @@ pub fn run(
         },
     )?;
     Ok(())
+}
+
+/// A typed range request: `--from`/`--to`/`--end-exclusive`/`--source-sha256`/`--range-report`
+/// as the CLI and the MCP tool receive them, before any of it is parsed.
+#[derive(Debug, Clone, Default)]
+pub struct RangeRequest {
+    pub from: String,
+    pub to: Option<String>,
+    pub end_exclusive: bool,
+    pub source_sha256: Option<String>,
+    pub report: Option<PathBuf>,
+}
+
+/// Parses `heading:<text>`, `bookmark:<name>` or `at:<section>.<paragraph>`. A value with no
+/// recognized prefix is refused by name rather than guessed to be a heading, because a typo in
+/// the prefix would otherwise silently select by text.
+fn parse_anchor(value: &str) -> anyhow::Result<hwp_convert::document_split::RangeAnchor> {
+    use hwp_convert::document_split::RangeAnchor;
+    if let Some(text) = value.strip_prefix("heading:") {
+        return Ok(RangeAnchor::Heading(text.to_string()));
+    }
+    if let Some(name) = value.strip_prefix("bookmark:") {
+        return Ok(RangeAnchor::Bookmark(name.to_string()));
+    }
+    if let Some(address) = value.strip_prefix("at:") {
+        let parsed = address.split_once('.').and_then(|(section, paragraph)| {
+            Some((section.trim().parse().ok()?, paragraph.trim().parse().ok()?))
+        });
+        if let Some((section, paragraph)) = parsed {
+            return Ok(RangeAnchor::Address { section, paragraph });
+        }
+    }
+    anyhow::bail!(
+        "잘못된 범위 지점: '{value}' (허용 형식: heading:<제목>, bookmark:<이름>, at:<구역>.<문단>) — 예: --from \"heading:신청서\""
+    )
 }
 
 /// The split itself, with the password already resolved. Split out of [`run`]
@@ -220,6 +383,7 @@ pub(crate) fn execute(
     input: &Path,
     out_dir: &Path,
     pages: &[String],
+    range: Option<&RangeRequest>,
     strict: bool,
     loss_report: Option<&Path>,
     options: &LoadOptions<'_>,
@@ -242,22 +406,77 @@ pub(crate) fn execute(
     // output directory) — an unguarded report write would silently overwrite
     // the input with JSON. Same rejection merge applies, before any work.
     if let Some(report_path) = loss_report {
-        crate::commands::merge::reject_loss_report_aliases(
+        crate::commands::merge::reject_report_aliases(
+            "--loss-report",
             report_path,
             &[input.to_path_buf()],
             out_dir,
         )?;
     }
 
-    let document = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+    // The path-based readers are bracketed by hashes; differing snapshots refuse the run.
+    // Keep the input stable: load_with_stable_hash documents the A-B-A replacement limit.
+    let (document, source_sha256) = if range.is_some() {
+        load_with_stable_hash(input, || {
+            load_document_with_options(input, options).map_err(anyhow::Error::new)
+        })?
+    } else {
+        (
+            load_document_with_options(input, options).map_err(anyhow::Error::new)?,
+            String::new(),
+        )
+    };
 
-    let outcome: SplitOutcome = if pages.is_empty() {
+    // The range report is a second output of the same transaction, so it gets the same alias
+    // guard the loss report does, before any work.
+    let mut range_extraction = None;
+    if let Some(request) = range {
+        if let Some(report_path) = &request.report {
+            crate::commands::merge::reject_report_aliases(
+                "--range-report",
+                report_path,
+                &[input.to_path_buf()],
+                out_dir,
+            )?;
+            // Two reports on one path would publish one over the other without a word, and the
+            // loss ledger is written first, so the range report would silently replace it.
+            if let Some(loss_path) = loss_report
+                && crate::commands::convert::normalize_for_alias_compare(report_path)
+                    == crate::commands::convert::normalize_for_alias_compare(loss_path)
+            {
+                anyhow::bail!(
+                    "--range-report와 --loss-report가 같은 경로입니다: {} — 서로 다른 파일을 지정하세요",
+                    report_path.display()
+                );
+            }
+        }
+        // Parse and resolve everything first: a bad anchor, a stale hash, an out-of-order end
+        // or a lost resource refuses here, before a single file is built or written.
+        let selector = hwp_convert::document_split::RangeSelector {
+            start: parse_anchor(&request.from)?,
+            end: request.to.as_deref().map(parse_anchor).transpose()?,
+            end_inclusive: !request.end_exclusive,
+            source_sha256: request.source_sha256.clone(),
+        };
+        let extracted =
+            hwp_convert::document_split::extract_range(&document, &source_sha256, &selector)
+                .map_err(|error| anyhow::anyhow!("범위 추출 실패: {error}"))?;
+        range_extraction = Some((selector, source_sha256, extracted));
+    }
+
+    let outcome: SplitOutcome = if let Some((_, _, extracted)) = &range_extraction {
+        SplitOutcome {
+            fragments: vec![extracted.fragment.clone()],
+            roundings: Vec::new(),
+        }
+    } else if pages.is_empty() {
         hwp_convert::document_split::split_sections(&document)
+            .map_err(|error| anyhow::anyhow!("분할 실패: {error}"))?
     } else {
         let ranges = parse_page_ranges(pages)?;
         hwp_convert::document_split::split_page_ranges(&document, &ranges)
-    }
-    .map_err(|error| anyhow::anyhow!("분할 실패: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("분할 실패: {error}"))?
+    };
     print_rounding_lines(&outcome.roundings);
 
     let destinations: Vec<PathBuf> = (1..=outcome.fragments.len())
@@ -265,13 +484,47 @@ pub(crate) fn execute(
         .collect();
 
     // Stem-collision precheck before any staging (T-03-08): every fragment
-    // destination must not alias the input or the loss-report path.
+    // destination must not alias the input, the loss-report path or the range-report path.
+    // The shared publish step only compares absolute paths, which keep `..`, so a report path
+    // spelled `out/../out/<stem>-001.hwpx` would otherwise replace the fragment with JSON and
+    // still succeed. The comparison here canonicalizes, like the report guards above.
     let mut alias_targets: Vec<&Path> = vec![input];
     if let Some(report_path) = loss_report {
         alias_targets.push(report_path);
     }
+    if let Some(report_path) = range.and_then(|request| request.report.as_deref()) {
+        alias_targets.push(report_path);
+    }
+    if let Some(report_path) = loss_report {
+        reject_report_named_like_fragment(
+            "--loss-report",
+            report_path,
+            out_dir,
+            &stem,
+            &extension,
+        )?;
+    }
+    if let Some(report_path) = range.and_then(|request| request.report.as_deref()) {
+        reject_report_named_like_fragment(
+            "--range-report",
+            report_path,
+            out_dir,
+            &stem,
+            &extension,
+        )?;
+    }
     for destination in &destinations {
         crate::commands::output::reject_output_aliases(destination, &alias_targets)?;
+        for target in &alias_targets {
+            if crate::commands::convert::normalize_for_alias_compare(destination)
+                == crate::commands::convert::normalize_for_alias_compare(target)
+            {
+                anyhow::bail!(
+                    "출력 조각이 보고서·입력 경로와 같은 파일입니다: {} — 서로 다른 경로를 지정하세요",
+                    destination.display()
+                );
+            }
+        }
     }
 
     std::fs::create_dir_all(out_dir)
@@ -290,6 +543,14 @@ pub(crate) fn execute(
                 fragment,
                 &output_document,
             ));
+        // The closure decided which streams to carry, but the output format's writer decides
+        // which it emits (HWP5 writes only streams its BIN_DATA table names). Compare with what
+        // the published bytes read back as, so the report never lists a stream the file lacks.
+        if let Some((_, _, extracted)) = range_extraction.as_mut() {
+            extracted
+                .resources
+                .reconcile_with_output(&fragment.bin_streams, &output_document.bin_streams);
+        }
         fragment_bytes.push((destination.clone(), bytes));
     }
 
@@ -308,8 +569,14 @@ pub(crate) fn execute(
     // D-15: write the loss report before any strict refusal, so the evidence
     // for a failed run survives on disk even when the run itself does not
     // publish.
+    // The loss report is its own transaction, so the set published below cannot compare against
+    // it by itself. Its identity is recorded and handed to that publish, which refuses to
+    // replace it: two spellings of one file (Unicode normalization, case) would otherwise let
+    // the range report overwrite the ledger without a word.
+    let mut published_alone = Vec::new();
     if let Some(report_path) = loss_report {
         crate::commands::convert::write_loss_report(report_path, &report.preservation)?;
+        published_alone.push(crate::commands::output::PublishedFile::record(report_path)?);
     }
     // #174: the ledger keeps D-08 roundings for audit, but --strict and the
     // loss summary judge only genuine preservation losses.
@@ -322,9 +589,28 @@ pub(crate) fn execute(
         eprintln!("{line}");
     }
 
+    // A range report is published in the SAME transaction as the fragment: a reader that finds
+    // the fragment finds the addresses that explain it, and a failed publish leaves neither.
+    let mut range_summary = None;
+    if let (Some(request), Some((selector, source_sha256, extracted))) = (range, &range_extraction)
+    {
+        let fragment_sha256 = hwp_convert::document_split::source_sha256(&fragment_bytes[0].1);
+        let report_json = range_report_json(selector, source_sha256, &fragment_sha256, extracted);
+        if let Some(report_path) = &request.report {
+            let mut text = serde_json::to_string_pretty(&report_json)?;
+            text.push('\n');
+            fragment_bytes.push((report_path.clone(), text.into_bytes()));
+        }
+        range_summary = Some(report_json);
+    }
+
     // D-16: publish the whole fragment set in one transaction — never per
     // member inside the build loop above, which has no outer transaction.
-    crate::commands::output::write_validated_files(&fragment_bytes, Some(input))?;
+    crate::commands::output::write_validated_files_avoiding(
+        &fragment_bytes,
+        Some(input),
+        &published_alone,
+    )?;
     // #177: only after the publish succeeded, drop fragments a previous,
     // larger run left behind.
     remove_stale_fragments(out_dir, &stem, &extension, &destinations);
@@ -338,7 +624,68 @@ pub(crate) fn execute(
     Ok(SplitSummary {
         fragments: destinations,
         report,
+        range: range_summary,
     })
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn fragment_names_are_matched_in_exact_case() {
+        // The stale-fragment cleanup deletes what matches, so it must not widen to other cases.
+        assert!(is_fragment_file_name("source-001.hwpx", "source", "hwpx"));
+        assert!(is_fragment_file_name("source-17.hwpx", "source", "hwpx"));
+        assert!(!is_fragment_file_name("SOURCE-001.HWPX", "source", "hwpx"));
+        assert!(!is_fragment_file_name("Source-001.hwpx", "source", "hwpx"));
+        assert!(!is_fragment_file_name("source-x.hwpx", "source", "hwpx"));
+        assert!(!is_fragment_file_name("source-.hwpx", "source", "hwpx"));
+        assert!(!is_fragment_file_name("other-001.hwpx", "source", "hwpx"));
+    }
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hwp-split-hash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    #[test]
+    fn a_stable_file_is_loaded_with_its_own_hash() {
+        let path = temp("stable.bin");
+        std::fs::write(&path, b"abc").unwrap();
+        let (value, hash) = load_with_stable_hash(&path, || Ok(7)).unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(hash, hwp_convert::document_split::source_sha256(b"abc"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_file_that_changes_while_it_is_parsed_is_refused() {
+        let path = temp("changing.bin");
+        std::fs::write(&path, b"before").unwrap();
+        let result = load_with_stable_hash(&path, || {
+            std::fs::write(&path, b"after").unwrap();
+            Ok(())
+        });
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("바뀌었습니다"), "{error}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_missing_file_names_the_path() {
+        let path = temp("missing-never-created.bin");
+        let error = load_with_stable_hash(&path, || Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing-never-created.bin"), "{error}");
+    }
 }
 
 #[cfg(test)]
@@ -374,7 +721,16 @@ mod tests {
         let out_dir = dir.join("frag");
         write_three_section_hwp(&input);
 
-        run(&input, &out_dir, &[], false, None, PasswordArgs::default()).unwrap();
+        run(
+            &input,
+            &out_dir,
+            &[],
+            None,
+            false,
+            None,
+            PasswordArgs::default(),
+        )
+        .unwrap();
 
         assert!(out_dir.join("in-001.hwp").exists());
         assert!(out_dir.join("in-002.hwp").exists());
@@ -396,7 +752,16 @@ mod tests {
         let doc = hwp_convert::from_markdown("단일 구역\n");
         crate::commands::convert::write_hwp(&doc, &input, false).unwrap();
 
-        run(&input, &out_dir, &[], false, None, PasswordArgs::default()).unwrap();
+        run(
+            &input,
+            &out_dir,
+            &[],
+            None,
+            false,
+            None,
+            PasswordArgs::default(),
+        )
+        .unwrap();
 
         assert!(out_dir.join("in-001.hwp").exists());
         assert!(!out_dir.join("in-002.hwp").exists());
@@ -451,6 +816,7 @@ mod tests {
             &input,
             &out_dir,
             &[],
+            None,
             false,
             Some(input.as_path()),
             PasswordArgs::default(),
@@ -558,7 +924,16 @@ mod tests {
         let out_dir = dir.join("frag");
         write_three_section_hwp(&input);
 
-        run(&input, &out_dir, &[], false, None, PasswordArgs::default()).unwrap();
+        run(
+            &input,
+            &out_dir,
+            &[],
+            None,
+            false,
+            None,
+            PasswordArgs::default(),
+        )
+        .unwrap();
 
         for name in ["in-001.hwp", "in-002.hwp", "in-003.hwp"] {
             assert!(

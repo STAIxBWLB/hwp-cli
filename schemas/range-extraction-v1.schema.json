@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/range-extraction-v1.schema.json",
+  "title": "hwp-range-extraction-v1",
+  "description": "The report `hwp split --from ... --range-report <file>` publishes with the extracted fragment, and the `range` field of the MCP tool `hwp_split`: which source the selection was made against, which range was taken, where every kept body paragraph and table landed in the fragment, and which binary streams the fragment kept or left out. It carries addresses, hashes and stream names, never document text. The report is closed: a field added, removed or renamed is a new major schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "schema_version",
+    "source_sha256",
+    "fragment_sha256",
+    "selection",
+    "addresses",
+    "resources"
+  ],
+  "properties": {
+    "contract": {
+      "const": "hwp-range-extraction-v1",
+      "description": "Names the contract so a consumer can tell this report from the others."
+    },
+    "schema_version": {
+      "const": "1.0",
+      "description": "Version of this contract."
+    },
+    "source_sha256": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 checked before and after path-based parsing. A differing hash is refused, including a mismatch with --source-sha256. The source must remain stable: an A-B-A replacement during parsing is not detected."
+    },
+    "fragment_sha256": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 of the published fragment file, so the report and the fragment cannot be paired by accident."
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from_kind",
+        "to_kind",
+        "end_inclusive",
+        "section",
+        "first_paragraph",
+        "end_paragraph"
+      ],
+      "description": "Content-free: the anchors are identified by kind and by the address they resolved to, never by their text, because a heading or bookmark name is document text.",
+      "properties": {
+        "from_kind": {
+          "enum": [
+            "heading",
+            "bookmark",
+            "address"
+          ],
+          "description": "How the start anchor was given."
+        },
+        "to_kind": {
+          "enum": [
+            "heading",
+            "bookmark",
+            "address",
+            null
+          ],
+          "description": "How the end anchor was given, or null when the range ran to the end of the start's section."
+        },
+        "end_inclusive": {
+          "type": "boolean",
+          "description": "Whether the end anchor's paragraph is part of the range."
+        },
+        "section": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based section of the source the range was taken from."
+        },
+        "first_paragraph": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based source body paragraph the range starts at (included)."
+        },
+        "end_paragraph": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "0-based source body paragraph just past the range (excluded), so the range is `[first_paragraph, end_paragraph)`."
+        }
+      }
+    },
+    "addresses": {
+      "type": "array",
+      "description": "Every kept source body paragraph in source order, each followed by the tables it holds. A table's ordinal is its position in document order, nested tables included (the numbering `hwp edit --set-cell` uses), counted in the source and, from zero, in the fragment. A table inside a caption is kept in the fragment but has no entry: `--set-cell` gives it no ordinal, so there is nothing to map.",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/paragraph_address"
+          },
+          {
+            "$ref": "#/$defs/table_address"
+          }
+        ]
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kept",
+        "kept_unverified",
+        "excluded",
+        "dropped_by_format",
+        "unverified_sites"
+      ],
+      "description": "The closure is conservative: a binary stream is excluded only when the whole fragment, header included, provably does not reference it. A stream is never dropped because a reference to it could not be read.",
+      "properties": {
+        "kept": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Binary streams the fragment provably references (a picture, or a binaryItemIDRef attribute in a raw-preserved object), in source order."
+        },
+        "kept_unverified": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Binary streams the fragment carries only because it holds a reference site the closure cannot resolve, so their absence from use cannot be proven. Empty when `unverified_sites` is empty."
+        },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Binary streams of the source the fragment provably does not reference and does not carry, in source order. A deliberate exclusion, never a loss."
+        },
+        "dropped_by_format": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Binary streams the closure decided to carry that the output format's writer did not emit (for HWP5, a stream no BIN_DATA table row names). They are not in `kept` or `kept_unverified`, which list only streams the published file holds."
+        },
+        "unverified_sites": {
+          "type": "array",
+          "description": "Places whose binary references cannot be proven absent or fully resolved, including unreadable XML and raw records. Known layouts may be probed; unknown or truncated content is never interpreted by guessing.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "at"
+            ],
+            "properties": {
+              "code": {
+                "enum": [
+                  "border_fill_image",
+                  "bullet_image",
+                  "raw_shape",
+                  "raw_ole",
+                  "raw_picture",
+                  "raw_video",
+                  "parameter_set",
+                  "raw_xml_unparsed",
+                  "raw_record_unparsed",
+                  "carried_part_unread"
+                ],
+                "description": "Why the site is unresolved: an image fill in a border fill, a bullet record that may be an image bullet, a raw HWP5 shape component, OLE object, picture component or video record, a raw Parameter Set that may hold a BinData item, unclassified raw record tags, raw XML that is structurally incomplete or contains entities/attributes it cannot read, or a package part carried verbatim that is not readable XML."
+              },
+              "at": {
+                "type": "string",
+                "description": "Address in the FRAGMENT: `header/border_fills/N`, `header/bullets/N`, `header/extras/N`, `sS/pP` (section and top-level body paragraph) or `package/NAME` (a package part carried verbatim)."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "paragraph_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section",
+        "paragraph"
+      ],
+      "properties": {
+        "section": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "paragraph": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "table_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section",
+        "paragraph",
+        "table"
+      ],
+      "properties": {
+        "section": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "paragraph": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "table": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "paragraph_address": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "output"
+      ],
+      "properties": {
+        "kind": {
+          "const": "paragraph"
+        },
+        "source": {
+          "$ref": "#/$defs/paragraph_position"
+        },
+        "output": {
+          "$ref": "#/$defs/paragraph_position"
+        }
+      }
+    },
+    "table_address": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "output"
+      ],
+      "properties": {
+        "kind": {
+          "const": "table"
+        },
+        "source": {
+          "$ref": "#/$defs/table_position"
+        },
+        "output": {
+          "$ref": "#/$defs/table_position"
+        }
+      }
+    }
+  }
+}

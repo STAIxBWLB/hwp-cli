@@ -25,9 +25,30 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
 - `hwp merge {inputs...} -o {out}` / `hwp_merge` — concatenate two or more documents, one Section
   per input in argument order. Page, footnote and outline numbering keep each input's own
   start/continue settings, so re-check them afterwards.
+  Later HWPX picture item references keep their own source meaning; reused ids do
+  not make a missing target resolve to another input's image. The merge retains the first
+  manifest's reference namespace; later inputs cannot supply its declared missing targets.
+  Native output reports removed images as `BinaryAssetRemoved`;
+  use `--strict` to refuse publication when that loss is unacceptable.
 - `hwp split {in} --out-dir {dir}` / `hwp_split` — one fragment per Section by default; `--pages`
   splits on page ranges instead, estimated from the layout cache Hancom saved rather than
-  recomputed, so it may not match Hancom's own pagination.
+  recomputed, so it may not match Hancom's own pagination. `--from`/`--to` (`from`/`to` in
+  `hwp_split`) extract one typed range instead, anchored on a heading (the paragraph's own text as `hwp cat` prints it), a bookmark or a
+  `section.paragraph` address, with the binaries the range uses. The `hwp-range-extraction-v1`
+  report of where each paragraph and table went and which binaries were kept, kept unverified,
+  excluded or dropped by the output format (HWP5 writes only the binaries its BIN_DATA table
+  names) is written only when you pass `--range-report {file.json}`; `hwp_split` always returns
+  it in its `range` field. A binary is excluded only when the whole fragment provably does not use
+  it: when the fragment holds a reference the tool cannot read (an image fill, a bullet that may be an
+  image bullet, a raw shape, OLE or video object, a carried package part that is not readable XML), every binary travels and the report
+  lists those sites. This includes settings/version XML, unreadable XML attributes, truncated
+  reference records and unknown raw tags. Keep the input stable during extraction: the source
+  hash checks before and after parsing cannot detect an A-B-A file replacement.
+  The report is content-free: anchors appear as a kind and a resolved address,
+  never as the heading or bookmark text. The fragment carries the section's page, column, header,
+  footer, page-number and new-number controls. When the range starts after the section's first
+  paragraph, a hide or odd/even adjust control on that paragraph acts on its own source page, so
+  it stays behind; a range that starts at the first paragraph takes it whole.
 - `hwp compare {a} {b}` / `hwp_compare` — paragraph and structural differences between two
   documents, leaving both untouched. This is not `hwp diff`, which compares a render against a
   Hancom reference PNG.
@@ -101,8 +122,10 @@ format constraints and refusal diagnostics still apply.
 ### The preservation ledger
 
 `convert`, `merge` and `split` record every item they could not preserve in the typed
-`hwp-preservation-report-v1` ledger. On the CLI it goes to `--loss-report {file.json}`; over MCP it
-comes back in the `preservation` field of every `hwp_merge` and `hwp_split` response. `--strict`
+`hwp-preservation-report-v1` ledger. On the CLI the ledger is written only when you pass
+`--loss-report {file.json}` (the command then prints a one-line summary on stderr when something
+was lost); over MCP it comes back in the `preservation` field of every `hwp_merge` and `hwp_split`
+response. `--strict`
 refuses to publish when the ledger is non-empty, but it is opt-in on both commands rather than the
 default: a merge always drops the package passthrough of every input after the first, so a
 fail-closed default would refuse even the most ordinary merge. Read the ledger instead of assuming
