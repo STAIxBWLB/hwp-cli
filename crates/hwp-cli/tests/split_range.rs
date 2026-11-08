@@ -8,6 +8,7 @@ use std::process::{Command, Output};
 use hwp_model::Document;
 use serde_json::Value;
 
+#[allow(dead_code)] // This test reuses the projection and comparison layers only.
 #[path = "common/original_form_contract.rs"]
 mod contract;
 #[path = "common/fixture_skip.rs"]
