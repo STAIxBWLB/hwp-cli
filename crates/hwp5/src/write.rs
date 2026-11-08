@@ -1985,6 +1985,10 @@ fn next_synthesized_instance_id(doc: &Document) -> u32 {
                     for list in &g.paragraph_lists {
                         list.paragraphs.iter().for_each(|q| walk(q, next));
                     }
+                    // The reader keeps a shape's caption apart from its paragraph lists.
+                    if let Some(caption) = &g.caption {
+                        caption.paragraphs.iter().for_each(|q| walk(q, next));
+                    }
                 }
                 _ => {}
             }

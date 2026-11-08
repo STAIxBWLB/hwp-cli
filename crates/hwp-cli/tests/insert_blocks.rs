@@ -2120,7 +2120,13 @@ fn content_inside_an_inserted_table_cell_is_measured_against_that_cell() {
             let diagnostic = fixture.refuse(
                 &source,
                 &format!("wide-{label}"),
-                json!([insert(at(&before, ANCHOR), "after", "create", json!({}), blocks)]),
+                json!([insert(
+                    at(&before, ANCHOR),
+                    "after",
+                    "create",
+                    json!({}),
+                    blocks
+                )]),
                 false,
             );
             assert!(
@@ -2134,7 +2140,13 @@ fn content_inside_an_inserted_table_cell_is_measured_against_that_cell() {
         let (output, run) = fixture.edit(
             &source,
             "fits",
-            json!([insert(at(&before, ANCHOR), "after", "create", json!({}), fits)]),
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                fits
+            )]),
             false,
         );
         success(run, "an image narrower than its cell");
@@ -2155,14 +2167,26 @@ fn spanned_cells_are_measured_by_their_column_span() {
     let diagnostic = fixture.refuse(
         &fixture.base.clone(),
         "span-wide",
-        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), table(70))]),
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table(70)
+        )]),
         false,
     );
     assert!(diagnostic.contains("layout_overflow"), "{diagnostic}");
     let (output, run) = fixture.edit(
         &fixture.base,
         "span-fits",
-        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), table(50))]),
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table(50)
+        )]),
         false,
     );
     success(run, "an image inside the span width");
@@ -2243,7 +2267,12 @@ fn columned(fixture: &Fixture, count: u16) -> PathBuf {
             // same-width in bit 12) then the gap (spec table 138 layout, read back by
             // `parse_coldef`), padded to the 12 bytes the writer's own default uses.
             let attr: u16 = (count << 2) | (1 << 12);
-            g.data = [attr.to_le_bytes().as_slice(), &2835i16.to_le_bytes(), &[0u8; 8]].concat();
+            g.data = [
+                attr.to_le_bytes().as_slice(),
+                &2835i16.to_le_bytes(),
+                &[0u8; 8],
+            ]
+            .concat();
         }
     }
     let path = fixture.path("columned");
@@ -2273,7 +2302,13 @@ fn blocks_are_measured_against_the_target_column_of_a_multi_column_section() {
             let diagnostic = fixture.refuse(
                 &source,
                 &format!("column-wide-{label}"),
-                json!([insert(at(&before, ANCHOR), "after", "create", json!({}), blocks.clone())]),
+                json!([insert(
+                    at(&before, ANCHOR),
+                    "after",
+                    "create",
+                    json!({}),
+                    blocks.clone()
+                )]),
                 false,
             );
             assert!(
@@ -2284,7 +2319,13 @@ fn blocks_are_measured_against_the_target_column_of_a_multi_column_section() {
         let (output, run) = fixture.edit(
             &source,
             "column-fits",
-            json!([insert(at(&before, ANCHOR), "after", "create", json!({}), fits.clone())]),
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                fits.clone()
+            )]),
             false,
         );
         success(run, "a table narrower than the column");
@@ -2294,7 +2335,13 @@ fn blocks_are_measured_against_the_target_column_of_a_multi_column_section() {
         let (_, run) = fixture.edit(
             &fixture.base,
             "single-wide",
-            json!([insert(at(&single, ANCHOR), "after", "create", json!({}), wide_table.clone())]),
+            json!([insert(
+                at(&single, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                wide_table.clone()
+            )]),
             false,
         );
         success(run, "a 120 mm table in a single 170 mm column");

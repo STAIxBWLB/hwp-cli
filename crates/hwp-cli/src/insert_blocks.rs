@@ -112,6 +112,21 @@ fn scan_blocks(blocks: &[BlockSpec], found: &mut Referenced) -> Result<(), Strin
     Ok(())
 }
 
+/// Whether any block, at any table-cell depth, references `name` at `level`.
+fn uses_list_level(blocks: &[BlockSpec], name: &str, level: usize) -> bool {
+    blocks.iter().any(|block| match block {
+        BlockSpec::Paragraph {
+            list: Some(reference),
+            ..
+        } => reference.name == name && usize::from(reference.level) == level,
+        BlockSpec::Table { rows, .. } => rows
+            .iter()
+            .flat_map(|row| &row.cells)
+            .any(|cell| uses_list_level(&cell.blocks, name, level)),
+        _ => false,
+    })
+}
+
 fn referenced(request: &InsertBlocks) -> Result<Referenced, String> {
     if request.blocks.is_empty() || request.blocks.len() > MAX_BLOCKS {
         return Err(format!(
@@ -149,6 +164,32 @@ fn hwpunit_to_mm(units: i32) -> f32 {
     (f64::from(units) * 25.4 / f64::from(hwp_model::HwpUnit::PER_INCH)) as f32
 }
 
+/// Width in HWPUNIT of one text column of `section`, given its full body width: the section's
+/// first column definition, split the way `hwp-render` splits it (equal columns share the body
+/// width less the gaps). Columns of unequal width list their own widths; the position a block
+/// lands in is not known here, so the narrowest one is the safe measure.
+fn column_width_hwp(section: &hwp_model::Section, body: i32) -> i32 {
+    let def = section
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            Control::Generic(generic) => generic.column_def.as_ref(),
+            _ => None,
+        });
+    let Some(def) = def else { return body };
+    let count = i32::from(def.count.max(1));
+    if count == 1 {
+        return body;
+    }
+    if !def.same_width
+        && let Some(narrowest) = def.widths.iter().copied().filter(|w| *w > 0).min()
+    {
+        return narrowest;
+    }
+    (body - def.gap.max(0).saturating_mul(count - 1)) / count
+}
+
 /// Limit this phase to the body and table cells, and return the width in mm of the text column
 /// or table cell the blocks will land in. Opaque Generic objects need a writer regeneration
 /// proof, not merely a readable address into their extracted model lists.
@@ -162,9 +203,8 @@ fn check_target(doc: &Document, target: &SegmentPath) -> Result<f32, String> {
             .section_def()
             .and_then(|def| def.page)
             .map_or(DEFAULT_CONTAINER_MM, |page| {
-                hwpunit_to_mm(
-                    page.width.0 - page.margin_left.0 - page.margin_right.0 - page.gutter.0,
-                )
+                let body = page.width.0 - page.margin_left.0 - page.margin_right.0 - page.gutter.0;
+                hwpunit_to_mm(column_width_hwp(section, body))
             });
     let mut paragraph = section
         .paragraphs
@@ -275,12 +315,7 @@ fn check_hwp_lists(
                     default.start
                 ));
             }
-            let used = request.blocks.iter().any(|block| {
-                matches!(block,
-                    BlockSpec::Paragraph { list: Some(reference), .. }
-                        if reference.name == *name && usize::from(reference.level) == index
-                )
-            });
+            let used = uses_list_level(&request.blocks, name, index);
             if used
                 && hwp5::write::DEFAULT_NUMBERING_FORMATS.get(index)
                     != Some(&hwp_model::NumFmt::Digit)
