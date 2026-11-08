@@ -1,19 +1,19 @@
-//! LineSegLayouter — 파일에 저장된 줄 배치(PARA_LINE_SEG)를 복원해
-//! DisplayList를 만든다.
+//! LineSegLayouter restores saved line layout (PARA_LINE_SEG)
+//! into a DisplayList.
 //!
-//! 실측으로 확정한 좌표 해석 (U1):
-//! - `v_pos`: 페이지 본문 영역 상단 기준, 페이지마다 0으로 리셋
-//! - 베이스라인 y = body_top + v_pos + baseline_gap
-//! - `col_start`/`seg_width`: 본문 영역 왼쪽 기준
-//! - 페이지 경계: v_pos가 직전 줄보다 작아지면 새 페이지 (v1 휴리스틱)
+//! Coordinate interpretation established by measurement (U1):
+//! - `v_pos`: relative to the page body top; resets to zero on each page.
+//! - Baseline y = body_top + v_pos + baseline_gap.
+//! - `col_start`/`seg_width`: relative to the body area's left edge.
+//! - Page boundary: a decreasing v_pos starts a new page (v1 heuristic).
 //!
-//! 불완전한 파일 대응 (실무 hwpx에서 실측):
-//! - 도구 생성 파일은 문단당 lineseg 1개 + 문단당 1줄 가정의 v_pos를
-//!   기록한다 → seg 폭에서 그리디 줄바꿈 + **흐름 커서**로 보정한다.
-//!   베이스라인 = max(저장된 v_pos 기반, 직전 콘텐츠 하단 기반) —
-//!   완전한 파일에서는 저장값이 항상 크므로 무손실, 불완전 파일에서는
-//!   겹침만 아래로 밀어낸다.
-//! - lineseg가 아예 없는 문단은 본문 폭 기준 폴백 배치.
+//! Incomplete-file handling, measured in real-world HWPX files:
+//! - Tool-generated files may save one lineseg per paragraph with v_pos
+//!   assuming one line. Wrap greedily at the segment width and use a flow cursor.
+//!   Baseline = max(saved-position baseline, previous content's bottom).
+//!   Complete files retain their saved positions because those are larger;
+//!   incomplete files only have overlapping content moved down.
+//! - Paragraphs without linesegs use fallback layout at the body width.
 
 use std::collections::HashSet;
 
@@ -31,7 +31,7 @@ use crate::segment_map::{SegmentMap, SegmentRecorder};
 use crate::shape::{InlineItem, shape_range_page};
 use crate::tab::TabStop;
 
-/// 인증 렌더가 레이아웃 생성 전에 적용하는 작업/메모리 예산.
+/// Work and memory budgets applied before certification layout begins.
 pub const CERTIFICATION_MAX_PAGES: usize = 4_096;
 pub const CERTIFICATION_MAX_DISPLAY_ITEMS: usize = 1_000_000;
 
@@ -337,14 +337,14 @@ fn preflight_layout_budget(doc: &Document, budget: &LayoutBudget) -> Result<(), 
     usage.finish_estimate(budget)
 }
 
-/// 기본 탭 간격 (40pt = 4000 HWPUNIT).
+/// Default tab interval (40pt = 4000 HWPUNIT).
 pub(crate) const TAB_INTERVAL_PT: f32 = 40.0;
 
-/// 연결 글상자 후보가 없을 때의 단 사이 가로 간격 근사값(pt).
+/// Approximate inter-column horizontal gap when no linked text-box candidate exists (pt).
 const COL_GAP_PT: f32 = 14.0;
 
-/// 저장 높이가 있는 행에서 실측 내용이 넘쳤다고 보고하는 최소 초과(pt).
-/// 반올림·잔여 advance 오차(줄당 0.1pt 수준)로 매 표마다 경고가 뜨지 않게 한다.
+/// Minimum measured overflow reported for a row with a stored height (pt).
+/// Avoid warnings on every table from rounding and residual advance errors (~0.1pt per line).
 const CELL_CONTENT_OVERFLOW_EPSILON_PT: f32 = 1.0;
 
 /// Pattern scale for tab-leader dashes, in pt.
@@ -365,17 +365,17 @@ const CELL_CONTENT_OVERFLOW_EPSILON_PT: f32 = 1.0;
 /// matches the resulting rhythm, not the mechanism.
 const LEADER_DASH_SCALE: f32 = 1.04;
 
-/// lineseg가 1개뿐인 문단을 "불완전한 캐시"로 판정하는 초과 배율.
+/// Overflow ratio that identifies a single-lineseg paragraph as an incomplete cache.
 ///
-/// 정품 줄은 seg 폭을 꽉 채우고, 우리 advance에는 한글과의 잔여 오차가 남아 조금 넘칠 수
-/// 있다(비공개 13쪽 실측: 초과 문단 2개, 463.3pt 폭에 각각 0.72%·1.52%). 이 정도로
-/// 재줄바꿈하면 줄이 늘어 쪽이 밀린다(13쪽 문서가 15쪽). 반대로 진짜 stub 캐시는 문단
-/// 전체가 한 줄에 들어 있어 수십 %~수백 % 넘치므로 여유를 둬도 걸린다. 글꼴 크기가 아니라
-/// 비율로 두어 좁은 셀에서 큰 글꼴이 과도한 여유를 얻지 않게 한다.
+/// Genuine lines fill their segment width; residual advance differences from Hangul can cause
+/// slight overflow (private 13-page measurement: two paragraphs, 0.72% and 1.52% over 463.3pt).
+/// Rewrapping these adds lines and shifts pages (13 pages became 15). Actual stub caches
+/// contain a whole paragraph on one line and overflow by tens to hundreds of percent.
+/// Use a ratio rather than font size so large fonts in narrow cells receive no excessive allowance.
 const CACHE_OVERFLOW_TOLERANCE: f32 = 1.05;
 
-/// 글상자 내부 문단을 단(컬럼)별 범위로 나눈다. 한 줄의 v_pos가 직전 줄보다 작아지면
-/// (한컴이 단 나누기로 흘린 것) 새 단으로 본다. 줄 배치 없는 문단은 현재 단에 둔다.
+/// Partition text-box paragraphs into column ranges. A decreasing line v_pos indicates
+/// Hangul flowed into a new column. Paragraphs without line layout stay in the current column.
 fn split_columns(paras: &[&Paragraph]) -> Vec<std::ops::Range<usize>> {
     let mut cols = Vec::new();
     let mut start = 0usize;
@@ -393,10 +393,10 @@ fn split_columns(paras: &[&Paragraph]) -> Vec<std::ops::Range<usize>> {
     cols
 }
 
-/// 연결 글상자의 이음단 위치(pt). 같은 폭·높이·세로오프셋을 갖고 더 오른쪽에 있는
-/// 떠 있는 gso 박스들을 가로 순으로 모은다(연결 글상자 = 다음 단).
+/// Continuation-column positions of linked text boxes (pt). Collect floating GSO boxes
+/// with equal width, height and vertical offset farther right, in horizontal order.
 fn continuation_columns(para: &Paragraph, base: &crate::gso::GsoBox) -> Vec<(f32, f32)> {
-    const TOL: i32 = 200; // 2pt 허용
+    const TOL: i32 = 200; // 2pt tolerance.
     let mut v: Vec<(f32, f32)> = para
         .controls
         .iter()
@@ -417,7 +417,7 @@ fn continuation_columns(para: &Paragraph, base: &crate::gso::GsoBox) -> Vec<(f32
     v
 }
 
-/// A4 기본값 (PAGE_DEF가 없는 비정상 문서 방어).
+/// A4 fallback for malformed documents without PAGE_DEF.
 fn default_page() -> PageDef {
     PageDef {
         width: HwpUnit(59528),
@@ -433,19 +433,19 @@ fn default_page() -> PageDef {
     }
 }
 
-/// 쪽 테두리 정의(PAGE_BORDER_FILL 14바이트, gc23 실측으로 확정한 레이아웃).
-/// 속성 u32(위치기준 bit0·머리말 bit1·꼬리말 bit2·채울영역 bit3-4) + gap u16×4
-/// (왼/오/위/아래, HWPUNIT16) + 테두리ID u16(1-기반, BORDER_FILL 참조).
+/// Page border definition (14-byte PAGE_BORDER_FILL; layout established by gc23 measurements).
+/// Attribute u32 (reference bit0, header bit1, footer bit2, fill area bits3-4), four u16 gaps
+/// (left/right/top/bottom, HWPUNIT16), then border ID u16 (one-based BORDER_FILL reference).
 struct PageBorderFill {
-    /// 위치기준 bit0: false=쪽(본문) 기준, true=종이 기준. 정품 실측 기본값=종이.
+    /// Reference bit0: false = page/body, true = paper. Measured genuine default: paper.
     paper_relative: bool,
-    /// gap 왼/오/위/아래 (HWPUNIT — 정품 기본 1417 ≈ 5mm).
+    /// Left/right/top/bottom gaps (HWPUNIT; genuine default 1417, approximately 5mm).
     gap: [u16; 4],
-    /// BORDER_FILL 참조 id(1-기반). 1 = 전 변 무테두리 관례.
+    /// One-based BORDER_FILL reference. By convention, 1 has no borders on any side.
     border_fill_id: u16,
 }
 
-/// PAGE_BORDER_FILL 14바이트 원문을 해석한다. 길이 부족이면 None.
+/// Parse the original 14-byte PAGE_BORDER_FILL payload; return None if too short.
 fn parse_page_border_fill(raw: &[u8]) -> Option<PageBorderFill> {
     if raw.len() < 14 {
         return None;
@@ -459,10 +459,10 @@ fn parse_page_border_fill(raw: &[u8]) -> Option<PageBorderFill> {
     })
 }
 
-/// 구역의 PAGE_BORDER_FILL 중 BOTH를 찾는다.
+/// Find the section's BOTH PAGE_BORDER_FILL entry.
 ///
-/// 데이터 소스: `SectionDef.page_border_fills_raw`(과제 1)를 소비한다. 등장 순서가
-/// 곧 BOTH/EVEN/ODD이므로 BOTH = 첫 원소다. EVEN/ODD 분기는 범위 밖(정품 표본 부재).
+/// Consume `SectionDef.page_border_fills_raw` (task 1). Entries occur in BOTH/EVEN/ODD order,
+/// so BOTH is the first. EVEN/ODD selection is out of scope without genuine samples.
 fn section_page_border_fill(section: &Section) -> Option<PageBorderFill> {
     let sd = section.section_def()?;
     let raw = sd.page_border_fills_raw.first()?;
@@ -656,7 +656,7 @@ impl PageNumberState {
                     None if control.data.len() < 6 => {
                         warnings.push_once(RenderIssueCode::PageControlPayloadOmitted, b"nwno");
                     }
-                    None => {} // PAGE 외 자동번호 재시작은 해당 번호 렌더러가 담당.
+                    None => {} // Non-PAGE automatic-number restarts belong to their respective number renderers.
                 },
                 _ => {}
             }
@@ -847,7 +847,7 @@ pub fn layout_document(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) -> DisplayList {
-    layout_document_inner(doc, store, warnings, &mut SegmentRecorder::disabled())
+    layout_document_inner(doc, store, warnings, &mut SegmentRecorder::disabled(), None)
 }
 
 /// Lays the document out **and** records where each source segment landed, as the
@@ -863,8 +863,38 @@ pub fn layout_document_with_segments(
     warnings: &mut RenderIssueAccumulator,
 ) -> (DisplayList, SegmentMap) {
     let mut rec = SegmentRecorder::new();
-    let list = layout_document_inner(doc, store, warnings, &mut rec);
+    let list = layout_document_inner(doc, store, warnings, &mut rec, None);
     (list, rec.finish())
+}
+
+/// Resolved first-line placement, relative to the page body.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BodyAnchor {
+    pub v_pos: i32,
+    /// Only the first line's own page move, never an earlier table continuation.
+    pub starts_page: bool,
+}
+
+/// Obtain body anchors from the same flow that plans floating-table fragments.
+/// The caller supplies cell caches and clears body caches before this measurement.
+pub(crate) fn synthesized_body_anchors(
+    doc: &Document,
+    store: &mut FontStore,
+) -> Vec<Vec<BodyAnchor>> {
+    let mut anchors: Vec<Vec<BodyAnchor>> = doc
+        .sections
+        .iter()
+        .map(|section| vec![BodyAnchor::default(); section.paragraphs.len()])
+        .collect();
+    let mut warnings = RenderIssueAccumulator::new();
+    layout_document_inner(
+        doc,
+        store,
+        &mut warnings,
+        &mut SegmentRecorder::disabled(),
+        Some(&mut anchors),
+    );
+    anchors
 }
 
 fn layout_document_inner(
@@ -872,12 +902,13 @@ fn layout_document_inner(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
+    anchors: Option<&mut [Vec<BodyAnchor>]>,
 ) -> DisplayList {
     // Memoized cell heights are keyed by addresses inside `doc`; never let one
     // document's entries answer for another's, and do not keep them past the
     // borrow (#321).
     store.measured_cells.clear();
-    let list = layout_document_pages(doc, store, warnings, rec);
+    let list = layout_document_pages(doc, store, warnings, rec, anchors);
     store.measured_cells.clear();
     list
 }
@@ -887,12 +918,13 @@ fn layout_document_pages(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
+    mut anchors: Option<&mut [Vec<BodyAnchor>]>,
 ) -> DisplayList {
     let mut pages = Vec::new();
     let mut page_numbers = PageNumberState::new(doc.header.properties.start_numbers[0]);
 
     for (section_index, section) in doc.sections.iter().enumerate() {
-        // 이 구역의 첫 페이지 인덱스 — 구역 끝에서 쪽 테두리를 전 페이지에 소급 삽입한다.
+        // Index of this section's first page; insert borders into all its pages when the section ends.
         let section_first_page = pages.len();
         let page_def = section
             .section_def()
@@ -901,8 +933,8 @@ fn layout_document_pages(
                 warnings.push(RenderIssueCode::PageDefinitionFallback, b"a4");
                 default_page()
             });
-        // 가로(landscape, PAGE_DEF attr bit0): 용지를 90° 돌려 폭↔높이를 맞바꾼다.
-        // (이전엔 방향 무시 → 가로 문서가 세로로 렌더돼 우측 열이 잘렸다.)
+        // Landscape (PAGE_DEF attr bit0): rotate the paper 90 degrees by swapping width and height.
+        // Previously, ignoring orientation rendered landscape files as portrait and clipped right columns.
         let landscape = page_def.attr & 1 != 0;
         let (paper_w_hu, paper_h_hu) = if landscape {
             (page_def.height.0, page_def.width.0)
@@ -914,7 +946,7 @@ fn layout_document_pages(
         let body_top = (page_def.margin_top.0 + page_def.margin_header.0) as f32 / 100.0;
         let body_width =
             (paper_w_hu - page_def.margin_left.0 - page_def.margin_right.0) as f32 / 100.0;
-        // 본문 영역 하한 (넘침 분할 기준)
+        // Bottom of the body area, used as the overflow boundary.
         let body_bottom = h - (page_def.margin_bottom.0 + page_def.margin_footer.0) as f32 / 100.0;
 
         // Resolve PAGE_BORDER_FILL BOTH once, then prepend it to every section page.
@@ -937,13 +969,13 @@ fn layout_document_pages(
             items: Vec::new(),
         };
         let mut prev_v_pos = -1i32;
-        // 흐름 커서: 이 페이지에 실제 배치된 콘텐츠의 하단 y (page 좌표)
+        // Flow cursor: bottom y of content actually placed on this page, in page coordinates.
         let mut content_bottom = body_top;
         let mut skipped_controls = 0usize;
         let mut paras_on_page = 0usize;
 
-        // 다단(multi-column): 섹션의 첫 cold 컨트롤 ColumnDef로 단 기하 설정(v1: 섹션당 1구성).
-        // 한글 line_seg는 col_start=0(단 상대)·seg_width=단폭이므로 단 x는 밴드 인덱스로 계산한다.
+        // Multi-column geometry comes from the section's first cold/ColumnDef control (one setup per section).
+        // Hangul line_seg uses column-relative col_start=0 and seg_width=column width; derive x from the band.
         // Boundary detection prefers flags bit0/bit1. Without either flag,
         // each v_pos reset advances a band and every colCount-th band starts a page.
         let col_def = section
@@ -995,7 +1027,7 @@ fn layout_document_pages(
         let notes = footnote::collect_notes(&section.paragraphs);
         let mut page_notes: Vec<&Note> = Vec::new();
         let mut pending_endnotes: Vec<&Note> = Vec::new();
-        // 목록(번호/불릿) 카운터 — 구역 단위, 문서 순서로 진행.
+        // List numbering/bullet counters advance in document order within each section.
         let mut list_state = crate::list::ListState::default();
 
         for (para_index, para) in section.paragraphs.iter().enumerate() {
@@ -1016,23 +1048,23 @@ fn layout_document_pages(
                             *b"cold", *b"head", *b"foot", *b"fn  ", *b"en  ", *b"bokm", *b"%hlk",
                         ]
                         .contains(&c.ctrl_id())
-                        // 글상자(텍스트) + 도형(선/사각형/타원/호/다각형)은 렌더한다.
+                        // Render text boxes and shapes (line/rectangle/ellipse/arc/polygon).
                         || matches!(c, Control::Generic(g)
                             if g.ctrl_id == *b"gso "
                                 && (!g.paragraph_lists.is_empty()
                                     || crate::shape_draw::has_shape(&g.raw_children)))
-                        // hwpx 구조화 도형(rect/ellipse/...).
+                        // Structured HWPX shapes (rect/ellipse/...).
                         || matches!(c, Control::Generic(g) if !g.gso_shapes.is_empty())
-                        // hwpx 컨테이너(hp:container) — 자식 도형/텍스트를 렌더한다.
+                        // HWPX containers (hp:container): render child shapes and text.
                         || matches!(c, Control::Generic(g) if g.container_box.is_some())
-                        // 수식(hp:equation).
+                        // Equations (hp:equation).
                         || matches!(c, Control::Generic(g) if g.equation.is_some());
                     !rendered
                 })
                 .count();
 
-            // 본문 넘침: 직전 콘텐츠가 본문 하한을 지났으면 새 페이지
-            // (lineseg 없는 생성 문서의 기본 페이지네이션)
+            // Body overflow: open a page when previous content passed the body bottom.
+            // This is the default pagination for generated documents without linesegs.
             if content_bottom > body_bottom && paras_on_page > 0 {
                 rec.content_end(&page);
                 render_page_notes(
@@ -1061,8 +1093,8 @@ fn layout_document_pages(
                 has_flow_in_current_band = false;
             }
 
-            // 쪽 나누기 (PARA_HEADER break_type bit2 / hp:p pageBreak)
-            // — 글상자만 있어 items가 비어도 문단을 거쳤으면 분할한다
+            // Explicit page break (PARA_HEADER break_type bit2 / hp:p pageBreak).
+            // Break after prior paragraphs even when they contain only text boxes and no display items.
             if para.header.break_type & 0x04 != 0 && paras_on_page > 0 {
                 rec.content_end(&page);
                 render_page_notes(
@@ -1096,7 +1128,7 @@ fn layout_document_pages(
             // emitted while finalizing the *previous* page and must stay outside this span.
             rec.begin_paragraph(section_index, para_index, para, &page);
 
-            // 본문 각주/미주 마커(윗첨자 번호)와 이 페이지에 속할 노트 수집.
+            // Collect superscript footnote/endnote markers and notes belonging to this page.
             // Split footnotes into the page queue and endnotes into the section queue.
             let marks = footnote::para_marks(&notes, para);
             // Held with the WCHAR offset of each anchor rather than queued straight onto the
@@ -1114,7 +1146,13 @@ fn layout_document_pages(
                 page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
             }
             let tabs = crate::tab::tab_stops(doc, para);
-            let geom = para_geometry(doc, para);
+            let mut geom = para_geometry(doc, para);
+            if anchors.is_some() && para_index == 0 {
+                // B5: the section's first paragraph starts at zero. Apply this
+                // to the anchor prepass flow; later explicit breaks and page
+                // overflow retain their existing space-before placement.
+                geom.spacing_top = 0.0;
+            }
             let links = crate::shape::hyperlink_ranges(para);
             // Do not consume a list counter for a paragraph that has no visible line at all.
             let marker = if para.line_segs.is_empty() && para.chars.is_empty() {
@@ -1123,26 +1161,33 @@ fn layout_document_pages(
                 list_state.marker_for_render(doc, para)
             };
 
-            // 이 문단의 첫 줄 상단 (표 앵커 위치)
+            // Top of this paragraph's first line, used as its table anchor.
             let mut para_top: Option<f32> = None;
 
-            // 문단 배경/테두리(border_fill) 패스용. 문단이 페이지/단 경계를 걸치면 배경을
-            // 페이지별 조각으로 나눠 각 페이지에 그린다(GC-9). 조각 상태:
-            //  - bg_slice_top: 현재 페이지 조각의 상단 y(그 페이지 첫 줄 배치 시 설정)
-            //  - bg_slice_insert: 현재 페이지 items 삽입 지점(배경 Rect를 텍스트 뒤로)
-            //  - bg_slice_col_x: 현재 조각의 단 x-오프셋(다단)
-            //  - bg_first_slice: 첫 조각인가(진짜 문단 상단 → 상단 테두리 O)
+            // Paragraph background/border pass (border_fill). Split the background into per-page
+            // fragments when a paragraph crosses a page or column boundary (GC-9). Fragment state:
+            // - bg_slice_top: current fragment's top y, set when its page's first line is placed.
+            // - bg_slice_insert: insertion point in the current page's items, behind text.
+            // - bg_slice_col_x: current fragment's horizontal column offset.
+            // - bg_first_slice: whether this is the first fragment, which receives the top border.
             let mut bg_slice_top: Option<f32> = None;
             let mut bg_slice_insert = page.items.len();
             let mut bg_slice_col_x = 0.0f32;
             let mut bg_first_slice = true;
 
+            if let Some(anchors) = anchors.as_deref_mut() {
+                anchors[section_index][para_index] = BodyAnchor {
+                    v_pos: ((content_bottom + geom.spacing_top - body_top) * 100.0).round() as i32,
+                    starts_page: false,
+                };
+            }
             if para.line_segs.is_empty() {
-                // 폴백: 본문 폭에서 그리디 줄바꿈
+                // Cacheless body advance follows declared line spacing. Its fallback
+                // baseline and paragraph-spacing placement remain distinct from cached layout.
                 // Set when the greedy wrap itself crossed a page boundary (#282).
                 let mut para_split = false;
                 if para.chars.is_empty() {
-                    content_bottom += 16.0; // 빈 문단 높이 근사
+                    content_bottom += 16.0; // Approximate empty-paragraph height.
                 } else {
                     let end = para.wchar_len();
                     let mut items = shape_range_page(
@@ -1156,7 +1201,7 @@ fn layout_document_pages(
                     );
                     crate::shape::apply_link_style(&mut items, &links);
                     let max_size = items_max_size(&items).unwrap_or(10.0);
-                    // 문단 들여쓰기/여백/위 간격(폴백 전용 — 캐시는 col_start에 반영됨).
+                    // Paragraph indent, margins and space-before (fallback only; caches encode these in col_start).
                     let left = body_left + geom.left;
                     let avail = (body_width - geom.left - geom.right).max(4.0);
                     let baseline_y = content_bottom + geom.spacing_top + max_size * 1.2;
@@ -1172,7 +1217,7 @@ fn layout_document_pages(
                         height_pt: h,
                         items: Vec::new(),
                     };
-                    // 마커는 줄상자 왼쪽에 놓고, 그 폭만큼 첫 줄 글자를 밀어낸다.
+                    // Place the marker left of the line box and shift the first line's text by its width.
                     // It goes into the scratch page too, so that if the first line moves to the
                     // next page the marker moves with it instead of being left behind.
                     let mut marker_advance = 0.0;
@@ -1186,19 +1231,19 @@ fn layout_document_pages(
                             warnings,
                         );
                     }
-                    // 첫 줄 들여쓰기/내어쓰기: 비정상 큰 양수는 방어 캡
-                    // (wrap 폭 미차감 — 좁은 셀 폭주 방지).
+                    // First-line indent/hanging indent: cap excessively large positive values.
+                    // Do not subtract from wrap width, avoiding runaway wrapping in narrow cells.
                     let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
                     let first_indent = first_indent.min(avail * 0.8);
                     let rest_indent = rest_indent.min(avail * 0.8);
-                    // 한 줄에 들어가는 가운데/오른쪽 정렬은 폴백에서도 보정한다.
+                    // Correct centered/right-aligned single lines in fallback layout too.
                     let natural = items_width(&items, &tabs);
                     let align = doc
                         .header
                         .para_shapes
                         .get(para.para_shape.0 as usize)
                         .map_or(1, |p| p.alignment());
-                    // 정렬(가운데/오른쪽) 한 줄은 들여쓰기 무시; 그 외엔 x0=좌여백 + 이후 줄 오프셋.
+                    // Centered/right-aligned single lines ignore indent; otherwise x0 = left margin + continuation offset.
                     let (x0, first_delta) = if natural <= avail && (align == 2 || align == 3) {
                         (
                             left + (avail - natural) * if align == 3 { 0.5 } else { 1.0 },
@@ -1207,10 +1252,15 @@ fn layout_document_pages(
                     } else {
                         (left + rest_indent, first_indent - rest_indent)
                     };
-                    // place_wrapped의 우변은 x0 + max_width라, 들여쓴 만큼 폭을 줄여야
-                    // 문단 원래 오른쪽 끝(left + avail)이 유지된다.
+                    // place_wrapped's right edge is x0 + max_width. Reduce width by the indent
+                    // to keep the paragraph's original right edge (left + avail).
                     let wrap_width = (left + avail - x0).max(1.0);
-                    let line_advance = max_size * 1.6;
+                    let line_advance = crate::lineseg::paragraph_advance(
+                        doc,
+                        para,
+                        (max_size * 100.0).round() as i32,
+                    ) as f32
+                        / 100.0;
                     let descent = max_size * 0.4;
                     let mut lines: Vec<(usize, f32)> = Vec::new();
                     let last_y = place_wrapped(
@@ -1279,6 +1329,21 @@ fn layout_document_pages(
                         }
                         lines_on_page += 1;
                         plan.push((start_item, dy, opens_page));
+                    }
+                    // Pagination may move the first line away from the entry cursor.
+                    // Record its resolved top and only the break this line opened;
+                    // a preceding table continuation already advanced the page.
+                    if let (
+                        Some(anchors),
+                        Some(&(_, first_dy, first_opens_page)),
+                        Some(&(_, first_baseline)),
+                    ) = (anchors.as_deref_mut(), plan.first(), lines.first())
+                    {
+                        anchors[section_index][para_index] = BodyAnchor {
+                            v_pos: ((first_baseline + first_dy - max_size * 1.2 - body_top) * 100.0)
+                                .round() as i32,
+                            starts_page: first_opens_page.is_some(),
+                        };
                     }
                     para_split = plan.iter().any(|&(_, _, opens)| opens.is_some());
                     let mut src = scratch.items.into_iter();
@@ -1406,10 +1471,9 @@ fn layout_document_pages(
 
             let last_content = last_content_seg(para);
             for (i, seg) in para.line_segs.iter().enumerate() {
-                // Hancom-saved linesegs use bit0 (first line of a page) and
-                // bit1 (first line of a column) as authoritative boundaries.
-                // Synthesized linesegs use 0x0006_0000 and therefore fall back
-                // to the v_pos-reset heuristic.
+                // Bits0/1 declare authoritative page/column starts in saved
+                // and synthesized caches. Without either boundary flag, use
+                // the v_pos-reset heuristic.
                 let (is_boundary, page_break) = if seg.flags & 0x3 != 0 {
                     (true, seg.flags & 0x1 != 0)
                 } else if seg.v_pos < prev_v_pos {
@@ -1499,7 +1563,7 @@ fn layout_document_pages(
                 crate::shape::apply_link_style(&mut items, &links);
                 let natural_width: f32 = items_width(&items, &tabs);
 
-                // 정렬 보정은 들여쓰기를 뺀 실제 글자 폭 기준이라 아래(indent 확정 후)에서 한다.
+                // Alignment uses width after subtracting indent, so compute it below after resolving indent.
                 let seg_width_pt = seg.seg_width as f32 / 100.0;
                 let align = doc
                     .header
@@ -1510,17 +1574,17 @@ fn layout_document_pages(
                 let baseline_gap_pt = seg.baseline_gap as f32 / 100.0;
                 let line_height_pt = seg.line_height as f32 / 100.0;
                 let stored_baseline = body_top + (seg.v_pos + seg.baseline_gap) as f32 / 100.0;
-                // 흐름 커서 보정: 앞 콘텐츠가 저장 위치를 이미 지났으면
-                // 베이스라인을 (콘텐츠 하단 + 이 줄의 ascent) 아래로 밀어낸다
+                // Flow correction: if previous content passed the saved position,
+                // move the baseline down to content_bottom plus this line's ascent.
                 let baseline_y = stored_baseline.max(content_bottom + baseline_gap_pt);
 
                 let line_advance =
                     (seg.line_height + seg.line_spacing).max(seg.line_height) as f32 / 100.0;
 
-                // 다단: 현재 밴드의 단 x-오프셋(col_start는 단 상대라 0). 단일 단이면 0.
+                // Current column's x offset (col_start is column-relative and zero). Zero for a single column.
                 let col_x = (col_band % col_count) as f32 * (col_width + col_gap);
                 let box_x = body_left + col_x + seg.col_start as f32 / 100.0;
-                // 배경 조각 상단: 이 페이지/단에서 처음 놓이는 줄의 윗변에서 잡는다(GC-9).
+                // Start the background fragment at its page/column's first line top (GC-9).
                 if bg_slice_top.is_none() {
                     bg_slice_top = Some(baseline_y - baseline_gap_pt);
                     bg_slice_col_x = col_x;
@@ -1540,10 +1604,10 @@ fn layout_document_pages(
                         );
                     }
                 }
-                // col_start는 좌여백만 담으므로 들여쓰기/내어쓰기는 여기서 준다.
+                // col_start contains only the left margin; apply first-line/hanging indent here.
                 let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
                 let indent = if i == 0 { first_indent } else { rest_indent };
-                // 정렬·줄바꿈은 들여쓰기를 뺀 남은 폭 기준이어야 오른쪽 끝이 밀리지 않는다.
+                // Align and wrap within the post-indent width so the right edge does not move.
                 let text_width = (seg_width_pt - indent).max(1.0);
                 let shift = align_line(
                     &mut items,
@@ -1553,8 +1617,8 @@ fn layout_document_pages(
                     i == last_content,
                 );
                 let x = box_x + indent + shift;
-                // 문단에 lineseg가 1개뿐인데 텍스트가 seg 폭을 크게 넘으면 불완전한
-                // lineseg로 보고 seg 폭에서 줄바꿈. 완전한 lineseg는 신뢰한다
+                // A single-lineseg paragraph whose text substantially exceeds segment width has an
+                // incomplete cache and wraps at segment width. Trust complete linesegs.
                 // (`CACHE_OVERFLOW_TOLERANCE`).
                 let wrap_width = if para.line_segs.len() == 1
                     && natural_width > text_width * CACHE_OVERFLOW_TOLERANCE
@@ -1571,7 +1635,7 @@ fn layout_document_pages(
                     wrap_width,
                     line_advance,
                     &tabs,
-                    0.0, // 줄 오프셋은 x에 이미 반영됨.
+                    0.0, // The line offset is already included in x.
                     &doc.header.border_fills,
                     None,
                     warnings,
@@ -1608,7 +1672,7 @@ fn layout_document_pages(
                 rec,
             );
             content_bottom = objects_bottom;
-            // 마지막(또는 유일) 배경 조각: 하변 테두리 O, 상변은 첫 조각일 때만(=경계 안 걸침).
+            // Final or only background fragment: bottom border on; top border only on the first fragment.
             if let Some(top) = bg_slice_top {
                 let (slice_insert, slice_top, slice_first) = if objects_split {
                     (0, body_top, false)
@@ -1862,7 +1926,7 @@ impl TableSplitCtx<'_, '_> {
     }
 }
 
-/// 기본 셀 안쪽 여백 (HWPUNIT — 한글 기본값).
+/// Default inner cell margins (HWPUNIT; Hangul defaults).
 const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
 
 /// One cached page-sized run of a cell.  The selections retain paragraph
@@ -2248,8 +2312,8 @@ fn page_notes_reservation_height(
     height + 5.0
 }
 
-/// 페이지 하단에 각주/미주 영역을 그린다(구분선 + 번호 + 내용).
-/// 블록 하단이 본문 하한(body_bottom)에 닿도록 위로 올려 배치한다.
+/// Draw the footnote/endnote area at the page bottom (separator, numbers and content).
+/// Move the block up so its bottom meets body_bottom.
 #[allow(clippy::too_many_arguments)]
 fn render_page_notes(
     doc: &Document,
@@ -2264,7 +2328,7 @@ fn render_page_notes(
     if notes.is_empty() {
         return;
     }
-    // 1) 스크래치 페이지에 y=0부터 노트를 쌓아 총 높이를 잰다.
+    // 1) Stack notes from y=0 on a scratch page to measure total height.
     let mut scratch = PageList {
         width_pt: page.width_pt,
         height_pt: page.height_pt,
@@ -2282,9 +2346,9 @@ fn render_page_notes(
             y,
             warnings,
         );
-        y += 3.0; // 노트 사이 간격
+        y += 3.0; // Gap between notes.
     }
-    // 2) 블록 하단이 body_bottom에 닿도록 위로 올린다(본문과 겹치면 그대로 둠).
+    // 2) Move up so the block bottom meets body_bottom; retain any overlap with body content.
     let top = (body_bottom - y).max(0.0);
     let sep_gap = 5.0;
     if !warnings.charge_display_items(1) {
@@ -2299,13 +2363,13 @@ fn render_page_notes(
         stroke: Some(Stroke::solid(0x0000_0000, 0.5)),
         rule: FillRule::NonZero,
     });
-    // 3) 스크래치 아이템을 top만큼 내려 본 페이지에 합친다.
+    // 3) Translate scratch items down by top and append them to the real page.
     for item in scratch.items.drain(..) {
         page.items.push(translate_item(item, 0.0, top));
     }
 }
 
-/// 노트 하나(번호 마커 + 내용 문단)를 (x, y)에 그리고 다음 y(하단)를 반환.
+/// Draw one note (number marker and content paragraphs) at (x, y), returning its bottom y.
 #[allow(clippy::too_many_arguments)]
 fn render_one_note(
     doc: &Document,
@@ -2324,7 +2388,7 @@ fn render_one_note(
     if let Some(run) = crate::shape::shape_plain(store, doc, &label, marker_size, 0, false) {
         push_run(page, x, baseline, run, &doc.header.border_fills, warnings);
     }
-    // 내용 문단들(자체 char_shape 크기 사용). 여러 문단은 세로로 누적.
+    // Content paragraphs use their own char_shape sizes and stack vertically.
     let mut bottom = y;
     for list in &note.content.paragraph_lists {
         bottom = layout_box_paragraphs(
@@ -2343,7 +2407,7 @@ fn render_one_note(
     bottom.max(baseline + marker_size * 0.3)
 }
 
-/// 목록 마커(불릿/번호)를 텍스트 시작 왼쪽(매달린 위치)에 그린다.
+/// Draw a list marker (bullet/number) hanging left of the text start.
 fn render_list_marker(
     page: &mut PageList,
     store: &mut FontStore,
@@ -2375,7 +2439,7 @@ fn render_list_marker(
 /// indent. The hanging space belongs to the list marker and lives *inside* the
 /// text area, so the marker sits at the box edge, the first line clears it, and
 /// every following line is indented by the hanging width. A positive indent
-/// (들여쓰기) applies to the first line only.
+/// (positive indent) applies to the first line only.
 fn line_indents(geom: &ParaGeom, marker_advance: f32) -> (f32, f32) {
     let hang = (-geom.first_indent).max(0.0);
     let first = if marker_advance > 0.0 {
@@ -2427,7 +2491,7 @@ fn rect_path_cmds(x: f32, y: f32, w: f32, h: f32) -> Vec<PathCmd> {
     ]
 }
 
-/// Item을 (dx, dy)만큼 평행이동한 사본.
+/// Copy an Item translated by (dx, dy).
 fn translate_item(item: Item, dx: f32, dy: f32) -> Item {
     match item {
         Item::Glyphs { x, y, run } => Item::Glyphs {
@@ -2482,7 +2546,7 @@ fn translate_item(item: Item, dx: f32, dy: f32) -> Item {
     }
 }
 
-/// PathCmd를 (dx, dy)만큼 평행이동.
+/// Translate a PathCmd by (dx, dy).
 fn translate_cmd(c: PathCmd, dx: f32, dy: f32) -> PathCmd {
     match c {
         PathCmd::MoveTo(x, y) => PathCmd::MoveTo(x + dx, y + dy),
@@ -2617,7 +2681,7 @@ fn place_caption_items(
     (caption.side == CaptionSide::Bottom).then_some(oy + oh + gap + height)
 }
 
-/// 문단에 달린 블록 개체(표/이미지)를 배치한다. 갱신된 콘텐츠 하단을 반환.
+/// Lay out paragraph-attached block objects (tables/images), returning the updated content bottom.
 #[allow(clippy::too_many_arguments)]
 fn layout_para_objects(
     doc: &Document,
@@ -2686,7 +2750,7 @@ fn layout_para_objects(
                 );
                 rec.end_segment(page);
                 if table_split {
-                    // 쪽이 나뉐 뒤의 커서는 새 페이지 좌표 — 이전 페이지의
+                    // After a split, the cursor uses the new page's coordinates, not the previous
                     // page's bottom; doing so would create a blank page.
                     bottom = end;
                     page_split = true;
@@ -2738,15 +2802,15 @@ fn layout_para_objects(
                             top_caption = Some((items, ch));
                             img_y += ch + cap.gap as f32 / 100.0;
                         }
-                        // WMF 벡터는 변형(뒤집기/회전/밝기·명암)이 없을 때만
-                        // 레이아웃 시점에 해석한다 — 변형이 있으면 기존 래스터
-                        // 경로(Item::Image → 백엔드 디코드)를 유지. crop은 WMF
-                        // 쪽이 윈도우와 교차해 직접 처리한다 (코퍼스는 전부
-                        // full-extent crop). 확장자 힌트는 쓰지 않고 바이트
-                        // 스니프가 유일한 권위다 (스니프는 ~20B 검사라 fast path
-                        // 이득이 없다). Placeholder 결과는 wmf 쪽이 자홍 rect +
-                        // typed issue를 이미 방출하고, Fallback은 아무것도 방출하지
-                        // 않았으니 래스터 경로로 복귀한다.
+                        // Lay out WMF vectors here only without transforms (flip/rotation/brightness/contrast).
+                        // Transformed images retain the existing raster path
+                        // (Item::Image -> backend decode). WMF intersects cropping with its own window;
+                        // the corpus uses full-extent crops throughout.
+                        // File extensions are ignored; byte sniffing is authoritative.
+                        // Sniffing examines about 20 bytes, so a separate fast path
+                        // adds no benefit. Placeholder already emits a magenta rectangle and
+                        // a typed issue from wmf; Fallback emits nothing,
+                        // so it returns to the raster path.
                         let untransformed = pic.flip == 0
                             && pic.rotation.unwrap_or(0.0) == 0.0
                             && pic.brightness == 0
@@ -2889,6 +2953,7 @@ fn layout_para_objects(
                         // it stopped.
                         Some(&mut *rec),
                         Some((control_index, range.start)),
+                        false,
                     );
                     max_bottom = max_bottom.max(inner);
                 }
@@ -2942,11 +3007,11 @@ fn layout_para_objects(
                     object_y = flow_end;
                 }
             }
-            // HWPX 컨테이너(hp:container): container_box 상자 + 원점 기준 상대좌표 자식 도형.
+            // HWPX container (hp:container): container_box plus child shapes relative to its origin.
             Control::Generic(g) if g.container_box.is_some() => {
                 let cb = g.container_box.as_ref().expect("is_some 가드");
-                // reader가 파싱하지 못한 가시 자식(pic/ole/chart/equation/미지 요소)이
-                // 있으면 컨테이너를 그리더라도 typed loss를 남긴다(detail은 해시됨).
+                // If the reader could not parse a visible child (pic/ole/chart/equation/unknown element),
+                // report typed loss even when drawing the container; details are hashed.
                 if cb.skipped_objects > 0 {
                     warnings.push(
                         RenderIssueCode::UnsupportedControlOmitted,
@@ -2962,13 +3027,13 @@ fn layout_para_objects(
                 } else {
                     0.0
                 };
-                // 컨테이너 원점: anchored면 텍스트 흐름 위치, 아니면 PAPER 기준 오프셋.
+                // Container origin: text-flow position when anchored, otherwise PAPER-relative offsets.
                 let origin = if cb.anchored {
                     ((x * 100.0) as i32, ((object_y + top_offset) * 100.0) as i32)
                 } else {
                     (cb.x, cb.y)
                 };
-                // 자식 도형을 페이지 절대좌표로 전개한다(IR 불변 유지를 위해 복제본 사용).
+                // Expand child shapes into absolute page coordinates on a copy, preserving IR immutability.
                 let adjusted: Vec<hwp_model::ShapeGeom> = g
                     .gso_shapes
                     .iter()
@@ -2983,8 +3048,8 @@ fn layout_para_objects(
                 crate::shape_draw::draw_ir_shapes(&adjusted, page, warnings);
                 let (bx, by) = (origin.0 as f32 / 100.0, origin.1 as f32 / 100.0);
                 let mut flow_end = by + bh;
-                // 컨테이너 텍스트 조판(단일 컬럼 v1). text_boxes가 있으면 리스트별
-                // 소유 상자(자식 도형 상자)에, 없으면 컨테이너 상자에 평탄 조판한다.
+                // Lay out container text (single column in v1). With text_boxes, each list uses
+                // its owning child-shape box; otherwise lay it out flat in the container box.
                 if !g.paragraph_lists.is_empty() {
                     if cb.text_boxes.is_empty() {
                         let flat = g.paragraph_lists.iter().flat_map(|l| l.paragraphs.iter());
@@ -3004,6 +3069,7 @@ fn layout_para_objects(
                             None,
                             Some(&mut *rec),
                             Some((control_index, 0)),
+                            false,
                         );
                         flow_end = flow_end.max(inner);
                     } else {
@@ -3011,8 +3077,8 @@ fn layout_para_objects(
                         // text box above.
                         let mut first = 0;
                         for (i, list) in g.paragraph_lists.iter().enumerate() {
-                            // 소유 상자는 컨테이너 원점 기준 — 페이지 절대로 옮긴다.
-                            // None(컨테이너 자체 소유)이면 컨테이너 상자에 조판.
+                            // The owning box is relative to the container origin; translate it to page coordinates.
+                            // None means the container itself owns the text, so use the container box.
                             let (tx, ty, tw) = match cb.text_boxes.get(i).copied().flatten() {
                                 Some([sx, sy, sw, _]) => (
                                     (origin.0 + sx) as f32 / 100.0,
@@ -3039,6 +3105,7 @@ fn layout_para_objects(
                                 None,
                                 Some(&mut *rec),
                                 Some((control_index, first)),
+                                false,
                             );
                             first += list.paragraphs.len();
                             flow_end = flow_end.max(inner);
@@ -3112,6 +3179,7 @@ fn layout_para_objects(
                         None,
                         Some(&mut *rec),
                         Some((control_index, 0)),
+                        false,
                     );
                     flow_end = flow_end.max(inner);
                 }
@@ -3155,7 +3223,7 @@ fn layout_para_objects(
                     object_y = flow_end;
                 }
             }
-            // 수식(hp:equation) — 스크립트를 실제 math로 조판(equation.rs).
+            // Equations (hp:equation): lay out the script as mathematics (equation.rs).
             Control::Generic(g) if g.equation.is_some() => {
                 let eq = g.equation.as_ref().expect("is_some");
                 let h = (eq.height as f32 / 100.0).max(12.0);
@@ -3164,13 +3232,13 @@ fn layout_para_objects(
                 } else {
                     (eq.x as f32 / 100.0, eq.y as f32 / 100.0, false)
                 };
-                // 글자 크기 2-pass: 여러 행 수식은 총 높이가 크므로, 기준 12pt로 시험 조판해
-                // 실제 높이를 잰 뒤 상자 높이(eq.height)에 맞춰 스케일한다(단일 행 가정 제거).
+                // Two-pass font size: multiline equations can be tall. Measure at 12pt first,
+                // then scale to the equation box height (eq.height), removing the single-line assumption.
                 let probe = crate::equation::typeset(store, doc, &eq.script, 12.0);
                 let ph = (probe.ascent + probe.descent).max(1.0);
                 let size = (12.0 * h / ph).clamp(6.0, 18.0);
                 let ebox = crate::equation::typeset(store, doc, &eq.script, size);
-                // 상단 정렬: 수식 상단(baseline-ascent)을 상자 상단(by)에 맞춘다.
+                // Top alignment: place the equation's top (baseline - ascent) at the box top (by).
                 let baseline_y = by + ebox.ascent;
                 crate::equation::render_into(page, ebox, bx + 2.0, baseline_y, warnings);
                 if inline {
@@ -3188,7 +3256,7 @@ fn layout_para_objects(
     (bottom, page_split)
 }
 
-/// 셀 여백 (왼/오른/위/아래) pt — 셀 지정 → 표 기본 → 한글 기본.
+/// Cell margins in pt (left/right/top/bottom): cell override, table default, then Hangul default.
 fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
     // HWP5 uses 0xffff in a cell LIST_HEADER to mean "use the table
     // default".  It is important that the sentinel remains in the IR for a
@@ -3294,12 +3362,12 @@ fn layout_table(
         .as_ref()
         .map_or(0.0, |caption| caption.height + caption.gap);
 
-    // 그리드 기하: span=1 셀에서 열 폭/행 높이를 확정, 모르는 칸은 평균으로
+    // Grid geometry: span=1 cells establish column widths and row heights; average unknown values.
     let mut col_w = vec![0.0f32; cols];
     let mut row_h = vec![0.0f32; rows];
     let mut row_covered = vec![false; rows];
-    // 저장된 행 높이가 실제 값인 행. 여기 해당하면 한글이 계산해 둔 최종 높이이므로
-    // 그대로 신뢰하고, 아니면(미기재 행) 측정 패스가 채운다.
+    // Rows with a stored height carry Hangul's final calculated height;
+    // trust it. A measurement pass fills rows without a stored height.
     let mut row_stored = vec![false; rows];
     for cell in &table.cells {
         let (c, r) = (cell.col as usize, cell.row as usize);
@@ -3329,11 +3397,11 @@ fn layout_table(
         }
     }
 
-    // 측정 패스: 실제 내용 높이로 행 높이를 확장한다(저장된 cell.height는 한글의 줄바꿈
-    // 기준이라, 셰이핑/합성 줄바꿈이 더 많은 줄을 만들면 내용이 다음 행을 침범해 겹친다 —
-    // 실측 높이와 max로 행을 늘려 방지). 스크래치 페이지에 그려 높이만 잰다. 실측 내용
-    // 높이는 세로정렬에 재사용한다(재측정 회피).
-    let mut spanned: Vec<(usize, usize, f32)> = Vec::new(); // (시작행, 스팬, 필요높이)
+    // Measurement pass: grow rows to measured content height. Stored cell.height reflects Hangul's
+    // line wrapping; extra shaped/synthesized lines could otherwise overlap the next row.
+    // Measure on a scratch page and take the maximum. Reuse measured content heights
+    // for vertical alignment rather than measuring them again.
+    let mut spanned: Vec<(usize, usize, f32)> = Vec::new(); // (start row, span, required height).
     let mut content_h_by_cell: Vec<f32> = Vec::with_capacity(table.cells.len());
     for cell in &table.cells {
         let (c, r) = (cell.col as usize, cell.row as usize);
@@ -3356,7 +3424,7 @@ fn layout_table(
             page.width_pt.to_bits(),
             page.height_pt.to_bits(),
         );
-        // 빈 셀은 스크래치 레이아웃(할당+셰이핑)을 생략 — 내용 높이 0(여백 mt+mb는 아래서 반영).
+        // Empty cells skip scratch layout and shaping: content height is zero; add mt+mb below.
         let content_h = if cell.paragraphs.is_empty() {
             0.0
         } else if let Some(&memoized) = store.measured_cells.get(&measured_key) {
@@ -3368,17 +3436,24 @@ fn layout_table(
                 items: Vec::new(),
             };
             let mut scratch_warn = RenderIssueAccumulator::new();
-            let measured = layout_box_paragraphs(
+            let measured = layout_box_para_iter(
                 doc,
                 store,
                 &mut scratch,
-                &cell.paragraphs,
+                cell.paragraphs
+                    .iter()
+                    .map(|para| (para, BoxParaSelection::All)),
                 0.0,
                 0.0,
                 content_w,
                 &mut scratch_warn,
-                None, // 측정 패스: 마커 미표시(counter 미증가)
                 None,
+                None,
+                0,
+                None,
+                None,
+                None,
+                true,
             );
             store.measured_cells.insert(measured_key, measured);
             measured
@@ -3387,23 +3462,23 @@ fn layout_table(
         let needed = content_h + mt + mb;
         let span = (cell.row_span as usize).max(1);
         let end = (r + span).min(rows);
-        // 줄 배치 캐시가 있는 셀의 행 높이는 한글이 계산해 둔 최종 값이다. 우리 실측이
-        // 더 크더라도 늘리지 않는다 — 늘리면 아래 모든 행이 밀려 정품 격자와 어긋난다
-        // (실측: 개체를 담은 셀 하나가 행을 190pt 늘려 다음 쪽 조각을 통째로 이동).
-        // 대신 넘친다는 사실을 typed 이슈로 보고해 원인이 묻히지 않게 한다. 캐시가 없는
-        // 셀(우리가 만든 문서 등)은 저장 높이도 레이아웃 산출물이 아니므로 실측이
-        // 유일한 근거다 — 종전대로 행을 늘린다.
+        // Cached cells' stored row heights are Hangul's final geometry. Do not grow them for larger
+        // measurements: that shifts all following rows away from the genuine grid.
+        // In one measured case an object enlarged a cell by 190pt and moved an entire next-page fragment.
+        // Report typed overflow instead so the cause remains visible. Uncached cells, such as
+        // authored documents, have no layout-derived stored height; their measurement
+        // is the sole evidence, so continue growing those rows.
         //
-        // 단, 캐시 자체가 저장 높이를 넘는 셀은 저장 높이가 하한일 뿐이다. 캐시는 한글이
-        // 그린 줄 위치 그 자체라, 캐시 줄들이 저장 높이 밖에서 끝나면 그 행은 실제로
-        // 그만큼 컸다. 편집으로 재합성된 셀은 편집 전 저장 높이 위에 단조 증가 캐시만
-        // 자라므로(#245) 정확히 이 모순을 보이고, 한글 hwpx 내보내기의 선언 최소 높이도
-        // 같다. 되돌림(v_pos 역행·쪽 시작 플래그·전진하지 않는 문단 시작)으로 나뉜 조각은
-        // 한글이 다음 쪽에 이어 그린 내용이라(#233) 조각 높이를 합쳐 센다. 행은 저장
-        // 높이와 캐시 전체 높이 중 큰 쪽을 하한으로 삼고, 그 하한을 넘는 실측(개체, 우리
-        // 줄바꿈)은 종전대로 늘리지 않고 보고만 한다. 이어지는 조각은
-        // layout_box_para_iter가 앞 줄 아래로 이어 그리므로 한 행 안에 다 들어가고, 우리
-        // 쪽 나눔이 한글과 다르면 행 전체가 다음 쪽으로 옮겨지되 내용은 잃지 않는다.
+        // When the cache itself exceeds the stored height, however, that height is only a lower bound.
+        // Cache coordinates are the lines Hangul drew: lines ending outside the stored row prove
+        // a taller row. Edited cells grow monotonic caches over their pre-edit heights (#245),
+        // producing this mismatch; Hangul's HWPX export similarly records declared minima.
+        // Fragments separated by v_pos decreases, page-start flags or nonadvancing paragraph starts
+        // continue on later pages (#233), so sum their heights. Use the greater of stored height
+        // and total cached height as the row floor. Measurements beyond that floor (objects or
+        // our wrapping) are reported without growing the row, as before. Continuation fragments
+        // follow prior lines in layout_box_para_iter and fit within the row. If our page breaks
+        // differ from Hangul's, move the whole row to the next page without losing content.
         let cell_cached = cell
             .paragraphs
             .iter()
@@ -3433,7 +3508,7 @@ fn layout_table(
             spanned.push((r, span, needed));
         }
     }
-    // row_span>1 셀: 스팬 행 합이 부족하면 마지막 스팬 행에 부족분을 더한다.
+    // For row_span>1, add any deficit in the spanned rows' total height to the final row.
     for (r, span, needed) in spanned {
         let end = (r + span).min(rows);
         let cur: f32 = row_h[r..end].iter().sum();
@@ -4377,6 +4452,7 @@ fn draw_table_cell_fragment(
             Some(cy + ch - mb),
             Some(rec),
             None,
+            true,
         );
     }
 
@@ -4473,7 +4549,7 @@ fn draw_table_rows(
             .border_fills
             .get((cell.border_fill.0 as usize).saturating_sub(1));
 
-        // 1) 배경
+        // 1) Background.
         if let Some(item) = border_fill.and_then(|bf| bg_fill_item(bf, cx, cy, cw, ch)) {
             if !warnings.charge_display_items(1) {
                 rec.end_segment(page);
@@ -4482,8 +4558,8 @@ fn draw_table_rows(
             page.items.push(item);
         }
 
-        // 2) 내용 — 셀 여백 + 세로정렬(list_attr bits5~6: 0=위, 1=가운데, 2=아래).
-        //    측정 패스의 실측 내용 높이로 남는 공간을 계산해 오프셋한다.
+        // 2) Content: cell margins and vertical alignment (list_attr bits5-6: top/center/bottom = 0/1/2).
+        // Use the measurement pass's content height to calculate the remaining-space offset.
         let (ml, mr, mt, mb) = cell_margins(table, cell);
         let content_h = content_h_by_cell.get(ci).copied().unwrap_or(0.0);
         let avail = (ch - mt - mb - content_h).max(0.0);
@@ -4503,7 +4579,7 @@ fn draw_table_rows(
             cy + mt + voff,
             (cw - ml - mr).max(4.0),
             warnings,
-            Some(cell_ls), // 렌더 패스: 셀 목록 마커 그림
+            Some(cell_ls), // Render pass: draw cell list markers.
             None,
             0,
             // Same bound as the fragment emitter: a floor-pushed paragraph
@@ -4511,6 +4587,7 @@ fn draw_table_rows(
             Some(cy + ch - mb),
             Some(rec),
             None,
+            true,
         );
 
         // 3) Borders (left, right, top, bottom).
@@ -4529,8 +4606,8 @@ fn draw_table_rows(
             }
             page.items.extend(items);
 
-            // 4) 대각선/역대각선 — slash/backSlash 비트가 켜졌을 때만(병합 셀은 전체 영역 가로지름).
-            //    diagonal 선은 스타일/색만 제공하므로 방향 비트가 없으면 그리지 않는다.
+            // 4) Diagonals: draw only when slash/backSlash bits are set; merged cells span the full area.
+            // The diagonal line provides style/color only; without direction bits, draw nothing.
             let (slash, backslash) = diagonal_dirs(bf.attr);
             if (slash || backslash) && bf.diagonal.is_visible() {
                 // Emit backslash before slash and preserve compound/dashed styles (GG-24).
@@ -4555,16 +4632,16 @@ fn draw_table_rows(
     }
 }
 
-/// BORDER_FILL 속성 비트 → (대각선 `/`, 역대각선 `\`) 그릴지.
-/// slash=bit2~4, backSlash=bit5~7. 둘 다 0이면 대각선 없음.
+/// BORDER_FILL attribute bits indicating whether to draw slash `/` or backslash `\\` diagonals.
+/// slash uses bits2-4, backSlash bits5-7; both zero means no diagonals.
 fn diagonal_dirs(attr: u16) -> (bool, bool) {
     let slash = (attr >> 2) & 0x7 != 0;
     let backslash = (attr >> 5) & 0x7 != 0;
     (slash, backslash)
 }
 
-/// 상자(셀) 안 문단들을 배치한다. origin은 텍스트 영역 좌상단(pt).
-/// 셀 내부 lineseg의 v_pos는 셀 텍스트 영역 상단 기준(본문과 동일 모델).
+/// Lay out paragraphs inside a box/cell; origin is the text area's top-left corner (pt).
+/// Cell lineseg v_pos is relative to the cell text-area top, matching the body model.
 #[allow(clippy::too_many_arguments)]
 fn layout_box_paragraphs(
     doc: &Document,
@@ -4591,12 +4668,13 @@ fn layout_box_paragraphs(
         page_number,
         0,
         None,
-        // This wrapper serves headers, footers, notes, captions and the cell measurement pass.
-        // The first four have no segment in the envelope `--segments v2` emits by default
+        // This wrapper serves headers, footers, notes and captions.
+        // These lists have no segment in the envelope `--segments v2` emits by default
         // (notes and captions never, headers and footers unless asked for), so a row would join
-        // to nothing, and a measurement page is scratch that no page ever receives.
+        // to nothing. Cell measurement calls layout_box_para_iter directly with no recorder.
         None,
         None,
+        false,
     )
 }
 
@@ -4609,6 +4687,24 @@ enum BoxParaSelection {
     All,
     Segments(std::ops::Range<usize>),
     Empty,
+}
+
+// Render-only cell caches are not serialized by synthesize_linesegs.
+fn compute_cell_render_linesegs(
+    store: &mut FontStore,
+    doc: &Document,
+    para: &Paragraph,
+    width: i32,
+    v: &mut i32,
+    warnings: &mut RenderIssueAccumulator,
+) -> Vec<hwp_model::LineSeg> {
+    // Keep paragraph margins within the rendered cell box. These temporary
+    // widths never change the prior full-width caches written to native files.
+    let shape = doc.header.para_shapes.get(para.para_shape.0 as usize);
+    let left = shape.map_or(0, |shape| shape.margin_left.max(0) / 2);
+    let right = shape.map_or(0, |shape| shape.margin_right.max(0) / 2);
+    let width = width.saturating_sub(left).saturating_sub(right).max(1);
+    crate::lineseg::compute_box_linesegs(store, doc, para, width, v, warnings)
 }
 
 /// Iterator form of `layout_box_paragraphs`; it also accepts a column fragment.
@@ -4646,7 +4742,7 @@ fn layout_box_para_iter<'a>(
     doc: &Document,
     store: &mut FontStore,
     page: &mut PageList,
-    paras: impl Iterator<Item = (&'a Paragraph, BoxParaSelection)>,
+    paras: impl Iterator<Item = (&'a Paragraph, BoxParaSelection)> + Clone,
     origin_x: f32,
     origin_y: f32,
     width: f32,
@@ -4663,10 +4759,16 @@ fn layout_box_para_iter<'a>(
     // the position, across all of its lists, of the first paragraph laid out here. `None`
     // records the paragraphs as a cell's.
     drawing: Option<(usize, usize)>,
+    cacheless_cells: bool,
 ) -> f32 {
     let mut content_bottom = origin_y;
-    // 흐름 하한: 캐시 줄은 올리지 않고, 흐름 배치 콘텐츠만 올린다 (함수 doc 참고).
+    // Only flow-placed content raises this floor; saved cache positions stay authoritative.
     let mut flow_floor = origin_y;
+    let mut uncached_next_v = v_origin;
+    // A mixed list still uses its saved cache and existing flow-floor contract.
+    // Only wholly cache-less lists receive ephemeral synthesized geometry.
+    let synthesize_uncached =
+        cacheless_cells && paras.clone().all(|(para, _)| para.line_segs.is_empty());
     // Enumerated before the `Empty` skip: the index is the paragraph's own position in the
     // cell, which is what the envelope's path component for it is.
     for (para_index, (para, selection)) in paras.enumerate() {
@@ -4681,10 +4783,27 @@ fn layout_box_para_iter<'a>(
                 None => rec.begin_cell_paragraph(para_index, para, page),
             }
         }
+        let synthesized;
+        let was_uncached = para.line_segs.is_empty();
+        let line_segs = if synthesize_uncached && !para.chars.is_empty() {
+            let mut v = (((content_bottom - origin_y) * 100.0).round() as i32 + v_origin)
+                .max(uncached_next_v);
+            synthesized = compute_cell_render_linesegs(
+                store,
+                doc,
+                para,
+                (width * 100.0).round() as i32,
+                &mut v,
+                warnings,
+            );
+            synthesized.as_slice()
+        } else {
+            para.line_segs.as_slice()
+        };
         let mut para_top: Option<f32> = None;
         let tabs = crate::tab::tab_stops(doc, para);
         // Do not advance a list counter for a completely empty box paragraph.
-        let marker = if para.line_segs.is_empty() && para.chars.is_empty() {
+        let marker = if line_segs.is_empty() && para.chars.is_empty() {
             None
         } else {
             list_state
@@ -4692,7 +4811,7 @@ fn layout_box_para_iter<'a>(
                 .and_then(|ls| ls.marker_for_render(doc, para))
         };
 
-        if para.line_segs.is_empty() {
+        if line_segs.is_empty() {
             if para.chars.is_empty() {
                 content_bottom += 12.0;
             } else {
@@ -4726,8 +4845,8 @@ fn layout_box_para_iter<'a>(
                         rec.marker_drawn(page);
                     }
                 }
-                // 첫 줄 들여쓰기/내어쓰기 — 본문 폴백 경로와 같은 규칙
-                // (wrap 폭 미차감 — 좁은 셀 폭주 방지). 비정상 큰 양수는 방어 캡.
+                // First-line/hanging indent follows the body fallback rules.
+                // Do not reduce wrap width; cap extreme positive values to protect narrow cells.
                 let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
                 let first_indent = first_indent.min(avail * 0.8);
                 let rest_indent = rest_indent.min(avail * 0.8);
@@ -4745,7 +4864,7 @@ fn layout_box_para_iter<'a>(
                 } else {
                     (left + rest_indent, first_indent - rest_indent)
                 };
-                // 들여쓴 만큼 폭을 줄여 셀의 원래 오른쪽 끝(left + avail)을 유지한다.
+                // Reduce width by the indent to preserve the cell's original right edge (left + avail).
                 let wrap_width = (left + avail - x0).max(1.0);
                 let last_y = place_wrapped(
                     page,
@@ -4762,14 +4881,14 @@ fn layout_box_para_iter<'a>(
                 );
                 content_bottom = last_y + max_size * 0.4 + geom.spacing_bottom;
             }
-            // 폴백(캐시 없는) 문단은 흐름 배치 — 이후 캐시 문단이 넘지 않게 바닥을 올린다.
+            // Uncached paragraphs use flow layout; raise the floor so later cached paragraphs cannot overlap.
             flow_floor = flow_floor.max(content_bottom);
         } else {
-            let last_content = last_content_seg(para);
+            let last_content = last_content_seg_in(para, line_segs);
             let selected = match &selection {
-                BoxParaSelection::All => 0..para.line_segs.len(),
+                BoxParaSelection::All => 0..line_segs.len(),
                 BoxParaSelection::Segments(range) => {
-                    range.start.min(para.line_segs.len())..range.end.min(para.line_segs.len())
+                    range.start.min(line_segs.len())..range.end.min(line_segs.len())
                 }
                 BoxParaSelection::Empty => unreachable!("empty selections are skipped above"),
             };
@@ -4778,7 +4897,7 @@ fn layout_box_para_iter<'a>(
             // Clamping each line to the floor on its own would fold every line
             // of the paragraph onto the floor and re-create the overlap this
             // guard exists to remove (#222). Zero for a well-formed cache.
-            let para_shift = para.line_segs.get(selected.start).map_or(0.0, |first| {
+            let para_shift = line_segs.get(selected.start).map_or(0.0, |first| {
                 let v_pos = first.v_pos.saturating_sub(v_origin);
                 let stored = origin_y + (v_pos + first.baseline_gap) as f32 / 100.0;
                 (flow_floor + first.baseline_gap as f32 / 100.0 - stored).max(0.0)
@@ -4790,10 +4909,9 @@ fn layout_box_para_iter<'a>(
             let mut run_shift = 0.0f32;
             let mut previous_v: Option<i32> = None;
             for i in selected {
-                let seg = &para.line_segs[i];
+                let seg = &line_segs[i];
                 let line_start = seg.text_start;
-                let line_end = para
-                    .line_segs
+                let line_end = line_segs
                     .get(i + 1)
                     .map_or(para.wchar_len(), |next| next.text_start);
                 if line_end <= line_start {
@@ -4807,8 +4925,8 @@ fn layout_box_para_iter<'a>(
                 }
                 previous_v = Some(seg.v_pos);
                 let shift = para_shift + run_shift;
-                // 캐시 v_pos를 존중: 흐름 하한 위로만 보정(흐름 커서로 끌어내리지 않음).
-                // `para_shift`는 문단 전체를 같은 양만큼 내려 줄 간격을 보존한다.
+                // Respect cached v_pos, shifting only above the flow floor rather than forcing the flow cursor.
+                // para_shift moves the entire paragraph equally, preserving its line spacing.
                 let baseline_y = (stored + shift).max(flow_floor + gap_pt);
                 // Fail closed on a shift that would leave the container: the
                 // line is clipped rather than painted over the row below or
@@ -4839,7 +4957,7 @@ fn layout_box_para_iter<'a>(
                 );
                 let natural_width = items_width(&items, &tabs);
 
-                // 정렬 보정은 들여쓰기를 뺀 실제 글자 폭 기준이라 아래(indent 확정 후)에서 한다.
+                // Alignment uses width after subtracting indent, so compute it below after resolving indent.
                 let seg_width_pt = (seg.seg_width as f32 / 100.0).min(width);
                 let align = doc
                     .header
@@ -4874,11 +4992,11 @@ fn layout_box_para_iter<'a>(
                         }
                     }
                 }
-                // col_start는 좌여백만 담으므로 들여쓰기/내어쓰기는 여기서 준다.
+                // col_start contains only the left margin; apply first-line/hanging indent here.
                 let geom = para_geometry(doc, para);
                 let (first_indent, rest_indent) = line_indents(&geom, marker_advance);
                 let indent = if i == 0 { first_indent } else { rest_indent };
-                // 정렬·줄바꿈은 들여쓰기를 뺀 남은 폭 기준이어야 오른쪽 끝이 밀리지 않는다.
+                // Align and wrap within the post-indent width so the right edge does not move.
                 let text_width = (seg_width_pt - indent).max(1.0);
                 let shift = align_line(
                     &mut items,
@@ -4888,8 +5006,8 @@ fn layout_box_para_iter<'a>(
                     i == last_content,
                 );
                 let x = box_x + indent + shift;
-                // 본문 경로와 같은 규칙 (`CACHE_OVERFLOW_TOLERANCE`).
-                let wrap_width = if para.line_segs.len() == 1
+                // Match the body path's rule (CACHE_OVERFLOW_TOLERANCE).
+                let wrap_width = if line_segs.len() == 1
                     && natural_width > text_width * CACHE_OVERFLOW_TOLERANCE
                 {
                     text_width.max(4.0)
@@ -4907,22 +5025,22 @@ fn layout_box_para_iter<'a>(
                     wrap_width,
                     line_advance,
                     &tabs,
-                    0.0, // 줄 오프셋은 x에 이미 반영됨.
+                    0.0, // The line offset is already included in x.
                     &doc.header.border_fills,
                     None,
                     warnings,
                 );
                 content_bottom = last_y + (seg.line_height as f32 / 100.0 - gap_pt).max(0.0);
-                // 우리 줄바꿈이 캐시와 어긋나 이 줄이 캐시 자리 아래로 넘쳤다면(단일 seg
-                // 문단의 추가 줄바꿈 등) 흐름 하한을 올려 다음 캐시 문단 겹침을 막는다.
-                // 다중 seg 줄은 wrap_width=INFINITY → last_y == baseline_y → 올리지 않음.
+                // If our wrapping extends below the saved line (such as additional wrapping within
+                // a single-segment paragraph), raise the flow floor to prevent later cache overlap.
+                // Multiple segments use wrap_width=INFINITY, so last_y == baseline_y and the floor stays unchanged.
                 if last_y > baseline_y {
                     flow_floor = flow_floor.max(content_bottom);
                 }
             }
         }
 
-        // 셀 안의 중첩 표/이미지 — 바닥을 늘렸으면 흐름 하한도 올려 후속 캐시 문단 겹침 방지.
+        // Nested tables/images inside cells: raise the flow floor when objects extend the bottom.
         // A nested object belongs to the first fragment that contains this
         // paragraph.  Rendering it for every selected line range would
         // duplicate the object on continuation pages.
@@ -4967,17 +5085,26 @@ fn layout_box_para_iter<'a>(
         // would otherwise stack every paragraph of a cell on the first one
         // (#222). No-op for cell-cumulative caches, which already sit below.
         flow_floor = flow_floor.max(content_bottom);
+        if synthesize_uncached && was_uncached {
+            // Retain the prior nested-list cursor: line advance only. Body
+            // paragraph before/after gaps are not established for native cells.
+            if let Some(last) = line_segs.last() {
+                uncached_next_v = last
+                    .v_pos
+                    .saturating_add(crate::lineseg::paragraph_metrics(doc, para).advance);
+            }
+        }
     }
     content_bottom
 }
 
-/// 열 폭 확정: `col_span==1`로 못 정한 열을 병합 셀(`col_span>1`)에서 유도하고, 표의 실제
-/// 총 폭(행별 셀 폭 합의 최대)에 맞춰 스케일한다. 표 실제 폭이 가용 폭(`avail_width`,
-/// 본문/셀 폭)을 넘으면 가용 폭에 맞춰 축소한다(한글 동작). 병합 위주 표가 평균 폴백으로
-/// 페이지를 넘던 문제(잉크 초과)를 해소한다. 정상 표(실제 폭 ≤ 가용)는 s≈1이라 무영향.
+/// Derive unknown columns from merged cells (col_span>1) when no col_span==1 cell defines them.
+/// Scale widths to the table's actual width, the maximum sum of cell widths in any row.
+/// If that exceeds avail_width (body/cell width), shrink to fit, matching Hangul.
+/// This fixes merged tables overflowing pages under average fallback; normal tables retain s~1.
 fn derive_col_widths(col_w: &mut [f32], table: &Table, avail_width: f32) {
     let cols = col_w.len();
-    // 1) 병합 셀에서 미지 열 유도 (작은 병합 먼저 확정해야 큰 병합이 남은 미지에 정확히 배분).
+    // 1) Derive unknown columns from merged cells, processing smaller spans before larger spans.
     let mut spanning: Vec<_> = table.cells.iter().filter(|c| c.col_span > 1).collect();
     spanning.sort_by_key(|c| c.col_span);
     for cell in spanning {
@@ -4996,10 +5123,10 @@ fn derive_col_widths(col_w: &mut [f32], table: &Table, avail_width: f32) {
             }
         }
     }
-    // 2) 그래도 미지면 평균 폴백(기존 동작).
+    // 2) Average any columns still unknown, retaining the existing fallback.
     fill_unknown(col_w, 60.0);
-    // 3) 스케일 목표 = 표 실제 폭(유도 잔차 보정 + 안전망), 단 가용 폭 초과 시 가용 폭에
-    //    맞춘다(한글 축소 동작). 정상 표는 sum==table_width≤avail라 s=1.
+    // 3) Target the actual table width to correct derivation residuals, bounded by available width
+    // to match Hangul's shrinking behavior. Normal tables have sum==table_width<=avail and s=1.
     let mut target = table_true_width(table);
     if avail_width > 0.0 && target > avail_width {
         target = avail_width;
@@ -5013,7 +5140,7 @@ fn derive_col_widths(col_w: &mut [f32], table: &Table, avail_width: f32) {
     }
 }
 
-/// 표의 실제 총 폭(pt) = 행별 셀 폭 합의 최대(모든 열을 커버하는 행 = 표 폭).
+/// Actual table width in pt: maximum sum of cell widths per row, covering every column.
 fn table_true_width(table: &Table) -> f32 {
     let mut by_row: std::collections::HashMap<u16, f32> = std::collections::HashMap::new();
     for cell in &table.cells {
@@ -5047,17 +5174,18 @@ fn prefix_sums(values: &[f32], start: f32) -> Vec<f32> {
     out
 }
 
-/// 문단에서 텍스트가 있는(line_end>line_start) 마지막 seg 인덱스. 빈 trailing seg 방어.
+/// Index of the last text-bearing segment (line_end>line_start), ignoring empty trailing segments.
 fn last_content_seg(para: &Paragraph) -> usize {
-    let n = para.line_segs.len();
+    last_content_seg_in(para, &para.line_segs)
+}
+
+fn last_content_seg_in(para: &Paragraph, segs: &[hwp_model::LineSeg]) -> usize {
+    let n = segs.len();
     (0..n)
         .rev()
         .find(|&j| {
-            let ls = para.line_segs[j].text_start;
-            let le = para
-                .line_segs
-                .get(j + 1)
-                .map_or(para.wchar_len(), |s| s.text_start);
+            let ls = segs[j].text_start;
+            let le = segs.get(j + 1).map_or(para.wchar_len(), |s| s.text_start);
             le > ls
         })
         .unwrap_or(n.saturating_sub(1))
@@ -5164,26 +5292,26 @@ fn justify_line(items: &mut [InlineItem], slack: f32, spaces_first: bool, includ
     }
 }
 
-/// 문단 기하(pt) — 폴백 경로에서 적용할 들여쓰기/여백/간격.
-/// (캐시 lineseg 경로는 col_start/v_pos에 이미 반영돼 있어 쓰지 않는다.)
+/// Paragraph geometry in pt: indentation, margins and gaps for fallback layout.
+/// Cached linesegs already encode these in col_start/v_pos, so that path does not use them.
 #[derive(Default, Clone, Copy)]
 struct ParaGeom {
-    /// 왼쪽 여백(margin_left만 — 들여쓰기는 first_indent로 분리).
+    /// Left margin only (margin_left); indentation is separate in first_indent.
     left: f32,
     right: f32,
-    /// 첫 줄 들여쓰기(양수) / 내어쓰기(음수 허용 — 첫 줄이 나머지보다 왼쪽).
-    /// wrap 폭에선 빼지 않는다 — 좁은 셀에서 avail이 붕괴해 글자마다 줄바꿈되는
-    /// 폭주 방지(work_report 실측). 페이지 좌변 밖 클램프는 배치 지점에서 한다.
+    /// Positive first-line indent or negative hanging indent, placing the first line farther left.
+    /// Do not subtract this from wrap width: narrow cells would collapse avail and wrap every glyph,
+    /// as measured in work_report. Clamp against the page's left edge where placement occurs.
     first_indent: f32,
     spacing_top: f32,
     spacing_bottom: f32,
 }
 
-/// 문단 배경/테두리(ParaShape.border_fill_id → BorderFill)의 한 페이지 조각을 그린다 —
-/// 셀 배경 패스의 문단판. 배경 Rect는 `insert_idx`(그 페이지의 문단 텍스트 시작 지점)에
-/// 삽입해 글자 뒤로 보내고, 테두리 선은 위에 얹는다. `left`/`width`는 이미 들여쓰기(geom)와
-/// 단 오프셋을 반영한 상자의 좌변/폭. 문단이 페이지를 걸치면 조각마다 이 함수가 호출되며,
-/// 걸친 경계쪽 상/하변 테두리는 `draw_top`/`draw_bottom`을 false로 주어 긋지 않는다(GC-9).
+/// Draw one page fragment of a paragraph background/border (ParaShape.border_fill_id -> BorderFill).
+/// This is the paragraph equivalent of the cell background pass. Insert its background Rect at
+/// insert_idx (the paragraph text start on this page), behind text, then overlay border lines.
+/// left/width already account for paragraph geometry and column offset. For a paragraph crossing
+/// pages, omit the boundary-facing borders via draw_top/draw_bottom=false (GC-9).
 /// `#[must_use]`: the return value is the insert count every caller has to hand to
 /// `SegmentRecorder::items_inserted`. Dropping it silently misattributes every item recorded
 /// after the insert on that page, so the compiler is made to object to a call that ignores it.
@@ -5212,14 +5340,14 @@ fn draw_para_bg_slice(
     let Some(ps) = doc.header.para_shapes.get(para.para_shape.0 as usize) else {
         return inserted;
     };
-    // border_fill_id는 1-based(0 = 참조 없음).
+    // border_fill_id is one-based; zero means no reference.
     let Some(idx) = (ps.border_fill_id as usize).checked_sub(1) else {
         return inserted;
     };
     let Some(bf) = doc.header.border_fills.get(idx) else {
         return inserted;
     };
-    // 배경(텍스트보다 뒤에 오도록 삽입).
+    // Insert the background behind text.
     if let Some(item) = bg_fill_item(bf, left, top, width, bottom - top) {
         let ins = insert_idx.min(page.items.len());
         if !warnings.charge_display_items(1) {
@@ -5245,14 +5373,14 @@ fn draw_para_bg_slice(
 }
 
 fn para_geometry(doc: &Document, para: &Paragraph) -> ParaGeom {
-    // IR의 PARA_SHAPE 여백류(margin/indent/spacing)는 2×HWPUNIT — hwp5 저장 단위
-    // (hwpx reader 실측 규칙: OWPML left=1500 → hwp5 ml=3000, read/header.rs 참조).
-    // pt 환산은 /200.
+    // IR PARA_SHAPE margins/indent/spacing use twice HWPUNIT, matching HWP5 storage.
+    // Measured HWPX reader rule: OWPML left=1500 becomes HWP5 ml=3000; see read/header.rs.
+    // Convert to pt by dividing by 200.
     match doc.header.para_shapes.get(para.para_shape.0 as usize) {
         Some(p) => ParaGeom {
             left: (p.margin_left as f32 / 200.0).max(0.0),
             right: (p.margin_right as f32 / 200.0).max(0.0),
-            // 내어쓰기(음수)를 보존한다 — 첫 줄 배치에서만 쓰고 페이지 좌변으로 클램프.
+            // Preserve negative hanging indent; apply it only to the first line and clamp at the page left edge.
             first_indent: p.indent as f32 / 200.0,
             spacing_top: (p.spacing_top as f32 / 200.0).max(0.0),
             spacing_bottom: (p.spacing_bottom as f32 / 200.0).max(0.0),
@@ -5288,7 +5416,7 @@ fn items_width(items: &[InlineItem], tabs: &[TabStop]) -> f32 {
                     None => position,
                 };
             }
-            InlineItem::LineBreak(_) => x = 0.0, // 새 줄 시작
+            InlineItem::LineBreak(_) => x = 0.0, // Start a new line.
         }
         idx += 1;
     }
@@ -5687,7 +5815,7 @@ fn place_wrapped(
     if let Some(lines) = lines.as_deref_mut() {
         lines.push((page.items.len(), first_baseline_y));
     }
-    // 첫 줄만 들여쓰기/내어쓰기(first_indent). 이후 줄·줄바꿈은 x0(문단 좌여백)로 복귀.
+    // Apply first_indent only to the first line; subsequent and broken lines return to x0 (left margin).
     let mut x = x0 + first_indent;
     let mut y = first_baseline_y;
     let mut previous_no_break = false;
@@ -5923,13 +6051,13 @@ mod page_number_layout_tests {
         })
     }
 
-    /// Hangul inserts 쪽 번호 매기기 wherever the caret was, so genuine documents
+    /// Hangul inserts page numbering wherever the caret was, so genuine documents
     /// carry `pgnp`/`nwno` inside a text box's paragraph list rather than in the
     /// body flow. The page-level state must still pick them up.
     #[test]
     fn 중첩_문단_리스트의_쪽번호_컨트롤도_적용된다() {
         let mut pgnp = vec![0u8; 12];
-        pgnp[..4].copy_from_slice(&(5u32 << 8).to_le_bytes()); // 아래 가운데
+        pgnp[..4].copy_from_slice(&(5u32 << 8).to_le_bytes()); // Bottom center.
         pgnp[10..12].copy_from_slice(&(u16::from(b'-')).to_le_bytes());
         let mut nwno = vec![0u8; 8];
         nwno[4..6].copy_from_slice(&7u16.to_le_bytes());
@@ -5983,17 +6111,17 @@ mod para_geom_tests {
             ..Paragraph::default()
         };
         let g = para_geometry(&doc, &para);
-        // IR 여백류는 2×HWPUNIT → /200. 들여쓰기는 left와 분리(first_indent).
+        // IR margins use twice HWPUNIT, so divide by 200; keep indentation separate from left.
         assert_eq!(g.left, 20.0); // margin_left 4000 / 200
         assert_eq!(g.first_indent, 15.0); // indent 3000 / 200
         assert_eq!(g.right, 10.0);
         assert_eq!(g.spacing_top, 6.0);
         assert_eq!(g.spacing_bottom, 3.0);
-        // 음수 들여쓰기(내어쓰기)는 보존한다(첫 줄이 나머지보다 왼쪽). /200.
+        // Preserve negative hanging indent: the first line is farther left; divide by 200.
         doc.header.para_shapes[0].indent = -1000;
         assert_eq!(para_geometry(&doc, &para).first_indent, -5.0);
         assert_eq!(para_geometry(&doc, &para).left, 20.0);
-        // para_shape 범위 밖이면 0.
+        // An out-of-range para_shape yields zero.
         let p2 = Paragraph {
             para_shape: ParaShapeId(99),
             ..Paragraph::default()
@@ -6003,22 +6131,22 @@ mod para_geom_tests {
 
     #[test]
     fn 줄_들여쓰기는_내어쓰기_구간을_텍스트_영역_안에_둔다() {
-        // 들여쓰기(양수): 첫 줄만 밀고 이후 줄은 줄상자 왼쪽.
+        // Positive indent shifts only the first line; later lines start at the line box's left edge.
         let indent = ParaGeom {
             first_indent: 15.0,
             ..ParaGeom::default()
         };
         assert_eq!(line_indents(&indent, 0.0), (15.0, 0.0));
-        // 내어쓰기(음수, 마커 없음): 첫 줄은 줄상자 왼쪽, 이후 줄만 내어쓰기 폭만큼.
+        // Negative indent without a marker: first line starts at the box left, later lines use the hanging offset.
         let hanging = ParaGeom {
             first_indent: -14.0,
             ..ParaGeom::default()
         };
         assert_eq!(line_indents(&hanging, 0.0), (0.0, 14.0));
-        // 마커가 있으면 첫 줄 글자는 마커를 비켜간다(최소 내어쓰기 폭).
+        // With a marker, first-line text clears its width, at least the hanging-indent width.
         assert_eq!(line_indents(&hanging, 9.0), (14.0, 14.0));
         assert_eq!(line_indents(&hanging, 20.0), (20.0, 14.0));
-        // 내어쓰기 없는 목록도 마커와 겹치지 않는다.
+        // Lists without hanging indent must still avoid overlapping their marker.
         assert_eq!(line_indents(&ParaGeom::default(), 9.0), (9.0, 0.0));
     }
 }
@@ -6029,15 +6157,15 @@ mod diagonal_tests {
 
     #[test]
     fn 대각선_방향_비트() {
-        // 둘 다 0 → 대각선 없음.
+        // Both zero means no diagonals.
         assert_eq!(diagonal_dirs(0), (false, false));
-        // 3D/그림자(bit0,1)만 켜져도 대각선 아님.
+        // Setting only 3D/shadow bits0-1 does not enable diagonals.
         assert_eq!(diagonal_dirs(0b11), (false, false));
         // slash(bit2~4) → `/`.
         assert_eq!(diagonal_dirs(0x4), (true, false));
         // backSlash(bit5~7) → `\`.
         assert_eq!(diagonal_dirs(0x20), (false, true));
-        // 둘 다(X자).
+        // Both diagonals, forming an X.
         assert_eq!(diagonal_dirs(0x4 | 0x20), (true, true));
     }
 }
@@ -6106,7 +6234,7 @@ mod justify_tests {
 
     #[test]
     fn 양쪽정렬_잉여를_글자사이에_분배() {
-        // natural 30, seg_width 45 → slack 15, 마지막 제외 2개에 7.5씩.
+        // Natural width 30, segment width 45: divide 15 slack equally over two non-final gaps (7.5 each).
         let mut items = vec![run(&[10.0, 10.0, 10.0])];
         let shift = align_line(&mut items, 0, 45.0, 30.0, false);
         assert_eq!(shift, 0.0);
@@ -6126,7 +6254,7 @@ mod justify_tests {
 
     #[test]
     fn 공백이_있으면_공백에만_분배() {
-        // "ab cd" 5글자, glyph 5개. 공백(인덱스2)에만 slack 전부.
+        // Five glyphs for "ab cd"; assign all slack to the space at index 2.
         let mut items = vec![run_t("ab cd", &[10.0, 10.0, 5.0, 10.0, 10.0])];
         align_line(&mut items, 0, 60.0, 45.0, false); // slack 15
         if let InlineItem::Run(r) = &items[0] {
@@ -6139,11 +6267,11 @@ mod justify_tests {
 
     #[test]
     fn 후행_공백엔_분배안함() {
-        // "ab " 끝 공백 → 보이는 텍스트가 끝까지 닿도록 공백 없는 줄처럼 전 글자 분배.
+        // A trailing space in "ab ": distribute over visible glyphs as if no space, reaching the line end.
         let mut items = vec![run_t("ab ", &[10.0, 10.0, 5.0])];
         align_line(&mut items, 0, 40.0, 25.0, false); // slack 15
         if let InlineItem::Run(r) = &items[0] {
-            // 후행 공백(idx2)은 분배 제외, last_visible=1 → gap 1개(idx0)에 15.
+            // Exclude trailing space at index 2; last_visible=1 leaves one gap, giving index 0 all 15 slack.
             assert!(
                 (r.glyphs[0].x_advance - 25.0).abs() < 0.01,
                 "{}",
@@ -6289,11 +6417,11 @@ mod table_width_tests {
         }
     }
 
-    /// 병합 셀만 커버하는 열(col_span==1 셀 없음)이 병합 셀 폭에서 유도돼야 한다.
+    /// Columns covered only by merged cells must derive widths from those cells (no col_span==1 cell).
     #[test]
     fn 병합_열_폭_유도() {
         // row0: [col0 span2 w=200pt][col2 span1 w=100pt]
-        // row1: [col0 span1 w=80pt][col1 span2 w=220pt]  → col1은 병합 셀에서만 유도.
+        // row1: [col0 span1 w=80pt][col1 span2 w=220pt]; only the merged cell defines col1.
         let cells = vec![
             cell(0, 0, 2, 20000),
             cell(2, 0, 1, 10000),
@@ -6301,16 +6429,16 @@ mod table_width_tests {
             cell(1, 1, 2, 22000),
         ];
         let t = table(2, 3, cells);
-        // layout_table와 동일하게 col_span==1로 초기화.
+        // Initialize from col_span==1 cells, matching layout_table.
         let mut col_w = vec![0.0f32; 3];
         for c in &t.cells {
             if c.col_span == 1 {
                 col_w[c.col as usize] = col_w[c.col as usize].max(c.width.to_pt() as f32);
             }
         }
-        assert_eq!(col_w, vec![80.0, 0.0, 100.0]); // col1 미지
+        assert_eq!(col_w, vec![80.0, 0.0, 100.0]); // col1 is unknown.
 
-        derive_col_widths(&mut col_w, &t, f32::MAX); // 캡 무발동
+        derive_col_widths(&mut col_w, &t, f32::MAX); // Do not trigger the cap.
         assert!((col_w[1] - 120.0).abs() < 0.01, "col1 유도값: {col_w:?}");
         assert!(col_w.iter().all(|w| *w > 0.0), "미지 열 없어야: {col_w:?}");
         assert!(
@@ -6319,7 +6447,7 @@ mod table_width_tests {
         );
     }
 
-    /// 정상 표(전부 col_span==1)는 열 폭이 불변이어야 한다(스케일 s=1).
+    /// Normal tables containing only col_span==1 cells must preserve their widths (scale s=1).
     #[test]
     fn 정상_표_열폭_불변() {
         let cells = vec![
@@ -6329,11 +6457,11 @@ mod table_width_tests {
         ];
         let t = table(1, 3, cells);
         let mut col_w = vec![100.0f32, 150.0, 50.0];
-        derive_col_widths(&mut col_w, &t, f32::MAX); // 캡 무발동
+        derive_col_widths(&mut col_w, &t, f32::MAX); // Do not trigger the cap.
         assert_eq!(col_w, vec![100.0, 150.0, 50.0]);
     }
 
-    /// 표 실제 폭(300pt)이 가용 폭(150pt)을 넘으면 가용 폭에 맞춰 축소하되 비율 유지.
+    /// Shrink a 300pt actual table width to 150pt available width while preserving proportions.
     #[test]
     fn 본문폭_초과_표_축소() {
         let cells = vec![
@@ -6341,12 +6469,12 @@ mod table_width_tests {
             cell(1, 0, 1, 15000),
             cell(2, 0, 1, 5000),
         ];
-        let t = table(1, 3, cells); // 실제 폭 300pt
+        let t = table(1, 3, cells); // Actual width is 300pt.
         let mut col_w = vec![100.0f32, 150.0, 50.0];
         derive_col_widths(&mut col_w, &t, 150.0);
         let sum: f32 = col_w.iter().sum();
         assert!((sum - 150.0).abs() < 0.5, "가용 폭 150pt로 축소: {col_w:?}");
-        // 상대 비율 2:3:1 유지.
+        // Preserve relative proportions 2:3:1.
         assert!((col_w[0] - 50.0).abs() < 0.5, "{col_w:?}");
         assert!((col_w[1] - 75.0).abs() < 0.5, "{col_w:?}");
         assert!((col_w[2] - 25.0).abs() < 0.5, "{col_w:?}");
@@ -6517,7 +6645,7 @@ mod certification_budget_tests {
             rotation: None,
             brightness: 0,
             contrast: 0,
-            effect_flags: 0x1, // 그림자 효과
+            effect_flags: 0x1, // Shadow effect.
             effects_raw: vec![1, 0, 0, 0],
             caption: None,
             bin_ref: BinRef::ItemRef("fx-image".to_string()),
@@ -7362,7 +7490,7 @@ mod decor_tests {
 
     #[test]
     fn emits_emphasis_marks_per_nonblank_glyph() {
-        // Three glyphs for "가 나" produce two marks because whitespace is skipped.
+        // Three glyphs for a syllable-space-syllable sequence produce two marks because whitespace is skipped.
         let mut run = dummy_run("가 나", 3);
         run.emphasis = 1; // DOT_ABOVE
         let page = place(run, &[]);
@@ -7575,5 +7703,59 @@ mod cell_split_plan_tests {
             cached_cell_split_plan(&cell, 0.0, 634.82, 654.80, 2.82).expect("two-run cached plan");
         let heights: Vec<f32> = plan.groups.iter().map(|group| group.height).collect();
         assert_eq!(heights, vec![500.0, 130.0, 370.0]);
+    }
+}
+
+#[cfg(test)]
+mod cell_render_cache_tests {
+    #[test]
+    fn ephemeral_cell_line_box_respects_both_paragraph_margins() {
+        let mut doc = hwp_convert::from_markdown("Margin cell\n");
+        let para = &doc.sections[0].paragraphs[0];
+        let shape = &mut doc.header.para_shapes[para.para_shape.0 as usize];
+        shape.margin_left = 2000;
+        shape.margin_right = 4000;
+        let para = &doc.sections[0].paragraphs[0];
+        let mut store = crate::FontStore::new_isolated();
+        let mut warnings = crate::RenderIssueAccumulator::new();
+        let width = 10000;
+        let lines = super::compute_cell_render_linesegs(
+            &mut store,
+            &doc,
+            para,
+            width,
+            &mut 0,
+            &mut warnings,
+        );
+        assert!(!lines.is_empty(), "exercise the render-only cell cache");
+        for line in &lines {
+            assert!(
+                line.col_start >= 1000,
+                "line stays after the left paragraph margin"
+            );
+            assert!(
+                line.col_start + line.seg_width <= width - 2000,
+                "render-only line box must stay before the right paragraph margin: {} + {} > {}",
+                line.col_start,
+                line.seg_width,
+                width - 2000
+            );
+        }
+        let native = crate::lineseg::compute_box_linesegs(
+            &mut store,
+            &doc,
+            para,
+            width,
+            &mut 0,
+            &mut warnings,
+        );
+        assert_eq!(
+            native[0].seg_width, width,
+            "native synthesis retains its prior full-width bytes"
+        );
+        assert_eq!(
+            native[0].col_start, 1000,
+            "native synthesis retains its prior col_start"
+        );
     }
 }
