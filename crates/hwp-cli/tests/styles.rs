@@ -336,6 +336,79 @@ fn an_absent_or_unrecognized_hwpx_style_type_is_reported_as_unknown() {
     assert_eq!(hwp5.iter().find(|(i, _)| *i == 1).unwrap().1, "paragraph");
 }
 
+/// An HWPX whose styles have no usable `type` keeps them unknown through both HWPX routes, and
+/// `edit --verify` accepts the result (T27-F4, the HWPX side).
+///
+/// `edit` to `.hwpx` copies an unchanged header from the source package, so by itself it never
+/// asks the writer anything; `convert --to hwpx` re-serializes the header and is the route that
+/// does. A writer that gave an unstated style a `type="PARA"` would make the converted document
+/// read back as a stated paragraph style.
+///
+/// The HWP5 side of this finding is covered at the signature level in `commands::edit::tests`:
+/// an HWPX to `.hwp` `edit --verify` fails today for every HWPX (the released 1.3.1 binary too)
+/// on header and package differences that have nothing to do with styles, so a CLI test cannot
+/// isolate the flag on that route.
+#[test]
+fn typeless_hwpx_styles_stay_unknown_through_edit_verify_and_convert() {
+    let source = sample_with_edited_header("verify-typeless.hwpx", |xml| {
+        let xml = xml.replacen(r#"<hh:style id="1" type="PARA""#, r#"<hh:style id="1""#, 1);
+        xml.replacen(
+            r#"<hh:style id="2" type="PARA""#,
+            r#"<hh:style id="2" type="BOGUS""#,
+            1,
+        )
+    });
+    let expect_unknown = |file: &PathBuf, route: &str| {
+        let listed = kinds(&styles(file));
+        let kind_of = |id: u64| listed.iter().find(|(i, _)| *i == id).unwrap().1.clone();
+        assert!(
+            kind_of(1).is_null(),
+            "{route}: absent type: {:?}",
+            kind_of(1)
+        );
+        assert!(
+            kind_of(2).is_null(),
+            "{route}: unrecognized type: {:?}",
+            kind_of(2)
+        );
+        assert_eq!(kind_of(0), "paragraph", "{route}");
+        assert_eq!(kind_of(12), "character", "{route}");
+    };
+
+    // edit --verify to .hwpx: accepted, and the kinds are as they were.
+    let edited = source.with_file_name("verify-typeless-edited.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&edited)
+        .args(["--set-meta", "title=검증", "--verify"])
+        .output()
+        .expect("run hwp edit");
+    assert!(
+        run.status.success(),
+        "--verify must accept a faithful HWPX write: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    expect_unknown(&edited, "edit --verify");
+
+    // convert --to hwpx re-serializes the header through the HWPX writer.
+    let converted = source.with_file_name("verify-typeless-converted.hwpx");
+    let run = hwp()
+        .arg("convert")
+        .arg(&source)
+        .args(["--to", "hwpx", "-o"])
+        .arg(&converted)
+        .output()
+        .expect("run hwp convert");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    expect_unknown(&converted, "convert --to hwpx");
+}
+
 /// A genuine file saved by Hangul has one character style, `쪽 번호`.
 #[test]
 fn a_genuine_character_style_is_listed_as_one() {

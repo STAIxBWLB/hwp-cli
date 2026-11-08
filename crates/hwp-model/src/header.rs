@@ -398,8 +398,10 @@ pub struct Style {
     pub attr: u8,
     /// The source did not state the kind: an HWPX `hh:style` with no `type`, or one this reader
     /// does not recognize. `attr` is then 0 only so that an HWP5 record never carries a reserved
-    /// value, and 0 must not be read as "paragraph". It is not part of the HWP5 record, which has
-    /// no way to say it, so it does not survive a write to HWP5; the HWPX writer writes `PARA`.
+    /// value, and 0 must not be read as "paragraph". The flag is not part of the HWP5 record,
+    /// which has no way to say it: after a write to HWP5 it reads back as attr 0, a paragraph
+    /// style, and the `--verify` projection for an HWP5 target drops it for that reason. The HWPX
+    /// writer writes the style back without a `type`, and the HWPX reader restores the flag.
     #[serde(default, skip_serializing_if = "is_false")]
     pub kind_unknown: bool,
     pub next_style: u8,
