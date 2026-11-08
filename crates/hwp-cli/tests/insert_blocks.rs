@@ -1451,3 +1451,217 @@ fn ordered_component_used_level_two_matching_default_ladder_succeeds() {
 fn ordered_component_used_level_one_digit_format_requires_hwpx() {
     ordered_used_level_case(1);
 }
+
+fn official_source(fixture: &Fixture) -> (PathBuf, Document) {
+    let input = fixture.dir.join("official.md");
+    std::fs::write(
+        &input,
+        "Official opening.\n\n1. Official numbered item.\n\nOfficial ending.\n",
+    )
+    .unwrap();
+    let source = fixture.dir.join("official-source.hwpx");
+    success(
+        hwp()
+            .args(["new", "--from"])
+            .arg(&input)
+            .args(["--preset", "official", "--output"])
+            .arg(&source)
+            .output()
+            .unwrap(),
+        "existing official-profile HWPX creation",
+    );
+    let doc = read(&source);
+    assert_ne!(doc.meta.source_format, "hwp5");
+    assert!(
+        doc.header.numberings.is_empty(),
+        "real HWPX source must not supply raw HWP numbering records"
+    );
+    assert!(
+        hwp5::numbering::is_official_eight_level_contract(&doc.header.numbering_levels),
+        "official HWPX must carry the eight-level semantic contract"
+    );
+    (source, doc)
+}
+
+fn official_insert(doc: &Document, text: &str, list_kind: Option<&str>) -> Value {
+    let style = &doc.header.styles[doc.sections[0].paragraphs[0].style.0 as usize].name;
+    let mut paragraph = block(style, text);
+    if list_kind.is_some() {
+        paragraph["list"] = json!({"name":"component-official-list","level":0});
+    }
+    let mut operation = insert(
+        json!({"at":{"section":0,"paragraph":0}}),
+        "after",
+        "refuse",
+        json!({}),
+        json!([paragraph]),
+    );
+    if let Some(kind) = list_kind {
+        operation["lists"] = json!({"component-official-list":{"kind":kind,"levels":[{"marker":if kind == "ordered" { "{n}." } else { "•" },"start":1}]}});
+    }
+    operation
+}
+
+fn assert_official_hwp_numbering(doc: &Document, expected_count: usize) {
+    assert!(hwp5::numbering::is_official_eight_level_contract(
+        &doc.header.numbering_levels
+    ));
+    assert_eq!(doc.header.numberings.len(), expected_count);
+    let expected = hwp5::numbering::official_eight_level_data();
+    for record in &doc.header.numberings {
+        assert_eq!(
+            record.data, expected,
+            "generated HWP must retain the bounded official numbering record bytes"
+        );
+        assert!(record.children.is_empty());
+    }
+}
+
+fn official_native_control(fixture: &Fixture, source: &Path) -> Document {
+    let output = fixture.dir.join("official-control.hwp");
+    success(
+        hwp()
+            .arg("convert")
+            .arg(source)
+            .arg("-o")
+            .arg(&output)
+            .output()
+            .unwrap(),
+        "existing official HWPX to HWP conversion without insertion",
+    );
+    let control = read(&output);
+    assert!(
+        !control.header.numberings.is_empty(),
+        "native control must materialize official numbering records"
+    );
+    assert_official_hwp_numbering(&control, control.header.numberings.len());
+    control
+}
+
+#[test]
+fn official_hwpx_ordered_insertion_to_hwp_refuses_before_changing_existing_numbering() {
+    let fixture = Fixture::new("official-ordered-hwp", "hwp");
+    let (source, before) = official_source(&fixture);
+    let _native_control = official_native_control(&fixture, &source);
+    let diagnostic = fixture.refuse(
+        &source,
+        "official-ordered-refused",
+        json!([official_insert(
+            &before,
+            "Official ordered insertion.",
+            Some("ordered")
+        )]),
+        false,
+    );
+    assert!(
+        diagnostic.contains("8")
+            && diagnostic.contains("기존")
+            && diagnostic.contains("번호")
+            && diagnostic.contains("변경")
+            && diagnostic.contains("HWPX"),
+        "ordered insertion must explain that HWP would change existing official eight-level numbering and offer HWPX: {diagnostic}"
+    );
+}
+
+#[test]
+fn official_hwpx_text_insertion_to_hwp_retains_official_record_bytes() {
+    let fixture = Fixture::new("official-text-hwp", "hwp");
+    let (source, before) = official_source(&fixture);
+    let native_control = official_native_control(&fixture, &source);
+    let source_bytes = std::fs::read(&source).unwrap();
+    let (output, run) = fixture.edit(
+        &source,
+        "official-text-inserted",
+        json!([official_insert(&before, "Official text insertion.", None)]),
+        false,
+    );
+    success(
+        run,
+        "text-only insertion preserves official numbering HWP path",
+    );
+    let after = read(&output);
+    assert_eq!(index(&after, "Official text insertion."), 1);
+    assert_official_hwp_numbering(&after, native_control.header.numberings.len());
+    assert_eq!(after.header.numberings, native_control.header.numberings);
+    assert_eq!(
+        after.header.numbering_levels,
+        native_control.header.numbering_levels
+    );
+    assert!(std::fs::read(&source).unwrap() == source_bytes);
+}
+
+#[test]
+fn official_hwpx_ordered_insertion_to_hwpx_preserves_existing_definitions() {
+    let fixture = Fixture::new("official-ordered-hwpx", "hwpx");
+    let (source, before) = official_source(&fixture);
+    let source_bytes = std::fs::read(&source).unwrap();
+    let (output, run) = fixture.edit(
+        &source,
+        "official-ordered-inserted",
+        json!([official_insert(
+            &before,
+            "Official ordered insertion.",
+            Some("ordered")
+        )]),
+        false,
+    );
+    success(
+        run,
+        "HWPX ordered insertion retains existing official definitions",
+    );
+    let after = read(&output);
+    let count = before.header.numbering_levels.len();
+    assert_eq!(after.header.numbering_levels.len(), count + 1);
+    assert_eq!(
+        &after.header.numbering_levels[..count],
+        &before.header.numbering_levels
+    );
+    let item = paragraph(&after, "Official ordered insertion.");
+    let shape = &after.header.para_shapes[item.para_shape.0 as usize];
+    assert_eq!(shape.head_type(), 2);
+    assert_eq!(usize::from(shape.numbering_id), count);
+    assert_eq!(after.header.numbering_levels[count][0].template, "^1.");
+    assert_eq!(after.header.numbering_levels[count][0].start, 1);
+    assert!(std::fs::read(&source).unwrap() == source_bytes);
+}
+
+#[test]
+fn official_hwpx_bullet_insertion_to_hwp_grows_only_bullets_and_retains_official_record() {
+    let fixture = Fixture::new("official-bullet-hwp", "hwp");
+    let (source, before) = official_source(&fixture);
+    let native_control = official_native_control(&fixture, &source);
+    let source_bytes = std::fs::read(&source).unwrap();
+    let (output, run) = fixture.edit(
+        &source,
+        "official-bullet-inserted",
+        json!([official_insert(
+            &before,
+            "Official bullet insertion.",
+            Some("bullet")
+        )]),
+        false,
+    );
+    success(
+        run,
+        "bullet insertion does not replace official ordered definitions",
+    );
+    let after = read(&output);
+    assert_official_hwp_numbering(&after, native_control.header.numberings.len());
+    assert_eq!(after.header.numberings, native_control.header.numberings);
+    assert_eq!(
+        after.header.numbering_levels,
+        native_control.header.numbering_levels
+    );
+    assert_eq!(
+        after.header.bullet_chars.len(),
+        before.header.bullet_chars.len() + 1
+    );
+    let item = paragraph(&after, "Official bullet insertion.");
+    let shape = &after.header.para_shapes[item.para_shape.0 as usize];
+    assert_eq!(shape.head_type(), 3);
+    assert_eq!(
+        after.header.bullet_chars[usize::from(shape.numbering_id)],
+        '•'
+    );
+    assert!(std::fs::read(&source).unwrap() == source_bytes);
+}
