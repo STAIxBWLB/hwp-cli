@@ -115,7 +115,7 @@ fn floating_table_in_another_section_does_not_change_inline_caches() {
 }
 
 #[test]
-fn wholly_uncached_cells_preserve_paragraph_margins_and_spacing() {
+fn wholly_uncached_cells_keep_prior_nested_cache_convention() {
     let mut source = hwp_convert::from_markdown("Anchor\n");
     let fill_color = 0x0034_5678;
     let fill = add_fill(&mut source, fill_color);
@@ -153,22 +153,22 @@ fn wholly_uncached_cells_preserve_paragraph_margins_and_spacing() {
     let second = &outer.cells[0].paragraphs[1].line_segs[0];
     assert_eq!(first.col_start, 1000, "left paragraph margin must survive");
     assert_eq!(
-        first.seg_width, 16800,
-        "both horizontal margins reduce cell line width"
+        first.seg_width, 19800,
+        "prior nested synthesis uses the supplied cell width without paragraph-margin narrowing"
     );
     assert_eq!(
-        first.v_pos, 500,
-        "space before the first paragraph must survive"
+        first.v_pos, 0,
+        "prior nested synthesis does not apply body space-before to a cell"
     );
     assert_eq!(
         second.v_pos - first.v_pos,
-        2800,
-        "line advance, previous after-spacing and next before-spacing are additive"
+        1600,
+        "prior nested synthesis accumulates line advance without body paragraph gaps"
     );
     assert_eq!(uncached.len(), 1);
     assert!(
-        (uncached[0].3 - 45.0).abs() < 0.01,
-        "C2 row height includes paragraph gaps but no final after-spacing: {uncached:?}"
+        (uncached[0].3 - 28.0).abs() < 0.01,
+        "prior nested convention ends the row at the last line bottom: {uncached:?}"
     );
     let synthesized = rectangles(&layout(&cached), fill_color);
     assert_eq!(synthesized.len(), 1);
@@ -338,4 +338,24 @@ fn first_line_pushed_after_floating_table_uses_resolved_page_anchor() {
         cached_pages, source_pages,
         "conversion must retain the resolved page anchor"
     );
+}
+
+#[test]
+fn explicit_break_space_before_agrees_in_inline_and_floating_sections() {
+    // This is an internal consistency rule, not Hangul-open evidence.
+    for floating in [false, true] {
+        let mut source = hwp_convert::from_markdown("Anchor\n\nHeading\n");
+        let mut heading_shape = source.header.para_shapes[source.sections[0].paragraphs[1].para_shape.0 as usize].clone();
+        heading_shape.spacing_top = 2400;
+        source.header.para_shapes.push(heading_shape);
+        source.sections[0].paragraphs[1].para_shape = hwp_model::ParaShapeId((source.header.para_shapes.len() - 1) as u16);
+        source.sections[0].paragraphs[1].header.break_type |= 0x04;
+        let fill = add_fill(&mut source, 0x0002_3456);
+        let mut object = table(Vec::new(), fill, 1200);
+        object.placement.as_mut().unwrap().treat_as_char = !floating;
+        source.sections[0].paragraphs[0].controls.push(Control::Table(object));
+        synthesize(&mut source);
+        assert_eq!(source.sections[0].paragraphs[1].line_segs[0].v_pos, 0,
+            "explicit-break space-before must be omitted in both section paths (floating={floating})");
+    }
 }
