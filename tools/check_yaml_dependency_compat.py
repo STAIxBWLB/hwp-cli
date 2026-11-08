@@ -49,7 +49,7 @@ def main():
         quote = lambda value: json.dumps(str(value), ensure_ascii=False)
         manifest = '\n'.join([
             '[package]', 'name = "hwp-yaml-dependency-compat"', 'version = "0.0.0"',
-            'edition = "2024"', 'publish = false', '', '[workspace]', '', '[dependencies]',
+            'edition = "2024"', 'rust-version = "1.93"', 'publish = false', '', '[workspace]', '', '[dependencies]',
             *[f'{name} = {{ path = {quote(ROOT / "crates" / name)} }}' for name in ["hwp-cli", "hwp-model", "hwp5", "hwpx"]],
             'yaml_legacy = { package = "serde_yaml", version = "=0.9.34" }',
             f'yaml_candidate = {{ package = "serde_norway", version = "={versions["serde_norway"]}" }}',
