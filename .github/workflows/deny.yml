@@ -1,0 +1,32 @@
+name: Dependency policy
+
+# cargo-deny (advisories, bans, licenses, sources; policy in deny.toml). It blocks releases
+# only: release.yml calls this workflow as a prerequisite of create-release. It is not a pull
+# request check, because a new advisory against an unchanged lockfile must not turn an
+# unrelated PR red. It runs on a schedule (advisories appear without any commit), when the
+# lockfile or the policy changes on main, on demand, and when release.yml calls it.
+on:
+  schedule:
+    - cron: "17 21 * * 1" # Mondays 06:17 KST
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - deny.toml
+      - .github/workflows/deny.yml
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+          arguments: --locked
