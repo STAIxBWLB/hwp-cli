@@ -1898,7 +1898,7 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     // gso 개체마다 유니크 instance_id (같은 값이면 한글이 같은 개체로 보고 무시 가능).
     // A document that already carries synthesized pictures (a re-read output of this writer)
     // holds ids from this same range, so start past the highest one instead of reusing it.
-    let mut inst: u32 = next_synthesized_instance_id(doc);
+    let mut inst = InstanceIds::new(doc);
 
     // 머리말/꼬리말 LIST_HEADER를 구역 PageDef 치수로 채운다(hwpx 출신, 빈 것만).
     // textWidth=본문 폭(용지−좌우 여백), textHeight=머리말/꼬리말 여백. 과거에는
@@ -1942,91 +1942,95 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     }
 }
 
-/// First `0x3000_0000..0x3010_0000` gso instance id no picture, table or gso container of
-/// `doc` already uses. Ids outside that range (genuine Hancom ids) never collide with a value
-/// drawn from it by this writer, so only the synthesized range is scanned.
-fn next_synthesized_instance_id(doc: &Document) -> u32 {
-    const BASE: u32 = 0x3000_0000;
-    const END: u32 = 0x3010_0000;
-    fn common_id(common: &[u8]) -> Option<u32> {
-        common
-            .get(32..36)
-            .map(|b| u32::from_le_bytes(b.try_into().expect("slice len checked")))
-            .filter(|id| (BASE..END).contains(id))
-    }
-    fn walk(para: &Paragraph, next: &mut u32) {
-        for control in &para.controls {
-            match control {
-                Control::Picture(p) => {
-                    if let Some(id) = common_id(&p.common_data) {
-                        *next = (*next).max(id + 1);
-                    }
-                    if let Some(caption) = &p.caption {
-                        caption.paragraphs.iter().for_each(|q| walk(q, next));
-                    }
-                }
-                Control::Table(t) => {
-                    if let Some(id) = common_id(&t.common_data) {
-                        *next = (*next).max(id + 1);
-                    }
-                    if let Some(caption) = &t.caption {
-                        caption.paragraphs.iter().for_each(|q| walk(q, next));
-                    }
-                    for cell in &t.cells {
-                        cell.paragraphs.iter().for_each(|q| walk(q, next));
-                    }
-                }
-                Control::Generic(g) => {
-                    if g.ctrl_id == *b"gso "
-                        && let Some(id) = common_id(&g.data)
-                    {
-                        *next = (*next).max(id + 1);
-                    }
-                    for list in &g.paragraph_lists {
-                        list.paragraphs.iter().for_each(|q| walk(q, next));
-                    }
-                    // The reader keeps a shape's caption apart from its paragraph lists.
-                    if let Some(caption) = &g.caption {
-                        caption.paragraphs.iter().for_each(|q| walk(q, next));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    let mut next = BASE;
-    for section in &doc.sections {
-        section.paragraphs.iter().for_each(|p| walk(p, &mut next));
-    }
-    next
-}
-
-/// Allocator for synthesized gso instance ids (placeholder, old behaviour).
+/// Allocator for the gso instance ids this writer synthesizes for pictures.
+///
+/// Ids come from `0x3000_0000..0x3010_0000`. An id is handed out only when neither it nor the
+/// id derived from it for the picture record (`id ^ 0x0010_0000`, which lands in
+/// `0x3010_0000..0x3020_0000`) is already held by a picture, table or gso container of the
+/// document, wherever that id sits. A re-read output of this writer holds ids from this same
+/// range, so a plain counter would repeat them. When the range is used up the allocator
+/// returns `None` instead of stepping past the range edge into another object's id; the caller
+/// leaves that picture unsynthesized and the existing strip step reports it as removed.
 struct InstanceIds {
+    used: BTreeSet<u32>,
     next: u32,
     end: u32,
-    exhausted: bool,
 }
+
 impl InstanceIds {
+    const BASE: u32 = 0x3000_0000;
+    const END: u32 = 0x3010_0000;
+    const PICTURE_RECORD_BIT: u32 = 0x0010_0000;
+
     fn new(doc: &Document) -> Self {
+        Self::with_range(doc, Self::BASE, Self::END)
+    }
+
+    fn with_range(doc: &Document, base: u32, end: u32) -> Self {
+        fn common_id(common: &[u8]) -> Option<u32> {
+            common
+                .get(32..36)
+                .map(|b| u32::from_le_bytes(b.try_into().expect("slice len checked")))
+        }
+        fn walk(para: &Paragraph, used: &mut BTreeSet<u32>) {
+            for control in &para.controls {
+                match control {
+                    Control::Picture(p) => {
+                        used.extend(common_id(&p.common_data));
+                        if let Some(caption) = &p.caption {
+                            caption.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                    }
+                    Control::Table(t) => {
+                        used.extend(common_id(&t.common_data));
+                        if let Some(caption) = &t.caption {
+                            caption.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                        for cell in &t.cells {
+                            cell.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                    }
+                    Control::Generic(g) => {
+                        if g.ctrl_id == *b"gso " {
+                            used.extend(common_id(&g.data));
+                        }
+                        for list in &g.paragraph_lists {
+                            list.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                        // The reader keeps a shape's caption apart from its paragraph lists.
+                        if let Some(caption) = &g.caption {
+                            caption.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut used = BTreeSet::new();
+        for section in &doc.sections {
+            section.paragraphs.iter().for_each(|p| walk(p, &mut used));
+        }
         Self {
-            next: next_synthesized_instance_id(doc),
-            end: u32::MAX,
-            exhausted: false,
+            used,
+            next: base,
+            end,
         }
     }
-    fn with_range(doc: &Document, _base: u32, end: u32) -> Self {
-        let mut ids = Self::new(doc);
-        ids.end = end;
-        ids
-    }
+
+    /// The next unused id, or `None` once the range holds no more.
     fn next(&mut self) -> Option<u32> {
-        let id = self.next;
-        self.next += 1;
-        Some(id)
-    }
-    fn exhausted(&self) -> bool {
-        self.exhausted
+        while self.next < self.end {
+            let candidate = self.next;
+            self.next += 1;
+            let derived = candidate ^ Self::PICTURE_RECORD_BIT;
+            if self.used.contains(&candidate) || self.used.contains(&derived) {
+                continue;
+            }
+            self.used.insert(candidate);
+            self.used.insert(derived);
+            return Some(candidate);
+        }
+        None
     }
 }
 
@@ -2080,7 +2084,7 @@ fn synth_pictures_para(
     bin_index: &dyn Fn(&hwp_model::BinRef) -> Option<usize>,
     assigned: &mut [Option<u16>],
     next_id: &mut u16,
-    inst: &mut u32,
+    inst: &mut InstanceIds,
     new_items: &mut Vec<hwp_model::BinDataItem>,
     renames: &mut Vec<(usize, String)>,
     warnings: &mut WriteReport,
@@ -2101,6 +2105,12 @@ fn synth_pictures_para(
                         PreservationDisposition::Removed,
                         1,
                     );
+                    continue;
+                };
+                // Take the instance id before minting a storage id: when the synthesized range is
+                // used up the picture is left as is (the strip step below reports it removed), and
+                // no BinData item or renamed stream may be left behind for it.
+                let Some(inst_id) = inst.next() else {
                     continue;
                 };
                 // 같은 스트림에 이미 storage_id가 있으면 재사용(공유 이미지).
@@ -2153,8 +2163,6 @@ fn synth_pictures_para(
                 // 이동해 본문과 겹친다.
                 let voff: i32 = p.vert_offset;
                 let hoff: i32 = p.horz_offset;
-                let inst_id = *inst;
-                *inst += 1;
                 let mut common = Vec::with_capacity(40);
                 common.extend_from_slice(&attr.to_le_bytes());
                 common.extend_from_slice(&voff.to_le_bytes());
@@ -5159,7 +5167,14 @@ mod tests {
             }],
             extras: Vec::new(),
         });
-        assert_eq!(next_synthesized_instance_id(&doc), 0x3000_0005);
+        let mut ids = InstanceIds::new(&doc);
+        for _ in 0..16 {
+            let id = ids.next().expect("the range has room");
+            assert!(
+                id != 0x3000_0004 && id != 0x3000_0004 ^ 0x0010_0000,
+                "{id:#x} repeats (or derives) the id held in the shape caption"
+            );
+        }
     }
 
     fn doc_with_picture_ids(ids: &[u32]) -> Document {
@@ -5186,7 +5201,10 @@ mod tests {
             (0x3000_0000..0x3010_0000).contains(&first),
             "{first:#x} is outside the synthesized range"
         );
-        assert!(first != 0x300f_ffff && first != 0x3010_0000, "{first:#x} is already used");
+        assert!(
+            first != 0x300f_ffff && first != 0x3010_0000,
+            "{first:#x} is already used"
+        );
         // Successive ids never repeat.
         let second = ids.next().unwrap();
         assert_ne!(first, second);
@@ -5199,7 +5217,11 @@ mod tests {
         let doc = doc_with_picture_ids(&[0x3010_0000]);
         let mut ids = InstanceIds::new(&doc);
         let first = ids.next().unwrap();
-        assert_ne!(first ^ 0x0010_0000, 0x3010_0000, "{first:#x} derives a used id");
+        assert_ne!(
+            first ^ 0x0010_0000,
+            0x3010_0000,
+            "{first:#x} derives a used id"
+        );
     }
 
     #[test]
@@ -5210,7 +5232,7 @@ mod tests {
         assert!(ids.next().is_some());
         assert!(ids.next().is_some());
         assert!(ids.next().is_none(), "the third request has nothing left");
-        assert!(ids.exhausted());
+        assert!(ids.next().is_none(), "and it stays exhausted");
     }
 
     #[test]

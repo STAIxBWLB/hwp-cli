@@ -1146,24 +1146,90 @@ pub fn renumber_inserted_objects(
     doc: &Document,
     paragraphs: &mut [Paragraph],
 ) -> Result<usize, String> {
-    let mut used = crate::edit::doc_object_ids(doc);
-    let mut next_z = crate::edit::doc_max_table_z_order(doc)
-        .checked_add(1)
-        .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
-    let mut next_field = 0u32;
-    for section in &doc.sections {
-        for para in &section.paragraphs {
-            max_field_id_in_para(para, &mut next_field);
-        }
-    }
-    let mut next_field = next_field
-        .checked_add(1)
-        .ok_or_else(|| "필드 id 오버플로".to_string())?;
+    let mut allocators = Allocators::new(doc);
     let mut count = 0usize;
     for para in paragraphs {
-        renumber_inserted_in_para(para, &mut used, &mut next_z, &mut next_field, &mut count)?;
+        renumber_inserted_in_para(para, &mut allocators, &mut count)?;
     }
     Ok(count)
+}
+
+/// The three counters an insert may draw from, each computed on first use. A text-only insert
+/// asks for none, so a target whose field ids or table z-orders are at their ceiling still
+/// accepts it, as it did before objects were supported.
+struct Allocators<'a> {
+    doc: &'a Document,
+    used: Option<std::collections::BTreeSet<u32>>,
+    next_z: Option<i32>,
+    next_field: Option<u32>,
+}
+
+impl<'a> Allocators<'a> {
+    fn new(doc: &'a Document) -> Self {
+        Self {
+            doc,
+            used: None,
+            next_z: None,
+            next_field: None,
+        }
+    }
+
+    /// A z-order whose synthesized HWP table id no table, picture or container of the target,
+    /// and no earlier inserted table, uses.
+    fn table_z_order(&mut self) -> Result<i32, String> {
+        let doc = self.doc;
+        let used = self
+            .used
+            .get_or_insert_with(|| crate::edit::doc_object_ids(doc));
+        if self.next_z.is_none() {
+            self.next_z = Some(
+                crate::edit::doc_max_table_z_order(doc)
+                    .checked_add(1)
+                    .ok_or_else(|| "개체 z-order 오버플로: 대상 문서의 표 z-order가 최댓값이라 새 표에 줄 값이 없습니다. 표를 삽입하지 않거나 대상 문서의 표 배치를 정리하세요".to_string())?,
+            );
+        }
+        let next_z = self.next_z.as_mut().expect("set above");
+        // `synthesized_table_object_id` keeps 16 bits of the z-order, so only 65,536 ids
+        // exist. One full cycle of z-orders visits all of them; if none is free the target has
+        // none left, and walking further cannot find one.
+        let mut tried = 0u32;
+        loop {
+            if tried > 0xffff {
+                return Err("표 개체 id 공간(65536개)을 모두 사용 중이라 새 표에 줄 id가 없습니다. 대상 문서에서 표를 줄이거나 삽입할 표 개수를 줄인 뒤 다시 시도하세요".to_string());
+            }
+            tried += 1;
+            let z = *next_z;
+            *next_z = z
+                .checked_add(1)
+                .ok_or_else(|| "개체 z-order 오버플로: 새 표에 줄 값이 최댓값을 넘었습니다. 삽입할 표 개수를 줄이거나 대상 문서의 표 배치를 정리하세요".to_string())?;
+            if used.insert(crate::edit::synthesized_table_object_id(z)) {
+                return Ok(z);
+            }
+        }
+    }
+
+    /// A field instance id above every field id of the target and of earlier inserts.
+    fn field_id(&mut self) -> Result<u32, String> {
+        let doc = self.doc;
+        if self.next_field.is_none() {
+            let mut max = 0u32;
+            for section in &doc.sections {
+                for para in &section.paragraphs {
+                    max_field_id_in_para(para, &mut max);
+                }
+            }
+            self.next_field = Some(max.checked_add(1).ok_or_else(|| {
+                "필드 id 오버플로: 대상 문서의 필드 id가 최댓값이라 새 필드에 줄 값이 없습니다. 필드를 삽입하지 않거나 대상 문서의 필드를 정리하세요".to_string()
+            })?);
+        }
+        let next = self.next_field.as_mut().expect("set above");
+        let id = *next;
+        *next = id.checked_add(1).ok_or_else(|| {
+            "필드 id 오버플로: 새 필드에 줄 값이 최댓값을 넘었습니다. 삽입할 필드 개수를 줄이세요"
+                .to_string()
+        })?;
+        Ok(id)
+    }
 }
 
 /// `attr(4) etc(1) len(2) WCHAR[len] id(4)` (spec table 152): the byte range of the id.
@@ -1217,9 +1283,7 @@ fn max_field_id_in_para(para: &Paragraph, max: &mut u32) {
 
 fn renumber_inserted_in_para(
     para: &mut Paragraph,
-    used: &mut std::collections::BTreeSet<u32>,
-    next_z: &mut i32,
-    next_field: &mut u32,
+    allocators: &mut Allocators,
     count: &mut usize,
 ) -> Result<(), String> {
     for control in &mut para.controls {
@@ -1228,41 +1292,24 @@ fn renumber_inserted_in_para(
                 if t.common_data.is_empty()
                     && let Some(placement) = &mut t.placement
                 {
-                    // `synthesized_table_object_id` keeps 16 bits of the z-order, so only 65,536
-                    // ids exist. One full cycle of z-orders visits all of them; if none is
-                    // free the target has none left, and walking further cannot find one.
-                    let mut tried = 0u32;
-                    loop {
-                        if tried > 0xffff {
-                            return Err("표 개체 id 공간(65536개)을 모두 사용 중이라 새 표에 줄 id가 없습니다. 대상 문서에서 표를 줄이거나 삽입할 표 개수를 줄인 뒤 다시 시도하세요".to_string());
-                        }
-                        tried += 1;
-                        let z = *next_z;
-                        *next_z = z
-                            .checked_add(1)
-                            .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
-                        if used.insert(crate::edit::synthesized_table_object_id(z)) {
-                            placement.z_order = z;
-                            *count += 1;
-                            break;
-                        }
-                    }
+                    placement.z_order = allocators.table_z_order()?;
+                    *count += 1;
                 }
                 if let Some(caption) = &mut t.caption {
                     for p in &mut caption.paragraphs {
-                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                        renumber_inserted_in_para(p, allocators, count)?;
                     }
                 }
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                        renumber_inserted_in_para(p, allocators, count)?;
                     }
                 }
             }
             Control::Picture(pic) => {
                 if let Some(caption) = &mut pic.caption {
                     for p in &mut caption.paragraphs {
-                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                        renumber_inserted_in_para(p, allocators, count)?;
                     }
                 }
             }
@@ -1270,21 +1317,18 @@ fn renumber_inserted_in_para(
                 if crate::field::is_field_ctrl_id(&g.ctrl_id)
                     && let Some(range) = field_id_range(&g.data)
                 {
-                    let id = *next_field;
-                    *next_field = id
-                        .checked_add(1)
-                        .ok_or_else(|| "필드 id 오버플로".to_string())?;
+                    let id = allocators.field_id()?;
                     g.data[range].copy_from_slice(&id.to_le_bytes());
                     *count += 1;
                 }
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                        renumber_inserted_in_para(p, allocators, count)?;
                     }
                 }
                 if let Some(caption) = &mut g.caption {
                     for p in &mut caption.paragraphs {
-                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                        renumber_inserted_in_para(p, allocators, count)?;
                     }
                 }
             }

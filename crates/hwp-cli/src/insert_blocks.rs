@@ -166,15 +166,18 @@ fn hwpunit_to_mm(units: i32) -> f32 {
 
 /// Width in HWPUNIT of one text column of `section` at its top-level paragraph `at`, given the
 /// full body width: the column definition in effect there, which is the last one at or before
-/// that paragraph (a section may change its layout partway), split the way `hwp-render` splits
-/// it (equal columns share the body width less the gaps). Columns of unequal width list their
+/// that paragraph (a section may change its layout partway). A `before` insertion lands ahead
+/// of the target paragraph and of any column control it carries
+/// (`hwp_convert::structure::insert_paragraphs_at` splices at the paragraph's own index), so it
+/// flows under the definition preceding the target: the target's own is excluded. The column
+/// width is split the way `hwp-render` splits it (equal columns share the body width less the gaps). Columns of unequal width list their
 /// own widths; which of them a block lands in is not known here, so the narrowest is the safe
 /// measure.
-fn column_width_hwp(section: &hwp_model::Section, at: usize, body: i32) -> i32 {
+fn column_width_hwp(section: &hwp_model::Section, at: usize, before: bool, body: i32) -> i32 {
     let def = section
         .paragraphs
         .iter()
-        .take(at.saturating_add(1))
+        .take(if before { at } else { at.saturating_add(1) })
         .flat_map(|paragraph| &paragraph.controls)
         .filter_map(|control| match control {
             Control::Generic(generic) => generic.column_def.as_ref(),
@@ -197,7 +200,7 @@ fn column_width_hwp(section: &hwp_model::Section, at: usize, body: i32) -> i32 {
 /// Limit this phase to the body and table cells, and return the width in mm of the text column
 /// or table cell the blocks will land in. Opaque Generic objects need a writer regeneration
 /// proof, not merely a readable address into their extracted model lists.
-fn check_target(doc: &Document, target: &SegmentPath, _before: bool) -> Result<f32, String> {
+fn check_target(doc: &Document, target: &SegmentPath, before: bool) -> Result<f32, String> {
     let invalid = || {
         "insert_blocks 삽입 위치가 본문 또는 표 셀 문단이 아닙니다. 최신 문서에서 본문/표 셀 문단 주소를 다시 선택하세요".to_owned()
     };
@@ -216,7 +219,7 @@ fn check_target(doc: &Document, target: &SegmentPath, _before: bool) -> Result<f
                     page.width.0
                 };
                 let body = paper - page.margin_left.0 - page.margin_right.0 - page.gutter.0;
-                hwpunit_to_mm(column_width_hwp(section, first, body))
+                hwpunit_to_mm(column_width_hwp(section, first, before, body))
             });
     let mut paragraph = section
         .paragraphs
@@ -1074,14 +1077,29 @@ mod tests {
         };
         // One column, then a change to two columns carried by paragraph 1.
         let mut to_two = hwp_convert::from_markdown("first\n\nsecond\n\nthird\n");
-        to_two.sections[0].paragraphs[1].controls.push(column_control(2));
-        assert!(width(&to_two, 1, true) > 150.0, "before the change: the one-column layout");
-        assert!(width(&to_two, 1, false) < 90.0, "after the change paragraph: two columns");
+        to_two.sections[0].paragraphs[1]
+            .controls
+            .push(column_control(2));
+        assert!(
+            width(&to_two, 1, true) > 150.0,
+            "before the change: the one-column layout"
+        );
+        assert!(
+            width(&to_two, 1, false) < 90.0,
+            "after the change paragraph: two columns"
+        );
         // Two columns, then a change back to one carried by paragraph 2.
         let mut to_one = hwp_convert::from_markdown("first\n\nsecond\n\nthird\n");
-        to_one.sections[0].paragraphs[1].controls.push(column_control(2));
-        to_one.sections[0].paragraphs[2].controls.push(column_control(1));
-        assert!(width(&to_one, 2, true) < 90.0, "before the change back: still two columns");
+        to_one.sections[0].paragraphs[1]
+            .controls
+            .push(column_control(2));
+        to_one.sections[0].paragraphs[2]
+            .controls
+            .push(column_control(1));
+        assert!(
+            width(&to_one, 2, true) < 90.0,
+            "before the change back: still two columns"
+        );
         assert!(width(&to_one, 2, false) > 150.0, "after it: one column");
         // The first paragraph has no preceding layout of its own, so `before` falls back to the
         // section default rather than reading a definition that follows the block.
@@ -1103,7 +1121,9 @@ mod tests {
     fn apply_passes_the_position_to_the_width_check() {
         let make = || {
             let mut doc = hwp_convert::from_markdown("first\n\nsecond\n\nthird\n");
-            doc.sections[0].paragraphs[1].controls.push(column_control(2));
+            doc.sections[0].paragraphs[1]
+                .controls
+                .push(column_control(2));
             doc
         };
         let at = SegmentPath {
@@ -1116,13 +1136,25 @@ mod tests {
         };
         // Before the 2-column change a 120 mm table sits in the 170 mm one-column layout.
         let mut doc = make();
-        apply(&mut doc, &at, &insert_table_request("before", 120), false, &none)
-            .expect("fits the preceding one-column layout");
+        apply(
+            &mut doc,
+            &at,
+            &insert_table_request("before", 120),
+            false,
+            &none,
+        )
+        .expect("fits the preceding one-column layout");
         // After the paragraph that starts two columns it does not.
         let mut doc = make();
         let before = doc.clone();
-        let error = apply(&mut doc, &at, &insert_table_request("after", 120), false, &none)
-            .expect_err("120 mm exceeds an 80 mm column");
+        let error = apply(
+            &mut doc,
+            &at,
+            &insert_table_request("after", 120),
+            false,
+            &none,
+        )
+        .expect_err("120 mm exceeds an 80 mm column");
         assert!(error.contains("layout_overflow"), "{error}");
         assert_eq!(doc, before);
     }
