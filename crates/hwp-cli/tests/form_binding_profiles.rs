@@ -185,6 +185,10 @@ impl Workspace {
         assert_eq!(receipt["published"], true);
         assert_eq!(receipt["render_font_native"], "unverified");
         assert_eq!(
+            receipt["native_warning_count"],
+            preview["native_warnings"].as_array().unwrap().len()
+        );
+        assert_eq!(
             receipt["output_sha256"],
             contract::digest(&std::fs::read(self.dir.join(&output)).unwrap())
         );
@@ -231,7 +235,47 @@ fn four_profiles_case(extension: &str) {
     let source = ws.profile_source(extension);
     let before = read(&ws.dir.join(&source));
     let discovery = ws.discover(&source);
-    let target = selected_cell(&discovery, 0, 2, 1, "Synthetic profile 1");
+    let business_values = [
+        ("course.name", 1, 1, "Synthetic Methods", "Reviewed Methods"),
+        ("course.year", 1, 3, "2030", "2031"),
+        (
+            "profile.name",
+            2,
+            1,
+            "Synthetic profile 1",
+            "Revised profile",
+        ),
+        ("total-hours", 2, 3, "90", "96"),
+        (
+            "profile.objective",
+            3,
+            1,
+            "PROFILE_1_VALUE: preserve every requested value.",
+            "Reviewed objective for the repeated profile.",
+        ),
+    ];
+    let mut bindings = Vec::new();
+    let mut values = serde_json::Map::new();
+    let mut expected_cells = Vec::new();
+    let mut selected = std::collections::BTreeMap::new();
+    let mut table_id = None;
+    for (key, row, col, old, value) in business_values {
+        let target = selected_cell(&discovery, 0, row, col, old);
+        table_id.get_or_insert_with(|| target["table_id"].clone());
+        selected.insert(target["id"].as_str().unwrap().to_owned(), (old, value));
+        bindings.push(binding(key, &[target], &[0, 1, 2, 3]));
+        values.insert(key.into(), json!(value));
+        let mut paragraphs = vec![value.into()];
+        if row == 3 {
+            paragraphs.push("Nested item: original wording remains unchanged.".into());
+        }
+        expected_cells.push(contract::ExpectedCell {
+            table: 0,
+            row,
+            col,
+            paragraphs,
+        });
+    }
     let heading = before.sections[0]
         .paragraphs
         .iter()
@@ -243,25 +287,11 @@ fn four_profiles_case(extension: &str) {
     };
     let heading_id = hwp_convert::paragraph_id(&path, &before.sections[0].paragraphs[heading]);
     let mut plan = empty_plan(&discovery);
-    plan["bindings"] = json!([binding("profile.name", &[target], &[0, 1, 2, 3])]);
-    plan["repeats"] = json!([{"table_id":target["table_id"],"after_paragraph_id":heading_id,"copies":4,"profile_ids":["profile-original","profile-copy1","profile-copy2","profile-copy3"]}]);
+    plan["bindings"] = json!(bindings);
+    plan["repeats"] = json!([{"table_id":table_id.unwrap(),"after_paragraph_id":heading_id,"copies":4,"profile_ids":["profile-original","profile-copy1","profile-copy2","profile-copy3"]}]);
     let before_projection = contract::project_form(&before);
-    let expected = contract::expect_cell_values(
-        &before_projection,
-        &[contract::ExpectedCell {
-            table: 0,
-            row: 2,
-            col: 1,
-            paragraphs: vec!["Revised profile".into()],
-        }],
-    )
-    .unwrap();
-    let (after, preview, receipt) = ws.apply(
-        &source,
-        extension,
-        plan,
-        json!({"profile.name":"Revised profile"}),
-    );
+    let expected = contract::expect_cell_values(&before_projection, &expected_cells).unwrap();
+    let (after, preview, receipt) = ws.apply(&source, extension, plan, Value::Object(values));
     let after_projection = contract::project_form(&after);
     assert_eq!(after_projection.tables.len(), 4);
     for (index, table) in after_projection.tables.iter().enumerate() {
@@ -281,7 +311,8 @@ fn four_profiles_case(extension: &str) {
         )
         .unwrap();
     }
-    assert_eq!(preview["changes"].as_array().unwrap().len(), 4);
+    let target_count = expected_cells.len() * 4;
+    assert_eq!(preview["changes"].as_array().unwrap().len(), target_count);
     assert_eq!(preview["copies"].as_array().unwrap().len(), 4);
     let copies: BTreeSet<_> = preview["copies"]
         .as_array()
@@ -297,13 +328,26 @@ fn four_profiles_case(extension: &str) {
         .map(|copy| copy["table_id"].as_str().unwrap())
         .collect();
     assert_eq!(ids.len(), 4);
+    let mut changed = BTreeSet::new();
     for change in preview["changes"].as_array().unwrap() {
-        assert_eq!(change["occurrence_id"], target["id"]);
-        assert_eq!(change["old_text"], "Synthetic profile 1");
-        assert_eq!(change["new_text"], "Revised profile");
+        let id = change["occurrence_id"].as_str().unwrap();
+        let &(old, new) = selected
+            .get(id)
+            .expect("every change comes from an explicitly selected source occurrence");
+        assert_eq!(change["old_text"], old);
+        assert_eq!(change["new_text"], new);
         assert!(change["profile_id"].is_string());
+        assert!(changed.insert((id.to_owned(), change["copy"].as_u64().unwrap())));
     }
-    assert_eq!(receipt["targets"], 4);
+    let wanted: BTreeSet<_> = selected
+        .keys()
+        .flat_map(|id| (0..4).map(move |copy| (id.clone(), copy)))
+        .collect();
+    assert_eq!(
+        changed, wanted,
+        "all selected business values must bind to all four explicit copies"
+    );
+    assert_eq!(receipt["targets"], target_count);
     assert_eq!(receipt["cloned_profiles"], 3);
 }
 #[test]
@@ -394,6 +438,70 @@ fn allocation_revision_case(extension: &str) {
     constraints.push(
         json!({"kind":"sum","keys":["lecture-total","practice-total"],"total":"total-hours"}),
     );
+    for (key, col, old, value) in [
+        ("course.name", 1, "Synthetic Methods", "Reviewed Methods"),
+        ("course.year", 3, "2030", "2031"),
+    ] {
+        let targets: Vec<_> = (0..6)
+            .map(|table| selected_cell(&discovery, table, 1, col, old))
+            .collect();
+        bindings.push(binding(key, &targets, &[0]));
+        values.insert(key.into(), json!(value));
+        for table in 0..6 {
+            expected_cells.push(contract::ExpectedCell {
+                table,
+                row: 1,
+                col,
+                paragraphs: vec![value.into()],
+            });
+        }
+    }
+    bindings.push(binding(
+        "applicant",
+        &[selected_cell(&discovery, 0, 2, 1, "Sample Author")],
+        &[0],
+    ));
+    values.insert("applicant".into(), json!("Reviewed Applicant"));
+    expected_cells.push(contract::ExpectedCell {
+        table: 0,
+        row: 2,
+        col: 1,
+        paragraphs: vec!["Reviewed Applicant".into()],
+    });
+    for profile in 1..=4 {
+        let table = profile + 1;
+        let old_name = format!("Synthetic profile {profile}");
+        let new_name = format!("Reviewed profile {profile}");
+        let old_objective = format!("PROFILE_{profile}_VALUE: preserve every requested value.");
+        let new_objective = format!("PROFILE_{profile}_UPDATED: reviewed objective.");
+        for (suffix, row, old, value) in [
+            ("name", 2, old_name.as_str(), new_name.as_str()),
+            (
+                "objective",
+                3,
+                old_objective.as_str(),
+                new_objective.as_str(),
+            ),
+        ] {
+            let key = format!("profile-{profile}.{suffix}");
+            bindings.push(binding(
+                &key,
+                &[selected_cell(&discovery, table, row, 1, old)],
+                &[0],
+            ));
+            values.insert(key, json!(value));
+            let mut paragraphs = vec![value.into()];
+            if row == 3 {
+                paragraphs.push("Nested item: original wording remains unchanged.".into());
+            }
+            expected_cells.push(contract::ExpectedCell {
+                table,
+                row,
+                col: 1,
+                paragraphs,
+            });
+        }
+    }
     plan["bindings"] = json!(bindings);
     plan["constraints"] = json!(constraints);
     let expected = contract::expect_cell_values(&before_projection, &expected_cells).unwrap();

@@ -90,6 +90,11 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
         }
     }
     let binding_input = contains_binding(&value);
+    if binding_input && value.as_array().is_some_and(|entries| entries.len() != 1) {
+        anyhow::bail!(
+            "apply_form_bindings는 단독 compound 연산이어야 합니다. 다른 연산을 별도 요청으로 분리하세요 (입력 내용 생략)"
+        );
+    }
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json"))
             .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;

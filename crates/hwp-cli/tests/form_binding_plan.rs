@@ -373,6 +373,61 @@ fn a_missing_ops_array_wrapper_never_echoes_binding_content() {
 }
 
 #[test]
+fn mixed_binding_batches_refuse_before_legacy_semantic_parsing() {
+    let workspace = Workspace::new("mixed-binding");
+    let source = workspace.source("hwpx");
+    let output = workspace.0.join("filled.hwpx");
+    let operation = binding_operation(&workspace, &source, "PRIVATE_VALUE");
+    let ops = workspace.0.join("mixed.json");
+    std::fs::write(
+        &ops,
+        serde_json::to_vec(
+            &json!([operation, {"op":"set_format","pattern":"PRIVATE_SCOPE","size":"1001pt"}]),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let result = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(ops)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        error.contains("단독"),
+        "the compound boundary precedes unrelated legacy parsing: {error}"
+    );
+    assert!(!error.contains("PRIVATE_"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn mixed_mcp_binding_requests_never_echo_legacy_values() {
+    let workspace = Workspace::new("mixed-mcp");
+    let source = workspace.source("hwpx");
+    let output = workspace.0.join("filled.hwpx");
+    let mut item = binding_operation(&workspace, &source, "PRIVATE_VALUE");
+    item.as_object_mut().unwrap().remove("op");
+    let response = mcp_tool(
+        "hwp_edit",
+        json!({"input":source,"output":output,"apply_form_bindings":item,
+        "set_format":[{"pattern":"probe","color":"PRIVATE_COLOR"}]}),
+    );
+    assert!(response["result"]["isError"] == true || response.get("error").is_some());
+    assert!(
+        !response.to_string().contains("PRIVATE_"),
+        "binding exclusivity must precede unrelated value parsing"
+    );
+    assert!(!output.exists());
+    assert!(!workspace.0.join("receipt.json").exists());
+}
+
+#[test]
 fn embedded_binding_plan_schema_matches_the_standalone_contract() {
     fn normalize(value: &Value) -> Value {
         match value {

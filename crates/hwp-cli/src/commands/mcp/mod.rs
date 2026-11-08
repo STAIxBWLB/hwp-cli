@@ -1482,6 +1482,23 @@ fn tool_grep(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
 }
 
 fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
+    if args.get("apply_form_bindings").is_some()
+        && args.as_object().is_some_and(|object| {
+            object.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "input"
+                        | "output"
+                        | "dry_run"
+                        | "report"
+                        | "allow_partial"
+                        | "apply_form_bindings"
+                )
+            })
+        })
+    {
+        return Err("apply_form_bindings는 다른 편집 인자와 함께 쓸 수 없습니다. 다른 연산을 별도 요청으로 분리하세요 (입력 내용 생략)".into());
+    }
     let input = checked_read_path(ctx, arg_str(args, "input")?)?;
     let output = checked_write_path(ctx, arg_str(args, "output")?)?;
     // D-12: the CLI --ops channel's dry-run and report flags, resolved up front. `report` is a
