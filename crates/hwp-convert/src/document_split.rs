@@ -851,7 +851,16 @@ fn count_tables(paragraph: &Paragraph) -> usize {
 }
 
 /// Whether a control of the section's first paragraph sets the section up (page, columns,
-/// header, footer, numbering) rather than being content.
+/// header, footer, page-number position, new number) rather than being content.
+///
+/// `pghd` (hide) and `pgct` (odd/even adjust) are deliberately NOT carried, although
+/// `commands::fill::is_section_scoped` lists them. That list serves a splice that puts new
+/// paragraphs back where the anchor was, so the controls still act on the page they sit on.
+/// Here the range starts somewhere else: a hide or an odd/even adjust acts on the source page
+/// that holds it, and moved onto the fragment's first paragraph it would hide or shift a page
+/// the author never marked. When the section's first paragraph holds one, the fragment loses
+/// it, and nothing in the fragment says so; the range report does not list it either, because
+/// the report is about binaries and addresses.
 fn is_section_setup_char(paragraph: &Paragraph, ch: &HwpChar) -> bool {
     let HwpChar::ExtCtrl { ctrl_index, .. } = ch else {
         return false;

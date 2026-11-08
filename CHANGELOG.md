@@ -52,7 +52,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   by the address it resolved to, never by its text, and `kept` / `kept-unverified` list only
   binaries the published file holds (HWP5 writes just the binaries its BIN_DATA table names, so
   the others are listed as dropped by the format). `--range-report` and `--loss-report` may not
-  name the same file. A mismatching `--source-sha256`, a missing or
+  name the same file, and neither may name a fragment, however the path is spelled. The source
+  hash is taken around the parse and a file that changed meanwhile is refused. The fragment
+  carries the section's page, column, header, footer, page-number and new-number controls; a
+  hide or odd/even adjust control on the section's first paragraph acts on that source page and
+  is not carried. A mismatching `--source-sha256`, a missing or
   ambiguous anchor, a range across sections, a reversed or empty range and a picture whose binary
   the source lacks are each refused before anything is written. Tested against every form of the generated P0 form set, from HWPX and from its HWP5
   conversion ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).

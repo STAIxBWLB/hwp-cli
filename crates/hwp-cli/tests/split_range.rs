@@ -1048,3 +1048,64 @@ fn swap_text(data: Vec<u8>, replacements: &[(&str, &str)]) -> Vec<u8> {
     }
     text.into_bytes()
 }
+
+/// The fragment and the range report are published in one transaction, so they must be two
+/// files. A report path that reaches the fragment through `..` is the same file even though
+/// its spelling differs, and publishing both would leave JSON where the fragment should be.
+#[test]
+fn a_report_path_that_reaches_the_fragment_through_dotdot_is_refused() {
+    let Some(ws) = Workspace::new("dotdot") else {
+        return;
+    };
+    std::fs::create_dir_all(ws.dir.join("out")).unwrap();
+    for (flag, spelled) in [
+        ("--range-report", "out/../out/source-001.hwpx"),
+        ("--range-report", "./out/source-001.hwpx"),
+        ("--loss-report", "out/../out/source-001.hwpx"),
+    ] {
+        let result = hwp(
+            &ws.dir,
+            &[
+                "split",
+                "source.hwpx",
+                "--out-dir",
+                "out",
+                "--from",
+                "heading:FORM_START_PROFILE_1",
+                flag,
+                spelled,
+            ],
+        );
+        assert!(!result.status.success(), "{flag} {spelled} must be refused");
+        assert!(
+            !ws.dir.join("out/source-001.hwpx").exists(),
+            "{flag} {spelled}: nothing may be published"
+        );
+    }
+    // Control: a report beside the fragment is fine and the fragment stays a package.
+    hwp_ok(
+        &ws.dir,
+        &[
+            "split",
+            "source.hwpx",
+            "--out-dir",
+            "out",
+            "--from",
+            "heading:FORM_START_PROFILE_1",
+            "--range-report",
+            "out/../report.json",
+        ],
+    );
+    let fragment = std::fs::read(ws.dir.join("out/source-001.hwpx")).unwrap();
+    assert_eq!(&fragment[..2], b"PK");
+}
+
+/// `--source-sha256` must describe the bytes the range was extracted from.
+#[test]
+fn the_reported_source_hash_is_the_hash_of_the_extracted_file() {
+    let Some(ws) = Workspace::new("hash-once") else {
+        return;
+    };
+    let report = extract(&ws, "source.hwpx", "h", "FORM_START_PROFILE_1", None, &[]);
+    assert_eq!(report["source_sha256"], ws.sha256("source.hwpx").as_str());
+}

@@ -135,15 +135,13 @@ impl Document {
             }
             BinRef::ItemRef(item) => {
                 // The package manifest is authoritative: an item id need not equal the file
-                // name (`id="logo" href="BinData/p1.png"`). Names are the fallback for
-                // documents without a manifest map (synthesized, or read from HWP5).
-                if let Some(index) = self
-                    .hwpx_bin_manifest
-                    .iter()
-                    .find(|(id, _)| id == item)
-                    .and_then(|(_, href)| self.bin_streams.iter().position(|s| s.name == *href))
-                {
-                    return Some(index);
+                // name (`id="logo" href="BinData/p1.png"`). An id the manifest lists resolves
+                // to its href's stream or to nothing: when the href names a stream the
+                // document does not carry, a same-stem stream of another item must not stand
+                // in for it. Names are the fallback only for ids the manifest does not list
+                // (a synthesized document, or one read from HWP5, has no manifest map).
+                if let Some((_, href)) = self.hwpx_bin_manifest.iter().find(|(id, _)| id == item) {
+                    return self.bin_streams.iter().position(|s| s.name == *href);
                 }
                 self.bin_streams.iter().position(|s| {
                     s.name == *item
@@ -243,6 +241,24 @@ mod bin_stream_index_tests {
             ..Document::default()
         };
         assert_eq!(doc.bin_stream_index(&BinRef::ItemRef("p2".into())), Some(0));
+    }
+
+    #[test]
+    fn a_manifest_id_whose_href_is_missing_does_not_fall_back_to_a_same_stem_stream() {
+        // `logo` is listed, but its href names a stream the document does not carry. An
+        // unrelated `BinData/logo.png` shares the stem and must not stand in for it.
+        let doc = Document {
+            bin_streams: vec![stream("BinData/logo.png", b"someone else's logo")],
+            hwpx_bin_manifest: vec![("logo".into(), "BinData/missing.png".into())],
+            ..Document::default()
+        };
+        assert_eq!(doc.bin_stream_index(&BinRef::ItemRef("logo".into())), None);
+        assert_eq!(doc.resolve_bin(&BinRef::ItemRef("logo".into())), None);
+        // An id the manifest does not list still resolves by name.
+        assert_eq!(
+            doc.bin_stream_index(&BinRef::ItemRef("BinData/logo.png".into())),
+            Some(0)
+        );
     }
 
     #[test]

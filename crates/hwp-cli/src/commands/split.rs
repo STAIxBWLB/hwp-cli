@@ -257,6 +257,32 @@ fn range_report_json(
     })
 }
 
+/// SHA-256 of `input`'s bytes.
+fn hash_input(input: &Path) -> anyhow::Result<String> {
+    let bytes = std::fs::read(input)
+        .with_context(|| format!("입력 파일을 읽을 수 없습니다: {}", input.display()))?;
+    Ok(hwp_convert::document_split::source_sha256(&bytes))
+}
+
+/// Runs `load` (which parses `input`) and returns its document with the hash of the file it
+/// parsed. The hash is taken before and after, and a file that changed meanwhile is refused:
+/// otherwise `--source-sha256` could pass for bytes other than the ones extracted from.
+fn load_with_stable_hash<T>(
+    input: &Path,
+    load: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<(T, String)> {
+    let before = hash_input(input)?;
+    let loaded = load()?;
+    let after = hash_input(input)?;
+    if before != after {
+        anyhow::bail!(
+            "입력 파일이 읽는 도중 바뀌었습니다: {} — 파일이 더 이상 바뀌지 않을 때 다시 실행하세요",
+            input.display()
+        );
+    }
+    Ok((loaded, before))
+}
+
 /// `hwp split` entry point.
 pub fn run(
     input: &Path,
@@ -357,7 +383,19 @@ pub(crate) fn execute(
         )?;
     }
 
-    let document = load_document_with_options(input, options).map_err(anyhow::Error::new)?;
+    // A range run names its source by hash, so the hash must describe the bytes that were
+    // parsed. The loaders take a path, so the file is hashed before and after the parse and a
+    // file that changed in between is refused rather than extracted from.
+    let (document, source_sha256) = if range.is_some() {
+        load_with_stable_hash(input, || {
+            load_document_with_options(input, options).map_err(anyhow::Error::new)
+        })?
+    } else {
+        (
+            load_document_with_options(input, options).map_err(anyhow::Error::new)?,
+            String::new(),
+        )
+    };
 
     // The range report is a second output of the same transaction, so it gets the same alias
     // guard the loss report does, before any work.
@@ -390,13 +428,10 @@ pub(crate) fn execute(
             end_inclusive: !request.end_exclusive,
             source_sha256: request.source_sha256.clone(),
         };
-        let source_bytes = std::fs::read(input)
-            .with_context(|| format!("입력 파일을 읽을 수 없습니다: {}", input.display()))?;
-        let actual_sha256 = hwp_convert::document_split::source_sha256(&source_bytes);
         let extracted =
-            hwp_convert::document_split::extract_range(&document, &actual_sha256, &selector)
+            hwp_convert::document_split::extract_range(&document, &source_sha256, &selector)
                 .map_err(|error| anyhow::anyhow!("범위 추출 실패: {error}"))?;
-        range_extraction = Some((selector, actual_sha256, extracted));
+        range_extraction = Some((selector, source_sha256, extracted));
     }
 
     let outcome: SplitOutcome = if let Some((_, _, extracted)) = &range_extraction {
@@ -419,13 +454,29 @@ pub(crate) fn execute(
         .collect();
 
     // Stem-collision precheck before any staging (T-03-08): every fragment
-    // destination must not alias the input or the loss-report path.
+    // destination must not alias the input, the loss-report path or the range-report path.
+    // The shared publish step only compares absolute paths, which keep `..`, so a report path
+    // spelled `out/../out/<stem>-001.hwpx` would otherwise replace the fragment with JSON and
+    // still succeed. The comparison here canonicalizes, like the report guards above.
     let mut alias_targets: Vec<&Path> = vec![input];
     if let Some(report_path) = loss_report {
         alias_targets.push(report_path);
     }
+    if let Some(report_path) = range.and_then(|request| request.report.as_deref()) {
+        alias_targets.push(report_path);
+    }
     for destination in &destinations {
         crate::commands::output::reject_output_aliases(destination, &alias_targets)?;
+        for target in &alias_targets {
+            if crate::commands::convert::normalize_for_alias_compare(destination)
+                == crate::commands::convert::normalize_for_alias_compare(target)
+            {
+                anyhow::bail!(
+                    "출력 조각이 보고서·입력 경로와 같은 파일입니다: {} — 서로 다른 경로를 지정하세요",
+                    destination.display()
+                );
+            }
+        }
     }
 
     std::fs::create_dir_all(out_dir)
@@ -517,6 +568,49 @@ pub(crate) fn execute(
         report,
         range: range_summary,
     })
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hwp-split-hash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    #[test]
+    fn a_stable_file_is_loaded_with_its_own_hash() {
+        let path = temp("stable.bin");
+        std::fs::write(&path, b"abc").unwrap();
+        let (value, hash) = load_with_stable_hash(&path, || Ok(7)).unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(hash, hwp_convert::document_split::source_sha256(b"abc"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_file_that_changes_while_it_is_parsed_is_refused() {
+        let path = temp("changing.bin");
+        std::fs::write(&path, b"before").unwrap();
+        let result = load_with_stable_hash(&path, || {
+            std::fs::write(&path, b"after").unwrap();
+            Ok(())
+        });
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("바뀌었습니다"), "{error}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_missing_file_names_the_path() {
+        let path = temp("missing-never-created.bin");
+        let error = load_with_stable_hash(&path, || Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing-never-created.bin"), "{error}");
+    }
 }
 
 #[cfg(test)]
