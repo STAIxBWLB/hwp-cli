@@ -215,7 +215,9 @@ pub enum Cmd {
         /// "bookmark:<name>" or "at:<section>.<paragraph>" (both 0-based). The
         /// range is a run of top-level body paragraphs of one section, so a table
         /// is taken whole; the fragment keeps the section setup, the whole header
-        /// and every binary the range references, and lists the rest as excluded
+        /// and every binary it uses. A binary is left out only when nothing in
+        /// the fragment provably uses it: a reference the tool cannot read (an
+        /// image fill, a raw shape or OLE object) keeps them all and is reported
         #[arg(long, conflicts_with = "pages")]
         from: Option<String>,
         /// Where the range ends, same syntax as --from (default: the end of the
@@ -230,8 +232,10 @@ pub enum Cmd {
         #[arg(long, requires = "from")]
         source_sha256: Option<String>,
         /// Write the range report (hwp-range-extraction-v1: source hash,
-        /// selection, source-to-output addresses and the kept and excluded
-        /// resources) as JSON to this path, published together with the fragment
+        /// selection, source-to-output addresses, the kept, kept-unverified and
+        /// excluded binaries and the unreadable reference sites) as JSON to this
+        /// path, published together with the fragment. Not written unless given;
+        /// it may not be the same file as --loss-report
         #[arg(long, requires = "from")]
         range_report: Option<PathBuf>,
         /// Fail when data that cannot be preserved (opaque) is found while splitting

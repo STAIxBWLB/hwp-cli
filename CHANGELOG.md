@@ -33,19 +33,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   unknown style kinds, stale addresses and HWP style numbers above 255 are refused before
   output publication
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
-||||||| parent of de9e9ec (feat(split): range report schema, MCP arguments, tests and docs (#417))
 - `hwp split --from <anchor> [--to <anchor>] [--end-exclusive] [--source-sha256 <hex>]
   [--range-report <file>]` and the matching `hwp_split` arguments extract one typed range instead
   of splitting by section or page. An anchor is `heading:<text>` (a top-level body paragraph whose
   whole text equals it), `bookmark:<name>` or `at:<section>.<paragraph>`. The range is a run of
   top-level body paragraphs of one section, so a table is taken whole and never cut. The fragment
-  keeps the section setup, the whole header and exactly the binaries the range references; the
-  other binaries are listed as excluded. `--range-report` publishes `hwp-range-extraction-v1`
-  (source hash, fragment hash, source-to-output paragraph and table addresses, kept and excluded
-  binaries) in the same transaction as the fragment, and `hwp_split` returns it inline. A
-  mismatching `--source-sha256`, a missing or ambiguous anchor, a range across sections, a reversed
-  or empty range and a picture whose binary the source lacks are each refused before anything is
-  written. Tested against every form of the generated P0 form set, from HWPX and from its HWP5
+  keeps the section setup and the whole header. Its binaries come from one closure pass over the
+  built fragment: a binary is dropped only when nothing in the fragment (pictures, captions,
+  carried header and footer, raw-preserved objects) provably uses it. When the fragment holds a
+  reference the tool cannot read, such as a border-fill image fill or a raw HWP5 shape or OLE
+  record, every binary is kept and the report lists the sites. `--range-report` publishes
+  `hwp-range-extraction-v1` (source hash, fragment hash, source-to-output paragraph and table
+  addresses, kept, kept-unverified and excluded binaries, unverified sites) in the same
+  transaction as the fragment, and `hwp_split` returns it inline. `--range-report` and
+  `--loss-report` may not name the same file. A mismatching `--source-sha256`, a missing or
+  ambiguous anchor, a range across sections, a reversed or empty range and a picture whose binary
+  the source lacks are each refused before anything is written. Tested against every form of the generated P0 form set, from HWPX and from its HWP5
   conversion ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
 - `hwp styles <file> [--format text|json]` and the MCP tool `hwp_styles` list a document's named
   styles with their resolved character and paragraph attributes and `used_by`, the `para`

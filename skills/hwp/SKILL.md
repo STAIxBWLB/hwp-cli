@@ -60,7 +60,9 @@ syntax (used by `fill`, `slots` and the template tools).
   whole), with the section setup and every binary the range uses. A heading must equal the whole
   paragraph text, so cell text is not an anchor, and an anchor matching twice is refused. Nothing
   is written on a refusal. `--range-report FILE` publishes `hwp-range-extraction-v1` (source
-  hash, source-to-output addresses, kept and excluded binaries) together with the fragment.
+  hash, source-to-output addresses, kept, kept-unverified and excluded binaries) together with the
+  fragment. A binary is excluded only when the fragment provably does not use it, so a reference
+  the tool cannot read keeps them all and is listed.
   `--strict` and `--loss-report` behave as
   in `merge`.
 - `hwp new -o {out.hwpx|out.hwp}` — create a document. `--from {file.md|file.json}` imports

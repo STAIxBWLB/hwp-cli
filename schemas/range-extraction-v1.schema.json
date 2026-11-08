@@ -94,22 +94,60 @@
       "additionalProperties": false,
       "required": [
         "kept",
-        "excluded"
+        "kept_unverified",
+        "excluded",
+        "unverified_sites"
       ],
+      "description": "The closure is conservative: a binary stream is excluded only when the whole fragment, header included, provably does not reference it. A stream is never dropped because a reference to it could not be read.",
       "properties": {
         "kept": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Binary streams the fragment carries: exactly those a kept picture references, in source order."
+          "description": "Binary streams the fragment provably references (a picture, or a binaryItemIDRef attribute in a raw-preserved object), in source order."
+        },
+        "kept_unverified": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Binary streams the fragment carries only because it holds a reference site the closure cannot resolve, so their absence from use cannot be proven. Empty when `unverified_sites` is empty."
         },
         "excluded": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Binary streams of the source the fragment does not carry, in source order."
+          "description": "Binary streams of the source the fragment provably does not reference and does not carry, in source order. A deliberate exclusion, never a loss."
+        },
+        "unverified_sites": {
+          "type": "array",
+          "description": "Places in the fragment that may reference a binary stream whose reference is not modeled, so it was not read. The bytes are never parsed or guessed.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "at"
+            ],
+            "properties": {
+              "code": {
+                "enum": [
+                  "border_fill_image",
+                  "raw_shape",
+                  "raw_ole",
+                  "raw_picture",
+                  "raw_xml_unparsed"
+                ],
+                "description": "Why the site is unresolved: an image fill in a border fill, a raw HWP5 shape component, OLE object or picture component, or raw XML that does not parse."
+              },
+              "at": {
+                "type": "string",
+                "description": "Address in the FRAGMENT: `header/border_fills/N` or `sS/pP` (section and top-level body paragraph)."
+              }
+            }
+          }
         }
       }
     }

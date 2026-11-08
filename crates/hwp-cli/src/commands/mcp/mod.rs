@@ -2922,7 +2922,7 @@ fn tool_defs() -> Vec<Value> {
                     "to": {"type": "string", "description": "범위 끝 지점(from과 같은 문법, 기본은 시작 구역의 끝). from과 함께만 사용"},
                     "end_exclusive": {"type": "boolean", "description": "to 문단을 범위에서 제외; 기본 false"},
                     "source_sha256": {"type": "string", "description": "선택을 만든 원본 파일의 SHA-256(16진수); 다르면 아무것도 쓰지 않고 거부"},
-                    "range_report": {"type": "string", "description": "hwp-range-extraction-v1 JSON(원본 해시, 원본→출력 주소, 유지·제외 자원)을 조각과 함께 게시할 경로"},
+                    "range_report": {"type": "string", "description": "hwp-range-extraction-v1 JSON(원본 해시, 원본→출력 주소, 유지·미검증 유지·제외 바이너리, 읽을 수 없는 참조 자리)을 조각과 함께 게시할 경로(선택, 응답의 range 필드에는 항상 들어 있다). loss_report와 같은 파일일 수 없다"},
                     "strict": {"type": "boolean", "description": "보존 불가(opaque) 데이터가 있으면 게시하지 않고 실패; 기본 false (CLI와 동일) — 응답의 preservation 원장으로 손실을 판단하라"},
                     "loss_report": {"type": "string", "description": "hwp-preservation-report-v1 JSON을 기록할 경로(선택)"},
                     "password": {"type": "string", "description": "이번 hwp_split 호출에만 사용할 문서 암호"}

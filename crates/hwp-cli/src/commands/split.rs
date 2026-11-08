@@ -241,7 +241,14 @@ fn range_report_json(
         "addresses": addresses,
         "resources": {
             "kept": extracted.resources.kept,
+            "kept_unverified": extracted.resources.kept_unverified,
             "excluded": extracted.resources.excluded,
+            "unverified_sites": extracted
+                .resources
+                .unverified
+                .iter()
+                .map(|site| serde_json::json!({"code": site.code, "at": site.at}))
+                .collect::<Vec<_>>(),
         },
     })
 }
@@ -338,7 +345,8 @@ pub(crate) fn execute(
     // output directory) — an unguarded report write would silently overwrite
     // the input with JSON. Same rejection merge applies, before any work.
     if let Some(report_path) = loss_report {
-        crate::commands::merge::reject_loss_report_aliases(
+        crate::commands::merge::reject_report_aliases(
+            "--loss-report",
             report_path,
             &[input.to_path_buf()],
             out_dir,
@@ -352,11 +360,23 @@ pub(crate) fn execute(
     let mut range_extraction = None;
     if let Some(request) = range {
         if let Some(report_path) = &request.report {
-            crate::commands::merge::reject_loss_report_aliases(
+            crate::commands::merge::reject_report_aliases(
+                "--range-report",
                 report_path,
                 &[input.to_path_buf()],
                 out_dir,
             )?;
+            // Two reports on one path would publish one over the other without a word, and the
+            // loss ledger is written first, so the range report would silently replace it.
+            if let Some(loss_path) = loss_report
+                && crate::commands::convert::normalize_for_alias_compare(report_path)
+                    == crate::commands::convert::normalize_for_alias_compare(loss_path)
+            {
+                anyhow::bail!(
+                    "--range-report와 --loss-report가 같은 경로입니다: {} — 서로 다른 파일을 지정하세요",
+                    report_path.display()
+                );
+            }
         }
         // Parse and resolve everything first: a bad anchor, a stale hash, an out-of-order end
         // or a lost resource refuses here, before a single file is built or written.

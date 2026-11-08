@@ -22,9 +22,13 @@
 //! not have. The selection is validated against the source hash and refused before anything
 //! is built when an anchor is missing, ambiguous, stale or out of order. The fragment carries
 //! the section setup of the source section (page, columns, header and footer), the whole
-//! `DocHeader` (D-06, no id remapping), and a resource closure that keeps every binary stream
-//! the selection references. Streams the selection does not reference are *reported* as
-//! excluded, never silently pruned, and a reference to a stream the source does not carry is
+//! `DocHeader` (D-06, no id remapping), and a resource closure computed by ONE walk over the
+//! fragment as built: its body, the setup controls carried in front, every caption and
+//! paragraph list, and the whole header. A stream is *reported* as excluded only when that
+//! walk proves nothing in the fragment uses it. A reference the IR does not model (a
+//! border-fill image fill, a raw HWP5 shape, OLE or picture record, raw XML that does not
+//! parse) is never read by guessing at bytes: the fragment keeps every stream it cannot prove
+//! unused and the report names the site. A reference to a stream the source does not carry is
 //! a refusal, so a deliberate exclusion can never be confused with a lost asset. Every kept
 //! body paragraph and table gets a source-to-output address so a later binding does not guess
 //! shifted indices.
@@ -429,13 +433,33 @@ pub enum AddressKind {
     Table,
 }
 
+/// A place in the fragment that may reference a binary stream but whose reference the IR does
+/// not model, so the closure cannot resolve it. Content-free: a stable cause code and an
+/// address in the FRAGMENT (`header/border_fills/N` or `sS/pP`, the top-level body paragraph).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnverifiedSite {
+    /// `border_fill_image`, `raw_shape`, `raw_ole`, `raw_picture` or `raw_xml_unparsed`.
+    pub code: &'static str,
+    pub at: String,
+}
+
 /// What happened to each binary stream of the source.
+///
+/// The closure is conservative: a stream is only excluded when the whole fragment, header
+/// included, provably does not reference it. "Excluded" therefore never means "lost".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourceClosureReport {
-    /// Streams the selection references, so the fragment carries them.
+    /// Streams the fragment provably references (a picture, or a `binaryItemIDRef` in a
+    /// raw-preserved object), so the fragment carries them.
     pub kept: Vec<String>,
-    /// Streams the source carries that the selection does not reference. The fragment does not
-    /// carry them, and this is a deliberate exclusion, not a loss.
+    /// Streams the fragment carries because it holds a reference site the closure cannot
+    /// resolve ([`UnverifiedSite`]) and so cannot prove them unused. Empty when every
+    /// reference site in the fragment was resolved.
+    pub kept_unverified: Vec<String>,
+    /// The sites that made `kept_unverified` non-empty.
+    pub unverified: Vec<UnverifiedSite>,
+    /// Streams the fragment provably does not reference. The fragment does not carry them,
+    /// and this is a deliberate exclusion, not a loss.
     pub excluded: Vec<String>,
 }
 
@@ -537,43 +561,153 @@ fn body_paragraphs(doc: &Document) -> impl Iterator<Item = (usize, usize, &Parag
     })
 }
 
-/// Visits every `BinRef` reachable from `paragraph`: pictures in the body, in table cells, in
-/// captions and in the paragraph lists of generic objects (text boxes, headers, footers).
-fn collect_bin_refs(paragraph: &Paragraph, out: &mut Vec<BinRef>) {
-    for control in &paragraph.controls {
-        match control {
-            Control::Picture(picture) => {
-                out.push(picture.bin_ref.clone());
-                if let Some(caption) = &picture.caption {
-                    caption
-                        .paragraphs
-                        .iter()
-                        .for_each(|p| collect_bin_refs(p, out));
-                }
-            }
-            Control::Table(table) => {
-                if let Some(caption) = &table.caption {
-                    caption
-                        .paragraphs
-                        .iter()
-                        .for_each(|p| collect_bin_refs(p, out));
-                }
-                for cell in &table.cells {
-                    cell.paragraphs
-                        .iter()
-                        .for_each(|p| collect_bin_refs(p, out));
-                }
-            }
-            Control::Generic(generic) => {
-                for list in &generic.paragraph_lists {
-                    list.paragraphs
-                        .iter()
-                        .for_each(|p| collect_bin_refs(p, out));
-                }
-            }
-            Control::SectionDef(_) => {}
+/// HWP5 record tags that can carry a binary reference the IR does not model (한글문서파일형식
+/// 5.0 §4.3.9, `HWPTAG_BEGIN` = 0x10): a shape component (its fill may be a picture), an OLE
+/// object and a picture component. Local copies because this crate does not depend on `hwp5`;
+/// `crates/hwp-cli/tests/split_range.rs` pins them to `hwp5::record::tag`.
+pub const TAG_SHAPE_COMPONENT: u16 = 0x10 + 60;
+pub const TAG_SHAPE_COMPONENT_OLE: u16 = 0x10 + 68;
+pub const TAG_SHAPE_COMPONENT_PICTURE: u16 = 0x10 + 69;
+
+/// Every binary reference of a document, and every place whose reference could not be read.
+#[derive(Default)]
+struct ReferenceScan {
+    /// References the IR models or that an XML attribute states outright.
+    refs: Vec<BinRef>,
+    unverified: Vec<UnverifiedSite>,
+}
+
+impl ReferenceScan {
+    fn unverified(&mut self, code: &'static str, at: &str) {
+        let site = UnverifiedSite {
+            code,
+            at: at.to_string(),
+        };
+        if !self.unverified.contains(&site) {
+            self.unverified.push(site);
         }
     }
+
+    /// Opaque HWP5 records: a record whose tag can hold a binary id is an unverified site. The
+    /// bytes are never parsed. `modeled_picture` is true for the extras of a `Control::Picture`,
+    /// whose shape component is its frame and whose picture component is where its `bin_ref`
+    /// was read from, so both are already accounted for by the `bin_ref` itself. An OLE record
+    /// is never accounted for.
+    fn opaque(&mut self, records: &[hwp_model::OpaqueRecord], at: &str, modeled_picture: bool) {
+        for record in records {
+            match record.tag {
+                TAG_SHAPE_COMPONENT if !modeled_picture => self.unverified("raw_shape", at),
+                TAG_SHAPE_COMPONENT_OLE => self.unverified("raw_ole", at),
+                TAG_SHAPE_COMPONENT_PICTURE if !modeled_picture => {
+                    self.unverified("raw_picture", at);
+                }
+                _ => {}
+            }
+            self.opaque(&record.children, at, modeled_picture);
+        }
+    }
+
+    /// Raw-preserved HWPX XML: `binaryItemIDRef` attributes are read as attributes, never by
+    /// searching text. XML that does not parse is an unverified site.
+    fn xml(&mut self, xml: &str, at: &str) {
+        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut found = Vec::new();
+        loop {
+            match reader.read_event() {
+                Ok(quick_xml::events::Event::Start(element))
+                | Ok(quick_xml::events::Event::Empty(element)) => {
+                    for attribute in element.attributes() {
+                        let Ok(attribute) = attribute else {
+                            self.unverified("raw_xml_unparsed", at);
+                            return;
+                        };
+                        if attribute.key.local_name().as_ref() == b"binaryItemIDRef"
+                            && let Ok(value) =
+                                attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        {
+                            found.push(BinRef::ItemRef(value.into_owned()));
+                        }
+                    }
+                }
+                Ok(quick_xml::events::Event::Eof) => break,
+                Ok(_) => {}
+                Err(_) => {
+                    self.unverified("raw_xml_unparsed", at);
+                    return;
+                }
+            }
+        }
+        self.refs.extend(found);
+    }
+
+    fn paragraph(&mut self, paragraph: &Paragraph, at: &str) {
+        self.opaque(&paragraph.extras, at, false);
+        for control in &paragraph.controls {
+            match control {
+                Control::Picture(picture) => {
+                    self.refs.push(picture.bin_ref.clone());
+                    self.opaque(&picture.extras, at, true);
+                    self.caption(&picture.caption, at);
+                }
+                Control::Table(table) => {
+                    self.opaque(&table.extras, at, false);
+                    self.caption(&table.caption, at);
+                    for cell in &table.cells {
+                        for inner in &cell.paragraphs {
+                            self.paragraph(inner, at);
+                        }
+                    }
+                }
+                Control::Generic(generic) => {
+                    for list in &generic.paragraph_lists {
+                        for inner in &list.paragraphs {
+                            self.paragraph(inner, at);
+                        }
+                    }
+                    self.caption(&generic.caption, at);
+                    self.opaque(&generic.raw_children, at, false);
+                    self.opaque(&generic.extras, at, false);
+                    if let Some(xml) = &generic.hwpx_raw_xml {
+                        self.xml(xml, at);
+                    }
+                }
+                Control::SectionDef(def) => {
+                    self.opaque(&def.extras, at, false);
+                    for xml in &def.secpr_raw_children {
+                        self.xml(xml, at);
+                    }
+                }
+            }
+        }
+    }
+
+    fn caption(&mut self, caption: &Option<hwp_model::Caption>, at: &str) {
+        if let Some(caption) = caption {
+            for inner in &caption.paragraphs {
+                self.paragraph(inner, at);
+            }
+        }
+    }
+}
+
+/// The ONE walk that decides the resource closure. It runs over the fragment as built (the
+/// whole header, every section and the setup controls carried in front of the range), so a
+/// reference site cannot be seen by one path and missed by another.
+fn scan_references(fragment: &Document) -> ReferenceScan {
+    let mut scan = ReferenceScan::default();
+    for (index, fill) in fragment.header.border_fills.iter().enumerate() {
+        // Fill-type bit 1 is an image fill; its BinData id sits unparsed in `tail`.
+        if fill.fill_type & 0x2 != 0 {
+            scan.unverified("border_fill_image", &format!("header/border_fills/{index}"));
+        }
+    }
+    for (section_index, section) in fragment.sections.iter().enumerate() {
+        scan.opaque(&section.extras, &format!("s{section_index}"), false);
+        for (index, paragraph) in section.paragraphs.iter().enumerate() {
+            scan.paragraph(paragraph, &format!("s{section_index}/p{index}"));
+        }
+    }
+    scan
 }
 
 /// Tables in `paragraph`, in the order `hwp edit` numbers them: a table, then the tables
@@ -660,28 +794,6 @@ pub fn extract_range(
     // both leave nothing to extract.
     if end <= start {
         return Err(RangeError::EndBeforeStart);
-    }
-
-    // Resource closure, decided from the selection alone and before anything is built.
-    let mut references = Vec::new();
-    for paragraph in &section.paragraphs[start..end] {
-        collect_bin_refs(paragraph, &mut references);
-    }
-    let mut kept_indices = BTreeSet::new();
-    for reference in &references {
-        match doc.bin_stream_index(reference) {
-            Some(index) => {
-                kept_indices.insert(index);
-            }
-            None => {
-                return Err(RangeError::LostResource {
-                    reference: match reference {
-                        BinRef::Id(id) => format!("BinData #{}", id.0),
-                        BinRef::ItemRef(item) => item.clone(),
-                    },
-                });
-            }
-        }
     }
 
     // The section setup rides on the first paragraph of the source section. When the range
@@ -781,13 +893,40 @@ pub fn extract_range(
     fragment.header.properties.section_count = 1;
     fragment.header.properties.caret = (0, 0, 0);
 
-    // Keep exactly the referenced streams, in source order. The streams are removed from the
-    // fragment only after the closure above proved every reference resolves.
-    let mut report = ResourceClosureReport::default();
+    // The closure runs over the fragment as built, with the whole header and the carried setup
+    // controls in it. A reference to a binary the source lacks is refused here, still before
+    // anything is written.
+    let scan = scan_references(&fragment);
+    let mut proven = BTreeSet::new();
+    for reference in &scan.refs {
+        match fragment.bin_stream_index(reference) {
+            Some(index) => {
+                proven.insert(index);
+            }
+            None => {
+                return Err(RangeError::LostResource {
+                    reference: match reference {
+                        BinRef::Id(id) => format!("BinData #{}", id.0),
+                        BinRef::ItemRef(item) => item.clone(),
+                    },
+                });
+            }
+        }
+    }
+    // Conservative: with an unresolvable reference site in the fragment, a stream that is not
+    // proven used is not proven unused either, so it travels and the report says why.
+    let keep_unproven = !scan.unverified.is_empty();
+    let mut report = ResourceClosureReport {
+        unverified: scan.unverified,
+        ..ResourceClosureReport::default()
+    };
     let mut streams = Vec::new();
     for (index, stream) in doc.bin_streams.iter().enumerate() {
-        if kept_indices.contains(&index) {
+        if proven.contains(&index) {
             report.kept.push(stream.name.clone());
+            streams.push(stream.clone());
+        } else if keep_unproven {
+            report.kept_unverified.push(stream.name.clone());
             streams.push(stream.clone());
         } else {
             report.excluded.push(stream.name.clone());
@@ -1130,8 +1269,17 @@ mod tests {
         paragraph_text(paragraph)
     }
 
+    /// A body paragraph with only `text`: the markdown converter puts the section setup
+    /// controls on the first paragraph of a document, so they are removed here and only
+    /// `range_doc`'s first paragraph keeps them.
     fn text_paragraph(text: &str) -> Paragraph {
-        crate::from_markdown(&format!("{text}\n")).sections[0].paragraphs[0].clone()
+        let mut paragraph =
+            crate::from_markdown(&format!("{text}\n")).sections[0].paragraphs[0].clone();
+        paragraph
+            .chars
+            .retain(|ch| !matches!(ch, HwpChar::ExtCtrl { .. }));
+        paragraph.controls.clear();
+        paragraph
     }
 
     fn picture_paragraph(reference: &str) -> Paragraph {
@@ -1395,6 +1543,241 @@ mod tests {
         extract_range(&doc, "h", &selector(heading("B"), None, true)).unwrap();
         assert_eq!(format!("{:?}", doc.sections), before);
         assert_eq!(doc.bin_streams.len(), streams);
+    }
+
+    fn generic(ctrl_id: &[u8; 4]) -> hwp_model::GenericControl {
+        hwp_model::GenericControl {
+            ctrl_id: *ctrl_id,
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }
+    }
+
+    /// Appends `control` to `paragraph` with the extended-control char that places it.
+    fn attach(paragraph: &mut Paragraph, ctrl_id: [u8; 4], control: Control) {
+        let index = paragraph.controls.len() as u32;
+        paragraph.controls.push(control);
+        paragraph.chars.insert(
+            0,
+            HwpChar::ExtCtrl {
+                code: 11,
+                ctrl_id,
+                payload: Vec::new(),
+                ctrl_index: Some(index),
+            },
+        );
+    }
+
+    fn opaque(tag: u16) -> hwp_model::OpaqueRecord {
+        hwp_model::OpaqueRecord {
+            tag,
+            data: vec![0; 4],
+            children: Vec::new(),
+        }
+    }
+
+    /// `range_doc` with `site` applied to the body paragraph `host` (1-based body index of the
+    /// range, `0` meaning the first paragraph of the section), then the range `B` only
+    /// extracted. `b.png` is referenced by the picture in the range, `c.png` and `unused.png`
+    /// by nothing the closure can read.
+    fn extract_b_with(site: impl FnOnce(&mut Document)) -> RangeOutcome {
+        let mut doc = range_doc();
+        site(&mut doc);
+        extract_range(
+            &doc,
+            "h",
+            &selector(heading("B"), Some(heading("C")), false),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn 쪽_배경_그림_채움이_있으면_쓰이지_않는다고_증명할_수_없는_바이너리를_남긴다() {
+        let mut existing = 0;
+        let outcome = extract_b_with(|doc| {
+            existing = doc.header.border_fills.len();
+            doc.header.border_fills.push(hwp_model::BorderFill {
+                fill_type: 0x2,
+                ..Default::default()
+            });
+        });
+        assert_eq!(outcome.resources.kept, vec!["BinData/b.png"]);
+        assert_eq!(
+            outcome.resources.kept_unverified,
+            vec!["BinData/c.png", "BinData/unused.png"]
+        );
+        assert!(outcome.resources.excluded.is_empty());
+        assert_eq!(
+            outcome.resources.unverified,
+            vec![UnverifiedSite {
+                code: "border_fill_image",
+                at: format!("header/border_fills/{existing}")
+            }]
+        );
+        assert_eq!(outcome.fragment.bin_streams.len(), 3);
+    }
+
+    #[test]
+    fn 범위_안_묶음_개체의_원본_레코드는_바이너리를_지우지_않는다() {
+        for (tag, code) in [
+            (TAG_SHAPE_COMPONENT, "raw_shape"),
+            (TAG_SHAPE_COMPONENT_OLE, "raw_ole"),
+            (TAG_SHAPE_COMPONENT_PICTURE, "raw_picture"),
+        ] {
+            let outcome = extract_b_with(|doc| {
+                // The grouped object sits in the picture paragraph of the range.
+                let mut object = generic(b"gso ");
+                object.raw_children.push(hwp_model::OpaqueRecord {
+                    tag: 0,
+                    data: Vec::new(),
+                    children: vec![opaque(tag)],
+                });
+                attach(
+                    &mut doc.sections[0].paragraphs[4],
+                    *b"gso ",
+                    Control::Generic(object),
+                );
+            });
+            assert!(
+                outcome.resources.excluded.is_empty(),
+                "{code}: a stream the object may use was excluded"
+            );
+            assert_eq!(outcome.fragment.bin_streams.len(), 3, "{code}");
+            assert_eq!(outcome.resources.unverified.len(), 1, "{code}");
+            assert_eq!(outcome.resources.unverified[0].code, code);
+            assert_eq!(outcome.resources.unverified[0].at, "s0/p2");
+        }
+    }
+
+    #[test]
+    fn 원문_xml_개체의_binary_item_id_ref는_읽어서_유지한다() {
+        let outcome = extract_b_with(|doc| {
+            let mut object = generic(b"con ");
+            object.hwpx_raw_xml = Some(
+                r#"<hp:container><hp:pic><hc:img binaryItemIDRef="c.png"/></hp:pic></hp:container>"#
+                    .into(),
+            );
+            attach(
+                &mut doc.sections[0].paragraphs[4],
+                *b"con ",
+                Control::Generic(object),
+            );
+        });
+        assert_eq!(
+            outcome.resources.kept,
+            vec!["BinData/b.png", "BinData/c.png"]
+        );
+        assert_eq!(outcome.resources.excluded, vec!["BinData/unused.png"]);
+        assert!(outcome.resources.unverified.is_empty());
+    }
+
+    #[test]
+    fn 읽을_수_없는_원문_xml은_추측하지_않고_모두_남긴다() {
+        let outcome = extract_b_with(|doc| {
+            let mut object = generic(b"con ");
+            object.hwpx_raw_xml = Some("<hp:container><hp:pic".into());
+            attach(
+                &mut doc.sections[0].paragraphs[4],
+                *b"con ",
+                Control::Generic(object),
+            );
+        });
+        assert!(outcome.resources.excluded.is_empty());
+        assert_eq!(outcome.resources.unverified[0].code, "raw_xml_unparsed");
+        assert_eq!(outcome.fragment.bin_streams.len(), 3);
+    }
+
+    #[test]
+    fn 앞에_붙는_머리말의_그림은_범위_밖에_있어도_유지한다() {
+        // The section's first paragraph carries a header whose paragraph holds c.png. The range
+        // starts later, so that paragraph rides in front as the section setup.
+        let outcome = extract_b_with(|doc| {
+            let mut head = generic(b"head");
+            head.paragraph_lists.push(hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![picture_paragraph("c.png")],
+            });
+            attach(
+                &mut doc.sections[0].paragraphs[0],
+                *b"head",
+                Control::Generic(head),
+            );
+        });
+        assert_eq!(
+            outcome.resources.kept,
+            vec!["BinData/b.png", "BinData/c.png"]
+        );
+        assert_eq!(outcome.resources.excluded, vec!["BinData/unused.png"]);
+    }
+
+    #[test]
+    fn 개체_캡션_안의_그림은_유지한다() {
+        let outcome = extract_b_with(|doc| {
+            let mut object = generic(b"gso ");
+            object.caption = Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 0,
+                width: None,
+                last_width: 0,
+                paragraphs: vec![picture_paragraph("c.png")],
+            });
+            attach(
+                &mut doc.sections[0].paragraphs[4],
+                *b"gso ",
+                Control::Generic(object),
+            );
+        });
+        assert_eq!(
+            outcome.resources.kept,
+            vec!["BinData/b.png", "BinData/c.png"]
+        );
+    }
+
+    #[test]
+    fn 그림_자신의_도형_레코드는_추가_불확실성이_아니다() {
+        // A modeled picture keeps its shape and picture components as opaque extras. Its
+        // bin_ref already says which stream it uses, so those must not turn every other
+        // stream into "unverified".
+        let outcome = extract_b_with(|doc| {
+            if let Control::Picture(picture) = &mut doc.sections[0].paragraphs[4].controls[0] {
+                picture.extras = vec![
+                    opaque(TAG_SHAPE_COMPONENT),
+                    opaque(TAG_SHAPE_COMPONENT_PICTURE),
+                ];
+            } else {
+                panic!("paragraph 4 holds the picture");
+            }
+        });
+        assert!(outcome.resources.unverified.is_empty());
+        assert_eq!(
+            outcome.resources.excluded,
+            vec!["BinData/c.png", "BinData/unused.png"]
+        );
+    }
+
+    #[test]
+    fn 범위_밖의_불확실한_자리는_조각에_없으므로_영향이_없다() {
+        // The grouped object is in the C paragraph, outside the B-only range.
+        let outcome = extract_b_with(|doc| {
+            let mut object = generic(b"gso ");
+            object.raw_children.push(opaque(TAG_SHAPE_COMPONENT_OLE));
+            attach(
+                &mut doc.sections[0].paragraphs[6],
+                *b"gso ",
+                Control::Generic(object),
+            );
+        });
+        assert!(outcome.resources.unverified.is_empty());
+        assert_eq!(outcome.resources.kept, vec!["BinData/b.png"]);
     }
 
     #[test]

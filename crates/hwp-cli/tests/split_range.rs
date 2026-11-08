@@ -244,6 +244,19 @@ fn assert_fragment_matches_source(
         report["resources"]["kept"].as_array().unwrap().len(),
         want_hashes.len()
     );
+    // The form set holds no reference the closure cannot read, so nothing is kept on suspicion.
+    assert!(
+        report["resources"]["kept_unverified"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        report["resources"]["unverified_sites"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         report["resources"]["excluded"].as_array().unwrap().len(),
         source.bin_streams.len() - want_hashes.len()
@@ -453,7 +466,7 @@ fn refusals_name_the_cause_and_write_nothing() {
         &["source.hwpx", "--from", "FORM_START_APPLICATION"],
         "잘못된 범위 지점",
     );
-    // The report may not overwrite the input.
+    // The report may not overwrite the input, and the refusal names the flag the user gave.
     let result = hwp(
         &ws.dir,
         &[
@@ -468,7 +481,49 @@ fn refusals_name_the_cause_and_write_nothing() {
         ],
     );
     assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("--range-report") && !stderr.contains("--loss-report"),
+        "alias refusal must name --range-report: {stderr}"
+    );
     assert!(!ws.dir.join("refused").exists());
+    // The same holds for the loss report on a range run and on a plain split.
+    for extra in [vec!["--from", "heading:FORM_START_APPLICATION"], vec![]] {
+        let mut args = vec!["split", "source.hwpx", "--out-dir", "refused"];
+        args.extend(extra);
+        args.extend(["--loss-report", "source.hwpx"]);
+        let result = hwp(&ws.dir, &args);
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("--loss-report"),
+            "{args:?}"
+        );
+        assert!(!ws.dir.join("refused").exists());
+    }
+    // One path for both reports would publish the range report over the loss ledger.
+    let result = hwp(
+        &ws.dir,
+        &[
+            "split",
+            "source.hwpx",
+            "--out-dir",
+            "refused",
+            "--from",
+            "heading:FORM_START_APPLICATION",
+            "--range-report",
+            "same.json",
+            "--loss-report",
+            "same.json",
+        ],
+    );
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("--range-report") && stderr.contains("--loss-report"),
+        "{stderr}"
+    );
+    assert!(!ws.dir.join("refused").exists());
+    assert!(!ws.dir.join("same.json").exists());
 }
 
 #[test]
@@ -616,4 +671,61 @@ fn the_schema_rejects_a_drifted_report() {
             "the schema accepted a drifted report: {label}"
         );
     }
+}
+
+/// `hwp-convert` copies three HWP5 tags because it cannot depend on `hwp5` (hub and spoke).
+/// A drifted copy would silently stop recognizing a raw object, so pin them here.
+#[test]
+fn the_closure_tags_equal_the_hwp5_tags() {
+    assert_eq!(
+        hwp_convert::document_split::TAG_SHAPE_COMPONENT,
+        hwp5::record::tag::SHAPE_COMPONENT
+    );
+    assert_eq!(
+        hwp_convert::document_split::TAG_SHAPE_COMPONENT_OLE,
+        hwp5::record::tag::SHAPE_COMPONENT_OLE
+    );
+    assert_eq!(
+        hwp_convert::document_split::TAG_SHAPE_COMPONENT_PICTURE,
+        hwp5::record::tag::SHAPE_COMPONENT_PICTURE
+    );
+}
+
+/// A reference site the closure cannot read must reach the published report and keep the
+/// streams, end to end: a border fill with an image fill is added to a real HWP5 form set.
+#[test]
+fn an_unreadable_reference_site_keeps_every_stream_and_is_reported() {
+    let Some(ws) = Workspace::new("unverified") else {
+        return;
+    };
+    let mut doc = ws.read("source.hwp");
+    let total = doc.bin_streams.len();
+    assert!(total >= 2, "the form set carries both pictures");
+    doc.header.border_fills.push(hwp_model::BorderFill {
+        fill_type: 0x2,
+        ..Default::default()
+    });
+    let site = doc.header.border_fills.len() - 1;
+    hwp5::write_document(
+        &doc,
+        &ws.dir.join("filled.hwp"),
+        &hwp5::WriteOptions::default(),
+    )
+    .unwrap();
+    let report = extract(&ws, "filled.hwp", "u", "FORM_START_PROFILE_1", None, &[]);
+    let resources = &report["resources"];
+    assert!(resources["excluded"].as_array().unwrap().is_empty());
+    assert_eq!(
+        resources["kept_unverified"].as_array().unwrap().len(),
+        total
+    );
+    assert_eq!(
+        resources["unverified_sites"][0]["code"],
+        "border_fill_image"
+    );
+    assert_eq!(
+        resources["unverified_sites"][0]["at"],
+        format!("header/border_fills/{site}").as_str()
+    );
+    assert_eq!(ws.read("u/filled-001.hwp").bin_streams.len(), total);
 }

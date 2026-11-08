@@ -50,11 +50,12 @@ fn infer_merge_format(output: &Path) -> anyhow::Result<MergeFormat> {
     }
 }
 
-/// Rejects a `--loss-report` path that aliases any input or the output, using
-/// the same path normalization `convert.rs` applies to its own report path
-/// (D-15's alias guard, extended from one input to N). Shared with
-/// `commands::split`, which passes its single input and `--out-dir`.
-pub(crate) fn reject_loss_report_aliases(
+/// Rejects a report path (`flag` is the option the user gave it with, such as `--loss-report`)
+/// that aliases any input or the output, using the same path normalization `convert.rs`
+/// applies to its own report path (D-15's alias guard, extended from one input to N). Shared
+/// with `commands::split`, which passes its single input and `--out-dir`.
+pub(crate) fn reject_report_aliases(
+    flag: &str,
     report_path: &Path,
     inputs: &[PathBuf],
     output: &Path,
@@ -63,7 +64,7 @@ pub(crate) fn reject_loss_report_aliases(
     for other in inputs.iter().map(PathBuf::as_path).chain([output]) {
         if report_normalized == crate::commands::convert::normalize_for_alias_compare(other) {
             anyhow::bail!(
-                "--loss-report 경로가 입력/출력과 같을 수 없습니다: {}",
+                "{flag} 경로가 입력/출력과 같을 수 없습니다: {}",
                 report_path.display()
             );
         }
@@ -201,7 +202,7 @@ pub(crate) fn execute(
     let input_refs: Vec<&Path> = inputs.iter().map(PathBuf::as_path).collect();
     crate::commands::output::reject_output_aliases(output, &input_refs)?;
     if let Some(report_path) = loss_report {
-        reject_loss_report_aliases(report_path, inputs, output)?;
+        reject_report_aliases("--loss-report", report_path, inputs, output)?;
     }
 
     let mut documents = Vec::with_capacity(inputs.len());

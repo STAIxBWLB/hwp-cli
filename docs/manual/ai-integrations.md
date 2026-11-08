@@ -29,8 +29,12 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
   splits on page ranges instead, estimated from the layout cache Hancom saved rather than
   recomputed, so it may not match Hancom's own pagination. `--from`/`--to` (`from`/`to` in
   `hwp_split`) extract one typed range instead, anchored on a heading, a bookmark or a
-  `section.paragraph` address, with the binaries the range uses and a `hwp-range-extraction-v1`
-  report of where each paragraph and table went.
+  `section.paragraph` address, with the binaries the range uses. The `hwp-range-extraction-v1`
+  report of where each paragraph and table went and which binaries were kept, kept unverified or
+  excluded is written only when you pass `--range-report {file.json}`; `hwp_split` always returns
+  it in its `range` field. A binary is excluded only when the whole fragment provably does not use
+  it: when the fragment holds a reference the tool cannot read (an image fill, a raw shape or OLE
+  object), every binary travels and the report lists those sites.
 - `hwp compare {a} {b}` / `hwp_compare` — paragraph and structural differences between two
   documents, leaving both untouched. This is not `hwp diff`, which compares a render against a
   Hancom reference PNG.
@@ -38,8 +42,10 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
 ### The preservation ledger
 
 `convert`, `merge` and `split` record every item they could not preserve in the typed
-`hwp-preservation-report-v1` ledger. On the CLI it goes to `--loss-report {file.json}`; over MCP it
-comes back in the `preservation` field of every `hwp_merge` and `hwp_split` response. `--strict`
+`hwp-preservation-report-v1` ledger. On the CLI the ledger is written only when you pass
+`--loss-report {file.json}` (the command then prints a one-line summary on stderr when something
+was lost); over MCP it comes back in the `preservation` field of every `hwp_merge` and `hwp_split`
+response. `--strict`
 refuses to publish when the ledger is non-empty, but it is opt-in on both commands rather than the
 default: a merge always drops the package passthrough of every input after the first, so a
 fail-closed default would refuse even the most ordinary merge. Read the ledger instead of assuming
