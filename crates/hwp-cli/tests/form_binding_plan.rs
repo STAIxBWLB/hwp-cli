@@ -228,6 +228,22 @@ fn stale_plan_refuses_without_replacing_any_artifact() {
 }
 
 #[test]
+fn a_repeated_label_cannot_replace_explicit_reviewed_occurrence_ids() {
+    let workspace = Workspace::new("ambiguous-label");
+    let source = workspace.source("hwpx");
+    let output = workspace.0.join("filled.hwpx");
+    let mut operation = binding_operation(&workspace, &source, "PRIVATE_AMBIGUOUS");
+    operation["plan"]["bindings"][0]["targets"] =
+        json!([{"label":"allocation","copies":[0],"max_chars":100,"allow_reflow":true}]);
+    let result = edit(&workspace, &source, &output, operation, false);
+    assert!(!result.status.success());
+    assert!(!String::from_utf8_lossy(&result.stderr).contains("PRIVATE_AMBIGUOUS"));
+    assert!(!output.exists());
+    assert!(!workspace.0.join("receipt.json").exists());
+    assert!(!workspace.0.join("preview.json").exists());
+}
+
+#[test]
 fn binding_preview_validates_native_output_without_publishing_the_document() {
     let workspace = Workspace::new("dry-run");
     let source = workspace.source("hwpx");
