@@ -31,7 +31,6 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   font-crate maintenance exceptions are proposed for person acceptance before merge; the font
   shaping/parser implementation is unchanged ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
 
-
 **Fixed**
 
 - For HWPX/Markdown/JSON synthesis, floating-table body anchors now follow the renderer's
