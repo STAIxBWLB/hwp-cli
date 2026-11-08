@@ -37,11 +37,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   target: placement-table z-orders, field instance ids and, in the HWP writer, picture
   instance ids, which now start past the ids a re-read document already holds. Ids held in
   table, picture and shape captions count too. A target that already uses all 65,536 table
-  object ids is refused with a named error instead of searching forever.
+  object ids is refused with a named error instead of searching forever, and ids are
+  looked up only when an inserted object needs one, so a text-only insert is accepted even by
+  a target whose field ids or table z-orders are at their ceiling. The HWP writer's picture ids
+  stay inside their range and skip ids the document holds; with the range used up it leaves
+  the picture unwritten and reports it removed.
   Blocks are measured against the text column or table cell they land in: the rotated paper of
   a landscape page, one column of a multi-column section under the column definition in effect
-  at the target paragraph, and, inside an inserted table, the cell's column span less its side
-  margins. A table draws its borders from a bordered fill the target header supplies or gains.
+  at the target paragraph (for `position: before`, the one preceding it, since the blocks land
+  ahead of that paragraph's own column control), and, inside an inserted table, the cell's
+  column span less its side margins. A table draws its borders from a bordered fill the target header supplies or gains.
   Image paths resolve beside the `--ops` file and are bound to the MCP sandbox roots; reading
   `--ops` from stdin has no directory, so image blocks are refused there. An image the target
   already stores byte for byte is shared instead of stored twice, and one whose name the
