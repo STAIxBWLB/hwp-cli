@@ -29,6 +29,7 @@ pub enum StyleEditError {
     Capacity { table: &'static str },
     InvalidAddress,
     UnsupportedKind(u8),
+    CharacterStylesUnsupported,
     InvalidCharacterProperties,
 }
 
@@ -62,6 +63,10 @@ impl std::fmt::Display for StyleEditError {
             Self::InvalidAddress => write!(
                 f,
                 "스타일을 적용할 문단 주소를 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 얻어 보세요"
+            ),
+            Self::CharacterStylesUnsupported => write!(
+                f,
+                "문자 스타일 편집은 현재 지원하지 않습니다. 문단 스타일을 사용하거나 #27의 HWPX 스타일 종류 지원 이후 문자 스타일 편집 후속 작업을 확인해 보세요"
             ),
             Self::UnsupportedKind(kind) => write!(
                 f,
@@ -167,9 +172,12 @@ fn check_shapes(doc: &Document, style: &hwp_model::Style) -> Result<(), StyleEdi
     Ok(())
 }
 
-/// Append one style, reusing equal shapes or appending changed copies. All fallible
+/// Append one paragraph style, reusing equal shapes or appending changed copies. All fallible
 /// work happens on a header candidate, leaving every original reference untouched.
 pub fn create_style(doc: &mut Document, request: &CreateStyle) -> Result<StyleId, StyleEditError> {
+    if request.kind == StyleKind::Character {
+        return Err(StyleEditError::CharacterStylesUnsupported);
+    }
     if request.name.is_empty()
         || request.name.chars().any(char::is_control)
         || request.name.encode_utf16().count() > usize::from(u16::MAX)
@@ -232,11 +240,7 @@ pub fn create_style(doc: &mut Document, request: &CreateStyle) -> Result<StyleId
     style.para_shape = find_or_insert_para(&mut header.para_shapes, paragraph);
     style.name = request.name.clone();
     style.english_name = request.name.clone();
-    style.attr = (style.attr & !0x7)
-        | match request.kind {
-            StyleKind::Paragraph => 0,
-            StyleKind::Character => 1,
-        };
+    style.attr &= !0x7;
     header.styles.push(style);
     doc.header = header;
     Ok(StyleId(id))
@@ -253,6 +257,9 @@ pub fn apply_style_at(
 ) -> Result<bool, StyleEditError> {
     let target_id = selector.resolve(doc)?;
     let target = doc.header.styles[usize::from(target_id.0)].clone();
+    if target.attr & 0x7 == 1 {
+        return Err(StyleEditError::CharacterStylesUnsupported);
+    }
     if target.attr & 0x7 != 0 {
         return Err(StyleEditError::UnsupportedKind(target.attr & 0x7));
     }

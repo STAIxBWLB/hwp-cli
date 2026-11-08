@@ -408,7 +408,7 @@ fn invalid_create_and_apply_requests_are_atomic() {
         assert!(apply_style_at(&mut doc, &path(&[0]), &StyleSelector::Id(0), false).is_err());
         assert_eq!(doc, before);
     }
-    for kind in [1, 2, 7] {
+    for kind in [2, 7] {
         let mut doc = baseline.clone();
         doc.header.styles[1].attr = kind;
         let before = doc.clone();
@@ -494,20 +494,33 @@ fn identifier_capacity_failures_are_atomic_and_equal_shapes_can_be_reused() {
 }
 
 #[test]
-fn utf16_name_boundary_and_character_kind_keep_base_metadata() {
+fn utf16_name_boundary_keeps_base_metadata() {
     let mut doc = fixture();
     let mut operation = request("temporary");
     operation.name = format!("{}x", "😀".repeat(32767));
-    operation.kind = StyleKind::Character;
     let id = create_style(&mut doc, &operation).unwrap();
     let style = &doc.header.styles[usize::from(id.0)];
     assert_eq!(style.name.encode_utf16().count(), usize::from(u16::MAX));
-    assert_eq!(style.attr, 0xa1);
+    assert_eq!(style.attr, 0xa0);
     assert_eq!((style.next_style, style.lang_id), (1, 1042));
+}
+
+#[test]
+fn character_style_creation_and_paragraph_application_are_refused_atomically() {
+    let mut doc = fixture();
+    let mut operation = request("Character accent");
+    operation.kind = StyleKind::Character;
     let before = doc.clone();
-    assert!(matches!(
-        apply_style_at(&mut doc, &path(&[0]), &selector(id), false),
-        Err(StyleEditError::UnsupportedKind(1))
-    ));
+    assert_eq!(
+        create_style(&mut doc, &operation),
+        Err(StyleEditError::CharacterStylesUnsupported)
+    );
+    assert_eq!(doc, before);
+    doc.header.styles[1].attr = 1;
+    let before = doc.clone();
+    assert_eq!(
+        apply_style_at(&mut doc, &path(&[0]), &StyleSelector::Id(1), false),
+        Err(StyleEditError::CharacterStylesUnsupported)
+    );
     assert_eq!(doc, before);
 }

@@ -14,6 +14,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - `hwp edit --ops` accepts `create_style` (copy a named or numbered base and override
   character/paragraph properties) and paragraph-addressed `apply_style` (name or number).
+  Both operations support paragraph-kind styles only; character-style editing is refused with
+  an actionable message and remains a follow-up after HWPX style-type support (#27).
   Creation preserves existing shared shape definitions; application preserves direct paragraph
   and run formatting independently unless `clear_direct` is true. Duplicate/unknown styles,
   stale addresses and HWP style numbers above 255 are refused before output publication

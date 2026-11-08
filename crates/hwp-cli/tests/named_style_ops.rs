@@ -295,6 +295,48 @@ fn para_id(path: &Path, text: &str) -> String {
     matches[0]["id"].as_str().unwrap().to_string()
 }
 
+fn assert_public_style_listing(path: &Path, name: &str, users: &[&str]) {
+    let output = hwp()
+        .arg("styles")
+        .arg(path)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "hwp styles must read edited output: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let listing: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listing["contract"], "hwp-styles-v1");
+    let row = listing["styles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == name)
+        .unwrap();
+    let doc = read(path);
+    let (id, style) = named(&doc, name);
+    assert_eq!(row["id"], id);
+    assert_eq!(row["kind"], "paragraph");
+    assert_eq!(row["attrs"]["char"]["size_pt"].as_f64(), Some(13.0));
+    assert_eq!(row["attrs"]["para"]["alignment"], "right");
+    assert_eq!(row["attrs"]["char_shape_id"], style.char_shape.0);
+    assert_eq!(row["attrs"]["para_shape_id"], style.para_shape.0);
+    let actual: std::collections::BTreeSet<_> = row["used_by"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect();
+    let expected: std::collections::BTreeSet<_> =
+        users.iter().map(|text| para_id(path, text)).collect();
+    assert_eq!(
+        actual, expected,
+        "hwp styles must publish exactly the edited style users"
+    );
+}
+
 #[test]
 fn create_style_by_name_and_id_preserves_shared_shapes_in_both_formats() {
     for extension in ["hwp", "hwpx"] {
@@ -319,6 +361,7 @@ fn create_style_by_name_and_id_preserves_shared_shapes_in_both_formats() {
             ]),
         );
         success(run, "create_style with name and numeric based_on");
+        assert_public_style_listing(&output, CREATED, &[]);
         let after = read(&output);
         assert_eq!(
             &after.header.styles[..before.header.styles.len()],
@@ -389,6 +432,11 @@ fn apply_style_keeps_direct_char_and_para_formatting_independent_in_both_formats
             ]),
         );
         success(run, "apply_style preserving direct formatting");
+        assert_public_style_listing(
+            &output,
+            CREATED,
+            &[INHERITED, DIRECT_PARA, MIXED, HEADING_LIKE],
+        );
         let after = read(&output);
         for text in [INHERITED, DIRECT_PARA, MIXED, HEADING_LIKE] {
             assert_eq!(paragraph(&after, text).style.0 as usize, created_id);
@@ -452,6 +500,7 @@ fn apply_style_clear_direct_resets_all_runs_and_para_shapes_in_both_formats() {
             ]),
         );
         success(run, "apply_style clear_direct");
+        assert_public_style_listing(&output, CREATED, &[DIRECT_PARA, MIXED, HEADING_LIKE]);
         let after = read(&output);
         let (_, style) = named(&after, CREATED);
         for text in [DIRECT_PARA, MIXED, HEADING_LIKE] {
@@ -487,6 +536,7 @@ fn apply_style_to_nested_cell_cat_v2_id_in_both_formats() {
             json!([apply(json!({"id":id}), json!(CREATED), None)]),
         );
         success(run, "apply_style to nested cell paragraph ID");
+        assert_public_style_listing(&output, CREATED, &[NESTED]);
         let after = read(&output);
         let (style_id, style) = named(&after, CREATED);
         let para = cell_paragraph(&after, NESTED);
@@ -724,23 +774,44 @@ fn named_style_schema_refuses_unknown_fields_and_run_addresses_before_writing() 
 }
 
 #[test]
-fn character_style_kind_survives_creation_and_unrelated_edits_in_both_formats() {
+fn character_style_requests_refuse_and_existing_character_styles_are_preserved_in_both_formats() {
     for extension in ["hwp", "hwpx"] {
         let fixture = Fixture::new("character-kind", extension);
-        let (source, run) = fixture.edit(
+        let destination = fixture.path("character-create-refused");
+        std::fs::write(&destination, b"sentinel").unwrap();
+        let (_, run) = fixture.edit(
             &fixture.base,
-            "character-style",
+            "character-create-refused",
             json!([
                 {"op":"create_style","name":"Character accent","based_on":"body",
                  "kind":"character","bold":"on"}
             ]),
         );
-        success(run, "create a named character style");
+        assert!(
+            !run.status.success(),
+            "T3 supports paragraph styles only, for {extension}"
+        );
+        assert!(String::from_utf8_lossy(&run.stderr).contains("#27"));
+        assert_eq!(std::fs::read(destination).unwrap(), b"sentinel");
+
+        // A pre-existing character style is source data, not a request to create one.
+        let mut doc = read(&fixture.base);
+        let mut accent = named(&doc, "body").1.clone();
+        accent.name = "Existing character accent".into();
+        accent.english_name = accent.name.clone();
+        accent.attr = (accent.attr & !7) | 1;
+        doc.header.styles.push(accent);
+        let source = fixture.path("existing-character-source");
+        if extension == "hwp" {
+            hwp5::write_document(&doc, &source, &hwp5::WriteOptions::default()).unwrap();
+        } else {
+            hwpx::write_document(&doc, &source).unwrap();
+        }
         let before = read(&source);
         assert_eq!(
-            named(&before, "Character accent").1.attr & 7,
+            named(&before, "Existing character accent").1.attr & 7,
             1,
-            "{extension}: created character style must retain its kind"
+            "{extension}: existing source must retain character kind (#27 prerequisite)"
         );
         let (output, run) = fixture.edit(
             &source,
@@ -753,17 +824,17 @@ fn character_style_kind_survives_creation_and_unrelated_edits_in_both_formats() 
         );
         let after = read(&output);
         assert_eq!(
-            named(&before, "Character accent"),
-            named(&after, "Character accent")
+            named(&before, "Existing character accent"),
+            named(&after, "Existing character accent")
         );
-        let destination = fixture.path("character-refused");
+        let destination = fixture.path("character-apply-refused");
         std::fs::write(&destination, b"sentinel").unwrap();
         let (_, run) = fixture.edit(
             &output,
-            "character-refused",
+            "character-apply-refused",
             json!([apply(
                 at(&after, INHERITED),
-                json!("Character accent"),
+                json!("Existing character accent"),
                 None
             )]),
         );
@@ -771,6 +842,7 @@ fn character_style_kind_survives_creation_and_unrelated_edits_in_both_formats() 
             !run.status.success(),
             "a paragraph address cannot apply a character style"
         );
+        assert!(String::from_utf8_lossy(&run.stderr).contains("#27"));
         assert_eq!(std::fs::read(destination).unwrap(), b"sentinel");
     }
 }
