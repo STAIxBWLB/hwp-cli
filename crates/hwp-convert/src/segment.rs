@@ -224,6 +224,10 @@ pub struct StyleLevel {
 /// The two style levels, side by side and never merged (D-06a).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SegmentStyle {
+    /// The paragraph's own `StyleId` (an index into `DocHeader::styles`), whether or not it
+    /// resolves. Not published by the segment envelope, which is closed; the `hwp styles`
+    /// listing joins on it to say which paragraphs use a named style.
+    pub style_id: u16,
     /// Reached through the paragraph's `StyleId` to the style's own char and para shapes.
     pub style: StyleLevel,
     /// Reached through the ids the segment itself names.
@@ -331,6 +335,7 @@ pub(crate) fn summarize(
 ) -> SegmentStyle {
     let style = doc.header.styles.get(para.style.0 as usize);
     SegmentStyle {
+        style_id: para.style.0,
         style: level(
             doc,
             style.map(|s| s.char_shape.0),
@@ -371,7 +376,11 @@ pub(crate) fn char_shape_id_at(para: &Paragraph, pos: u32) -> Option<u16> {
         .map(|(_, id)| id.0)
 }
 
-fn level(doc: &Document, char_shape_id: Option<u16>, para_shape_id: Option<u16>) -> StyleLevel {
+pub(crate) fn level(
+    doc: &Document,
+    char_shape_id: Option<u16>,
+    para_shape_id: Option<u16>,
+) -> StyleLevel {
     StyleLevel {
         char_shape_id,
         para_shape_id,

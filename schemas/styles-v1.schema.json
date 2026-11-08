@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/styles-v1.schema.json",
+  "title": "hwp-styles-v1",
+  "description": "The listing `hwp styles <file> --format json` and the MCP tool `hwp_styles` emit: every named style of the document with its resolved attributes and the paragraphs that use it. `attrs` has exactly the shape of the `style` level of `segment-envelope-v2`, and `used_by` holds `para` segment ids as `hwp cat --with-segments --segments v2` publishes them, so the two artifacts join on id alone. The listing is closed: a field added, removed or renamed is a new major schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "schema_version",
+    "styles"
+  ],
+  "properties": {
+    "contract": {
+      "const": "hwp-styles-v1",
+      "description": "Names the contract so a consumer can tell this listing from the segment envelope."
+    },
+    "schema_version": {
+      "const": "1.0",
+      "description": "Version of this contract."
+    },
+    "styles": {
+      "type": "array",
+      "description": "One entry per row of the document's style table, in table order, so an entry's array index equals its `id`.",
+      "items": {
+        "$ref": "#/$defs/style"
+      }
+    }
+  },
+  "$defs": {
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "english_name",
+        "kind",
+        "next_style",
+        "attrs",
+        "used_by"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into the style table, which is what a paragraph's style id holds."
+        },
+        "name": {
+          "type": "string"
+        },
+        "english_name": {
+          "type": "string",
+          "description": "May be empty: a document is free to leave it unset."
+        },
+        "kind": {
+          "enum": [
+            "paragraph",
+            "character",
+            null
+          ],
+          "description": "`null` means THE DOCUMENT DOES NOT ANSWER, never 'paragraph'. HWP5 states the kind in the low three bits of the style record. The HWPX reader does not read the `type` attribute yet (gap GE-13), so every style of a document read from HWPX has `null`, and a reserved HWP5 value is `null` too."
+        },
+        "next_style": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "The style id the document applies to the paragraph after one of this style. Published as stated, not validated against the table."
+        },
+        "attrs": {
+          "$ref": "#/$defs/style_level",
+          "description": "The style's own character and paragraph shapes and what they resolve to, the same object as the `style` level of a segment in `segment-envelope-v2`. A `null` block means the shape id does not resolve in this document's header table."
+        },
+        "used_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Ids of the `para` segments whose paragraph names this style, in segment order (the `segment-envelope-v2` order). Computed under default text options: a paragraph in a header, a footer or a hidden comment has no segment there and is not listed. The ids are not tamper evidence and not stable across edits above the paragraph, exactly as in `segment-envelope-v2`. A paragraph naming a style id outside the table is listed under no style."
+        }
+      }
+    },
+    "style_level": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "char_shape_id",
+        "para_shape_id",
+        "char",
+        "para"
+      ],
+      "description": "One of the two style levels: the shape ids it names and what they resolve to. A `null` here is an explicitly absent block and never a fabricated default a consumer could read as the document's own value.",
+      "properties": {
+        "char_shape_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "`null` when the level itself is unreachable (an unresolvable style id)."
+        },
+        "para_shape_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "`null` when the level itself is unreachable (an unresolvable style id)."
+        },
+        "char": {
+          "description": "`null` when the character-shape id does not resolve in this document's header table.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/char_attrs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "para": {
+          "description": "`null` when the paragraph-shape id does not resolve in this document's header table.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/para_attrs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "char_attrs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "face_ids",
+        "faces",
+        "size_pt",
+        "bold",
+        "italic",
+        "color"
+      ],
+      "description": "The character attributes, in units a consumer cannot misread.",
+      "properties": {
+        "face_ids": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "description": "Font id per language slot, in slot order hangul, latin, hanja, japanese, other, symbol, user. Seven are published rather than one, because picking one would silently pick a language for the consumer.",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "faces": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "description": "The face name each slot's id resolves to in the document's font table, in the same slot order. A `null` slot means THIS DOCUMENT'S FONT TABLE DOES NOT ANSWER FOR THAT SLOT - the id is out of range. It does not mean 'no font', and a consumer must not read it as a default face.",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "size_pt": {
+          "type": "number",
+          "description": "Size in POINTS. The stored value is HWPUNIT, where 1000 = 10pt; the division happens here once."
+        },
+        "bold": {
+          "type": "boolean",
+          "description": "From the character shape's own bold predicate, not from a re-derived bit test."
+        },
+        "italic": {
+          "type": "boolean",
+          "description": "From the character shape's own italic predicate."
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "description": "`#RRGGBB`. The stored value is a COLORREF (`0x00BBGGRR`) whose byte order is a trap for a web consumer, so it is decoded here exactly once."
+        }
+      }
+    },
+    "para_attrs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alignment",
+        "indent",
+        "line_spacing_type",
+        "line_spacing"
+      ],
+      "description": "The paragraph attributes.",
+      "properties": {
+        "alignment": {
+          "type": "string",
+          "enum": [
+            "justify",
+            "left",
+            "right",
+            "center",
+            "distribute",
+            "divide",
+            "unknown"
+          ],
+          "description": "The decoded alignment as a name, never a bare integer. `unknown` means the document named a RESERVED VALUE: the stored field is three bits wide and the specification defines only 0..=5, so a hwp5 file can carry 6 or 7 and nothing clamps it on the way in. It is reported rather than coerced to a default, because a file we did not write is untrusted input and guessing `justify` for it would put a value in the envelope the document never stated."
+        },
+        "indent": {
+          "type": "integer",
+          "description": "HWPUNIT (1/7200 inch); negative means an outdent."
+        },
+        "line_spacing_type": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "description": "0 percent, 1 fixed, 2 margin-only, 3 at-least. It selects the unit of `line_spacing`."
+        },
+        "line_spacing": {
+          "type": "integer",
+          "description": "Its unit follows `line_spacing_type`: percent for type 0, HWPUNIT for type 1. The pair is published rather than a resolved number, because collapsing them loses the distinction."
+        }
+      }
+    }
+  }
+}

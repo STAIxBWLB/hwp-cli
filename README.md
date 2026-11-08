@@ -46,7 +46,7 @@ and in CI.
 - **Document-level workflows** Merge several documents into one (`hwp merge`, one Section per
   input), split one into per-section or per-page-range fragments (`hwp split`), and report the
   paragraph and structural differences between two documents (`hwp compare`).
-- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 22 tools to
+- **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 23 tools to
   desktop clients, including Amazon Quick Desktop.
 
 ## Implementation status
@@ -61,7 +61,7 @@ and in CI.
 | Certification (`certify`) and structured corpus gate (`corpus`) | Implemented |
 | Document-level workflows (`merge`, `split`, `compare`) | Implemented; spot-checked in Hancom on 2026-08-29 (see [12-feature-gaps](docs/design/12-feature-gaps.md) GM-3/GM-4/GM-8) |
 | Official-document authoring (profiles, templates, frames, lint, table styling) | Implemented |
-| MCP server (22 tools) | Implemented |
+| MCP server (23 tools) | Implemented |
 | Distribution documents (배포용문서) | Read |
 | HTML conversion | Structural parity with markdown; CSS mapping of character and paragraph shapes is still coarse |
 | Equations | Approximated as a box plus the script |
@@ -296,6 +296,7 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | `template <template> --data <data> -o <output>` | Bounded expansion of the TemplateSpec/Data v1 typed AST |
 | `edit <input> -o <output>` | Text, formatting and structural editing (paragraphs, table rows/columns, cell merge/split, fields, images, seals) |
 | `fields` / `bookmarks` / `slots` `<file>` | List fields, bookmarks, or `{{name}}` slots |
+| `styles <file>` | List named styles with resolved attributes and `used_by` paragraph segment ids (`--format json` emits `hwp-styles-v1`) |
 | `fill <input> -o <output>` | Fidelity-preserving template filling (hwpx package preserved) |
 | `validate <file>` | Structural validation (mimetype, required entries, XML parsing) |
 | `lint <file>` | Ten official-document notation and structure rules. Advisory by default; `--strict` exits 1 on an error-severity finding and `--json` emits `hwp-lint-report-v1` |
@@ -498,7 +499,7 @@ The copy-paste Windows setup, create/validate acceptance test, reusable agent in
 symptom-driven recovery are in the dedicated
 [Amazon Quick Desktop runbook](docs/manual/amazon-quick-desktop.md).
 
-Amazon Quick Desktop can launch this local stdio server and expose all 22 tools. Install the
+Amazon Quick Desktop can launch this local stdio server and expose all 23 tools. Install the
 publish-safe skill into its active profile with:
 
 ```sh
@@ -518,7 +519,7 @@ but it is a private hop that expects a trusted edge in front of it: authenticate
 tenant isolation and artifact transfer remain future work in
 [Remote MCP transport](docs/design/20-remote-mcp.md).
 
-### Exposed tools (22)
+### Exposed tools (23)
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
@@ -527,6 +528,7 @@ tenant isolation and artifact transfer remain future work in
 | `hwp_grep` | `path`, `pattern` | Paragraph text search; returns `{matches, count, truncated}` — zero matches is a normal result |
 | `hwp_list_fields` | `path` | List fields |
 | `hwp_list_bookmarks` | `path` | List bookmarks (bokm) |
+| `hwp_styles` | `path` | List named styles with resolved attributes and `used_by` segment ids, as an `hwp-styles-v1` listing |
 | `hwp_slots` | `path` | List `{{name}}` placeholders |
 | `hwp_render` | `path` | Render pages to PNG (base64, response up to 16 MiB) or write PNG/SVG/PDF files via `output_path` (dpi 36..=600) |
 | `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations |

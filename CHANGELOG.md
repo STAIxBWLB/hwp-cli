@@ -10,6 +10,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `hwp styles <file> [--format text|json]` and the MCP tool `hwp_styles` list a document's named
+  styles with their resolved character and paragraph attributes and `used_by`, the `para`
+  segment ids that `hwp cat --with-segments --segments v2` publishes. The JSON form is the new
+  `hwp-styles-v1` contract (`schemas/styles-v1.schema.json`), whose `attrs` reuse the segment
+  envelope's `style` level. `kind` is `null` when the document does not state it: always for
+  HWPX, whose reader does not read `hh:style@type` yet (GE-13)
+  ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
+
 **Changed**
 
 - Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)

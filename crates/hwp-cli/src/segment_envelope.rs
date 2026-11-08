@@ -52,7 +52,7 @@ pub fn segment_json(s: &Segment) -> serde_json::Value {
 
 /// One style level. A `null` is an explicitly absent block - an id that does not resolve in
 /// this document's header table - and never a fabricated default.
-fn style_level_json(level: &StyleLevel) -> serde_json::Value {
+pub fn style_level_json(level: &StyleLevel) -> serde_json::Value {
     serde_json::json!({
         "char_shape_id": level.char_shape_id,
         "para_shape_id": level.para_shape_id,

@@ -41,7 +41,7 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
   구역별·쪽 범위별 조각으로 나누며(`hwp split`), 문서 두 개의 문단·구조 차이를 보고한다
   (`hwp compare`).
 - **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 Amazon Quick Desktop을 포함한
-  데스크톱 클라이언트에 22개 도구를 노출한다.
+  데스크톱 클라이언트에 23개 도구를 노출한다.
 
 ## 구현 상태
 
@@ -55,7 +55,7 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 | 인증(certify) · 구조 코퍼스 게이트(corpus) | 구현 완료 |
 | 문서 단위 작업(`merge`·`split`·`compare`) | 구현 완료. 2026-08-29 한글에서 표본 확인([12-feature-gaps](docs/design/12-feature-gaps.ko.md) GM-3·GM-4·GM-8) |
 | 공문서 저작 (프로파일·템플릿·문서 틀·lint·표 서식) | 구현 완료 |
-| MCP 서버 (22 도구) | 구현 완료 |
+| MCP 서버 (23 도구) | 구현 완료 |
 | 배포용문서 | 읽기 지원 |
 | HTML 변환 | 구조는 markdown과 동등. 글자·문단 모양의 CSS 매핑은 아직 거칠다 |
 | 수식 | 상자+스크립트 근사 렌더 |
@@ -277,6 +277,7 @@ hwp mcp --font-dir ./fonts
 | `template <template> --data <data> -o <output>` | TemplateSpec/Data v1의 typed AST를 bounded expansion |
 | `edit <input> -o <output>` | 텍스트·서식·구조 편집(문단, 표 행/열, 셀 병합/분할, 필드, 이미지, 도장) |
 | `fields` / `bookmarks` / `slots` `<file>` | 필드·누름틀 / 책갈피 / `{{name}}` 슬롯 목록 |
+| `styles <file>` | 이름 있는 스타일 목록 (해석된 속성, `used_by` 문단 세그먼트 id; `--format json`은 `hwp-styles-v1`) |
 | `fill <input> -o <output>` | 충실도 보존 템플릿 채우기(hwpx 패키지 보존) |
 | `validate <file>` | 구조 검증(mimetype·필수 엔트리·XML 파싱) |
 | `lint <file>` | 공문서 표기법·구조 규칙 10개를 검사. 기본은 권고이며, `--strict`는 오류 등급이 있을 때 1로 종료하고 `--json`은 `hwp-lint-report-v1`을 출력 |
@@ -462,7 +463,7 @@ Amazon Quick Desktop)과 번들 에이전트 스킬(`hwp skill export`):
 Windows 복사·실행 설정, 생성·검증 acceptance test, 재사용 가능한 에이전트 지침, 증상별 복구는 전용
 [Amazon Quick Desktop 가이드](docs/manual/amazon-quick-desktop.ko.md)에 정리했다.
 
-Amazon Quick Desktop은 로컬 stdio 서버를 실행해 22개 도구를 모두 노출할 수 있다. publish-safe
+Amazon Quick Desktop은 로컬 stdio 서버를 실행해 23개 도구를 모두 노출할 수 있다. publish-safe
 스킬은 활성 프로필에 다음과 같이 설치한다.
 
 ```sh
@@ -481,7 +482,7 @@ Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 이제 `h
 edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, tenant 격리, artifact 전송은
 여전히 [Remote MCP transport](docs/design/20-remote-mcp.ko.md)의 후속 작업이다.
 
-### 노출 도구 (22종)
+### 노출 도구 (23종)
 
 | 도구 | 필수 인자 | 기능 |
 |---|---|---|
@@ -490,6 +491,7 @@ edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, ten
 | `hwp_grep` | `path`, `pattern` | 문단 텍스트 검색. `{matches, count, truncated}` 반환 — 0건이어도 정상 결과 |
 | `hwp_list_fields` | `path` | 필드/누름틀 목록 |
 | `hwp_list_bookmarks` | `path` | 책갈피(bokm) 목록 |
+| `hwp_styles` | `path` | 이름 있는 스타일 목록 (해석된 속성, `used_by` 세그먼트 id), `hwp-styles-v1` 형식 |
 | `hwp_slots` | `path` | `{{name}}` 자리표시자 목록 |
 | `hwp_render` | `path` | 페이지를 PNG로 렌더(base64, 응답 최대 16 MiB)하거나 `output_path`로 PNG/SVG/PDF 파일 작성(dpi 36..=600) |
 | `hwp_edit` | `input`, `output` | typed JSON 작업으로 strict atomic 편집 |
