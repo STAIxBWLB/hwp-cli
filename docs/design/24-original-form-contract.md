@@ -11,7 +11,8 @@ or proof that Hancom Office opens the output.
 ## Scope and delivery boundary
 
 P0 supplies a deterministic authoring specification, expected values, shared test helpers and
-negative self-checks. It does not implement range extraction (#417), production binding plans
+negative self-checks. Range extraction (#417) is implemented separately as `hwp split --from`,
+and its tests use these helpers as the oracle. P0 does not implement production binding plans
 (#418), original-form certification (#419), pagination/style operations (#420), or the complete
 CLI/MCP workflow (#421). Existing production edit, compose, compare and render operations remain
 the execution surfaces. A helper's in-memory expected document is a test oracle, not a new public

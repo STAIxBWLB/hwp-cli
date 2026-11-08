@@ -128,6 +128,11 @@ Divide one document into several outputs, one per section by default (page range
 | `<INPUT>` |  |  | Input HWP/HWPX file |
 | `--out-dir` | `<OUT_DIR>` |  | Output directory (file names are "<input stem>-NNN.<lowercased input extension>") |
 | `--pages` | `<PAGES>` |  | Page range to split on instead of section boundaries, "N" or "N-M" (1-based, inclusive, repeatable). Boundaries come from the page starts Hancom itself saved in the document's layout cache — a boundary that falls inside a paragraph rounds forward to the next paragraph's start, and the estimate may not match what Hancom itself would paginate |
+| `--from` | `<FROM>` |  | Extract one typed range instead of splitting: where it starts, as "heading:<text>" (the one body paragraph whose whole text equals it), "bookmark:<name>" or "at:<section>.<paragraph>" (both 0-based). The range is a run of top-level body paragraphs of one section, so a table is taken whole; the fragment keeps the section setup, the whole header and every binary the range references, and lists the rest as excluded |
+| `--to` | `<TO>` |  | Where the range ends, same syntax as --from (default: the end of the start's section) |
+| `--end-exclusive` |  |  | Leave the --to paragraph out of the range (it is included by default) |
+| `--source-sha256` | `<SOURCE_SHA256>` |  | SHA-256 (hex) of the source file the selection was made against; a different file is refused before anything is written |
+| `--range-report` | `<RANGE_REPORT>` |  | Write the range report (hwp-range-extraction-v1: source hash, selection, source-to-output addresses and the kept and excluded resources) as JSON to this path, published together with the fragment |
 | `--strict` |  |  | Fail when data that cannot be preserved (opaque) is found while splitting |
 | `--loss-report` | `<LOSS_REPORT>` |  | Write the typed preservation ledger (hwp-preservation-report-v1) as JSON to this path, even when the split succeeds without loss |
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |

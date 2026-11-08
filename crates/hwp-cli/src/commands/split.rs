@@ -186,6 +186,9 @@ fn remove_stale_fragments(out_dir: &Path, stem: &str, extension: &str, keep: &[P
 pub(crate) struct SplitSummary {
     pub fragments: Vec<PathBuf>,
     pub report: WriteReport,
+    /// The `hwp-range-extraction-v1` report of a range run, whether or not `--range-report`
+    /// also wrote it to disk. `None` for section and page splits.
+    pub range: Option<serde_json::Value>,
 }
 
 /// The `hwp-range-extraction-v1` report: what was selected, against which source, where each
@@ -451,15 +454,16 @@ pub(crate) fn execute(
 
     // A range report is published in the SAME transaction as the fragment: a reader that finds
     // the fragment finds the addresses that explain it, and a failed publish leaves neither.
-    if let (Some(request), Some((_, source_sha256, extracted))) = (range, &range_extraction)
-        && let Some(report_path) = &request.report
-    {
+    let mut range_summary = None;
+    if let (Some(request), Some((_, source_sha256, extracted))) = (range, &range_extraction) {
         let fragment_sha256 = hwp_convert::document_split::source_sha256(&fragment_bytes[0].1);
         let report_json = range_report_json(request, source_sha256, &fragment_sha256, extracted);
-        let mut text = serde_json::to_string_pretty(&report_json)?;
-        text.push('\n');
-        crate::commands::output::reject_output_aliases(report_path, &[input])?;
-        fragment_bytes.push((report_path.clone(), text.into_bytes()));
+        if let Some(report_path) = &request.report {
+            let mut text = serde_json::to_string_pretty(&report_json)?;
+            text.push('\n');
+            fragment_bytes.push((report_path.clone(), text.into_bytes()));
+        }
+        range_summary = Some(report_json);
     }
 
     // D-16: publish the whole fragment set in one transaction — never per
@@ -478,6 +482,7 @@ pub(crate) fn execute(
     Ok(SplitSummary {
         fragments: destinations,
         report,
+        range: range_summary,
     })
 }
 
@@ -514,7 +519,16 @@ mod tests {
         let out_dir = dir.join("frag");
         write_three_section_hwp(&input);
 
-        run(&input, &out_dir, &[], false, None, PasswordArgs::default()).unwrap();
+        run(
+            &input,
+            &out_dir,
+            &[],
+            None,
+            false,
+            None,
+            PasswordArgs::default(),
+        )
+        .unwrap();
 
         assert!(out_dir.join("in-001.hwp").exists());
         assert!(out_dir.join("in-002.hwp").exists());
@@ -536,7 +550,16 @@ mod tests {
         let doc = hwp_convert::from_markdown("단일 구역\n");
         crate::commands::convert::write_hwp(&doc, &input, false).unwrap();
 
-        run(&input, &out_dir, &[], false, None, PasswordArgs::default()).unwrap();
+        run(
+            &input,
+            &out_dir,
+            &[],
+            None,
+            false,
+            None,
+            PasswordArgs::default(),
+        )
+        .unwrap();
 
         assert!(out_dir.join("in-001.hwp").exists());
         assert!(!out_dir.join("in-002.hwp").exists());
@@ -591,6 +614,7 @@ mod tests {
             &input,
             &out_dir,
             &[],
+            None,
             false,
             Some(input.as_path()),
             PasswordArgs::default(),
@@ -698,7 +722,16 @@ mod tests {
         let out_dir = dir.join("frag");
         write_three_section_hwp(&input);
 
-        run(&input, &out_dir, &[], false, None, PasswordArgs::default()).unwrap();
+        run(
+            &input,
+            &out_dir,
+            &[],
+            None,
+            false,
+            None,
+            PasswordArgs::default(),
+        )
+        .unwrap();
 
         for name in ["in-001.hwp", "in-002.hwp", "in-003.hwp"] {
             assert!(

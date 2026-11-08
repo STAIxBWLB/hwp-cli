@@ -38,8 +38,8 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
   내장 문서 템플릿 8종(`hwp new --template`), 네이티브 두문·결문 틀, 법정 8단계 항목 부호,
   프리셋 표 서식(`hwp edit --style-tables`), 표기법·구조 린터(`hwp lint`, 10개 규칙)를 제공한다.
 - **문서 단위 작업** 여러 문서를 하나로 합치고(`hwp merge`, 입력 하나가 Section 하나), 하나를
-  구역별·쪽 범위별 조각으로 나누며(`hwp split`), 문서 두 개의 문단·구조 차이를 보고한다
-  (`hwp compare`).
+  구역별·쪽 범위별 조각으로 나누거나 서식 하나 같은 형식 있는 범위를 쓰는 바이너리와 함께
+  잘라내며(`hwp split`), 문서 두 개의 문단·구조 차이를 보고한다 (`hwp compare`).
 - **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 Amazon Quick Desktop을 포함한
   데스크톱 클라이언트에 23개 도구를 노출한다.
 
@@ -505,7 +505,7 @@ edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, ten
 | `hwp_validate` | `path` | 구조 검증 `{valid, errors, warnings}` |
 | `hwp_lint` | `path` | 공문서 표기법·구조 규칙 10개를 `hwp-lint-report-v1` 리포트로 반환 |
 | `hwp_merge` | `inputs`, `output` | 문서 두 개 이상을 합치고 보존 손실 원장을 반환 |
-| `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages` 범위)로 나누고 발행된 조각 경로를 반환 |
+| `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages` 범위)로 나누거나 `from`/`to`로 형식 있는 범위 하나를 추출하고, 발행된 조각 경로와 범위 추출 시 `hwp-range-extraction-v1` 보고서를 반환 |
 | `hwp_compare` | `a`, `b` | 읽기 전용 문단·구조 비교를 `hwp-compare-report-v1`으로 반환. 차이가 있어도 `isError`가 아니므로 `identical`을 읽는다 |
 | `hwp_put_file` | `name`, `content` | base64 콘텐츠를 세션 워크스페이스에 저장. 원격 배포에 기존 문서를 넣는 유일한 경로다. 도구 인자는 경로를 받으므로 먼저 올린 뒤 그 이름을 넘긴다. 복호 512 KiB 상한 |
 | `hwp_get_file` | `path` | 워크스페이스 파일을 base64로 반환(영수증 블록 + embedded resource). 상한을 넘으면 자르지 않고 거절한다. 중간 산출물은 워크스페이스에 두고 최종 결과물만 받는다. 반환된 base64는 클라이언트 메시지 스트림에 쌓인다 |

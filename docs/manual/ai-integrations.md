@@ -27,7 +27,10 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
   start/continue settings, so re-check them afterwards.
 - `hwp split {in} --out-dir {dir}` / `hwp_split` — one fragment per Section by default; `--pages`
   splits on page ranges instead, estimated from the layout cache Hancom saved rather than
-  recomputed, so it may not match Hancom's own pagination.
+  recomputed, so it may not match Hancom's own pagination. `--from`/`--to` (`from`/`to` in
+  `hwp_split`) extract one typed range instead, anchored on a heading, a bookmark or a
+  `section.paragraph` address, with the binaries the range uses and a `hwp-range-extraction-v1`
+  report of where each paragraph and table went.
 - `hwp compare {a} {b}` / `hwp_compare` — paragraph and structural differences between two
   documents, leaving both untouched. This is not `hwp diff`, which compares a render against a
   Hancom reference PNG.

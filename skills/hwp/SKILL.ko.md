@@ -54,7 +54,14 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
 - `hwp split {input} --out-dir {dir}` — 문서 하나를 조각으로 나눕니다. 기본은 Section
   하나당 조각 하나이며 이름은 `{stem}-NNN.{소문자 확장자}`입니다. `--pages "N"|"N-M"`
   (반복 가능)을 주면 쪽 범위로 나누는데, 그 경계는 한컴이 저장한 레이아웃 캐시에서 얻은
-  추정값이라 한컴 자체 페이지 나눔과 다를 수 있습니다. `--strict`와 `--loss-report`는
+  추정값이라 한컴 자체 페이지 나눔과 다를 수 있습니다. `--from "heading:<텍스트>"|
+  "bookmark:<이름>"|"at:<구역>.<문단>"`에 선택적 `--to`, `--end-exclusive`,
+  `--source-sha256 <hex>`를 주면 형식 있는 범위 하나를 대신 추출합니다. 범위는 한 구역의
+  최상위 본문 문단이며(표는 통째로 포함) 구역 설정과 범위가 쓰는 모든 바이너리가 함께
+  들어갑니다. 제목은 문단 전체 텍스트와 같아야 하므로 셀 텍스트는 지점이 될 수 없고, 두 곳과
+  일치하는 지점은 거부됩니다. 거부되면 아무것도 쓰지 않습니다. `--range-report <파일>`은
+  `hwp-range-extraction-v1`(원본 해시, 원본→출력 주소, 유지·제외된 바이너리)을 조각과 함께
+  게시합니다. `--strict`와 `--loss-report`는
   `merge`와 같습니다.
 - `hwp new -o {out.hwpx|out.hwp}` — 문서 생성. `--from {file.md|file.json}`은 마크다운
   또는 JSON IR을 가져옵니다 (생략 시 빈 문서); `--set-meta key=value` (title/author/
@@ -318,7 +325,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | `hwp_certify` | `input`, `policy`, `report` | 인증 실행 후 보고서를 원자적으로 발행 |
 | `hwp_diff` | `input`, `ref` | 한 페이지를 렌더링해 참조 PNG와 비교 |
 | `hwp_merge` | `inputs`, `output` | 문서 두 개 이상을 합침 (입력 하나당 Section 하나); 보존 손실 원장을 반환 |
-| `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages`)로 조각내고 발행된 조각 경로를 반환 |
+| `hwp_split` | `input`, `out_dir` | Section 단위(또는 `pages`)로 조각내거나 `from`/`to`로 형식 있는 범위 하나를 추출하고, 발행된 조각 경로와 범위 추출 시 `hwp-range-extraction-v1` 보고서를 반환 |
 | `hwp_compare` | `a`, `b` | 읽기 전용 문단·구조 비교로 `hwp-compare-report-v1`을 반환. 차이가 있는 것은 정상 결과라 `isError`가 되지 않으므로 `identical`을 읽는다 |
 | `hwp_put_file` | `name`, `content` | base64 콘텐츠를 세션 워크스페이스에 저장. 원격 배포에 기존 문서를 넣는 유일한 경로다. 도구 인자는 경로를 받으므로 먼저 올린 뒤 그 이름을 넘긴다. 복호 512 KiB 상한 |
 | `hwp_get_file` | `path` | 워크스페이스 파일을 base64로 반환(영수증 블록 + embedded resource). 상한을 넘으면 자르지 않고 거절한다. 중간 산출물은 워크스페이스에 두고 최종 결과물만 받는다. 반환된 base64는 클라이언트 메시지 스트림에 쌓인다 |

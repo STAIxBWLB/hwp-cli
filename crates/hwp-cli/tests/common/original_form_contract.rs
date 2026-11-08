@@ -445,6 +445,100 @@ pub fn compare_expected_cells(
     }
     Ok(())
 }
+/// Compares everything a table projection carries EXCEPT its address key: grid, cell values,
+/// geometry and style. A range fragment moves a table to a new address, so its content is
+/// compared with this, and the address through the extraction report.
+pub fn compare_table_payload(
+    index: usize,
+    before: &TableProjection,
+    after: &TableProjection,
+) -> Result<(), ContractViolation> {
+    same(
+        &(before.rows, before.cols),
+        &(after.rows, after.cols),
+        "grid",
+        &index.to_string(),
+    )?;
+    same(
+        &before.cells.len(),
+        &after.cells.len(),
+        "grid",
+        &index.to_string(),
+    )?;
+    for (before, after) in before.cells.iter().zip(&after.cells) {
+        let key = format!("{index}/{}/{}", before.row, before.col);
+        same(&before.values, &after.values, "cell_values", &key)?;
+        same(
+            &(
+                before.row,
+                before.col,
+                before.row_span,
+                before.col_span,
+                before.width,
+                before.minimum_height,
+            ),
+            &(
+                after.row,
+                after.col,
+                after.row_span,
+                after.col_span,
+                after.width,
+                after.minimum_height,
+            ),
+            "grid",
+            &key,
+        )?;
+        same(&before.style, &after.style, "style", &key)?;
+    }
+    same(&before.style, &after.style, "style", &index.to_string())?;
+    Ok(())
+}
+
+/// Compares a picture's payload hash and geometry, never its address key.
+pub fn compare_image_payload(
+    before: &ImageProjection,
+    after: &ImageProjection,
+) -> Result<(), ContractViolation> {
+    same(
+        &before.payload_sha256,
+        &after.payload_sha256,
+        "resources",
+        "payload",
+    )?;
+    same(&before.geometry, &after.geometry, "resources", "geometry")
+}
+
+/// Compares the top-level body paragraphs `source_range` of `source` with the paragraphs of
+/// `fragment` starting at `fragment_offset`: text atoms, style and page-break bit, never the
+/// address. `source` and `fragment` are single-section for this check.
+pub fn compare_body_run(
+    source: &FormProjection,
+    source_range: std::ops::Range<usize>,
+    fragment: &FormProjection,
+    fragment_offset: usize,
+) -> Result<(), ContractViolation> {
+    let body = |projection: &FormProjection, wanted: usize| -> Option<ParagraphProjection> {
+        projection
+            .paragraphs
+            .iter()
+            .find(|para| para.key == format!("s0/p{wanted}"))
+            .cloned()
+    };
+    for (position, source_index) in source_range.enumerate() {
+        let key = format!("p{source_index}");
+        let (Some(before), Some(after)) = (
+            body(source, source_index),
+            body(fragment, fragment_offset + position),
+        ) else {
+            return Err(violation("paragraphs", &key));
+        };
+        same(&before.values, &after.values, "paragraph_values", &key)?;
+        same(&before.style, &after.style, "style", &key)?;
+        same(&before.break_type, &after.break_type, "breaks", &key)?;
+    }
+    Ok(())
+}
+
 pub fn compare_form_contract(
     expected: &FormProjection,
     actual: &FormProjection,
@@ -464,44 +558,7 @@ pub fn compare_form_contract(
     )?;
     for (index, (before, after)) in expected.tables.iter().zip(&actual.tables).enumerate() {
         same(&before.key, &after.key, "structure", &index.to_string())?;
-        same(
-            &(before.rows, before.cols),
-            &(after.rows, after.cols),
-            "grid",
-            &index.to_string(),
-        )?;
-        same(
-            &before.cells.len(),
-            &after.cells.len(),
-            "grid",
-            &index.to_string(),
-        )?;
-        for (before, after) in before.cells.iter().zip(&after.cells) {
-            let key = format!("{index}/{}/{}", before.row, before.col);
-            same(&before.values, &after.values, "cell_values", &key)?;
-            same(
-                &(
-                    before.row,
-                    before.col,
-                    before.row_span,
-                    before.col_span,
-                    before.width,
-                    before.minimum_height,
-                ),
-                &(
-                    after.row,
-                    after.col,
-                    after.row_span,
-                    after.col_span,
-                    after.width,
-                    after.minimum_height,
-                ),
-                "grid",
-                &key,
-            )?;
-            same(&before.style, &after.style, "style", &key)?;
-        }
-        same(&before.style, &after.style, "style", &index.to_string())?;
+        compare_table_payload(index, before, after)?;
     }
     same(
         &expected.paragraphs.len(),

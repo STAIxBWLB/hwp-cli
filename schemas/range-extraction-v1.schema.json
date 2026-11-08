@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/range-extraction-v1.schema.json",
+  "title": "hwp-range-extraction-v1",
+  "description": "The report `hwp split --from ... --range-report <file>` publishes with the extracted fragment, and the `range` field of the MCP tool `hwp_split`: which source the selection was made against, which range was taken, where every kept body paragraph and table landed in the fragment, and which binary streams the fragment kept or left out. It carries addresses, hashes and stream names, never document text. The report is closed: a field added, removed or renamed is a new major schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "schema_version",
+    "source_sha256",
+    "fragment_sha256",
+    "selection",
+    "addresses",
+    "resources"
+  ],
+  "properties": {
+    "contract": {
+      "const": "hwp-range-extraction-v1",
+      "description": "Names the contract so a consumer can tell this report from the others."
+    },
+    "schema_version": {
+      "const": "1.0",
+      "description": "Version of this contract."
+    },
+    "source_sha256": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 of the source file that was read. When the caller passed `--source-sha256` it equals that value, because a different file is refused."
+    },
+    "fragment_sha256": {
+      "$ref": "#/$defs/sha256",
+      "description": "SHA-256 of the published fragment file, so the report and the fragment cannot be paired by accident."
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "end_inclusive",
+        "section",
+        "first_paragraph",
+        "end_paragraph"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "The start anchor exactly as given."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The end anchor exactly as given, or null when the range ran to the end of the start's section."
+        },
+        "end_inclusive": {
+          "type": "boolean",
+          "description": "Whether the end anchor's paragraph is part of the range."
+        },
+        "section": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based section of the source the range was taken from."
+        },
+        "first_paragraph": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based source body paragraph the range starts at (included)."
+        },
+        "end_paragraph": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "0-based source body paragraph just past the range (excluded), so the range is `[first_paragraph, end_paragraph)`."
+        }
+      }
+    },
+    "addresses": {
+      "type": "array",
+      "description": "Every kept source body paragraph in source order, each followed by the tables it holds. A table's ordinal is its position in document order, nested tables included (the numbering `hwp edit --set-cell` uses), counted in the source and, from zero, in the fragment.",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/paragraph_address"
+          },
+          {
+            "$ref": "#/$defs/table_address"
+          }
+        ]
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kept",
+        "excluded"
+      ],
+      "properties": {
+        "kept": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Binary streams the fragment carries: exactly those a kept picture references, in source order."
+        },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Binary streams of the source the fragment does not carry, in source order."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "paragraph_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section",
+        "paragraph"
+      ],
+      "properties": {
+        "section": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "paragraph": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "table_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section",
+        "paragraph",
+        "table"
+      ],
+      "properties": {
+        "section": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "paragraph": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "table": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "paragraph_address": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "output"
+      ],
+      "properties": {
+        "kind": {
+          "const": "paragraph"
+        },
+        "source": {
+          "$ref": "#/$defs/paragraph_position"
+        },
+        "output": {
+          "$ref": "#/$defs/paragraph_position"
+        }
+      }
+    },
+    "table_address": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "output"
+      ],
+      "properties": {
+        "kind": {
+          "const": "table"
+        },
+        "source": {
+          "$ref": "#/$defs/table_position"
+        },
+        "output": {
+          "$ref": "#/$defs/table_position"
+        }
+      }
+    }
+  }
+}

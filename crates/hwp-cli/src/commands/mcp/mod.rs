@@ -1224,6 +1224,7 @@ fn tool_split_scoped(args: &mut Value, ctx: &dyn FileAuthority) -> McpToolResult
             "out_dir": out_dir,
             "strict": strict,
             "fragments": summary.fragments,
+            "range": summary.range,
             "warnings": summary.report.warnings,
             "preservation": summary.report.preservation,
         }))
@@ -3283,6 +3284,62 @@ mod tests {
                     "{name} must not accept password"
                 );
             }
+        }
+    }
+
+    /// `hwp_split` with `from`/`to` extracts a typed range, returns the report inline, and
+    /// refuses a stale hash or a mixed `pages` request without writing anything.
+    #[test]
+    fn mcp_split_extracts_a_typed_range_and_refuses_bad_requests() {
+        let source = temp_file("range-source.hwpx");
+        let out_dir = temp_file("range-out");
+        let refused_dir = temp_file("range-refused");
+        let report_path = temp_file("range-report.json");
+        create_hwpx(&source, "# 첫째\n\n본문 하나\n\n# 둘째\n\n본문 둘\n");
+        let sha = hwp_convert::document_split::source_sha256(&std::fs::read(&source).unwrap());
+
+        let result = tool_split_scoped(
+            &mut json!({
+                "input": source, "out_dir": out_dir,
+                "from": "heading:2. 둘째", "source_sha256": sha, "range_report": report_path,
+            }),
+            &ctx(),
+        )
+        .expect("hwp_split 범위");
+        let reply: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../../schemas/range-extraction-v1.schema.json"
+        ))
+        .unwrap();
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap();
+        assert!(
+            validator.is_valid(&reply["range"]),
+            "the inline range report violates its schema"
+        );
+        assert_eq!(reply["range"]["contract"], "hwp-range-extraction-v1");
+        assert_eq!(reply["range"]["source_sha256"], sha.as_str());
+        let on_disk: Value = serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(
+            on_disk, reply["range"],
+            "inline and published reports are one report"
+        );
+        assert_eq!(reply["fragments"].as_array().unwrap().len(), 1);
+
+        for args in [
+            json!({"input": source, "out_dir": refused_dir, "from": "heading:2. 둘째", "source_sha256": "0".repeat(64)}),
+            json!({"input": source, "out_dir": refused_dir, "from": "heading:2. 둘째", "pages": ["1"]}),
+            json!({"input": source, "out_dir": refused_dir, "to": "heading:2. 둘째"}),
+            json!({"input": source, "out_dir": refused_dir, "end_exclusive": true}),
+        ] {
+            let mut args = args;
+            assert!(tool_split_scoped(&mut args, &ctx()).is_err(), "{args}");
+            assert!(
+                !refused_dir.exists(),
+                "a refusal wrote a fragment dir: {args}"
+            );
         }
     }
 
