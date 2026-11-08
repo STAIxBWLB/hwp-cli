@@ -41,7 +41,10 @@ pub fn direct_text(para: &Paragraph) -> String {
 }
 
 pub fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Diagnostics carry a content-free stable ID, never cell text or document coordinates.
@@ -555,7 +558,7 @@ pub fn anchor_positions(
         }
         body_pages.push(rows);
     }
-    let table_fragments = map
+    let table_fragments: Vec<_> = map
         .rows
         .iter()
         .filter(|row| row.kind == "table")

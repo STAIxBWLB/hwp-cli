@@ -126,6 +126,14 @@ fn assert_manifest(doc: &Document, manifest: &Value) -> FormProjection {
     for table in manifest["tables"].as_array().unwrap() {
         let index = table["table_index"].as_u64().unwrap() as usize;
         let actual = &projected.tables[index];
+        assert!(
+            actual.key.starts_with(&format!(
+                "s{}/p{}/",
+                table["section"].as_u64().unwrap(),
+                table["paragraph"].as_u64().unwrap()
+            )),
+            "table occurrence differs from authored source address"
+        );
         assert_eq!(u64::from(actual.rows), table["rows"].as_u64().unwrap());
         assert_eq!(u64::from(actual.cols), table["cols"].as_u64().unwrap());
         let cells = table["cells"].as_array().unwrap();
@@ -494,6 +502,7 @@ fn anchor_and_font_self_checks_reject_moved_starts_and_incomplete_evidence() {
     let mut issues = hwp_render::RenderIssueAccumulator::new();
     let (_, mut map) =
         hwp_render::layout::layout_document_with_segments(&fixture.doc, &mut store, &mut issues);
+    contract::anchor_positions(&fixture.doc, &map, &contract::body_paths(&fixture.doc)).unwrap();
     map.truncated = true;
     assert!(contract::anchor_positions(&fixture.doc, &map, &fixture.forms()).is_err());
     map.truncated = false;
