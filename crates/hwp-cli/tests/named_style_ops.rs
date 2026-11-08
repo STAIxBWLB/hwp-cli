@@ -1378,3 +1378,81 @@ fn update_style_unknown_target_aborts_the_entire_batch_even_with_allow_partial()
         );
     }
 }
+
+/// F3 writer proof compares two serializations of the same authored model. It does
+/// not assert that arbitrary original HWPX packages survive the surgical CLI path.
+#[test]
+fn own_style_empty_runs_preserve_model_caches_and_both_writer_bytes() {
+    for old_shape in [0, 1] {
+        let fixture = Fixture::new(&format!("own-style-writers-{old_shape}"), "hwp");
+        let mut before = read(&fixture.base);
+        let (body, _) = named(&before, "body");
+        before.header.styles[body].char_shape = hwp_model::CharShapeId(old_shape);
+        let location = at(&before, INHERITED);
+        let section = location["at"]["section"].as_u64().unwrap() as usize;
+        let index = location["at"]["paragraph"].as_u64().unwrap() as usize;
+        let target = &mut before.sections[section].paragraphs[index];
+        target.char_shape_runs.clear();
+        assert!(
+            !target.line_segs.is_empty(),
+            "generated native fixture must supply a saved cache for the no-op proof"
+        );
+        let saved_cache = target.line_segs.clone();
+        let hwp_before = fixture.directory.join("writer-before.hwp");
+        let hwpx_before = fixture.directory.join("writer-before.hwpx");
+        let hwp_options = hwp5::WriteOptions {
+            preserve_linesegs: true,
+            ..hwp5::WriteOptions::default()
+        };
+        let hwpx_options = hwpx::HwpxWriteOptions {
+            preserve_linesegs: true,
+        };
+        hwp5::write_document(&before, &hwp_before, &hwp_options).unwrap();
+        hwpx::write_document_with(&before, &hwpx_before, &hwpx_options).unwrap();
+        let mut after = before.clone();
+        let changed = hwp_convert::styles::edit::apply_style_at(
+            &mut after,
+            &hwp_convert::segment_id::SegmentPath {
+                section,
+                indices: vec![index],
+            },
+            &hwp_convert::styles::edit::StyleSelector::Id(u16::try_from(body).unwrap()),
+            false,
+        )
+        .expect("existing own style must resolve");
+        assert!(
+            !changed,
+            "own-style application must return Ok(false) with empty runs (old CS {old_shape})"
+        );
+        assert!(
+            after.sections[section].paragraphs[index]
+                .char_shape_runs
+                .is_empty()
+        );
+        assert_eq!(
+            after.sections[section].paragraphs[index].line_segs,
+            saved_cache
+        );
+        assert!(
+            after == before,
+            "the entire no-op model must remain unchanged (old CS {old_shape})"
+        );
+        let hwp_after = fixture.directory.join("writer-after.hwp");
+        let hwpx_after = fixture.directory.join("writer-after.hwpx");
+        hwp5::write_document(&after, &hwp_after, &hwp_options).unwrap();
+        hwpx::write_document_with(&after, &hwpx_after, &hwpx_options).unwrap();
+        for (format, before, after) in [
+            ("HWP5", hwp_before, hwp_after),
+            ("HWPX", hwpx_before, hwpx_after),
+        ] {
+            let before = std::fs::read(before).unwrap();
+            let after = std::fs::read(after).unwrap();
+            assert!(
+                before == after,
+                "own-style no-op changed {format} writer bytes (old CS {old_shape}, before {} bytes, after {} bytes)",
+                before.len(),
+                after.len()
+            );
+        }
+    }
+}

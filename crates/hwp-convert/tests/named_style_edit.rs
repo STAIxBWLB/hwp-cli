@@ -1196,3 +1196,134 @@ fn update_refuses_affected_raw_backed_users_without_clearing_the_raw_subtree() {
         "an unrelated raw-backed user is preserved rather than cleared"
     );
 }
+
+#[test]
+fn raw_style_refusal_reports_every_model_route_and_a_resolvable_ancestor_without_text() {
+    let mut doc = valid_font_fixture();
+    let private_text = [
+        "NEVER_DISCLOSE_LIST",
+        "NEVER_DISCLOSE_CAPTION",
+        "NEVER_DISCLOSE_NESTED",
+        "NEVER_DISCLOSE_ANCESTOR",
+    ];
+    let mut raw = generic(vec![para(private_text[0], 0, 0, &[(0, 0)])]);
+    raw.caption = Some(caption(vec![para(private_text[1], 0, 0, &[(0, 0)])]));
+    let mut nested = para("NEVER_DISCLOSE_NESTED_CONTAINER", 1, 0, &[(0, 0)]);
+    nested.controls.push(Control::Generic(generic(vec![para(
+        private_text[2],
+        0,
+        0,
+        &[(0, 0)],
+    )])));
+    raw.paragraph_lists.push(ParagraphList {
+        header_data: vec![],
+        paragraphs: vec![nested],
+    });
+    raw.raw_children = vec![hwp_model::OpaqueRecord {
+        tag: 0x7777,
+        data: vec![71, 72],
+        children: vec![],
+    }];
+    let mut ancestor = para(private_text[3], 1, 0, &[(0, 0)]);
+    ancestor.controls.push(Control::Generic(raw));
+    let index = doc.sections[0].paragraphs.len();
+    let ancestor_path = path(&[index]);
+    let ancestor_id = hwp_convert::paragraph_id(&ancestor_path, &ancestor);
+    doc.sections[0].paragraphs.push(ancestor);
+    let before = doc.clone();
+    let error = update_style(&mut doc, &update_request())
+        .expect_err("all raw-backed affected users must refuse atomically");
+    let message = error.to_string();
+    assert!(
+        message.contains("문단 3개"),
+        "refusal must report all 3 affected typed users, not stop after the first: {message}"
+    );
+    let prefix = format!("sections[0].paragraphs[{index}].controls[0]");
+    for route in [
+        format!("{prefix}.paragraph_lists[0].paragraphs[0]"),
+        format!("{prefix}.caption.paragraphs[0]"),
+        format!(
+            "{prefix}.paragraph_lists[1].paragraphs[0].controls[0].paragraph_lists[0].paragraphs[0]"
+        ),
+    ] {
+        assert!(
+            message.contains(&route),
+            "refusal omitted the human model route {route}: {message}"
+        );
+    }
+    assert!(
+        message.contains(&format!("상위 문단 주소: {ancestor_id}")),
+        "refusal must label the nearest addressable ancestor ID rather than invent an editable raw/caption ID: {message}"
+    );
+    let checksum = ancestor_id.split('.').next().unwrap().to_owned();
+    let resolved = hwp_convert::resolve(
+        &doc,
+        &hwp_convert::Address {
+            section: 0,
+            indices: vec![index],
+            checksum: Some(checksum),
+            chars: None,
+        },
+        hwp_convert::Granularity::Paragraph,
+    )
+    .expect("the diagnostic's ancestor ID must actually resolve");
+    assert_eq!(resolved.before_id, ancestor_id);
+    for text in private_text
+        .into_iter()
+        .chain(["NEVER_DISCLOSE_NESTED_CONTAINER"])
+    {
+        assert!(
+            !message.contains(text),
+            "diagnostics must not disclose document text"
+        );
+    }
+    assert!(
+        doc == before,
+        "diagnostic collection cannot mutate users, caches, raw subtrees or header definitions"
+    );
+}
+
+#[test]
+fn raw_style_refusal_counts_all_users_and_bounds_sampled_locations() {
+    let mut doc = valid_font_fixture();
+    let mut raw = generic(
+        (0..10)
+            .map(|index| para(&format!("PRIVATE_RAW_USER_{index}"), 0, 0, &[(0, 0)]))
+            .collect(),
+    );
+    raw.raw_children = vec![hwp_model::OpaqueRecord {
+        tag: 0x7777,
+        data: vec![71, 72],
+        children: vec![],
+    }];
+    let mut ancestor = para("PRIVATE_RAW_ANCESTOR", 1, 0, &[(0, 0)]);
+    ancestor.controls.push(Control::Generic(raw));
+    let index = doc.sections[0].paragraphs.len();
+    let ancestor_id = hwp_convert::paragraph_id(&path(&[index]), &ancestor);
+    doc.sections[0].paragraphs.push(ancestor);
+    let before = doc.clone();
+    let message = update_style(&mut doc, &update_request())
+        .expect_err("ten raw users must all be counted before refusal")
+        .to_string();
+    assert!(
+        message.contains("문단 10개"),
+        "raw diagnostic must count beyond its sample cap: {message}"
+    );
+    assert!(
+        message.contains("위치 8/10개 표시"),
+        "raw diagnostic must declare its bounded sample: {message}"
+    );
+    let route_prefix =
+        format!("sections[0].paragraphs[{index}].controls[0].paragraph_lists[0].paragraphs[");
+    assert_eq!(
+        message.matches(&route_prefix).count(),
+        8,
+        "at most eight sampled user routes may be retained in this error"
+    );
+    assert!(message.contains(&format!("상위 문단 주소: {ancestor_id}")));
+    assert!(!message.contains("PRIVATE_RAW_USER_") && !message.contains("PRIVATE_RAW_ANCESTOR"));
+    assert!(
+        doc == before,
+        "bounded diagnostic collection must remain atomic"
+    );
+}
