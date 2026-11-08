@@ -197,10 +197,15 @@ fn reject_report_named_like_fragment(
     let report_dir = report_path.parent().unwrap_or(Path::new(""));
     let same_dir = crate::commands::convert::normalize_for_alias_compare(report_dir)
         == crate::commands::convert::normalize_for_alias_compare(out_dir);
+    // Exact case on purpose. The cleanup that deletes stale fragments compares names exactly,
+    // so only an exact-case name is at risk from it. A report that is the SAME FILE as a
+    // fragment of this run in another case (`SOURCE-001.HWPX` beside `source-001.hwpx`, on a
+    // volume that folds case) is a different hazard, and the case-folded alias key refuses it
+    // before anything is staged.
     if same_dir && is_fragment_file_name(name, stem, extension) {
         anyhow::bail!(
-            "{flag} 파일 이름 '{name}'이(가) 분할 조각 이름({stem}-NNN.{extension})과 같은 형식이라 \
-             조각으로 오인되어 이후 실행에서 지워집니다 — 다른 이름을 지정하세요"
+            "{flag} 파일 이름 '{name}'이(가) 분할 조각 이름({stem}-NNN.{extension})과 같은 형식입니다 \
+             — 조각을 덮어쓰거나 조각으로 오인되어 다음 실행에서 지워질 수 있으니 다른 이름을 지정하세요"
         );
     }
     Ok(())
@@ -612,6 +617,23 @@ pub(crate) fn execute(
         report,
         range: range_summary,
     })
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn fragment_names_are_matched_in_exact_case() {
+        // The stale-fragment cleanup deletes what matches, so it must not widen to other cases.
+        assert!(is_fragment_file_name("source-001.hwpx", "source", "hwpx"));
+        assert!(is_fragment_file_name("source-17.hwpx", "source", "hwpx"));
+        assert!(!is_fragment_file_name("SOURCE-001.HWPX", "source", "hwpx"));
+        assert!(!is_fragment_file_name("Source-001.hwpx", "source", "hwpx"));
+        assert!(!is_fragment_file_name("source-x.hwpx", "source", "hwpx"));
+        assert!(!is_fragment_file_name("source-.hwpx", "source", "hwpx"));
+        assert!(!is_fragment_file_name("other-001.hwpx", "source", "hwpx"));
+    }
 }
 
 #[cfg(test)]

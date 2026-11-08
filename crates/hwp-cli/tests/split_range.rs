@@ -1301,3 +1301,50 @@ fn a_genuine_orphan_stream_is_reported_as_dropped_by_the_format() {
         .collect();
     assert!(codes.contains(&"raw_shape"), "{codes:?}");
 }
+
+/// Whether the temp directory's filesystem folds case, decided by creating a file and looking it
+/// up under another case. The expectations below follow the filesystem, not the platform name.
+fn volume_folds_case(dir: &Path) -> bool {
+    std::fs::write(dir.join("CaseProbeFile"), b"x").unwrap();
+    dir.join("caseprobefile").exists()
+}
+
+/// On a volume that folds case (macOS and Windows by default), `out/SOURCE-001.HWPX` is the
+/// fragment `out/source-001.hwpx`: publishing both would leave JSON where the fragment should
+/// be. On a case-sensitive volume the two names are two files and nothing is refused.
+#[test]
+fn a_report_that_differs_from_the_fragment_only_in_case_follows_the_volume() {
+    let Some(ws) = Workspace::new("case-only") else {
+        return;
+    };
+    let folds = volume_folds_case(&ws.dir);
+    let result = hwp(
+        &ws.dir,
+        &[
+            "split",
+            "source.hwpx",
+            "--out-dir",
+            "out",
+            "--from",
+            "heading:FORM_START_PROFILE_1",
+            "--range-report",
+            "out/SOURCE-001.HWPX",
+        ],
+    );
+    if folds {
+        assert!(
+            !result.status.success(),
+            "a case-only alias must be refused"
+        );
+        assert!(!ws.dir.join("out").exists(), "nothing may be written");
+    } else {
+        assert!(
+            result.status.success(),
+            "two names on a case-sensitive volume are two files: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let fragment = std::fs::read(ws.dir.join("out/source-001.hwpx")).unwrap();
+        assert_eq!(&fragment[..2], b"PK", "the fragment is still a package");
+        assert!(ws.dir.join("out/SOURCE-001.HWPX").exists());
+    }
+}

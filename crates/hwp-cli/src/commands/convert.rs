@@ -867,14 +867,81 @@ pub(crate) fn print_warnings(warnings: &[String]) {
     }
 }
 
-/// Normalize paths for the alias guards. Canonicalize existing paths. For a path that does not
-/// exist yet, canonicalize its longest existing ancestor and append the rest with `.` and `..`
-/// resolved lexically: a component that does not exist cannot be a symlink, so `..` after it
-/// simply cancels it. Dot segments and symlink spellings resolving to the same file then
-/// compare equal even when the output directory is about to be created, which is the usual
-/// `split --out-dir new-dir` case (`out/../out/x` and `out/x` are the same file).
-/// Falls back to the original path only if the current directory cannot be read.
+/// Whether the volume `path` lives on treats names that differ only in case as one name.
+///
+/// On unix the volume is asked, because the platform does not decide it: macOS volumes are
+/// case-insensitive by default but can be case-sensitive, and Linux can mount case-insensitive
+/// ones (casefold ext4, vfat, CIFS). The nearest existing path component is looked up again
+/// with its case flipped, and the volume is case-insensitive when that finds the same file
+/// (same device and inode). Nothing is written. When no component has a cased letter to flip,
+/// or the probe cannot decide, it answers by the platform default (yes on macOS, no on other
+/// unix), the safe side on macOS where folding too little lets a report replace a fragment
+/// unnoticed. Windows has no inode to compare and defaults to case-insensitive.
+pub(crate) fn path_is_case_insensitive(path: &Path) -> bool {
+    probe_case_insensitive(path).unwrap_or(cfg!(any(windows, target_os = "macos")))
+}
+
+#[cfg(unix)]
+fn probe_case_insensitive(path: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let absolute = std::path::absolute(path).ok()?;
+    for ancestor in absolute.ancestors() {
+        let Some(name) = ancestor.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let flipped: String = name
+            .chars()
+            .map(|ch| {
+                if ch.is_lowercase() {
+                    ch.to_uppercase().next().unwrap_or(ch)
+                } else if ch.is_uppercase() {
+                    ch.to_lowercase().next().unwrap_or(ch)
+                } else {
+                    ch
+                }
+            })
+            .collect();
+        if flipped == name {
+            continue; // no cased letter to flip in this component
+        }
+        let (Ok(original), Some(parent)) = (std::fs::metadata(ancestor), ancestor.parent()) else {
+            continue; // does not exist yet
+        };
+        return Some(match std::fs::metadata(parent.join(&flipped)) {
+            Ok(other) => (other.dev(), other.ino()) == (original.dev(), original.ino()),
+            Err(_) => false,
+        });
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn probe_case_insensitive(_path: &Path) -> Option<bool> {
+    None
+}
+
+/// A key for the alias guards: two paths with equal keys are the same file, so a set of outputs
+/// holding both would write one over the other. Canonicalize existing paths. For a path that
+/// does not exist yet, canonicalize its longest existing ancestor and append the rest with `.`
+/// and `..` resolved lexically: a component that does not exist cannot be a symlink, so `..`
+/// after it simply cancels it. Dot segments and symlink spellings resolving to the same file
+/// then compare equal even when the output directory is about to be created, which is the usual
+/// `split --out-dir new-dir` case (`out/../out/x` and `out/x` are the same file). On a
+/// case-insensitive volume ([`path_is_case_insensitive`]) the key is also case-folded, so
+/// `out/SOURCE-001.HWPX` and `out/source-001.hwpx` are one file. The key is for COMPARING only:
+/// it may be lowercased and is not a path to open or write. Folding is plain Unicode lowercase,
+/// which does not cover a volume's Unicode normalization (APFS also treats NFC and NFD
+/// spellings as one name).
 pub(crate) fn normalize_for_alias_compare(path: &Path) -> PathBuf {
+    let resolved = resolve_for_alias_compare(path);
+    if path_is_case_insensitive(&resolved) {
+        PathBuf::from(resolved.to_string_lossy().to_lowercase())
+    } else {
+        resolved
+    }
+}
+
+fn resolve_for_alias_compare(path: &Path) -> PathBuf {
     use std::path::Component;
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
@@ -1427,7 +1494,14 @@ mod tests {
                 spelling.display()
             );
         }
-        assert_eq!(normalize_for_alias_compare(&plain), plain);
+        // The key is a comparison value, not a path to open: on a volume that folds case it is
+        // lowercased, and elsewhere it is the resolved path itself.
+        let key = normalize_for_alias_compare(&plain);
+        if path_is_case_insensitive(&root) {
+            assert_eq!(key, PathBuf::from(plain.to_string_lossy().to_lowercase()));
+        } else {
+            assert_eq!(key, plain);
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1447,6 +1521,87 @@ mod tests {
             normalize_for_alias_compare(&root.join("out").join("..").join("a.hwpx")),
             normalize_for_alias_compare(&root.join("out").join("a.hwpx"))
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Whether `dir` really folds case, decided by the filesystem itself and not by the code
+    /// under test: a file is created and looked up under another case.
+    fn dir_really_folds_case(dir: &Path) -> bool {
+        std::fs::write(dir.join("CaseProbeFile"), b"x").unwrap();
+        dir.join("caseprobefile").exists()
+    }
+
+    #[test]
+    fn 대소문자만_다른_경로는_대소문자를_가리지_않는_볼륨에서만_같은_파일이다() {
+        let root = alias_dir("case-fold");
+        let really = dir_really_folds_case(&root);
+        // The volume decides, not the platform: macOS can mount a case-sensitive volume and
+        // Linux a case-insensitive one. A temp dir whose own name has no cased letter to flip
+        // falls back to the platform default, which is also what this asserts.
+        assert_eq!(
+            path_is_case_insensitive(&root),
+            really,
+            "the probe agrees with the volume"
+        );
+        let lower = root.join("out").join("source-001.hwpx");
+        let upper = root.join("OUT").join("SOURCE-001.HWPX");
+        // Neither directory exists, which is the usual new --out-dir.
+        let same = normalize_for_alias_compare(&lower) == normalize_for_alias_compare(&upper);
+        assert_eq!(same, path_is_case_insensitive(&root));
+        if really {
+            assert!(
+                same,
+                "a folding volume must treat the two spellings as one file"
+            );
+        }
+        // Different names never collapse, whatever the volume does with case.
+        assert_ne!(
+            normalize_for_alias_compare(&root.join("out").join("source-001.hwpx")),
+            normalize_for_alias_compare(&root.join("out").join("source-002.hwpx"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn 이미_있는_파일도_대소문자만_다른_철자가_같은_키를_낸다() {
+        let root = alias_dir("case-fold-existing");
+        let really = dir_really_folds_case(&root);
+        let spelled = |name: &str| normalize_for_alias_compare(&root.join(name));
+        // The file exists, so a folding volume canonicalizes both spellings to its real name.
+        // The key must say "same file" exactly when the filesystem does.
+        assert_eq!(spelled("CaseProbeFile") == spelled("caseprobefile"), really);
+        assert!(spelled("CaseProbeFile") != spelled("CaseProbeFile2"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Two DIFFERENT files whose names differ only in case can exist only on a case-sensitive
+    /// volume. The probe must tell that apart from a folding volume, where the flipped name
+    /// is the same file: finding "a file under the flipped name" is not enough. On a folding
+    /// volume the second file cannot be created, so there is nothing to check there.
+    #[cfg(unix)]
+    #[test]
+    fn 이름만_대소문자가_다른_서로_다른_두_파일이_있으면_접지_않는_볼륨이다() {
+        let root = alias_dir("case-two-files");
+        // The probe looks the name up with every letter's case inverted, so the second file
+        // must be that exact twin ("Probe" and "pROBE"), or the probe never meets it.
+        let upper = root.join("Probe");
+        let lower = root.join("pROBE");
+        std::fs::write(&upper, b"upper").unwrap();
+        let second = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lower);
+        if let Ok(mut file) = second {
+            use std::io::Write as _;
+            file.write_all(b"lower").unwrap();
+            // Two files, so the volume is case-sensitive, and the probe must say so.
+            assert!(!path_is_case_insensitive(&upper));
+            assert_ne!(
+                normalize_for_alias_compare(&upper),
+                normalize_for_alias_compare(&lower),
+                "two distinct files must keep distinct keys"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

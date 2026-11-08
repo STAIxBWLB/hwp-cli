@@ -3162,6 +3162,42 @@ mod tests {
     }
 
     #[test]
+    fn output_set_treats_case_only_spellings_as_one_file_where_the_volume_does() {
+        let dir = test_dir("set-case");
+        fs::write(dir.join("CaseProbeFile"), b"x").unwrap();
+        let really = dir.join("caseprobefile").exists();
+        let outputs = vec![
+            (dir.join("out").join("a.bin"), b"FRAGMENT".to_vec()),
+            (dir.join("out").join("A.BIN"), b"REPORT".to_vec()),
+        ];
+        let folds = crate::commands::convert::path_is_case_insensitive(&dir);
+        assert!(folds || !really, "the probe must not miss a folding volume");
+        if folds {
+            let result = write_validated_files(&outputs, None);
+            assert!(
+                result.is_err(),
+                "one file spelled in two cases was accepted"
+            );
+            assert!(
+                !dir.join("out").exists(),
+                "nothing may be staged or published"
+            );
+        } else {
+            // A case-sensitive volume holds two files, and both are written. (The publish step
+            // stages beside each file, so its directory has to exist; the refusal above came
+            // from the preflight, before any directory was needed.)
+            fs::create_dir_all(dir.join("out")).unwrap();
+            write_validated_files(&outputs, None).unwrap();
+            assert_eq!(
+                fs::read(dir.join("out").join("a.bin")).unwrap(),
+                b"FRAGMENT"
+            );
+            assert_eq!(fs::read(dir.join("out").join("A.BIN")).unwrap(), b"REPORT");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn output_set_preflight_rejects_duplicate_and_race_before_mutation() {
         let dir = test_dir("set-preflight");
         let first = dir.join("page-1.png");

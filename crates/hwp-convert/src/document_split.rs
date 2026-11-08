@@ -492,15 +492,31 @@ impl ResourceClosureReport {
     /// Moves every carried stream the published output does not hold from `kept` /
     /// `kept_unverified` to `dropped_by_format`. `fragment` is the stream list the writer was
     /// given, `output` the streams read back from what it wrote. A stream is held when the
-    /// output has a stream with the same bytes that no earlier stream has already claimed.
+    /// output has a stream of the same NAME and bytes (the HWPX and HWP5 readers keep the names
+    /// they find), or, failing that, a stream with the same bytes that nothing else claimed.
+    /// Names are tried for every stream before any byte-only match, so an orphan cannot take
+    /// the output of a referenced stream that happens to hold identical bytes.
     pub fn reconcile_with_output(
         &mut self,
         fragment: &[hwp_model::BinStream],
         output: &[hwp_model::BinStream],
     ) {
         let mut unclaimed: Vec<&hwp_model::BinStream> = output.iter().collect();
+        let mut matched = vec![false; fragment.len()];
+        for (index, stream) in fragment.iter().enumerate() {
+            if let Some(position) = unclaimed
+                .iter()
+                .position(|held| held.name == stream.name && held.data == stream.data)
+            {
+                unclaimed.remove(position);
+                matched[index] = true;
+            }
+        }
         let mut dropped = BTreeSet::new();
-        for stream in fragment {
+        for (index, stream) in fragment.iter().enumerate() {
+            if matched[index] {
+                continue;
+            }
             match unclaimed.iter().position(|held| held.data == stream.data) {
                 Some(position) => {
                     unclaimed.remove(position);
@@ -788,10 +804,17 @@ impl ReferenceScan {
                             self.unverified("raw_xml_unparsed", at);
                             return;
                         };
-                        if attribute.key.local_name().as_ref() == b"binaryItemIDRef"
-                            && let Ok(value) =
+                        if attribute.key.local_name().as_ref() == b"binaryItemIDRef" {
+                            // A value that cannot be normalized (an entity XML cannot
+                            // resolve) is a reference whose target is unknown, not an absent
+                            // reference: treating it as absent would let the stream it names
+                            // be excluded as provably unused.
+                            let Ok(value) =
                                 attribute.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                        {
+                            else {
+                                self.unverified("raw_xml_unparsed", at);
+                                return;
+                            };
                             found.push(BinRef::ItemRef(value.into_owned()));
                         }
                     }
@@ -2461,6 +2484,83 @@ mod tests {
             .chunks(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect()
+    }
+
+    // ───────────── T9-F20, N7 ─────────────
+
+    #[test]
+    fn 정규화할_수_없는_바이너리_참조_속성은_조용히_무시하지_않고_불확실로_둔다() {
+        // `&unknown;` is an entity XML cannot resolve, so the attribute value cannot be read.
+        // The reference is not "absent": c.png may be the stream it names.
+        let outcome = extract_b_with(|doc| {
+            let mut object = generic(b"con ");
+            object.hwpx_raw_xml = Some(
+                r#"<hp:container><hc:img binaryItemIDRef="c&unknown;png"/></hp:container>"#.into(),
+            );
+            attach(
+                &mut doc.sections[0].paragraphs[4],
+                *b"con ",
+                Control::Generic(object),
+            );
+        });
+        assert!(
+            outcome.resources.excluded.is_empty(),
+            "{:?}",
+            outcome.resources
+        );
+        assert_eq!(outcome.resources.unverified[0].code, "raw_xml_unparsed");
+        assert_eq!(outcome.fragment.bin_streams.len(), 3);
+    }
+
+    #[test]
+    fn 읽을_수_있는_엔티티가_든_바이너리_참조는_풀어서_센다() {
+        let outcome = extract_b_with(|doc| {
+            let mut object = generic(b"con ");
+            // `&#99;` is the character `c`.
+            object.hwpx_raw_xml = Some(
+                r#"<hp:container><hc:img binaryItemIDRef="&#99;.png"/></hp:container>"#.into(),
+            );
+            attach(
+                &mut doc.sections[0].paragraphs[4],
+                *b"con ",
+                Control::Generic(object),
+            );
+        });
+        assert_eq!(
+            outcome.resources.kept,
+            vec!["BinData/b.png", "BinData/c.png"]
+        );
+        assert!(outcome.resources.unverified.is_empty());
+    }
+
+    #[test]
+    fn 같은_바이트의_고아_스트림이_참조되는_스트림의_출력을_가로채지_않는다() {
+        // `a.png` is an orphan the format drops; `b.png` is referenced and written. Both have
+        // the same bytes, and the output holds exactly one such stream, named like b.png.
+        let fragment: Vec<_> = ["a.png", "b.png"]
+            .iter()
+            .map(|name| hwp_model::BinStream {
+                name: format!("BIN0001-{name}"),
+                data: b"same".to_vec(),
+            })
+            .collect();
+        let output = vec![hwp_model::BinStream {
+            name: "BIN0001-b.png".into(),
+            data: b"same".to_vec(),
+        }];
+        let mut report = ResourceClosureReport {
+            kept: vec!["BIN0001-b.png".into()],
+            kept_unverified: vec!["BIN0001-a.png".into()],
+            ..Default::default()
+        };
+        report.reconcile_with_output(&fragment, &output);
+        assert_eq!(
+            report.kept,
+            vec!["BIN0001-b.png"],
+            "the referenced stream stays kept"
+        );
+        assert!(report.kept_unverified.is_empty());
+        assert_eq!(report.dropped_by_format, vec!["BIN0001-a.png"]);
     }
 
     #[test]

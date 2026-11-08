@@ -545,6 +545,13 @@ fn remap_paragraph(
                         remap_paragraph(p, ps_off, cs_off, bd_off, rename)?;
                     }
                 }
+                // A shape's caption holds paragraphs of its own, with shape ids and pictures
+                // like any other, and is not one of its paragraph lists.
+                if let Some(cap) = &mut g.caption {
+                    for p in &mut cap.paragraphs {
+                        remap_paragraph(p, ps_off, cs_off, bd_off, rename)?;
+                    }
+                }
                 // Reference ids changed above — the original XML is stale.
                 g.hwpx_raw_xml = None;
             }
@@ -760,6 +767,12 @@ fn remap_paragraph_general(para: &mut Paragraph, offsets: &HeaderOffsets) -> Res
             Control::Generic(g) => {
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
+                        unresolvable += remap_paragraph_general(p, offsets)?;
+                    }
+                }
+                // A shape's caption holds paragraphs of its own (see the fast tier).
+                if let Some(cap) = &mut g.caption {
+                    for p in &mut cap.paragraphs {
                         unresolvable += remap_paragraph_general(p, offsets)?;
                     }
                 }
@@ -1323,6 +1336,135 @@ mod tests {
         });
         doc.hwpx_bin_manifest = vec![(item.into(), name.into())];
         doc
+    }
+
+    /// A document whose first paragraph holds a shape (`gso `) with a caption of `caption`.
+    fn document_with_shape_caption(caption_paragraph: Paragraph) -> Document {
+        let mut doc = from_markdown("본문\n");
+        doc.sections[0].paragraphs.insert(
+            0,
+            hwp_model::Paragraph {
+                controls: vec![Control::Generic(hwp_model::GenericControl {
+                    ctrl_id: *b"gso ",
+                    data: Vec::new(),
+                    paragraph_lists: Vec::new(),
+                    extras: Vec::new(),
+                    raw_children: Vec::new(),
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: None,
+                    caption: Some(caption_with_para(caption_paragraph)),
+                    hwpx_raw_xml: None,
+                    container_box: None,
+                })],
+                ..Default::default()
+            },
+        );
+        doc
+    }
+
+    fn shape_caption_paragraph(doc: &Document, section: usize) -> &Paragraph {
+        doc.sections[section].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Generic(g) => g.caption.as_ref(),
+                _ => None,
+            })
+            .expect("a shape with a caption")
+            .paragraphs
+            .first()
+            .expect("the caption paragraph")
+    }
+
+    #[test]
+    fn 병합_뒤_도형_캡션_안_그림도_자기_문서의_이미지를_가리킨다() {
+        for general in [false, true] {
+            let a = document_with_item("image1", "BinData/p1.png", b"A-IMAGE");
+            let picture_paragraph = hwp_model::Paragraph {
+                controls: vec![Control::Picture(sample_picture("image1"))],
+                ..Default::default()
+            };
+            let mut b = document_with_shape_caption(picture_paragraph);
+            b.bin_streams.push(hwp_model::BinStream {
+                name: "BinData/image1.png".into(),
+                data: b"B-IMAGE".to_vec(),
+            });
+            b.hwpx_bin_manifest = vec![("image1".into(), "BinData/image1.png".into())];
+            if general {
+                b = non_palette_compatible(b);
+                b.hwpx_bin_manifest = vec![("image1".into(), "BinData/image1.png".into())];
+            }
+            let a_sections = a.sections.len();
+            let outcome = merge_documents(&[a, b]).unwrap();
+            assert_eq!(outcome.general_path_used, general);
+            let caption = shape_caption_paragraph(&outcome.document, a_sections);
+            let Some(Control::Picture(picture)) = caption.controls.first() else {
+                panic!("general={general}: the caption keeps its picture");
+            };
+            assert_eq!(
+                outcome.document.resolve_bin(&picture.bin_ref),
+                Some(b"B-IMAGE".as_slice()),
+                "general={general}: a caption picture must follow its own input's manifest"
+            );
+        }
+    }
+
+    #[test]
+    fn 병합_뒤_도형_캡션_문단도_이동된_모양으로_해석된다() {
+        for general in [false, true] {
+            let mut a = from_markdown("문서 A\n");
+            // The first input carries extra shapes of its own, so the offset a later input's
+            // ids must move by is not zero: with an offset of zero, "shifted" and "left alone"
+            // look the same and the test cannot tell a missed caption from a handled one.
+            a.header.para_shapes.push(hwp_model::ParaShape {
+                line_spacing: 111,
+                ..Default::default()
+            });
+            a.header.char_shapes.push(hwp_model::CharShape {
+                base_size: 1111,
+                ..Default::default()
+            });
+            // The fast tier only accepts extra char and para shapes (its signature pins the
+            // style and border-fill counts), so the marker shapes are added to the header
+            // first and the style marker only on the general tier.
+            let mut scratch = from_markdown("문서 B\n");
+            scratch.header.para_shapes.push(hwp_model::ParaShape {
+                line_spacing: 250,
+                ..Default::default()
+            });
+            let para_shape = hwp_model::ParaShapeId((scratch.header.para_shapes.len() - 1) as u16);
+            scratch.header.char_shapes.push(hwp_model::CharShape {
+                base_size: 4321,
+                ..Default::default()
+            });
+            let char_shape = CharShapeId((scratch.header.char_shapes.len() - 1) as u16);
+            let mut b = document_with_shape_caption(Paragraph {
+                para_shape,
+                char_shape_runs: vec![(0, char_shape)],
+                ..Default::default()
+            });
+            b.header = scratch.header;
+            if general {
+                b = non_palette_compatible(b);
+            }
+            let outcome = merge_documents(&[a.clone(), b]).unwrap();
+            assert_eq!(outcome.general_path_used, general);
+            let merged = &outcome.document;
+            let caption = shape_caption_paragraph(merged, a.sections.len());
+            // The fast tier shifts only ids past the shared palette and the general tier shifts
+            // them all, so the offsets differ; what must hold on both is that the id resolves
+            // to the entry the caption paragraph named.
+            assert_eq!(
+                merged.header.para_shapes[caption.para_shape.0 as usize].line_spacing, 250,
+                "general={general}"
+            );
+            let (_, run) = caption.char_shape_runs[0];
+            assert_eq!(
+                merged.header.char_shapes[run.0 as usize].base_size, 4321,
+                "general={general}: the caption run's char shape resolves to its own entry"
+            );
+        }
     }
 
     /// Two HWPX-style inputs that both say `image1`, with different manifests: A's `image1`

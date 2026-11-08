@@ -55,7 +55,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   by the address it resolved to, never by its text, and `kept` / `kept-unverified` list only
   binaries the published file holds (HWP5 writes just the binaries its BIN_DATA table names, so
   the others are listed as dropped by the format). `--range-report` and `--loss-report` may not
-  name the same file, and neither may name a fragment, however the path is spelled. The source
+  name the same file, and neither may name a fragment, however the path is spelled (`..`
+  segments through a directory that does not exist yet, and on a volume that ignores case, a
+  different case; the volume is asked, not assumed). The source
   hash is taken around the parse and a file that changed meanwhile is refused. The fragment
   carries the section's page, column, header, footer, page-number and new-number controls. When
   the range starts after the section's first paragraph, a hide or odd/even adjust control on
@@ -80,7 +82,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   manifest, so a later input that reused an id such as `image1` for a different file used to
   resolve to the first input's image. Each later input's ids are now resolved through that
   input's own manifest while its streams are grafted, which also keeps an id working after its
-  stream was renamed on a name collision. Resolving a picture's id now consults the package
+  stream was renamed on a name collision. A shape's caption is remapped too: its pictures
+  follow their own input's manifest, and its paragraphs get the same paragraph, character and
+  style offsets as every other paragraph, where they used to keep the ids of the input they
+  came from. Resolving a picture's id now consults the package
   manifest first, so an id that differs from its file name (`id="logo"`,
   `href="BinData/p1.png"`) finds its image, where `hwp convert` used to drop it as a removed
   binary asset; an id the manifest lists never falls back to a same-named file of another item
