@@ -707,6 +707,7 @@ fn hwp_style_id_overflow_refuses_before_publication_but_hwpx_keeps_u16_ids() {
     let cases = [
         create("Beyond native capacity", json!(0)),
         apply(at(&loaded, INHERITED), json!(256), None),
+        json!({"op":"update_style","style":256,"size":"13pt"}),
     ];
     for (index, operation) in cases.into_iter().enumerate() {
         let operations = fixture.directory.join(format!("capacity-{index}.json"));
@@ -1056,7 +1057,12 @@ fn empty_native_runs_own_style_application_is_byte_identical() {
             &std::fs::read(fixture.directory.join("own-empty-noop-report.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(report["applied_count"], 0);
+        assert_eq!(
+            report["applied_count"], 1,
+            "a successful no-op still counts as one applied request"
+        );
+        assert_eq!(report["failed_count"], 0);
+        assert_eq!(report["ops"][0]["changed"], json!([]));
         assert_eq!(report["ops"][0]["status"], "applied");
         assert_eq!(report["ops"][0]["pieces_touched"], 0);
         assert!(report["ops"][0]["reason"].is_null());
@@ -1319,8 +1325,56 @@ fn empty_update_style_is_a_successful_native_byte_identical_noop() {
             &std::fs::read(fixture.directory.join("empty-updated-report.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(report["applied_count"], 0);
+        assert_eq!(
+            report["applied_count"], 1,
+            "a successful no-op still counts as one applied request"
+        );
+        assert_eq!(report["failed_count"], 0);
+        assert_eq!(report["ops"][0]["changed"], json!([]));
         assert_eq!(report["ops"][0]["status"], "applied");
         assert_eq!(report["ops"][0]["pieces_touched"], 0);
+    }
+}
+
+#[test]
+fn update_style_unknown_target_aborts_the_entire_batch_even_with_allow_partial() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("update-refusal", extension);
+        let destination = fixture.path("refused-update");
+        std::fs::copy(&fixture.base, &destination).unwrap();
+        let expected = std::fs::read(&destination).unwrap();
+        let operations = fixture.directory.join("refused-update-ops.json");
+        std::fs::write(
+            &operations,
+            serde_json::to_vec(&json!([
+                create("Earlier candidate", json!("body")),
+                {"op":"update_style","style":"Missing target style","size":"13pt"}
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let run = hwp()
+            .arg("edit")
+            .arg(&fixture.base)
+            .arg("-o")
+            .arg(&destination)
+            .arg("--ops")
+            .arg(&operations)
+            .arg("--allow-partial")
+            .output()
+            .unwrap();
+        assert!(
+            !run.status.success(),
+            "unknown style must remain a hard refusal"
+        );
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert!(
+            stderr.contains("Missing target style") && !stderr.contains("Name("),
+            "{stderr}"
+        );
+        assert!(
+            std::fs::read(destination).unwrap() == expected,
+            "a later update refusal must not publish the earlier candidate header"
+        );
     }
 }
