@@ -96,8 +96,8 @@ pub fn synthesize_linesegs(
             // cached v_pos for vertical placement; omitting spacing compresses paragraphs
             // together and loses heading space-before, causing vertical displacement.
             // Paragraph gaps add the preceding space-after and current space-before. Omit
-            // space-before at a section's first paragraph (genuine v_pos=0). Explicit
-            // breaks also omit it for consistency; that case is unverified against Hangul.
+            // space-before at a section's first paragraph (genuine v_pos=0).
+            // An explicit break resets the page cursor but retains the existing space-before.
             let (sp_top, sp_bottom) = snap
                 .header
                 .para_shapes
@@ -107,7 +107,7 @@ pub fn synthesize_linesegs(
             if explicit_break {
                 v_pos = 0;
             }
-            if pi > 0 && !explicit_break {
+            if pi > 0 {
                 v_pos += sp_top;
             }
             // Floating-table measurement already populated nested caches.

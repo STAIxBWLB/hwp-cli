@@ -1146,12 +1146,7 @@ fn layout_document_pages(
                 page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
             }
             let tabs = crate::tab::tab_stops(doc, para);
-            let mut geom = para_geometry(doc, para);
-            if para.line_segs.is_empty() && para.header.break_type & 0x04 != 0 {
-                // Match inline cache synthesis at an explicit break. This omission
-                // of space-before is an internal convention, unverified in Hangul.
-                geom.spacing_top = 0.0;
-            }
+            let geom = para_geometry(doc, para);
             let links = crate::shape::hyperlink_ranges(para);
             // Do not consume a list counter for a paragraph that has no visible line at all.
             let marker = if para.line_segs.is_empty() && para.chars.is_empty() {
@@ -1181,7 +1176,8 @@ fn layout_document_pages(
                 };
             }
             if para.line_segs.is_empty() {
-                // Greedy body layout uses the same metrics as synthesized caches.
+                // Cacheless body advance follows declared line spacing. Its fallback
+                // baseline and paragraph-spacing placement remain distinct from cached layout.
                 // Set when the greedy wrap itself crossed a page boundary (#282).
                 let mut para_split = false;
                 if para.chars.is_empty() {
@@ -4696,6 +4692,12 @@ fn compute_cell_render_linesegs(
     v: &mut i32,
     warnings: &mut RenderIssueAccumulator,
 ) -> Vec<hwp_model::LineSeg> {
+    // Keep paragraph margins within the rendered cell box. These temporary
+    // widths never change the prior full-width caches written to native files.
+    let shape = doc.header.para_shapes.get(para.para_shape.0 as usize);
+    let left = shape.map_or(0, |shape| shape.margin_left.max(0) / 2);
+    let right = shape.map_or(0, |shape| shape.margin_right.max(0) / 2);
+    let width = width.saturating_sub(left).saturating_sub(right).max(1);
     crate::lineseg::compute_box_linesegs(store, doc, para, width, v, warnings)
 }
 

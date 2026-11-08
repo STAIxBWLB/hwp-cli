@@ -166,7 +166,7 @@ ripwire . --recall="<topic>" # the docs/design and .ripwire_notes rows that answ
 
 - 2026-11-08 (#410): before changing geometry serialized into native line caches, cite genuine
   saved-file bytes or a format specification section for the exact field and context (body, cell,
-  caption or text box). Body measurements do not establish nested-list rules. Revisit when
+  caption or text box). Body measurements do not establish nested-list rules. Revisit when:
   native-cache reviews stop finding unsupported extrapolations, or the model changes.
 
 - 2026-09-26 (#370) and 2026-09-27 (#384): new regression tests could not catch their regression (on the old code
