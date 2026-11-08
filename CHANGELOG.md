@@ -35,12 +35,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   numbering. Text and bullet insertion keep that contract. HWPX preserves authored numbering.
   Inserted tables, images and fields get object identities that collide with nothing in the
   target (placement-table z-orders, field instance ids and, in the HWP writer, picture
-  instance ids now start past the ids a re-read document already holds). Tables and images
+  instance ids now start past the ids a re-read document already holds; ids held by shape,
+  table and picture captions count too). Tables and images
   are measured against the text column or table cell they land in, and a table draws its
   borders from a bordered fill the target header supplies or gains. Image paths resolve beside
   the `--ops` file and are bound to the MCP sandbox roots; reading `--ops` from stdin has no
   directory, so image blocks are refused there. Equations insert into HWPX only because the
-  HWP writer drops them. Compilation no longer clones the whole target per operation. Inserted-id
+  HWP writer drops them. An inserted image whose stream name the target's package manifest already maps to another file is renamed so it still resolves to its own bytes. Compilation no longer clones the whole target per operation. Inserted-id
   reporting and MCP reachability remain follow-ups
   ([#428](https://github.com/STAIxBWLB/hwp-cli/issues/428)).
 
