@@ -319,3 +319,154 @@ fn short_tables_and_following_body_keep_anchors() {
 fn long_tables_and_merged_rows_keep_continuation_anchors() {
     probe(30, true, true);
 }
+
+#[test]
+fn native_edit_keeps_base_anchor_beside_cached_floating_neighbours() {
+    // Owner-authored genuine-style caches, not a genuine Hangul fixture or open receipt.
+    let dir =
+        ProbeDir(std::env::temp_dir().join(format!("hwp410-native-edit-{}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let mut doc = hwp_convert::from_markdown("Anchor\n\nEdited paragraph\n\nNeighbour\n");
+    assert_eq!(doc.sections[0].paragraphs.len(), 3);
+    for shape in &mut doc.header.char_shapes {
+        shape.base_size = 1000;
+    }
+    for shape in &mut doc.header.para_shapes {
+        shape.spacing_top = 0;
+        shape.spacing_bottom = 0;
+        shape.line_spacing_type = 0;
+        shape.line_spacing = 160;
+        shape.line_spacing_old = 160;
+    }
+    for control in &mut doc.sections[0].paragraphs[0].controls {
+        if let hwp_model::Control::SectionDef(def) = control {
+            let page = def.page.as_mut().unwrap();
+            page.margin_header = hwp_model::HwpUnit(0);
+            page.margin_footer = hwp_model::HwpUnit(0);
+        }
+    }
+    let page = doc.sections[0].section_def().unwrap().page.unwrap();
+    let body_width = page.width.0 - page.margin_left.0 - page.margin_right.0;
+    let body_height = page.height.0 - page.margin_top.0 - page.margin_bottom.0;
+    let line = |v| hwp_model::LineSeg {
+        text_start: 0,
+        v_pos: v,
+        line_height: 1000,
+        text_height: 1000,
+        baseline_gap: 850,
+        line_spacing: 600,
+        col_start: 0,
+        seg_width: body_width,
+        flags: 0x0006_0000,
+    };
+    let mut cell_para = doc.sections[0].paragraphs[0].clone();
+    cell_para.controls.clear();
+    cell_para.line_segs = vec![line(0)];
+    let tables = hwp_convert::from_markdown("| Cell |\n|---|\n| Value |\n");
+    let mut object = tables.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| {
+            if let hwp_model::Control::Table(t) = c {
+                Some(t.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    object.rows = 1;
+    object.cols = 1;
+    object.row_cell_counts = vec![1];
+    object.cells.truncate(1);
+    object.cells[0].width = hwp_model::HwpUnit(body_width);
+    object.cells[0].height = hwp_model::HwpUnit(body_height - 1200);
+    object.cells[0].margins = [100; 4];
+    object.cells[0].paragraphs = vec![cell_para];
+    object.inner_margins = [100; 4];
+    object.common_data.clear();
+    object.placement = Some(hwp_model::GsoPlacement {
+        treat_as_char: false,
+        vert_rel_to: 2,
+        horz_rel_to: 3,
+        width: body_width,
+        height: body_height - 1200,
+        ..Default::default()
+    });
+    // Base synthesis advances by 100+100+1000+566, independently of the saved row minimum.
+    let base_anchor = 1766;
+    for (index, paragraph) in doc.sections[0].paragraphs.iter_mut().enumerate() {
+        paragraph.header.instance_id = index as u32 + 1;
+        paragraph.line_segs = vec![line(match index {
+            0 => 0,
+            1 => base_anchor,
+            _ => base_anchor + 1600,
+        })];
+    }
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(hwp_model::Control::Table(object));
+    let input = dir.0.join("source.hwp");
+    hwp5::write_document(
+        &doc,
+        &input,
+        &hwp5::WriteOptions {
+            preserve_linesegs: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let original = hwp5::read_document(&input).unwrap().document;
+    assert_eq!(original.meta.source_format, "hwp5");
+    assert!(
+        original.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .any(|c| matches!(c,
+        hwp_model::Control::Table(t) if t.placement.as_ref().is_some_and(|p| !p.treat_as_char)))
+    );
+    assert_eq!(
+        original.sections[0].paragraphs[1].line_segs[0].v_pos,
+        base_anchor
+    );
+    std::fs::write(
+        dir.0.join("ops.json"),
+        r#"[{"op":"set_para","address":{"at":{"section":0,"paragraph":1}},"align":"center"}]"#,
+    )
+    .unwrap();
+    run(
+        &[
+            "edit",
+            "source.hwp",
+            "-o",
+            "edited.hwp",
+            "--ops",
+            "ops.json",
+        ],
+        &dir.0,
+    );
+    let edited = hwp5::read_document(&dir.0.join("edited.hwp"))
+        .unwrap()
+        .document;
+    let changed = &edited.sections[0].paragraphs[1];
+    assert_ne!(
+        changed.para_shape, original.sections[0].paragraphs[1].para_shape,
+        "exercise an actual native paragraph edit"
+    );
+    assert_eq!(
+        changed.line_segs[0].v_pos, base_anchor,
+        "native edits must keep the base synthesized anchor, not a cacheless floating prepass anchor"
+    );
+    assert_eq!(
+        changed.line_segs[0].flags & 1,
+        0,
+        "native edits must not acquire the new planner page-start bit"
+    );
+    for index in [0, 2] {
+        assert_eq!(
+            edited.sections[0].paragraphs[index].line_segs,
+            original.sections[0].paragraphs[index].line_segs,
+            "unchanged native neighbour caches remain authoritative"
+        );
+    }
+}
