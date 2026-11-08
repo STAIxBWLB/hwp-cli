@@ -160,8 +160,8 @@ pub struct AssetContext<'a> {
 /// definition (PageSpec default).
 const DEFAULT_CONTAINER_MM: f32 = 170.0;
 
-fn hwpunit_to_mm(units: i32) -> f32 {
-    (f64::from(units) * 25.4 / f64::from(hwp_model::HwpUnit::PER_INCH)) as f32
+fn hwpunit_to_mm(units: i64) -> f32 {
+    (units as f64 * 25.4 / f64::from(hwp_model::HwpUnit::PER_INCH)) as f32
 }
 
 /// Width in HWPUNIT of one text column of `section` at its top-level paragraph `at`, given the
@@ -170,10 +170,19 @@ fn hwpunit_to_mm(units: i32) -> f32 {
 /// of the target paragraph and of any column control it carries
 /// (`hwp_convert::structure::insert_paragraphs_at` splices at the paragraph's own index), so it
 /// flows under the definition preceding the target: the target's own is excluded. The column
-/// width is split the way `hwp-render` splits it (equal columns share the body width less the gaps). Columns of unequal width list their
-/// own widths; which of them a block lands in is not known here, so the narrowest is the safe
-/// measure.
-fn column_width_hwp(section: &hwp_model::Section, at: usize, before: bool, body: i32) -> i32 {
+/// width is split the way `hwp-render` splits it (equal columns share the body width less the
+/// gaps). Columns of unequal width list their own widths; which of them a block lands in is not
+/// known here, so the narrowest is the safe measure.
+///
+/// Every number here comes from the document, so the arithmetic is widened to i64 and an
+/// impossible layout (a negative gap, gaps wider than the body) yields `None` rather than a
+/// wrapped or negative width.
+fn column_width_hwp(
+    section: &hwp_model::Section,
+    at: usize,
+    before: bool,
+    body: i64,
+) -> Option<i64> {
     let def = section
         .paragraphs
         .iter()
@@ -184,17 +193,22 @@ fn column_width_hwp(section: &hwp_model::Section, at: usize, before: bool, body:
             _ => None,
         })
         .next_back();
-    let Some(def) = def else { return body };
-    let count = i32::from(def.count.max(1));
+    let Some(def) = def else { return Some(body) };
+    let count = i64::from(def.count.max(1));
     if count == 1 {
-        return body;
+        return Some(body);
     }
     if !def.same_width
         && let Some(narrowest) = def.widths.iter().copied().filter(|w| *w > 0).min()
     {
-        return narrowest;
+        return Some(i64::from(narrowest));
     }
-    (body - def.gap.max(0).saturating_mul(count - 1)) / count
+    if def.gap < 0 {
+        return None;
+    }
+    let gaps = i64::from(def.gap).checked_mul(count - 1)?;
+    let columns = body.checked_sub(gaps)?;
+    (columns > 0).then_some(columns / count)
 }
 
 /// Limit this phase to the body and table cells, and return the width in mm of the text column
@@ -206,21 +220,37 @@ fn check_target(doc: &Document, target: &SegmentPath, before: bool) -> Result<f3
     };
     let section = doc.sections.get(target.section).ok_or_else(invalid)?;
     let first = *target.indices.first().ok_or_else(invalid)?;
-    let mut width =
-        section
-            .section_def()
-            .and_then(|def| def.page)
-            .map_or(DEFAULT_CONTAINER_MM, |page| {
-                // PAGE_DEF attr bit 0 rotates the paper, so the horizontal extent is `height`.
-                // `hwp-render` reads it the same way (layout.rs, "Landscape (PAGE_DEF attr bit0)").
-                let paper = if page.attr & 1 != 0 {
-                    page.height.0
-                } else {
-                    page.width.0
-                };
-                let body = paper - page.margin_left.0 - page.margin_right.0 - page.gutter.0;
-                hwpunit_to_mm(column_width_hwp(section, first, before, body))
-            });
+    let unknown = || {
+        "삽입 위치의 본문 폭을 알 수 없습니다. 쪽 여백, 단 간격, 표 셀 폭과 여백이 유효한 문서인지 확인하세요"
+            .to_owned()
+    };
+    // Page, column and cell numbers all come from the document and the HWP5 reader accepts any
+    // i32 for them, so the sums below run in i64 and an impossible geometry is refused as an
+    // unknown width instead of panicking (overflow-checked builds) or wrapping (release).
+    let mut width = match section.section_def().and_then(|def| def.page) {
+        None => DEFAULT_CONTAINER_MM,
+        Some(page) => {
+            // PAGE_DEF attr bit 0 rotates the paper, so the horizontal extent is `height`.
+            // `hwp-render` reads it the same way (layout.rs, "Landscape (PAGE_DEF attr bit0)").
+            let paper = if page.attr & 1 != 0 {
+                page.height.0
+            } else {
+                page.width.0
+            };
+            if [page.margin_left.0, page.margin_right.0, page.gutter.0]
+                .iter()
+                .any(|v| *v < 0)
+            {
+                return Err(unknown());
+            }
+            let body = i64::from(paper)
+                - i64::from(page.margin_left.0)
+                - i64::from(page.margin_right.0)
+                - i64::from(page.gutter.0);
+            let column = column_width_hwp(section, first, before, body).ok_or_else(unknown)?;
+            hwpunit_to_mm(column)
+        }
+    };
     let mut paragraph = section
         .paragraphs
         .get(*target.indices.first().ok_or_else(invalid)?)
@@ -237,15 +267,13 @@ fn check_target(doc: &Document, target: &SegmentPath, before: bool) -> Result<f3
         // The cell's own margins are often the 0xffff "inherit" sentinel or all zero
         // ("omitted"); `Table::cell_margins` resolves both exactly as the renderer does.
         let margins = table.cell_margins(cell);
-        width = hwpunit_to_mm(cell.width.0 - i32::from(margins[0]) - i32::from(margins[1]));
+        width =
+            hwpunit_to_mm(i64::from(cell.width.0) - i64::from(margins[0]) - i64::from(margins[1]));
         paragraph = cell.paragraphs.get(*para).ok_or_else(invalid)?;
         rest = tail;
     }
     if !width.is_finite() || width <= 0.0 {
-        return Err(
-            "삽입 위치의 본문 폭을 알 수 없습니다. 표 셀 폭과 여백이 유효한 문서인지 확인하세요"
-                .into(),
-        );
+        return Err(unknown());
     }
     Ok(width)
 }
