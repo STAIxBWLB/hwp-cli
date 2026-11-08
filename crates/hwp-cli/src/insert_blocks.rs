@@ -598,6 +598,8 @@ struct StreamPlan {
 /// `Document::bin_stream_index` is manifest-first and also matches by `/<name>` suffix and by
 /// file stem, so an `ItemRef` can land on a stream other than the one just compiled:
 ///
+/// - the HWP5 writer's own lookup is more permissive than the model's (ASCII case-insensitive
+///   file name, then substring), so a name any of them would take counts as a collision;
 /// - it resolves to a stream with the same bytes: share it, do not append a duplicate;
 /// - it resolves to other bytes, or the package manifest lists the name for another file, or
 ///   lists it for a file the document does not carry: rename the compiled stream to a name
@@ -608,9 +610,25 @@ fn plan_streams(doc: &Document, streams: &[hwp_model::BinStream]) -> StreamPlan 
             .iter()
             .any(|(id, href)| id == name || href == name)
     };
+    // Every stream any writer could take for `name`: the model resolver's pick plus what the
+    // HWP5 writer's lookup (`hwp5::write::bin_stream_index`) accepts, which is the most
+    // permissive one: the file name ignoring ASCII case, then any name containing it. A
+    // collision with any of them would capture the picture in that format's output.
+    let candidates = |name: &str| -> BTreeSet<usize> {
+        let mut found: BTreeSet<usize> = doc
+            .bin_stream_index(&hwp_model::BinRef::ItemRef(name.to_owned()))
+            .into_iter()
+            .collect();
+        for (index, have) in doc.bin_streams.iter().enumerate() {
+            let trailing = have.name.rsplit('/').next().unwrap_or(&have.name);
+            if trailing.eq_ignore_ascii_case(name) || have.name.contains(name) {
+                found.insert(index);
+            }
+        }
+        found
+    };
     let unresolved = |name: &str, plan: &StreamPlan| {
-        doc.bin_stream_index(&hwp_model::BinRef::ItemRef(name.to_owned()))
-            .is_none()
+        candidates(name).is_empty()
             && !manifest_lists(name)
             && !streams.iter().any(|have| have.name == name)
             && !plan.renames.values().any(|taken| taken == name)
@@ -620,22 +638,21 @@ fn plan_streams(doc: &Document, streams: &[hwp_model::BinStream]) -> StreamPlan 
         shared: BTreeSet::new(),
     };
     for stream in streams {
-        let found = doc.bin_stream_index(&hwp_model::BinRef::ItemRef(stream.name.clone()));
-        match found {
-            Some(index) if doc.bin_streams[index].data == stream.data => {
-                plan.shared.insert(stream.name.clone());
+        let hits = candidates(&stream.name);
+        let model = doc.bin_stream_index(&hwp_model::BinRef::ItemRef(stream.name.clone()));
+        if hits.is_empty() {
+            let listed_for_another_file = doc
+                .hwpx_bin_manifest
+                .iter()
+                .any(|(id, href)| *id == stream.name && *href != stream.name);
+            if !listed_for_another_file {
                 continue;
             }
-            Some(_) => {}
-            None => {
-                let listed_for_another_file = doc
-                    .hwpx_bin_manifest
-                    .iter()
-                    .any(|(id, href)| *id == stream.name && *href != stream.name);
-                if !listed_for_another_file {
-                    continue;
-                }
-            }
+        } else if model.is_some() && hits.iter().all(|i| doc.bin_streams[*i].data == stream.data) {
+            // Every writer lands on a byte-identical stream, and the model resolver finds it
+            // too (the HWPX output keeps the reference): store nothing twice.
+            plan.shared.insert(stream.name.clone());
+            continue;
         }
         let (stem, extension) = match stream.name.rsplit_once('.') {
             Some((stem, extension)) => (stem.to_owned(), format!(".{extension}")),
