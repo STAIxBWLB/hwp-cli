@@ -185,9 +185,11 @@ fn style_type_char_reads_as_a_character_style() {
 </hh:head>"##;
     let (header, _) = hwpx::read::header::parse_header(xml).unwrap();
     let attrs: Vec<u8> = header.styles.iter().map(|s| s.attr).collect();
-    // An absent or unknown type stays 0, the value the reader produced before: a reserved value
-    // must never reach an HWP5 STYLE record.
+    // An absent or unknown type keeps attr 0: a reserved value must never reach an HWP5 STYLE
+    // record. The kind is flagged unknown instead, so 0 is not mistaken for "paragraph".
     assert_eq!(attrs, [0, 1, 0, 0]);
+    let unknown: Vec<bool> = header.styles.iter().map(|s| s.kind_unknown).collect();
+    assert_eq!(unknown, [false, false, true, true]);
 }
 
 /// 취소선 shape 매핑: SOLID는 취소선, NONE/3D는 비취소선.

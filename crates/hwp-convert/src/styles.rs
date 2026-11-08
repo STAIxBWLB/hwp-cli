@@ -7,6 +7,7 @@
 //! construction an id `hwp cat --with-segments --segments v2` publishes.
 
 use hwp_model::Document;
+use hwp_model::header::Style;
 
 use crate::segment::{Segment, SegmentKind, StyleLevel, level};
 
@@ -54,9 +55,17 @@ pub struct NamedStyle {
 /// there (한글문서 파일 형식 5.0 §4.2.11 table 48; the genuine saved `fixtures/hwp5/bookmark.hwp` has
 /// `쪽 번호` at attr 1 and every other style at 0), and the HWPX reader maps `hh:style@type`
 /// `PARA`/`CHAR` onto the same bits (genuine `fixtures/hwpx/seal-groundtruth.hwpx` has `쪽 번호`
-/// as `CHAR`). A reserved value is unknown, not a paragraph style.
-fn style_kind(attr: u8) -> Option<StyleKind> {
-    match attr & 0x7 {
+/// as `CHAR`).
+///
+/// Two cases are unknown rather than a paragraph style: a reserved value in those bits, and a
+/// style flagged `kind_unknown`, which the HWPX reader sets for a `type` that is absent or not
+/// one of the format's two values. For those the attr is 0 only to keep it a valid HWP5 value,
+/// and reading it as "paragraph" would answer a question the document never answered.
+fn style_kind(style: &Style) -> Option<StyleKind> {
+    if style.kind_unknown {
+        return None;
+    }
+    match style.attr & 0x7 {
         0 => Some(StyleKind::Paragraph),
         1 => Some(StyleKind::Character),
         _ => None,
@@ -109,7 +118,7 @@ pub fn list_named_styles(
                 })?,
                 name: style.name.clone(),
                 english_name: style.english_name.clone(),
-                kind: style_kind(style.attr),
+                kind: style_kind(style),
                 next_style: style.next_style,
                 attrs: level(doc, Some(style.char_shape.0), Some(style.para_shape.0)),
                 used_by: Vec::new(),
@@ -179,6 +188,20 @@ mod tests {
                 .collect();
             assert_eq!(kinds, [Some("paragraph"), Some("character")], "{source}");
         }
+    }
+
+    /// A style whose source never stated a kind is unknown whatever its attr bits say: attr 0 is
+    /// only the valid HWP5 value kept for it, and must not read as "paragraph" (T27-F1).
+    #[test]
+    fn a_style_flagged_kind_unknown_is_not_a_paragraph_style() {
+        let mut doc = doc_with_styles("hwpx", &[0, 0, 1]);
+        doc.header.styles[1].kind_unknown = true;
+        let kinds: Vec<_> = list_named_styles(&doc, &[])
+            .unwrap()
+            .iter()
+            .map(|s| s.kind.map(StyleKind::as_str))
+            .collect();
+        assert_eq!(kinds, [Some("paragraph"), None, Some("character")]);
     }
 
     /// The largest table `StyleId` can address lists with distinct, in-order ids; one row more

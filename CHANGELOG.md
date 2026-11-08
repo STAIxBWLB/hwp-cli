@@ -24,7 +24,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - The HWPX reader now reads `hh:style@type` (`PARA`/`CHAR`) into the style kind that HWP5 stores in
   the low bits of `STYLE.attr`, and the HWPX writer writes `CHAR` back for a character style
   instead of always `PARA`. Character styles such as `쪽 번호` therefore survive an HWPX to HWPX
-  round trip, and `hwp styles` reports a `kind` for HWPX documents too (gap GE-13,
+  round trip, and `hwp styles` reports a `kind` for HWPX documents too. A style whose `type` is
+  absent or not `PARA`/`CHAR` is reported as `null` (unknown), not as a paragraph style, and is
+  written back without a `type` (gap GE-13,
   [#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 
 **Changed**
