@@ -29,6 +29,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Changed**
 
+- CI publishes a stable `ci-ok` gate for every PR, including lightweight docs/formula changes.
+  Bundled skill and corpus Markdown always run full gates. The aggregate rejects failed,
+  cancelled or unexpectedly skipped jobs; releases require it,
+  and formula PR auto-merge waits for its successful exact-head CI. GitHub's clean-status
+  auto-merge refusal uses a checked head-matched merge only after a fresh clean/mergeable proof
+  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+
 - Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)
   and `--locked`, with `cargo-zigbuild` 0.23.4 and zig 0.16.0 pinned. The release `verify-ci`
   gate now waits (up to 45 minutes) for a tag commit's still-running CI instead of failing, and
@@ -58,6 +65,25 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   [#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)-[#426](https://github.com/STAIxBWLB/hwp-cli/issues/426),
   including native width/height sentinel interpretation and multiline body bounds. Hancom Office
   verification remains pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
+
+**Added**
+
+- A reproducible owner-authored original-form fixture set and layered test contract cover
+  repeated labels, merged/signature cells, four profile tables and retained/outside images.
+  Shared helpers compare expected cells, grid/width/style/resource projections, relative anchors
+  and observed font identities; corruption self-checks exercise their failure boundaries.
+  Semantic control atoms distinguish character/inline controls and preserve extended-control
+  codes, IDs and anchor indices. Invalid tab references, including index 0, and incomplete font
+  resolution collections are rejected rather than accepted as equal observations.
+  Named-style references are validated and compared by resolved names; formatting runs after
+  interior paragraph-break controls remain in the WCHAR-bounded style projection. Table styles
+  include semantic page-break policy. Anchor collection requires document-derived table IDs to
+  match observed table rows, with at least one row per expected table; relative geometry remains
+  font-environment evidence. Retained-image checks resolve the authored table identity and cell,
+  rejecting an identical image moved to the same coordinates in another table. These bounded
+  checks do not prove complete table-fragment rendering or Hancom pagination.
+  This adds regression evidence and a bilingual design contract, not production extraction,
+  binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
 
 ## [1.3.1]
 
