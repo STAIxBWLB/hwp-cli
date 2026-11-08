@@ -375,6 +375,8 @@ class WorkflowTests(unittest.TestCase):
     def test_ci_ok_always_covers_all_existing_gates_and_decision(self):
         _, jobs = self.jobs()
         self.assertIn("ci-ok", jobs)
+        self.assertEqual(set(jobs), {"decision", "lint", "pdf-parity", "test", "ci-ok"},
+                         "new gating jobs must be added to ci-ok and its policy")
         aggregate = jobs["ci-ok"]
         self.assertRegex(aggregate, r"(?m)^    if:\s*(?:\$\{\{\s*)?always\(\)")
         needs = re.search(r"(?m)^    needs:\s*\[([^\]]+)\]", aggregate)
