@@ -25,7 +25,7 @@ pub mod binding;
 pub enum FormFieldSource {
     /// A `{{ name }}` slot.
     Placeholder,
-    /// `라벨: 값` in a paragraph outside table cells.
+    /// `Label: Value` in a paragraph outside table cells.
     InlineLabel,
     /// A table cell that reads as a form label.
     FormLabel,
@@ -75,7 +75,7 @@ pub struct FormField {
     pub required: bool,
 }
 
-/// List the form fields of `doc`: `{{ }}` slots, inline `라벨: 값` outside table cells, and
+/// List the form fields of `doc`: `{{ }}` slots, inline `Label: Value` outside table cells, and
 /// table cells that read as labels. An inline label whose value is only differently-keyed
 /// slot(s) is left out: the slot is already a field of its own. Sorted by key.
 pub fn scan_form_fields(doc: &Document) -> Vec<FormField> {
@@ -95,10 +95,10 @@ pub fn scan_form_fields(doc: &Document) -> Vec<FormField> {
             }
             if !in_cell {
                 for inline in inline_labels(&seg) {
-                    // `라벨: {{다른키}}`: the slot is already listed as its own field, and a
+                    // `Label: {{OtherKey}}`: the slot is already listed as its own field, and a
                     // fill defers the label to it, so listing the label too only earns the
                     // caller an unmatched key it could never fill (#385). A same-key sighting
-                    // (`담당자: {{담당자}}`) creates no extra field — the two sightings merge —
+                    // (`Contact: {{Contact}}`) creates no extra field — the two sightings merge —
                     // so it stays, keeping occurrences and source accurate.
                     if defers_to_a_different_key(
                         &seg[inline.label.clone()],
@@ -201,10 +201,10 @@ pub struct FormFill {
 /// 2. In every text segment, candidate edits are collected on the unfilled text in this order,
 ///    and one that overlaps an accepted edit is dropped with a warning:
 ///    - `{{ name }}` slots, matched by normalized name as in kordoc;
-///    - outside table cells, the text after `라벨:`, up to a comma, semicolon, line end, the
-///      next `라벨:` on the line, or 100 characters;
-///    - inside table cells, `라벨(  )` blanks, `□옵션` checkboxes (checked when the value is
-///      truthy; a falsy value leaves the box but counts as matched) and `(라벨:  )` annotations.
+///    - outside table cells, the text after `Label:`, up to a comma, semicolon, line end, the
+///      next `Label:` on the line, or 100 characters;
+///    - inside table cells, `Label(  )` blanks, `□Option` checkboxes (checked when the value is
+///      truthy; a falsy value leaves the box but counts as matched) and `(Label:  )` annotations.
 /// 3. The value cells from step 1, written with [`crate::set_cell`]. No text edit reached them.
 ///
 /// A slot owns its text: a label whose value text or value cell holds a requested slot is left
@@ -424,7 +424,7 @@ struct Candidate {
     /// The pattern's match, for messages.
     matched: Range<usize>,
     /// The text it rewrites, or would rewrite (an unchecked box claims its `□`). A later
-    /// candidate whose claim overlaps an accepted one is dropped, so `□기타(   )` fills both
+    /// candidate whose claim overlaps an accepted one is dropped, so `□Other(   )` fills both
     /// the box and the blank.
     claim: Range<usize>,
     /// Byte ranges of the segment with their replacements, in order.
@@ -490,7 +490,7 @@ fn slot_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidat
         .collect()
 }
 
-/// `라벨: ...` becomes `라벨: 값`. The separator and the old value are spliced apart, so the
+/// `Label: ...` becomes `Label: Value`. The separator and the old value are spliced apart, so the
 /// value keeps the char shape of the text it replaces, not of the colon.
 fn inline_candidates(
     seg: &str,
@@ -521,7 +521,7 @@ fn inline_candidates(
         let mut edits = Vec::new();
         if inline.value.is_empty() {
             // A blank value keeps one space before the text that follows it on the line (a
-            // label, a bracketed note), but not before a closer: `(한문: 李英俊)`.
+            // label, a bracketed note), but not before a closer: `(Chinese: 李英俊)`.
             let space = match seg[inline.value.end..].chars().next() {
                 Some(ch)
                     if !matches!(ch, '\n' | ',' | ';')
@@ -550,7 +550,7 @@ fn inline_candidates(
     found
 }
 
-/// `라벨(  )접미` becomes `라벨(값)접미`, keyed `라벨접미`, else `라벨`.
+/// `Label(  )Suffix` becomes `Label(Value)Suffix`, keyed `LabelSuffix`, else `Label`.
 fn paren_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidate> {
     let mut found = Vec::new();
     for caps in PAREN_BLANK.captures_iter(seg) {
@@ -581,7 +581,7 @@ fn paren_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candida
     found
 }
 
-/// `□옵션` becomes `☑옵션` when the value is truthy.
+/// `□Option` becomes `☑Option` when the value is truthy.
 fn checkbox_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidate> {
     let mut found = Vec::new();
     for caps in CHECKBOX.captures_iter(seg) {
@@ -620,7 +620,7 @@ fn checkbox_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Cand
     found
 }
 
-/// `(라벨:  )` becomes `(라벨: 값)`.
+/// `(Label:  )` becomes `(Label: Value)`.
 fn annotation_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Candidate> {
     let mut found = Vec::new();
     for caps in ANNOTATION_BLANK.captures_iter(seg) {
@@ -644,13 +644,13 @@ fn annotation_candidates(seg: &str, values: &BTreeMap<String, String>) -> Vec<Ca
     found
 }
 
-/// One inline `라벨: 값` in a text segment, as byte ranges.
+/// One inline `Label: Value` in a text segment, as byte ranges.
 struct InlineLabel {
     label: Range<usize>,
     /// The colon and the whitespace around it.
     separator: Range<usize>,
     /// kordoc's value: up to a comma, semicolon, line end or 100 characters. It also stops at
-    /// the next `라벨:` on the line, so filling one label never deletes the next (#365 review),
+    /// the next `Label:` on the line, so filling one label never deletes the next (#365 review),
     /// and at brackets that are not its own (#367): the matching closer of a bracket the label
     /// sits in, and a bracketed note that ends the value.
     value: Range<usize>,
@@ -680,7 +680,7 @@ fn in_slot(slots: &[hwp_model::SlotToken<'_>], at: usize) -> bool {
 }
 
 /// The byte offset of `close` matching a bracket opened before `start`, skipping brackets that
-/// open and close inside `seg[start..end]`: `(소속: 인공지능학과(야간))`.
+/// open and close inside `seg[start..end]`: `(Department: AI department(Evening))`.
 fn matching_closer(
     seg: &str,
     start: usize,
@@ -705,7 +705,7 @@ fn matching_closer(
 }
 
 /// The byte offset of the outermost bracket opened in `seg[start..end]` and not closed there:
-/// its group runs past the value (into the next label, as in `성명:  (한문:  )`).
+/// its group runs past the value (into the next label, as in `FullName:  (Chinese:  )`).
 fn unclosed_opener(
     seg: &str,
     start: usize,
@@ -727,8 +727,8 @@ fn unclosed_opener(
 }
 
 /// The byte offset where a bracketed note ending `seg[start..end]` begins: a balanced group
-/// at the value start or right after whitespace (`(서명/인)`, `홍길동 (대리)`). A group glued
-/// to the text before it, or with text after it, is content (`(주)제주한라`).
+/// at the value start or right after whitespace (`(Signature/Seal)`, `Sample Name (Agent)`). A group glued
+/// to the text before it, or with text after it, is content (`(Ltd)SampleCompany`).
 fn trailing_note(
     seg: &str,
     start: usize,
@@ -786,13 +786,13 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
             }
         }
         scanned = label.start();
-        // `라벨:` inside a slot name (`{{기간: 시작}}`) is part of the slot.
+        // `Label:` inside a slot name (`{{Period: Start}}`) is part of the slot.
         let before = slots.partition_point(|slot| slot.range.start <= label.start());
         if before > 0 && slots[before - 1].range.contains(&label.start()) {
             at = whole.end();
             continue;
         }
-        // `https://` is a URL, not a label: `//` right after the colon (`비고: // 없음` is a label).
+        // `https://` is a URL, not a label: `//` right after the colon (`Note: // None` is a label).
         if whole.as_str().ends_with([':', '：']) && seg[whole.end()..].starts_with("//") {
             at = whole.end();
             continue;
@@ -819,7 +819,7 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
                     .len();
             cut_value(seg, start, &mut end, cut);
         }
-        // A label inside a bracket owns the text up to that bracket's closer: `(한문: 李英俊)`.
+        // A label inside a bracket owns the text up to that bracket's closer: `(Chinese: 李英俊)`.
         if let Some(&close) = open.last()
             && let Some(at) = matching_closer(seg, start, end, close, &slots)
         {
@@ -829,7 +829,7 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
         if let Some(at) = unclosed_opener(seg, start, end, &slots) {
             cut_value(seg, start, &mut end, at);
         }
-        // A bracketed note that ends the value is not the value: `(서명/인)`, `홍길동 (대리)`.
+        // A bracketed note that ends the value is not the value: `(Signature/Seal)`, `Sample Name (Agent)`.
         while let Some(at) = trailing_note(seg, start, end, &slots) {
             cut_value(seg, start, &mut end, at);
         }
@@ -849,7 +849,7 @@ fn inline_labels(seg: &str) -> Vec<InlineLabel> {
     labels
 }
 
-/// A letter of kordoc's label pattern, `[가-힣A-Za-z]`.
+/// A letter in kordoc labels: a Hangul syllable or an ASCII letter.
 fn is_label_letter(ch: char) -> bool {
     ('가'..='힣').contains(&ch) || ch.is_ascii_alphabetic()
 }
@@ -897,7 +897,7 @@ fn is_only_slots(text: &str) -> bool {
 
 /// True when the label's fill would defer to slot(s) keyed differently from the label: the
 /// value is only slot(s) and at least one usable slot normalizes to another key (#385). A
-/// same-key sighting (`담당자: {{담당자}}`) merges label and slot into one field, so the label
+/// same-key sighting (`Contact: {{Contact}}`) merges label and slot into one field, so the label
 /// stays and the field's occurrences and source remain accurate.
 fn defers_to_a_different_key(label: &str, value: &str) -> bool {
     if !is_only_slots(value) {
@@ -932,7 +932,7 @@ fn cell_label(text: &str) -> &str {
         .trim()
 }
 
-/// kordoc's label-cell test: short, and a known keyword, a few Hangul syllables, or `라벨:`.
+/// kordoc's label-cell test: short, and a known keyword, a few Hangul syllables, or `Label:`.
 fn is_label_cell(text: &str) -> bool {
     let trimmed = cell_label(text);
     if trimmed.is_empty() || trimmed.chars().count() > 30 {
@@ -999,7 +999,7 @@ fn find_matching_key(label: &str, values: &BTreeMap<String, String>) -> Option<S
     best_key
 }
 
-/// The head of kordoc's inline-label pattern, `([가-힣A-Za-z]{2,10})\s*[:：]\s*([^\n,;]{0,100})`;
+/// Head of kordoc inline labels: 2-10 Hangul/ASCII letters, a colon and up to 100 value characters;
 /// [`inline_labels`] bounds the value.
 static INLINE_HEAD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([가-힣A-Za-z]{2,10})\s*[:：]\s*").unwrap());
@@ -1115,7 +1115,7 @@ mod tests {
         );
     }
 
-    /// #385: `라벨: {{자리표시자}}` lists the slot, not the label — the label's fill defers to
+    /// #385: `Label: {{Slot}}` lists the slot, not the label — the label's fill defers to
     /// the slot, so listing it too earns the caller an unmatched key it could never fill. A
     /// label with text of its own next to the slot stays.
     #[test]
@@ -1148,7 +1148,7 @@ mod tests {
         assert!(fill.unmatched.is_empty(), "{fill:?}");
     }
 
-    /// #385 review: a same-key sighting (`담당자: {{담당자}}`) creates no extra field, so the
+    /// #385 review: a same-key sighting (`Contact: {{Contact}}`) creates no extra field, so the
     /// label stays and the merged field keeps its occurrences and source.
     #[test]
     fn keeps_an_inline_label_whose_slot_has_the_same_key() {
@@ -1218,7 +1218,7 @@ mod tests {
     }
 
     /// One column, so no pattern cell has a neighbour the label-cell step could also write:
-    /// `학년(  )반` and `(비고:   )` read as label cells too, as in kordoc.
+    /// `Year(  )Class` and `(Note:   )` read as label cells too, as in kordoc.
     #[test]
     fn fills_blanks_checkboxes_and_annotations_in_cells() {
         let mut doc = from_markdown("| 학년(  )반 |\n|---|\n| □동의 □비동의 |\n| (비고:   ) |\n");
@@ -1321,7 +1321,7 @@ mod tests {
         assert_eq!(counts["성명"], 0, "{}", doc.plain_text());
     }
 
-    /// kordoc parity for slot names with spaces or parentheses: `{{성 명}}` is key `성명`.
+    /// kordoc parity for slot names with spaces or parentheses: `{{Full Name}}` is key `FullName`.
     #[test]
     fn slot_names_normalize_like_kordoc() {
         let mut doc = from_markdown("{{성 명}} / {{사업명(국문)}} / {{성명}}\n");
@@ -1424,7 +1424,7 @@ mod tests {
         );
     }
 
-    /// A value ends at the next `라벨:` on the line, so filling one label keeps the next.
+    /// A value ends at the next `Label:` on the line, so filling one label keeps the next.
     #[test]
     fn inline_value_stops_at_the_next_label() {
         let mut doc = from_markdown("작성일: 2026. 8. 20. 담당자: 홍길동\n");
@@ -1467,7 +1467,7 @@ mod tests {
         assert!(doc.plain_text().contains("성명\tHong"));
     }
 
-    /// `라벨:` inside a slot name belongs to the slot, and a slot later in a value ends it.
+    /// `Label:` inside a slot name belongs to the slot, and a slot later in a value ends it.
     #[test]
     fn inline_labels_leave_slots_alone() {
         let mut doc = from_markdown("{{기간: 시작}}\n\n기간: 3일 {{비고}}\n");
@@ -1542,7 +1542,7 @@ mod tests {
         assert!(doc.plain_text().contains("구분\t☑신규 □변경"));
     }
 
-    /// Overlap is judged on what a candidate rewrites, so `□기타(   )` checks the box and fills
+    /// Overlap is judged on what a candidate rewrites, so `□Other(   )` checks the box and fills
     /// the blank, as kordoc does; a falsy value leaves the box and still fills the blank.
     #[test]
     fn a_checkbox_with_a_blank_fills_both() {
@@ -1684,7 +1684,7 @@ mod tests {
         );
     }
 
-    /// Many inline labels with no `라벨: ` after them: each value search stays local. A search
+    /// Many inline labels with no `Label: ` after them: each value search stays local. A search
     /// to the end of the segment per label made this quadratic.
     #[test]
     fn many_inline_labels_scan_in_linear_time() {

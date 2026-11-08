@@ -244,6 +244,9 @@ publishes atomically with the document and optional local preview. Do not combin
 with `--allow-partial` or `--report`; use its receipt instead. The preview contains exact values
 and addresses. Default receipts/logs contain identities, hashes, counts and occurrence IDs,
 not labels or values; read their outcome and retain the source/plan/output identities.
+Native/preview warning counts are included in the receipt; original messages appear only in
+the explicitly requested preview (`native_warnings`). Preview font substitution is not semantic
+loss, and render/font acceptance remains separate.
 
 As an alternative, add `--dry-run` to the edit invocation. It still writes and verifies a private
 native candidate, then publishes a receipt with `published: false` and the requested preview;

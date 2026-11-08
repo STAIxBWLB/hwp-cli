@@ -49,6 +49,9 @@ pub struct BindingPreview {
     pub values_sha256: String,
     pub copies: Vec<ProfileCopy>,
     pub changes: Vec<BindingChange>,
+    /// Filled by the native executor for the explicitly requested local artifact only.
+    /// Empty core preparation does not attest absence of font/render issues.
+    pub native_warnings: Vec<String>,
 }
 
 pub struct PreparedBindings {
@@ -402,6 +405,7 @@ pub fn prepare_binding_plan(
             values_sha256: digest(&value_bytes),
             copies,
             changes,
+            native_warnings: Vec::new(),
         },
     })
 }

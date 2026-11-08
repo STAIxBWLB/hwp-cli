@@ -32,6 +32,7 @@ struct Receipt {
     occurrence_ids: Vec<String>,
     targets: usize,
     cloned_profiles: usize,
+    native_warning_count: usize,
     semantic_budget: &'static str,
     render_font_native: &'static str,
 }
@@ -87,12 +88,6 @@ pub(super) fn execute(
                 .map_err(anyhow::Error::msg)?;
             let mut report = write_output(prepared.document(), stage, request.plan.repeats.iter().any(|repeat| repeat.copies > 1), format, Some((snapshot, &original)))
                 .map_err(|_| anyhow::anyhow!("바인딩 결과를 기존 native writer로 만들 수 없습니다. 지원하지 않는 개체/보존 항목을 validate로 확인하고 다른 대상을 선택하세요"))?;
-            if !report.warnings.is_empty() {
-                anyhow::bail!(
-                    "native writer 경고 {}건 때문에 양식 보존 범위를 확정할 수 없어 게시하지 않습니다. 원본 validate 결과와 지원 대상/서식을 확인한 뒤 계획을 다시 검토하세요",
-                    report.warnings.len()
-                );
-            }
             report.preservation.extend(
                 crate::commands::preservation::inspect_same_format_container_with_binary_allowance(
                     snapshot,
@@ -107,7 +102,10 @@ pub(super) fn execute(
             super::verify_output(stage, Some(prepared.document())).map_err(|_| anyhow::anyhow!(
                 "바인딩 결과의 native 재읽기/의미 검증이 실패했습니다. 출력을 게시하지 않았습니다. 원본 validate 결과와 지원 대상/서식 보존 범위를 확인하세요"))?;
             let bytes = std::fs::read(stage)?;
-            let preview = prepared.preview;
+            let mut preview = prepared.preview;
+            // write_output includes preview-render/font diagnostics. Keep original messages
+            // only in the explicitly requested local preview, never default logs or receipts.
+            preview.native_warnings = report.warnings;
             let receipt = receipt(&preview, &bytes, !edit.dry_run);
             std::fs::write(&stages[1], serde_json::to_vec_pretty(&receipt)?)?;
             if request.preview.is_some() {
@@ -120,7 +118,14 @@ pub(super) fn execute(
     Ok(EditReport {
         output: output.display().to_string(),
         applied: count,
-        warnings: Vec::new(),
+        warnings: if preview.native_warnings.is_empty() {
+            Vec::new()
+        } else {
+            vec![format!(
+                "native_preview_or_writer_warning: {}건. 원문은 공개 로그에서 생략했습니다. preview 경로를 지정해 native_warnings를 확인하고 hwp render/certify로 렌더·폰트를 별도 검증하세요",
+                preview.native_warnings.len()
+            )]
+        },
         preservation,
         ops: vec![OpOutcome {
             index: 0,
@@ -150,6 +155,7 @@ fn receipt(preview: &BindingPreview, bytes: &[u8], published: bool) -> Receipt {
             .collect(),
         targets: preview.changes.len(),
         cloned_profiles: preview.copies.iter().filter(|copy| copy.copy != 0).count(),
+        native_warning_count: preview.native_warnings.len(),
         semantic_budget: "selected_text_and_declared_clones_only",
         render_font_native: "unverified",
     }

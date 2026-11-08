@@ -49,6 +49,11 @@
     },
     "render_font_native": {
       "const": "unverified"
+    },
+    "native_warning_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Count only. Original warning messages belong only in the explicit local preview; preview-render/font diagnostics are not render acceptance."
     }
   },
   "required": [
@@ -62,6 +67,7 @@
     "targets",
     "cloned_profiles",
     "semantic_budget",
-    "render_font_native"
+    "render_font_native",
+    "native_warning_count"
   ]
 }

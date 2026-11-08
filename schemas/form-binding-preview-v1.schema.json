@@ -168,6 +168,13 @@
           "allow_reflow"
         ]
       }
+    },
+    "native_warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Original native-writer/preview-render messages, in this explicit local artifact only. Empty core preparation does not establish absence of native/render issues."
     }
   },
   "required": [
@@ -176,6 +183,7 @@
     "plan_sha256",
     "values_sha256",
     "copies",
-    "changes"
+    "changes",
+    "native_warnings"
   ]
 }

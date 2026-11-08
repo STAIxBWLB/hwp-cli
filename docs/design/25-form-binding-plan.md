@@ -115,6 +115,9 @@ and clone maps. Public logs and default receipts contain hashes, occurrence/oper
 counts and bounded cause/next-action codes. Do not leak discovery text, semantic values or legacy
 warnings containing original cell contents. Receipt identity binds source, reviewed plan, values,
 output and actual outcome; it does not attest layout or native compatibility.
+The receipt records `native_warning_count`; original writer/preview-render messages appear
+only in the explicit local preview's `native_warnings`. Font substitution during preview is
+not semantic loss and does not supply the separate #419 render/font acceptance.
 
 Every target requires reviewed reflow permission. `max_chars` bounds replacement Unicode scalar
 count. With `allow_reflow=false`, replacement WCHAR length cannot exceed the original claim's
