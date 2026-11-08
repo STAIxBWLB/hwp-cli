@@ -31,6 +31,21 @@ fn run(dir: &Path, args: &[&str]) -> Vec<u8> {
     );
     result.stdout
 }
+fn compose(dir: &Path) {
+    let spec = dir.join("original-form.spec.json").canonicalize().unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_hwp"))
+        .arg("compose")
+        .arg(spec)
+        .args(["-o", "source.hwpx"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "fixture compose failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
 fn generate(dir: &Path) -> bool {
     let python = std::env::var_os("PYTHON").unwrap_or_else(|| {
         if cfg!(windows) {
@@ -68,12 +83,14 @@ impl Fixture {
         if !generate(&dir) {
             return None;
         }
-        run(
-            &dir,
-            &["compose", "original-form.spec.json", "-o", "source.hwpx"],
-        );
+        compose(&dir);
         let expected: Value =
             serde_json::from_slice(&std::fs::read(dir.join("expected.json")).unwrap()).unwrap();
+        assert!(
+            contract::digest(&std::fs::read(dir.join("original-form.spec.json")).unwrap())
+                == expected["spec"]["sha256"].as_str().unwrap(),
+            "fixture specification identity differs from manifest"
+        );
         let doc = hwpx::read_document(&dir.join("source.hwpx"))
             .unwrap()
             .document;
@@ -261,10 +278,7 @@ fn generated_forms_match_manifest_and_repeat_in_both_formats() {
             "generator bytes are not deterministic"
         );
     }
-    run(
-        &twin,
-        &["compose", "original-form.spec.json", "-o", "source.hwpx"],
-    );
+    compose(&twin);
     let twin_doc = hwpx::read_document(&twin.join("source.hwpx"))
         .unwrap()
         .document;
