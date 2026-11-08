@@ -12,6 +12,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- `hwp edit --ops` accepts `insert_blocks` for DocumentSpec v1 paragraphs, text/line-break
+  runs, named lists and page/column breaks in body or table-cell lists. Existing target
+  paragraph styles take precedence; missing styles use component definitions under the
+  default `create` policy or refuse under `refuse`. Applied outcomes report the selected
+  policy in `missing_style`, keeping the failure-only `reason` null.
+  Missing styles/lists, stale addresses and unsupported resource blocks refuse before
+  publication. Both addressed paragraph insertion operations refuse insertion before a section
+  setup paragraph; insert after it instead. HWP list insertion refuses markers/starts outside
+  the existing writer's default record and used decimal levels that its format selectors cannot
+  retain. HWP output also refuses ordered-definition additions when non-HWP5 inputs have the
+  official eight-level contract but no raw numbering records, preserving their existing
+  numbering. Text and bullet insertion keep that contract. HWPX preserves authored numbering. Tables, images, fields, equations and inserted-id reporting remain follow-ups
+  ([#428](https://github.com/STAIxBWLB/hwp-cli/issues/428)).
+
 - `hwp edit --ops` accepts `update_style` for named paragraph styles. Changed character and
   paragraph shapes receive fresh IDs, preserving unrelated users and direct formatting even
   when existing definitions have identical values. Inheriting users in modeled body, cell and

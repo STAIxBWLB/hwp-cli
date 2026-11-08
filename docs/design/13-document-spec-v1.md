@@ -8,6 +8,14 @@
 authoring. `hwp_cli::document_spec` is the versioned Rust/serde implementation. A change to either
 requires the other, examples, and contract tests to change in the same commit.
 
+Consumers compiling `schemas/edit-ops-v1.schema.json` must also load
+`schemas/document-spec-v1.schema.json` and register it under its `$id`,
+`https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json`. EditOps references its block,
+style and list definitions; validators may resolve them when compiling any batch, even one
+without `insert_blocks`. Load both schemas from the same bundle. The CLI embeds and registers
+both resources, so validation needs no network fetch. Insertion currently stages a whole-document
+clone per operation, including binary streams; T3 resource staging must revisit that cost.
+
 The contract is deliberately closed:
 
 - root `version` is exactly `"1.0"`;

@@ -1,12 +1,12 @@
-//! 구조 편집 — 문단 삽입/삭제.
+//! Structural editing: paragraph insertion and deletion.
 //!
-//! 새 문단/셀은 `set_cell`과 동일한 최소 IR(문단끝 0x0d는 writer가 idempotent하게
-//! 보장, line_segs 비움)로 만들고, 앵커/템플릿의 글자·문단 모양을 상속한다.
-//! 구조 편집본은 **합성 경로**(convert/new와 동일, 한글 수용 검증됨)로 써야 삽입
-//! 문단/행에 모든 불변식(0x0d·마지막문단 비트·카운트)이 적용된다.
+//! Create minimal paragraph/cell IR like set_cell: the writer idempotently supplies the
+//! paragraph terminator, caches start empty, and character/paragraph shapes inherit from the anchor.
+//! Structural edits require the synthesis path, as used by convert/new and checked in Hangul,
+//! to establish terminators, last-paragraph bits and counts for inserted paragraphs/rows.
 //!
-//! 표 행/열 연산은 `crate::edit`(재귀 표 로케이터 계열 — set-cell과 인덱스 일치)으로
-//! 단일화됐다. 여기서는 문단 수준 편집만 둔다.
+//! Table row/column operations live in crate::edit and share its recursive table indices
+//! with set-cell. This module contains paragraph-level editing only.
 
 use hwp_model::{
     CharShapeId, Control, Document, GenericControl, HwpChar, ParaShapeId, Paragraph, StyleId,
@@ -16,7 +16,7 @@ use hwp_model::{
 use crate::edit::find_match;
 use crate::segment_id::SegmentPath;
 
-/// 텍스트로 최소 문단을 만든다(글자/문단 모양 상속). 빈 텍스트면 빈 문단.
+/// Build a minimal paragraph from text with inherited character/paragraph shapes; empty text yields an empty paragraph.
 fn make_paragraph(
     text: &str,
     para_shape: ParaShapeId,
@@ -46,7 +46,7 @@ fn make_paragraph(
     }
 }
 
-/// 문단의 (para_shape, style, 첫 char_shape) 템플릿.
+/// Paragraph template: para_shape, style and first char_shape.
 fn para_template(p: &Paragraph) -> (ParaShapeId, StyleId, CharShapeId) {
     (
         p.para_shape,
@@ -55,22 +55,22 @@ fn para_template(p: &Paragraph) -> (ParaShapeId, StyleId, CharShapeId) {
     )
 }
 
-/// 문서의 모든 문단 리스트에 `f`를 적용한다 — 주어진 리스트를 **먼저** 부르고,
-/// 그다음 그 리스트의 각 문단이 품은 중첩 리스트(표 캡션·표 셀·그림 캡션·개체
-/// 문단 리스트·개체 캡션)로 재귀한다. 구역정의 컨트롤은 건너뛴다.
+/// Apply f to every paragraph list: visit the supplied list first, then recurse into
+/// table captions/cells, picture captions, object paragraph lists and object captions
+/// contained by its paragraphs. Skip section-definition controls.
 ///
-/// `f`가 참을 돌려주면 그 리스트가 바뀐 것으로 본다. 절대 조기 종료하지 않고
-/// (결과는 OR로 합친다) 모든 레벨을 방문한다 — 조기 종료 여부는 `f`가 스스로
-/// 상태를 들고 판단한다. 원문 XML(`hwpx_raw_xml`)을 품은 개체 안이 바뀌면 그
-/// 원문은 낡으므로 지운다 — writer가 stale XML을 방출하는 것을 막는다.
+/// A true result from f means the list changed. Visit every level without early exit,
+/// combining results with OR; f owns any state needed to stop its own work. Changes
+/// inside an object invalidate its captured hwpx_raw_xml, which must be cleared
+/// so the writer cannot emit stale XML.
 ///
-/// **hwp5 원본 레코드를 품은 개체(`raw_children` 비어있지 않음)는 들어가지 않는다.**
-/// hwp5 writer(`emit_control`)는 그런 개체를 `raw_children` 바이트 그대로 다시 쓰고
-/// `paragraph_lists`는 보지 않으므로, 안쪽 IR을 고쳐도 저장 파일은 그대로다. IR에서
-/// 재합성하는 길도 없다 — gso 재합성은 정품과 어긋나 손상을 부르는 것으로 판명돼
-/// (규칙 E6) 글상자는 `degrade_hwpx_gso`가 본문으로 내리는 안전 강등만 지원한다.
-/// 따라서 조용한 성공 대신 아예 방문하지 않는다. 그 안의 앵커는
-/// [`text_in_unwritable_object`]가 따로 알려 준다.
+/// Do not enter objects with nonempty raw_children containing original HWP5 records.
+/// The HWP5 emit_control writer re-emits their raw_children bytes and ignores their
+/// paragraph_lists, so editing inner IR would leave the saved file unchanged. No IR
+/// resynthesis path exists: gso resynthesis differed from genuine files and caused corruption
+/// (rule E6). degrade_hwpx_gso supports only safe degradation that hoists text-box text into the body.
+/// Skip these objects rather than report silent success. text_in_unwritable_object
+/// separately diagnoses anchors inside them.
 pub(crate) fn walk_para_lists(
     paras: &mut Vec<Paragraph>,
     f: &mut dyn FnMut(&mut Vec<Paragraph>) -> bool,
@@ -79,8 +79,8 @@ pub(crate) fn walk_para_lists(
     hit | walk_nested_para_lists(paras, f)
 }
 
-/// [`walk_para_lists`]에서 **주어진 리스트 자신은 빼고** 그 아래 중첩 리스트만 훑는다.
-/// 두 단계 탐색(섹션 본문 먼저, 그다음 중첩)이 필요한 [`insert_paragraph`]가 쓴다.
+/// Visit only lists nested below the supplied list, excluding the list itself from walk_para_lists.
+/// Used by insert_paragraph's two-stage search: section bodies first, then nested lists.
 fn walk_nested_para_lists(
     paras: &mut [Paragraph],
     f: &mut dyn FnMut(&mut Vec<Paragraph>) -> bool,
@@ -102,7 +102,7 @@ fn walk_nested_para_lists(
                         hit |= walk_para_lists(&mut cap.paragraphs, f);
                     }
                 }
-                // 저장 시 원본 서브트리를 그대로 쓰는 개체 — 안쪽 편집은 버려진다.
+                // The writer re-emits the original subtree; inner IR edits would be discarded.
                 Control::Generic(g) if !g.raw_children.is_empty() => {}
                 Control::Generic(g) => {
                     let mut inner = false;
@@ -124,9 +124,9 @@ fn walk_nested_para_lists(
     hit
 }
 
-/// [`walk_para_lists`]가 건너뛰는 개체(hwp5 원본 레코드를 품은 글상자·머리말 등)
-/// 안에 `text`가 있는지 본다. 문단 삽입·삭제가 아무 것도 못 했을 때 "앵커가 없다"와
-/// "앵커가 손댈 수 없는 개체 안에 있다"를 구별해 알리기 위한 진단용이다.
+/// Check for text inside objects skipped by walk_para_lists, such as text boxes/headers
+/// with original HWP5 records. When insertion/deletion changes nothing, distinguish a
+/// missing anchor from an anchor inside an unwritable object.
 pub fn text_in_unwritable_object(doc: &Document, text: &str) -> bool {
     fn in_list(paras: &[Paragraph], text: &str, inside_raw: bool) -> bool {
         if inside_raw
@@ -168,16 +168,16 @@ pub fn text_in_unwritable_object(doc: &Document, text: &str) -> bool {
         .any(|s| in_list(&s.paragraphs, text, false))
 }
 
-/// `anchor`를 가진 첫 문단 뒤(또는 앞)에 `text` 문단을 삽입한다. 반환=삽입 여부.
-/// 새 문단은 앵커 문단의 글자/문단 모양을 상속한다. 앵커는 본문뿐 아니라 표 셀·
-/// 중첩 표·캡션 안에서도 찾는다.
+/// Insert a text paragraph after or before the first paragraph containing anchor; return whether inserted.
+/// The new paragraph inherits the anchor's character/paragraph shapes. Search body,
+/// table-cell, nested-table and caption paragraphs.
 ///
-/// 탐색은 **두 단계**다: ① 모든 섹션의 본문 문단을 섹션 순서대로, ② 그래도 못 찾으면
-/// 중첩 리스트를 문서 순서대로. 중첩 탐색이 없던 시절의 우선순위가 그대로 남는다 —
-/// 단순 전위 순회로 하면 섹션 0의 셀이 섹션 1의 본문을 이겨, 예전에 섹션 1 본문을
-/// 맞히던 호출이 조용히 다른 문단을 고르게 된다.
+/// Search in two stages: all section bodies in section order, then nested lists in
+/// document order. Retain the priority used before nested search existed; a simple
+/// preorder walk would let a section-0 cell beat a section-1 body, silently changing
+/// which paragraph a previously working call selects.
 pub fn insert_paragraph(doc: &mut Document, anchor: &str, text: &str, before: bool) -> bool {
-    // 두 단계가 같은 클로저를 공유하므로 완료 플래그는 Cell에 둔다(클로저가 &done만 잡는다).
+    // Both stages share the closure, so keep completion state in Cell and capture only &done.
     let done = std::cell::Cell::new(false);
     let mut visit = |list: &mut Vec<Paragraph>| -> bool {
         if done.get() {
@@ -212,9 +212,9 @@ pub fn insert_paragraph(doc: &mut Document, anchor: &str, text: &str, before: bo
     false
 }
 
-/// `matching`을 가진 문단을 삭제한다 — 본문뿐 아니라 표 셀·중첩 표·캡션 안에서도
-/// 지운다. 리스트마다 최소 1문단은 남기고(섹션·셀·캡션이 비면 한글이 손상으로
-/// 판정한다), 구역정의 문단은 보존한다. 반환=삭제 개수.
+/// Delete matching paragraphs from body, cell, nested-table and caption lists. Retain
+/// at least one paragraph per list because Hangul treats empty sections/cells/captions
+/// as corrupt; preserve section-definition paragraphs. Return the number deleted.
 pub fn delete_paragraph(doc: &mut Document, matching: &str) -> usize {
     let mut count = 0usize;
     for section in &mut doc.sections {
@@ -451,15 +451,39 @@ pub fn insert_paragraph_at(
     text: &str,
     shape: (ParaShapeId, StyleId, CharShapeId),
 ) -> Result<(), String> {
-    let (list, idx) =
-        list_at_mut(doc, at).ok_or_else(|| "삽입 위치 주소를 찾을 수 없습니다".to_string())?;
-    if idx >= list.len() {
-        return Err("삽입 위치 주소를 찾을 수 없습니다".to_string());
-    }
     let (ps, sty, cs) = shape;
-    let new = make_paragraph(text, ps, sty, cs);
+    insert_paragraphs_at(doc, at, before, vec![make_paragraph(text, ps, sty, cs)])
+}
+
+/// Splice compiled paragraphs into the addressed list, preserving its last-paragraph flags
+/// and invalidating ancestor caches through the same path as single-paragraph insertion.
+pub fn insert_paragraphs_at(
+    doc: &mut Document,
+    at: &SegmentPath,
+    before: bool,
+    paragraphs: Vec<Paragraph>,
+) -> Result<(), String> {
+    if paragraphs.is_empty() {
+        return Err("삽입할 문단이 없습니다. 하나 이상의 문단 블록을 지정하세요".into());
+    }
+    let (list, idx) = list_at_mut(doc, at)
+        .filter(|(list, index)| *index < list.len())
+        .ok_or_else(|| {
+            "삽입 위치 주소를 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 얻어 보세요"
+                .to_owned()
+        })?;
+    // The first section paragraph owns its section/column setup. Moving it later
+    // makes the native writers synthesize or omit setup on the new first paragraph.
+    if before
+        && list[idx]
+            .controls
+            .iter()
+            .any(|control| matches!(control, Control::SectionDef(_)))
+    {
+        return Err("구역 정의 문단 앞에는 삽입할 수 없습니다. insert_blocks는 position=after, insert_para는 before=false로 이 문단 뒤에 삽입하세요".into());
+    }
     let at_idx = if before { idx } else { idx + 1 };
-    list.insert(at_idx, new);
+    list.splice(at_idx..at_idx, paragraphs);
     crate::edit::fixup_last_para_flag(list);
     crate::address::invalidate_ancestors(doc, at);
     Ok(())
@@ -498,18 +522,18 @@ mod tests {
     fn 문단_삽입_삭제() {
         let mut doc = from_markdown("첫째 문단\n\n둘째 문단\n\n셋째 문단");
         let n0: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
-        // 둘째 뒤에 삽입.
+        // Insert after the second paragraph.
         assert!(insert_paragraph(&mut doc, "둘째", "삽입된 문단", false));
         let n1: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
         assert_eq!(n1, n0 + 1);
         let txt = doc.plain_text();
         assert!(txt.contains("삽입된 문단"));
-        // 삽입 위치: "둘째"와 "셋째" 사이.
+        // Insertion position: between the second and third paragraphs.
         let i2 = txt.find("둘째").unwrap();
         let ii = txt.find("삽입된").unwrap();
         let i3 = txt.find("셋째").unwrap();
         assert!(i2 < ii && ii < i3, "둘째 뒤·셋째 앞: {txt:?}");
-        // 삭제.
+        // Delete.
         let d = delete_paragraph(&mut doc, "삽입된 문단");
         assert_eq!(d, 1);
         assert!(!doc.plain_text().contains("삽입된 문단"));
@@ -518,14 +542,14 @@ mod tests {
     #[test]
     fn 마지막_문단은_안지움() {
         let mut doc = from_markdown("유일 문단");
-        // 본문 문단이 secd 1개뿐이면 보존(섹션 빔 방지).
+        // Retain a sole body paragraph carrying secd, avoiding an empty section.
         let before: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
         delete_paragraph(&mut doc, "유일");
         let after: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
         assert_eq!(before, after, "최소 1문단 유지");
     }
 
-    // ── #220: 앵커를 표 셀·중첩 표·캡션 안에서도 찾는다 ──────────────────────
+    // #220: find anchors in cells, nested tables and captions too.
 
     fn first_table_mut(doc: &mut Document) -> &mut hwp_model::Table {
         doc.sections
@@ -566,7 +590,7 @@ mod tests {
         let texts = cell_texts(&doc, 1, 0);
         assert_eq!(texts.len(), 2, "셀 문단 2개: {texts:?}");
         assert!(texts[1].contains("셀 새 문단"), "앵커 뒤 삽입: {texts:?}");
-        // 삽입 뒤에도 리스트 마지막 문단만 bit31.
+        // After insertion, bit31 belongs only to the list's last paragraph.
         let t = first_table_mut(&mut doc);
         let cell = t.cells.iter().find(|c| c.row == 1 && c.col == 0).unwrap();
         for (i, p) in cell.paragraphs.iter().enumerate() {
@@ -601,7 +625,7 @@ mod tests {
             "중첩 새 문단",
             false
         ));
-        // plain_text는 중첩 표까지 훑지 않으므로 구조로 확인한다.
+        // plain_text does not traverse nested tables; check their structure instead.
         let inner_cell = {
             let outer = first_table_mut(&mut doc);
             let host = outer
@@ -667,13 +691,13 @@ mod tests {
 
     #[test]
     fn 본문_문단이_셀보다_먼저_잡힌다() {
-        // 같은 앵커가 본문과 셀 양쪽에 있으면 본문이 이긴다 — 이 변경 전에 최상위
-        // 문단을 맞히던 호출이 계속 같은 문단을 맞힌다는 호환성 보장.
+        // When both body and cell contain the anchor, the body wins, preserving the target
+        // of calls that selected top-level paragraphs before this change.
         let mut doc = from_markdown("공통앵커\n\n| 가 | 나 |\n|----|----|\n| 공통앵커 | 2 |\n");
         assert!(insert_paragraph(&mut doc, "공통앵커", "새 문단", false));
-        // 셀은 그대로 1문단.
+        // The cell still contains one paragraph.
         assert_eq!(cell_texts(&doc, 1, 0).len(), 1, "셀은 안 바뀜");
-        // 본문에 삽입.
+        // Insert in the body.
         let body: Vec<String> = doc.sections[0]
             .paragraphs
             .iter()
@@ -687,9 +711,9 @@ mod tests {
 
     #[test]
     fn 뒤_섹션_본문이_앞_섹션_셀보다_먼저_잡힌다() {
-        // 중첩 탐색이 없던 시절 insert_paragraph는 섹션 본문만, 섹션 순서로 훑었다.
-        // 단순 전위 순회로 바꾸면 섹션 0의 셀이 섹션 1의 본문을 이겨 예전 호출이
-        // 조용히 다른 문단을 고른다 — 두 단계 탐색이 그 우선순위를 지킨다.
+        // Before nested search existed, insert_paragraph visited only section bodies in section order.
+        // A simple preorder walk would let a section-0 cell beat a section-1 body and silently
+        // change the target of existing calls. The two-stage search retains that priority.
         let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 공통앵커 | 2 |\n");
         let mut second = doc.sections[0].clone();
         let mut anchor_para = second.paragraphs[0].clone();
@@ -717,20 +741,20 @@ mod tests {
 
     #[test]
     fn 셀_안_문단도_지운다_단_마지막은_남는다() {
-        // 셀 문단 2개 중 하나만 매치 → 지워진다.
+        // Only one of two cell paragraphs matches, so it is deleted.
         let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 유지 | 2 |\n");
         insert_paragraph(&mut doc, "유지", "지울문단", false);
         assert_eq!(cell_texts(&doc, 1, 0).len(), 2);
         assert_eq!(delete_paragraph(&mut doc, "지울문단"), 1);
         assert_eq!(cell_texts(&doc, 1, 0).len(), 1, "하나만 지움");
 
-        // 셀에 하나뿐인 문단이 매치되면 남긴다(셀이 비면 한글 손상 판정).
+        // Retain a sole matching cell paragraph; Hangul treats an empty cell as corrupt.
         assert_eq!(delete_paragraph(&mut doc, "유지"), 0, "마지막 문단 보존");
         assert_eq!(cell_texts(&doc, 1, 0).len(), 1);
     }
 
-    /// hwp5 원본 서브트리(`raw_children`)를 품은 개체를 하나 단다 — writer가 그 바이트를
-    /// 그대로 다시 쓰는, 안쪽 IR 편집이 저장되지 않는 개체.
+    /// Attach an object with an original HWP5 raw_children subtree. The writer re-emits
+    /// those bytes unchanged, so inner IR edits would not be saved.
     fn attach_raw_object(doc: &mut Document, text: &str) {
         let template = doc.sections[0].paragraphs[0].clone();
         let mut inner = template.clone();
@@ -749,7 +773,7 @@ mod tests {
                     paragraphs: vec![inner],
                 }],
                 extras: Vec::new(),
-                // 비어 있지 않다 = hwp5 출신, 저장 시 원본 그대로 방출.
+                // Nonempty means HWP5 source records, re-emitted unchanged when saving.
                 raw_children: vec![hwp_model::OpaqueRecord {
                     tag: 0x0048,
                     data: Vec::new(),
@@ -768,10 +792,10 @@ mod tests {
     fn 원본보존_개체_안은_건드리지_않는다() {
         let mut doc = from_markdown("본문");
         attach_raw_object(&mut doc, "개체앵커");
-        // 삽입도 삭제도 그 안에서는 일어나지 않는다 — 조용한 성공 금지.
+        // Neither insertion nor deletion enters it; never claim silent success.
         assert!(!insert_paragraph(&mut doc, "개체앵커", "새 문단", false));
         assert_eq!(delete_paragraph(&mut doc, "개체앵커"), 0);
-        // 진단 함수가 "없음"과 "손댈 수 없음"을 구별한다.
+        // The diagnostic distinguishes missing from unwritable anchors.
         assert!(text_in_unwritable_object(&doc, "개체앵커"));
         assert!(!text_in_unwritable_object(&doc, "본문"));
         assert!(!text_in_unwritable_object(&doc, "어디에도 없는 문자열"));

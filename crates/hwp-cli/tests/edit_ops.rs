@@ -302,7 +302,15 @@ fn kind_coverage_all_33() {
     // Schema gate mirrors load_ops: Draft 2020-12 against the committed schema.
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json")).unwrap();
+    let document_spec: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/document-spec-v1.schema.json"
+    ))
+    .unwrap();
     let validator = jsonschema::options()
+        .with_resource(
+            "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
+            jsonschema::Resource::from_contents(document_spec).unwrap(),
+        )
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&schema)
         .unwrap();
@@ -1143,7 +1151,15 @@ fn paragraph_granularity_rejects_a_char_range() {
         "$ref": "#/$defs/paragraphAddress",
         "$defs": defs,
     });
+    let document_spec: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../schemas/document-spec-v1.schema.json"
+    ))
+    .unwrap();
     let validator = jsonschema::options()
+        .with_resource(
+            "https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json",
+            jsonschema::Resource::from_contents(document_spec).unwrap(),
+        )
         .with_draft(jsonschema::Draft::Draft202012)
         .build(&wrapped)
         .unwrap();
@@ -2455,7 +2471,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "85c98bee33dd2cae7901dd39c677e1f25fdaafa4d4f58abc54ce0e5759e9891c",
+        actual, "7b0d3acb1032b4c2f2d46e024ef35d7d72e98c4027656a85059a83b75644c761",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -2478,7 +2494,7 @@ fn edit_report_schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "8abbf7ff610c5c21a37b9235c584289f5f15c3fe8a0b1b8cfce40248d93d77d7",
+        actual, "bc4b8d6cf30ff5b6c1f5e7a3d29686b4f677cad28467fc933889455a30c9453c",
         "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

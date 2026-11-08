@@ -1782,6 +1782,65 @@ impl<'a> BlockCompiler<'a> {
         }
     }
 
+    /// Bind a name to an existing target style without creating or replacing definitions.
+    pub(crate) fn register_target_style(
+        &mut self,
+        name: &str,
+        id: hwp_model::StyleId,
+    ) -> Result<(), ComposeError> {
+        let style = self
+            .document
+            .header
+            .styles
+            .get(usize::from(id.0))
+            .ok_or_else(|| ComposeError::Compile {
+                path: format!("$.styles.{name}"),
+                message: "target style id is missing".into(),
+            })?;
+        if usize::from(style.char_shape.0) >= self.document.header.char_shapes.len()
+            || usize::from(style.para_shape.0) >= self.document.header.para_shapes.len()
+        {
+            return Err(ComposeError::Compile {
+                path: format!("$.styles.{name}"),
+                message: "target style has a dangling shape reference".into(),
+            });
+        }
+        self.styles.insert(
+            name.to_owned(),
+            CompiledStyle {
+                style_id: id,
+                para_shape: style.para_shape,
+                char_shape: style.char_shape,
+            },
+        );
+        Ok(())
+    }
+
+    /// Reuse the compose style compiler with a resolved target/created parent as its defaults.
+    /// The insertion resolver handles name precedence and cycles; compose's own path is unchanged.
+    pub(crate) fn compile_style_over(
+        &mut self,
+        name: &str,
+        definition: &StyleSpec,
+        parent: hwp_model::StyleId,
+    ) -> Result<hwp_model::StyleId, ComposeError> {
+        self.register_target_style("", parent)?;
+        let base = self.styles[""];
+        let defaults = self.defaults;
+        self.defaults = BlockDefaults {
+            style: parent,
+            para_shape: base.para_shape,
+            char_shape: base.char_shape,
+            ..defaults
+        };
+        let mut own = definition.clone();
+        own.based_on = None;
+        let result = self.compile_styles(&BTreeMap::from([(name.to_owned(), own)]));
+        self.defaults = defaults;
+        result?;
+        Ok(self.styles[name].style_id)
+    }
+
     /// Registers `styles` in the document's header: one character shape, one paragraph shape and
     /// one style table row per name, resolved through `based_on`. The shapes the new rows start
     /// from are the document's default shapes ([`BlockDefaults`]).
