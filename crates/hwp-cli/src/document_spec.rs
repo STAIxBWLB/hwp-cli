@@ -1673,6 +1673,9 @@ struct CompiledStyle {
 struct CompiledList {
     kind: ListKind,
     definition_ids: Vec<u16>,
+    /// The style each level names (`ListLevelSpec::style`), kept with the compiled list so a
+    /// paragraph needs no access to the spec the list came from.
+    level_styles: Vec<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -1681,102 +1684,122 @@ struct EmbeddedAsset {
     pixel_size: (u32, u32),
 }
 
-struct Compiler<'a> {
-    spec: &'a DocumentSpec,
+/// The header entries a block falls back to when it names no style, and the border fill a table
+/// gets. They are properties of the document the blocks are compiled into, not of the compiler.
+///
+/// `COMPOSE` is the document `hwp compose` builds (`from_markdown("")`): style 0 is the default
+/// style, para shape 2 and char shape 0 are its body shapes, and border fill 3 is its ruled
+/// table fill. A document that already exists has its own table layout, so a caller compiling
+/// into one passes the ids of the entries that play these roles there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct BlockDefaults {
+    pub style: hwp_model::StyleId,
+    pub para_shape: hwp_model::ParaShapeId,
+    pub char_shape: hwp_model::CharShapeId,
+    pub border_fill: hwp_model::BorderFillId,
+}
+
+impl BlockDefaults {
+    pub(crate) const COMPOSE: Self = Self {
+        style: hwp_model::StyleId(0),
+        para_shape: hwp_model::ParaShapeId(2),
+        char_shape: hwp_model::CharShapeId(0),
+        border_fill: hwp_model::BorderFillId(3),
+    };
+}
+
+/// What the blocks compiled so far added to the report.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct BlockCounts {
+    pub tables: usize,
+    pub images: usize,
+    pub equations: usize,
+    pub fields: usize,
+}
+
+/// Compiles `BlockSpec`s into paragraphs against the header tables of one document.
+///
+/// It owns the document while it works, because compiling a block appends to that document's
+/// character shapes, paragraph shapes, styles, numbering definitions and binary streams, and the
+/// ids it hands out index those tables. [`BlockCompiler::over_document`] starts from any
+/// document, so the same compiler serves `hwp compose` (a document built for the spec) and a
+/// caller that compiles blocks for insertion into an existing document. Section layout, page
+/// setup and headers and footers are not blocks and stay with [`Compiler`].
+pub(crate) struct BlockCompiler<'a> {
     base_dir: &'a Path,
     /// MCP sandbox allowed roots (canonicalized). When empty, asset paths get no extra check.
     roots: &'a [PathBuf],
     document: hwp_model::Document,
+    defaults: BlockDefaults,
     styles: BTreeMap<String, CompiledStyle>,
-    resolved_styles: BTreeMap<String, StyleSpec>,
     lists: BTreeMap<String, CompiledList>,
     list_para_shapes: BTreeMap<(u16, String, u8), hwp_model::ParaShapeId>,
     assets: BTreeMap<String, EmbeddedAsset>,
     asset_paths: BTreeMap<PathBuf, EmbeddedAsset>,
     asset_bytes: u64,
-    report: ComposeReport,
+    counts: BlockCounts,
 }
 
-impl<'a> Compiler<'a> {
-    fn new(
-        spec: &'a DocumentSpec,
+impl<'a> BlockCompiler<'a> {
+    /// Compiles blocks against `document`'s header tables. Nothing is registered yet: call
+    /// [`Self::compile_styles`] and [`Self::compile_lists`] for the definitions the blocks name.
+    pub(crate) fn over_document(
+        document: hwp_model::Document,
+        defaults: BlockDefaults,
         base_dir: &'a Path,
-        output: &Path,
-        dry_run: bool,
-        allow_visual_fallback: bool,
         roots: &'a [PathBuf],
-    ) -> Result<Self, ComposeError> {
-        let mut document = hwp_convert::from_markdown("");
-        document.sections.clear();
-        document.bin_streams.clear();
-        document.metadata.title = spec.metadata.title.clone();
-        document.metadata.author = spec.metadata.author.clone();
-        document.metadata.subject = spec.metadata.subject.clone();
-        document.metadata.keywords = spec.metadata.keywords.clone();
-        document.metadata.description = spec.metadata.description.clone();
-        document.meta.source_format = "document-spec-v1".to_string();
-        document.meta.source_version = "1.0".to_string();
-
-        let mut compiler = Self {
-            spec,
+    ) -> Self {
+        Self {
             base_dir,
             roots,
             document,
+            defaults,
             styles: BTreeMap::new(),
-            resolved_styles: BTreeMap::new(),
             lists: BTreeMap::new(),
             list_para_shapes: BTreeMap::new(),
             assets: BTreeMap::new(),
             asset_paths: BTreeMap::new(),
             asset_bytes: 0,
-            report: ComposeReport {
-                schema_version: SpecVersion::V1,
-                output: output.display().to_string(),
-                dry_run,
-                deterministic: true,
-                native: true,
-                visual_fallback_allowed: allow_visual_fallback,
-                visual_fallback_used: Vec::new(),
-                sections: 0,
-                paragraphs: 0,
-                tables: 0,
-                images: 0,
-                equations: 0,
-                fields: 0,
-                warnings: Vec::new(),
-            },
-        };
-        compiler.compile_styles()?;
-        compiler.compile_lists()?;
-        Ok(compiler)
+            counts: BlockCounts::default(),
+        }
     }
 
-    fn compile(mut self) -> Result<CompiledSpec, ComposeError> {
-        for (index, section) in self.spec.sections.iter().enumerate() {
-            let sections = self.compile_section(section, index)?;
-            self.document.sections.extend(sections);
-        }
-        self.document.header.properties.section_count =
-            u16::try_from(self.document.sections.len()).unwrap_or(u16::MAX);
-        self.report.sections = self.document.sections.len();
-        self.report.paragraphs = count_document_paragraphs(&self.document);
-        Ok(CompiledSpec {
-            document: self.document,
-            report: self.report,
-        })
+    /// The document with everything compiled so far.
+    pub(crate) fn into_document(self) -> hwp_model::Document {
+        self.document
     }
 
-    fn compile_styles(&mut self) -> Result<(), ComposeError> {
-        for name in self.spec.styles.keys() {
-            let resolved = self.resolve_style(name, &mut BTreeSet::new())?;
-            self.resolved_styles.insert(name.clone(), resolved);
+    pub(crate) fn counts(&self) -> BlockCounts {
+        self.counts
+    }
+
+    fn empty_paragraph(&self) -> hwp_model::Paragraph {
+        hwp_model::Paragraph {
+            style: self.defaults.style,
+            para_shape: self.defaults.para_shape,
+            char_shape_runs: vec![(0, self.defaults.char_shape)],
+            ..hwp_model::Paragraph::default()
         }
-        for (name, style) in &self.resolved_styles {
+    }
+
+    /// Registers `styles` in the document's header: one character shape, one paragraph shape and
+    /// one style table row per name, resolved through `based_on`. The shapes the new rows start
+    /// from are the document's default shapes ([`BlockDefaults`]).
+    pub(crate) fn compile_styles(
+        &mut self,
+        styles: &BTreeMap<String, StyleSpec>,
+    ) -> Result<(), ComposeError> {
+        let mut resolved_styles = BTreeMap::new();
+        for name in styles.keys() {
+            let resolved = Self::resolve_style(styles, name, &mut BTreeSet::new())?;
+            resolved_styles.insert(name.clone(), resolved);
+        }
+        for (name, style) in &resolved_styles {
             let mut char_shape = self
                 .document
                 .header
                 .char_shapes
-                .first()
+                .get(usize::from(self.defaults.char_shape.0))
                 .cloned()
                 .unwrap_or_default();
             apply_char_style(&mut self.document.header, &mut char_shape, style);
@@ -1786,7 +1809,7 @@ impl<'a> Compiler<'a> {
                 .document
                 .header
                 .para_shapes
-                .get(2)
+                .get(usize::from(self.defaults.para_shape.0))
                 .cloned()
                 .or_else(|| self.document.header.para_shapes.first().cloned())
                 .unwrap_or_default();
@@ -1822,7 +1845,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn resolve_style(
-        &self,
+        styles: &BTreeMap<String, StyleSpec>,
         name: &str,
         stack: &mut BTreeSet<String>,
     ) -> Result<StyleSpec, ComposeError> {
@@ -1832,16 +1855,12 @@ impl<'a> Compiler<'a> {
                 message: "style inheritance cycle".to_string(),
             });
         }
-        let own = self
-            .spec
-            .styles
-            .get(name)
-            .ok_or_else(|| ComposeError::Compile {
-                path: format!("$.styles.{name}"),
-                message: "style not found after validation".to_string(),
-            })?;
+        let own = styles.get(name).ok_or_else(|| ComposeError::Compile {
+            path: format!("$.styles.{name}"),
+            message: "style not found after validation".to_string(),
+        })?;
         let mut resolved = match &own.based_on {
-            Some(parent) => self.resolve_style(parent, stack)?,
+            Some(parent) => Self::resolve_style(styles, parent, stack)?,
             None => StyleSpec::default(),
         };
         merge_style(&mut resolved, own);
@@ -1850,8 +1869,13 @@ impl<'a> Compiler<'a> {
         Ok(resolved)
     }
 
-    fn compile_lists(&mut self) -> Result<(), ComposeError> {
-        for (name, list) in &self.spec.lists {
+    /// Registers `lists` in the document's header: one numbering definition (ordered) or one
+    /// bullet character per level (bullet).
+    pub(crate) fn compile_lists(
+        &mut self,
+        lists: &BTreeMap<String, ListSpec>,
+    ) -> Result<(), ComposeError> {
+        for (name, list) in lists {
             let mut definition_ids = Vec::with_capacity(list.levels.len());
             match list.kind {
                 ListKind::Ordered => {
@@ -1895,199 +1919,18 @@ impl<'a> Compiler<'a> {
                 CompiledList {
                     kind: list.kind,
                     definition_ids,
+                    level_styles: list
+                        .levels
+                        .iter()
+                        .map(|level| level.style.clone())
+                        .collect(),
                 },
             );
         }
         Ok(())
     }
 
-    fn compile_section(
-        &mut self,
-        section: &SectionSpec,
-        section_index: usize,
-    ) -> Result<Vec<hwp_model::Section>, ComposeError> {
-        let page = section.page.unwrap_or(self.spec.page);
-        let mut output = Vec::new();
-        let mut paragraphs = vec![self.compile_section_anchor(section, page, section_index)?];
-        for (block_index, block) in section.blocks.iter().enumerate() {
-            if matches!(
-                block,
-                BlockSpec::Break {
-                    kind: BreakKind::Section
-                }
-            ) {
-                output.push(hwp_model::Section {
-                    paragraphs,
-                    extras: Vec::new(),
-                });
-                paragraphs = vec![self.compile_section_anchor(section, page, section_index)?];
-                continue;
-            }
-            paragraphs.extend(self.compile_block(
-                block,
-                &format!("$.sections[{section_index}].blocks[{block_index}]"),
-            )?);
-        }
-        output.push(hwp_model::Section {
-            paragraphs,
-            extras: Vec::new(),
-        });
-        Ok(output)
-    }
-
-    fn compile_section_anchor(
-        &mut self,
-        section: &SectionSpec,
-        page: PageSpec,
-        section_index: usize,
-    ) -> Result<hwp_model::Paragraph, ComposeError> {
-        let mut paragraph = hwp_model::Paragraph {
-            char_shape_runs: vec![(0, hwp_model::CharShapeId(0))],
-            header: hwp_model::ParaHeaderInfo {
-                break_type: 0x03,
-                ..hwp_model::ParaHeaderInfo::default()
-            },
-            ..hwp_model::Paragraph::default()
-        };
-        append_control(
-            &mut paragraph,
-            hwp_model::ctrl_char::SECTION_COLUMN_DEF,
-            hwp_model::Control::SectionDef(hwp_model::SectionDef {
-                data: Vec::new(),
-                page: Some(page_def(page)),
-                extras: Vec::new(),
-                secpr_raw_children: Vec::new(),
-                footnote_shape_raw: None,
-                endnote_shape_raw: None,
-                page_border_fills_raw: Vec::new(),
-            }),
-        )?;
-        append_control(
-            &mut paragraph,
-            hwp_model::ctrl_char::SECTION_COLUMN_DEF,
-            hwp_model::Control::Generic(hwp_model::GenericControl {
-                ctrl_id: *b"cold",
-                data: Vec::new(),
-                paragraph_lists: Vec::new(),
-                extras: Vec::new(),
-                raw_children: Vec::new(),
-                gso_shapes: Vec::new(),
-                equation: None,
-                column_def: Some(hwp_model::ColumnDef {
-                    count: 1,
-                    kind: 0,
-                    direction: 0,
-                    same_width: true,
-                    gap: 0,
-                    widths: Vec::new(),
-                    divider: None,
-                }),
-                caption: None,
-                hwpx_raw_xml: None,
-                container_box: None,
-            }),
-        )?;
-        if let Some(header) = &section.header {
-            self.append_header_footer(
-                &mut paragraph,
-                header,
-                *b"head",
-                &format!("$.sections[{section_index}].header"),
-            )?;
-        }
-        if let Some(footer) = &section.footer {
-            self.append_header_footer(
-                &mut paragraph,
-                footer,
-                *b"foot",
-                &format!("$.sections[{section_index}].footer"),
-            )?;
-        }
-        if let Some(page_number) = &section.page_number {
-            self.document.header.properties.start_numbers[0] =
-                u16::try_from(page_number.start).expect("validated page number");
-            let mut new_number = Vec::with_capacity(6);
-            new_number.extend_from_slice(&0_u32.to_le_bytes());
-            new_number.extend_from_slice(
-                &u16::try_from(page_number.start)
-                    .expect("validated page number")
-                    .to_le_bytes(),
-            );
-            append_control(
-                &mut paragraph,
-                hwp_model::ctrl_char::PAGE_CONTROL,
-                generic_control(*b"nwno", new_number),
-            )?;
-
-            let side = page_number
-                .suffix
-                .as_deref()
-                .and_then(|suffix| suffix.encode_utf16().next())
-                .unwrap_or(0);
-            let position = page_number_position_code(page_number.position);
-            let mut data = Vec::with_capacity(12);
-            data.extend_from_slice(&(u32::from(position) << 8).to_le_bytes());
-            data.extend_from_slice(&[0_u8; 6]);
-            data.extend_from_slice(&side.to_le_bytes());
-            append_control(
-                &mut paragraph,
-                hwp_model::ctrl_char::PAGE_CONTROL,
-                generic_control(*b"pgnp", data),
-            )?;
-        }
-        Ok(paragraph)
-    }
-
-    fn append_header_footer(
-        &mut self,
-        paragraph: &mut hwp_model::Paragraph,
-        spec: &HeaderFooterSpec,
-        ctrl_id: [u8; 4],
-        path: &str,
-    ) -> Result<(), ComposeError> {
-        for (apply, label, blocks) in [
-            (0_u32, "default", &spec.default),
-            (1_u32, "even", &spec.even),
-            (2_u32, "odd", &spec.odd),
-        ] {
-            if blocks.is_empty() {
-                continue;
-            }
-            let mut paragraphs = Vec::new();
-            for (index, block) in blocks.iter().enumerate() {
-                paragraphs.extend(self.compile_block(block, &format!("{path}.{label}[{index}]"))?);
-            }
-            if paragraphs.is_empty() {
-                paragraphs.push(empty_paragraph());
-            }
-            let mut data = Vec::with_capacity(8);
-            data.extend_from_slice(&apply.to_le_bytes());
-            data.extend_from_slice(&0_u32.to_le_bytes());
-            append_control(
-                paragraph,
-                hwp_model::ctrl_char::HEADER_FOOTER,
-                hwp_model::Control::Generic(hwp_model::GenericControl {
-                    ctrl_id,
-                    data,
-                    paragraph_lists: vec![hwp_model::ParagraphList {
-                        header_data: Vec::new(),
-                        paragraphs,
-                    }],
-                    extras: Vec::new(),
-                    raw_children: Vec::new(),
-                    gso_shapes: Vec::new(),
-                    equation: None,
-                    column_def: None,
-                    caption: None,
-                    hwpx_raw_xml: None,
-                    container_box: None,
-                }),
-            )?;
-        }
-        Ok(())
-    }
-
-    fn compile_block(
+    pub(crate) fn compile_block(
         &mut self,
         block: &BlockSpec,
         path: &str,
@@ -2113,7 +1956,7 @@ impl<'a> Compiler<'a> {
                 placement,
                 ..
             } => {
-                let mut paragraph = empty_paragraph();
+                let mut paragraph = self.empty_paragraph();
                 self.append_image(
                     &mut paragraph,
                     asset,
@@ -2122,7 +1965,6 @@ impl<'a> Compiler<'a> {
                     *placement == ImagePlacement::Inline,
                     path,
                 )?;
-                self.report.paragraphs += 1;
                 Ok(vec![paragraph])
             }
             BlockSpec::Equation {
@@ -2130,33 +1972,29 @@ impl<'a> Compiler<'a> {
                 width_mm,
                 height_mm,
             } => {
-                let mut paragraph = empty_paragraph();
+                let mut paragraph = self.empty_paragraph();
                 self.append_equation(&mut paragraph, script, *width_mm, *height_mm, true)?;
-                self.report.paragraphs += 1;
                 Ok(vec![paragraph])
             }
             BlockSpec::Field { name, value, style } => {
-                let mut paragraph = empty_paragraph();
+                let mut paragraph = self.empty_paragraph();
                 let shape = self.char_shape_for_style(style.as_deref())?;
                 append_field(&mut paragraph, name, value, shape)?;
-                self.report.fields += 1;
-                self.report.paragraphs += 1;
+                self.counts.fields += 1;
                 Ok(vec![paragraph])
             }
             BlockSpec::Break {
                 kind: BreakKind::Page,
             } => {
-                let mut paragraph = empty_paragraph();
+                let mut paragraph = self.empty_paragraph();
                 paragraph.header.break_type = 0x04;
-                self.report.paragraphs += 1;
                 Ok(vec![paragraph])
             }
             BlockSpec::Break {
                 kind: BreakKind::Column,
             } => {
-                let mut paragraph = empty_paragraph();
+                let mut paragraph = self.empty_paragraph();
                 paragraph.header.break_type = 0x08;
-                self.report.paragraphs += 1;
                 Ok(vec![paragraph])
             }
             BlockSpec::Break {
@@ -2175,20 +2013,20 @@ impl<'a> Compiler<'a> {
         runs: &[RunSpec],
         path: &str,
     ) -> Result<hwp_model::Paragraph, ComposeError> {
-        let list_level_style = list_ref.and_then(|list_ref| {
-            self.spec
-                .lists
+        // Owned: the name lives in `self.lists`, and the runs below borrow `self` mutably.
+        let list_level_style: Option<String> = list_ref.and_then(|list_ref| {
+            self.lists
                 .get(&list_ref.name)
-                .and_then(|list| list.levels.get(usize::from(list_ref.level)))
-                .and_then(|level| level.style.as_deref())
+                .and_then(|list| list.level_styles.get(usize::from(list_ref.level)))
+                .and_then(Clone::clone)
         });
-        let style_name = style_name.or(list_level_style);
+        let style_name = style_name.or(list_level_style.as_deref());
         let compiled_style = style_name
             .and_then(|name| self.styles.get(name).copied())
             .unwrap_or(CompiledStyle {
-                style_id: hwp_model::StyleId(0),
-                para_shape: hwp_model::ParaShapeId(2),
-                char_shape: hwp_model::CharShapeId(0),
+                style_id: self.defaults.style,
+                para_shape: self.defaults.para_shape,
+                char_shape: self.defaults.char_shape,
             });
         let para_shape = match list_ref {
             Some(list_ref) => self.list_para_shape(compiled_style.para_shape, list_ref, path)?,
@@ -2218,7 +2056,7 @@ impl<'a> Compiler<'a> {
                     let shape = self.char_shape_for_style(style.as_deref().or(style_name))?;
                     append_field(&mut paragraph, name, value, shape)?;
                     current_shape = shape;
-                    self.report.fields += 1;
+                    self.counts.fields += 1;
                 }
                 RunSpec::Equation {
                     script,
@@ -2249,7 +2087,6 @@ impl<'a> Compiler<'a> {
                 )),
             }
         }
-        self.report.paragraphs += 1;
         Ok(paragraph)
     }
 
@@ -2310,7 +2147,7 @@ impl<'a> Compiler<'a> {
                     path: format!("$.styles.{style}"),
                     message: "style not found after validation".to_string(),
                 }),
-            None => Ok(hwp_model::CharShapeId(0)),
+            None => Ok(self.defaults.char_shape),
         }
     }
 
@@ -2368,7 +2205,7 @@ impl<'a> Compiler<'a> {
                 container_box: None,
             }),
         )?;
-        self.report.equations += 1;
+        self.counts.equations += 1;
         Ok(())
     }
 
@@ -2421,7 +2258,7 @@ impl<'a> Compiler<'a> {
                 extras: Vec::new(),
             }),
         )?;
-        self.report.images += 1;
+        self.counts.images += 1;
         Ok(())
     }
 
@@ -2525,7 +2362,7 @@ impl<'a> Compiler<'a> {
                     )?);
                 }
                 if paragraphs.is_empty() {
-                    paragraphs.push(empty_paragraph());
+                    paragraphs.push(self.empty_paragraph());
                 }
                 let width = column_widths[cursor..col_end].iter().sum();
                 let paragraph_count = i32::try_from(paragraphs.len()).unwrap_or(i32::MAX);
@@ -2538,7 +2375,7 @@ impl<'a> Compiler<'a> {
                     width: hwp_model::HwpUnit(width),
                     height: hwp_model::HwpUnit(1700_i32.saturating_mul(paragraph_count.max(1))),
                     margins: [510, 510, 141, 141],
-                    border_fill: hwp_model::BorderFillId(3),
+                    border_fill: self.defaults.border_fill,
                     header_tail: Vec::new(),
                     paragraphs,
                 });
@@ -2571,21 +2408,283 @@ impl<'a> Compiler<'a> {
             cell_spacing: 0,
             inner_margins: [510, 510, 141, 141],
             row_cell_counts,
-            border_fill: hwp_model::BorderFillId(3),
+            border_fill: self.defaults.border_fill,
             table_tail: Vec::new(),
             cells,
             caption: None,
             extras: Vec::new(),
         };
-        let mut paragraph = empty_paragraph();
+        let mut paragraph = self.empty_paragraph();
         append_control(
             &mut paragraph,
             hwp_model::ctrl_char::OBJECT,
             hwp_model::Control::Table(table),
         )?;
-        self.report.tables += 1;
-        self.report.paragraphs += 1;
+        self.counts.tables += 1;
         Ok(paragraph)
+    }
+}
+
+/// Section-level compilation of a whole `DocumentSpec`: the document it builds, page setup,
+/// headers and footers. Everything inside a block goes through [`BlockCompiler`].
+struct Compiler<'a> {
+    spec: &'a DocumentSpec,
+    blocks: BlockCompiler<'a>,
+    report: ComposeReport,
+}
+
+impl<'a> Compiler<'a> {
+    fn new(
+        spec: &'a DocumentSpec,
+        base_dir: &'a Path,
+        output: &Path,
+        dry_run: bool,
+        allow_visual_fallback: bool,
+        roots: &'a [PathBuf],
+    ) -> Result<Self, ComposeError> {
+        let mut document = hwp_convert::from_markdown("");
+        document.sections.clear();
+        document.bin_streams.clear();
+        document.metadata.title = spec.metadata.title.clone();
+        document.metadata.author = spec.metadata.author.clone();
+        document.metadata.subject = spec.metadata.subject.clone();
+        document.metadata.keywords = spec.metadata.keywords.clone();
+        document.metadata.description = spec.metadata.description.clone();
+        document.meta.source_format = "document-spec-v1".to_string();
+        document.meta.source_version = "1.0".to_string();
+
+        let mut compiler = Self {
+            spec,
+            blocks: BlockCompiler::over_document(document, BlockDefaults::COMPOSE, base_dir, roots),
+            report: ComposeReport {
+                schema_version: SpecVersion::V1,
+                output: output.display().to_string(),
+                dry_run,
+                deterministic: true,
+                native: true,
+                visual_fallback_allowed: allow_visual_fallback,
+                visual_fallback_used: Vec::new(),
+                sections: 0,
+                paragraphs: 0,
+                tables: 0,
+                images: 0,
+                equations: 0,
+                fields: 0,
+                warnings: Vec::new(),
+            },
+        };
+        compiler.blocks.compile_styles(&spec.styles)?;
+        compiler.blocks.compile_lists(&spec.lists)?;
+        Ok(compiler)
+    }
+
+    fn compile(mut self) -> Result<CompiledSpec, ComposeError> {
+        for (index, section) in self.spec.sections.iter().enumerate() {
+            let sections = self.compile_section(section, index)?;
+            self.blocks.document.sections.extend(sections);
+        }
+        self.blocks.document.header.properties.section_count =
+            u16::try_from(self.blocks.document.sections.len()).unwrap_or(u16::MAX);
+        self.report.sections = self.blocks.document.sections.len();
+        self.report.paragraphs = count_document_paragraphs(&self.blocks.document);
+        let counts = self.blocks.counts();
+        self.report.tables = counts.tables;
+        self.report.images = counts.images;
+        self.report.equations = counts.equations;
+        self.report.fields = counts.fields;
+        Ok(CompiledSpec {
+            document: self.blocks.into_document(),
+            report: self.report,
+        })
+    }
+
+    fn compile_section(
+        &mut self,
+        section: &SectionSpec,
+        section_index: usize,
+    ) -> Result<Vec<hwp_model::Section>, ComposeError> {
+        let page = section.page.unwrap_or(self.spec.page);
+        let mut output = Vec::new();
+        let mut paragraphs = vec![self.compile_section_anchor(section, page, section_index)?];
+        for (block_index, block) in section.blocks.iter().enumerate() {
+            if matches!(
+                block,
+                BlockSpec::Break {
+                    kind: BreakKind::Section
+                }
+            ) {
+                output.push(hwp_model::Section {
+                    paragraphs,
+                    extras: Vec::new(),
+                });
+                paragraphs = vec![self.compile_section_anchor(section, page, section_index)?];
+                continue;
+            }
+            paragraphs.extend(self.blocks.compile_block(
+                block,
+                &format!("$.sections[{section_index}].blocks[{block_index}]"),
+            )?);
+        }
+        output.push(hwp_model::Section {
+            paragraphs,
+            extras: Vec::new(),
+        });
+        Ok(output)
+    }
+
+    fn compile_section_anchor(
+        &mut self,
+        section: &SectionSpec,
+        page: PageSpec,
+        section_index: usize,
+    ) -> Result<hwp_model::Paragraph, ComposeError> {
+        let mut paragraph = hwp_model::Paragraph {
+            char_shape_runs: vec![(0, hwp_model::CharShapeId(0))],
+            header: hwp_model::ParaHeaderInfo {
+                break_type: 0x03,
+                ..hwp_model::ParaHeaderInfo::default()
+            },
+            ..hwp_model::Paragraph::default()
+        };
+        append_control(
+            &mut paragraph,
+            hwp_model::ctrl_char::SECTION_COLUMN_DEF,
+            hwp_model::Control::SectionDef(hwp_model::SectionDef {
+                data: Vec::new(),
+                page: Some(page_def(page)),
+                extras: Vec::new(),
+                secpr_raw_children: Vec::new(),
+                footnote_shape_raw: None,
+                endnote_shape_raw: None,
+                page_border_fills_raw: Vec::new(),
+            }),
+        )?;
+        append_control(
+            &mut paragraph,
+            hwp_model::ctrl_char::SECTION_COLUMN_DEF,
+            hwp_model::Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"cold",
+                data: Vec::new(),
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: Some(hwp_model::ColumnDef {
+                    count: 1,
+                    kind: 0,
+                    direction: 0,
+                    same_width: true,
+                    gap: 0,
+                    widths: Vec::new(),
+                    divider: None,
+                }),
+                caption: None,
+                hwpx_raw_xml: None,
+                container_box: None,
+            }),
+        )?;
+        if let Some(header) = &section.header {
+            self.append_header_footer(
+                &mut paragraph,
+                header,
+                *b"head",
+                &format!("$.sections[{section_index}].header"),
+            )?;
+        }
+        if let Some(footer) = &section.footer {
+            self.append_header_footer(
+                &mut paragraph,
+                footer,
+                *b"foot",
+                &format!("$.sections[{section_index}].footer"),
+            )?;
+        }
+        if let Some(page_number) = &section.page_number {
+            self.blocks.document.header.properties.start_numbers[0] =
+                u16::try_from(page_number.start).expect("validated page number");
+            let mut new_number = Vec::with_capacity(6);
+            new_number.extend_from_slice(&0_u32.to_le_bytes());
+            new_number.extend_from_slice(
+                &u16::try_from(page_number.start)
+                    .expect("validated page number")
+                    .to_le_bytes(),
+            );
+            append_control(
+                &mut paragraph,
+                hwp_model::ctrl_char::PAGE_CONTROL,
+                generic_control(*b"nwno", new_number),
+            )?;
+
+            let side = page_number
+                .suffix
+                .as_deref()
+                .and_then(|suffix| suffix.encode_utf16().next())
+                .unwrap_or(0);
+            let position = page_number_position_code(page_number.position);
+            let mut data = Vec::with_capacity(12);
+            data.extend_from_slice(&(u32::from(position) << 8).to_le_bytes());
+            data.extend_from_slice(&[0_u8; 6]);
+            data.extend_from_slice(&side.to_le_bytes());
+            append_control(
+                &mut paragraph,
+                hwp_model::ctrl_char::PAGE_CONTROL,
+                generic_control(*b"pgnp", data),
+            )?;
+        }
+        Ok(paragraph)
+    }
+
+    fn append_header_footer(
+        &mut self,
+        paragraph: &mut hwp_model::Paragraph,
+        spec: &HeaderFooterSpec,
+        ctrl_id: [u8; 4],
+        path: &str,
+    ) -> Result<(), ComposeError> {
+        for (apply, label, blocks) in [
+            (0_u32, "default", &spec.default),
+            (1_u32, "even", &spec.even),
+            (2_u32, "odd", &spec.odd),
+        ] {
+            if blocks.is_empty() {
+                continue;
+            }
+            let mut paragraphs = Vec::new();
+            for (index, block) in blocks.iter().enumerate() {
+                paragraphs.extend(
+                    self.blocks
+                        .compile_block(block, &format!("{path}.{label}[{index}]"))?,
+                );
+            }
+            if paragraphs.is_empty() {
+                paragraphs.push(self.blocks.empty_paragraph());
+            }
+            let mut data = Vec::with_capacity(8);
+            data.extend_from_slice(&apply.to_le_bytes());
+            data.extend_from_slice(&0_u32.to_le_bytes());
+            append_control(
+                paragraph,
+                hwp_model::ctrl_char::HEADER_FOOTER,
+                hwp_model::Control::Generic(hwp_model::GenericControl {
+                    ctrl_id,
+                    data,
+                    paragraph_lists: vec![hwp_model::ParagraphList {
+                        header_data: Vec::new(),
+                        paragraphs,
+                    }],
+                    extras: Vec::new(),
+                    raw_children: Vec::new(),
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: None,
+                    caption: None,
+                    hwpx_raw_xml: None,
+                    container_box: None,
+                }),
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -2620,8 +2719,7 @@ fn apply_char_style(
     style: &StyleSpec,
 ) {
     if let Some(font) = &style.font_family {
-        let id = ensure_font(header, font);
-        shape.face_ids = [id; hwp_model::LANG_COUNT];
+        shape.face_ids = ensure_font(header, font);
     }
     if let Some(size) = style.font_size_pt {
         shape.base_size = pt_to_hwp(size);
@@ -2701,20 +2799,31 @@ fn apply_para_style(shape: &mut hwp_model::ParaShape, style: &StyleSpec) {
     }
 }
 
-fn ensure_font(header: &mut hwp_model::DocHeader, font: &str) -> u16 {
-    if let Some(index) = header.fonts[0].iter().position(|face| face.name == font) {
-        return u16::try_from(index).unwrap_or(u16::MAX);
-    }
-    let id = u16::try_from(header.fonts[0].len()).unwrap_or(u16::MAX);
-    for language in &mut header.fonts {
-        language.push(hwp_model::FaceName {
-            attr: 1,
-            name: font.to_string(),
-            default_name: Some(font.to_string()),
-            ..hwp_model::FaceName::default()
-        });
-    }
-    id
+/// The face id of `font` in each of the seven language tables, appending the face to every table
+/// that lacks it.
+///
+/// The tables are separate and need not be parallel: a real document's Hangul table can hold
+/// `휴먼고딕` at index 3 while its Latin table holds `휴먼명조` there, and the tables differ in
+/// length. So each table is searched for the name on its own, and a missing face is appended at
+/// that table's own next index. Reusing one id for all seven (the compose document's tables are
+/// built identical, which is why that worked there) names a different font in six of them.
+fn ensure_font(header: &mut hwp_model::DocHeader, font: &str) -> [u16; hwp_model::LANG_COUNT] {
+    std::array::from_fn(|language| {
+        let table = &mut header.fonts[language];
+        let index = table
+            .iter()
+            .position(|face| face.name == font)
+            .unwrap_or_else(|| {
+                table.push(hwp_model::FaceName {
+                    attr: 1,
+                    name: font.to_string(),
+                    default_name: Some(font.to_string()),
+                    ..hwp_model::FaceName::default()
+                });
+                table.len() - 1
+            });
+        u16::try_from(index).unwrap_or(u16::MAX)
+    })
 }
 
 fn find_or_push_char_shape(
@@ -2779,14 +2888,6 @@ fn page_def(page: PageSpec) -> hwp_model::PageDef {
         margin_footer: hwp_model::HwpUnit(mm_to_hwp(page.margin_footer_mm)),
         gutter: hwp_model::HwpUnit(mm_to_hwp(page.gutter_mm)),
         attr: u32::from(page.orientation == PageOrientation::Landscape),
-    }
-}
-
-fn empty_paragraph() -> hwp_model::Paragraph {
-    hwp_model::Paragraph {
-        para_shape: hwp_model::ParaShapeId(2),
-        char_shape_runs: vec![(0, hwp_model::CharShapeId(0))],
-        ..hwp_model::Paragraph::default()
     }
 }
 
@@ -2979,6 +3080,352 @@ mod tests {
                 }],
             }],
         }
+    }
+
+    /// The existing document the factored compiler targets: the committed HWPX sample, whose
+    /// header tables are nothing like the ones `hwp compose` builds (57 character shapes, 58
+    /// paragraph shapes, 30 styles, 22 border fills), loaded through the real reader.
+    fn existing_document() -> hwp_model::Document {
+        let sample =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx");
+        hwpx::read_document(&sample)
+            .expect("the committed sample reads")
+            .document
+    }
+
+    fn text_paragraph(style: Option<&str>, text: &str) -> BlockSpec {
+        BlockSpec::Paragraph {
+            style: style.map(str::to_string),
+            list: None,
+            keep_with_next: false,
+            runs: vec![RunSpec::Text {
+                text: text.to_string(),
+                style: None,
+                format: RunFormatSpec::default(),
+            }],
+        }
+    }
+
+    fn one_cell_table(text: &str) -> BlockSpec {
+        BlockSpec::Table {
+            width_mm: None,
+            columns: vec![TableColumnSpec { width_mm: 30.0 }],
+            rows: vec![TableRowSpec {
+                cells: vec![TableCellSpec {
+                    col_span: 1,
+                    row_span: 1,
+                    blocks: vec![text_paragraph(None, text)],
+                }],
+            }],
+        }
+    }
+
+    /// Blocks compile against an existing document's header tables: the defaults a block falls
+    /// back to are the ones the caller names, new styles and shapes are appended after the
+    /// document's own rows, and nothing already in the header moves. Hardcoding the compose
+    /// layout (style 0, paragraph shape 2, border fill 3) would pass the compose tests and fail
+    /// here, because this document's roles are played by other rows.
+    #[test]
+    fn blocks_compile_against_an_existing_documents_header_tables() {
+        let document = existing_document();
+        let before = document.header.clone();
+        let defaults = BlockDefaults {
+            style: hwp_model::StyleId(23),
+            para_shape: hwp_model::ParaShapeId(5),
+            char_shape: hwp_model::CharShapeId(5),
+            border_fill: hwp_model::BorderFillId(11),
+        };
+        assert_ne!(defaults, BlockDefaults::COMPOSE);
+        assert!(
+            before.border_fills.len() > 11 && before.para_shapes.len() > 5,
+            "the chosen default ids exist in the sample"
+        );
+
+        let base_dir = PathBuf::new();
+        let mut compiler = BlockCompiler::over_document(document, defaults, &base_dir, &[]);
+        let mut styles = BTreeMap::new();
+        styles.insert(
+            "강조".to_string(),
+            StyleSpec {
+                bold: Some(true),
+                font_size_pt: Some(17.0),
+                ..StyleSpec::default()
+            },
+        );
+        compiler.compile_styles(&styles).expect("styles register");
+
+        let mut paragraphs = Vec::new();
+        for (index, block) in [
+            text_paragraph(None, "기본"),
+            text_paragraph(Some("강조"), "새 스타일"),
+            one_cell_table("셀"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            paragraphs.extend(
+                compiler
+                    .compile_block(block, &format!("$.blocks[{index}]"))
+                    .expect("block compiles"),
+            );
+        }
+        let counts = compiler.counts();
+        let document = compiler.into_document();
+
+        // A block that names no style gets the caller's defaults, not compose's.
+        assert_eq!(paragraphs[0].style, defaults.style);
+        assert_eq!(paragraphs[0].para_shape, defaults.para_shape);
+        assert_eq!(
+            paragraphs[0].char_shape_runs,
+            vec![(0, defaults.char_shape)]
+        );
+
+        // A new style is appended after the document's 30 rows, and the paragraph names it.
+        assert_eq!(document.header.styles.len(), before.styles.len() + 1);
+        let new_id = u16::try_from(before.styles.len()).unwrap();
+        assert_eq!(paragraphs[1].style, hwp_model::StyleId(new_id));
+        assert_eq!(document.header.styles[usize::from(new_id)].name, "강조");
+        let new_style = &document.header.styles[usize::from(new_id)];
+        let new_char = &document.header.char_shapes[usize::from(new_style.char_shape.0)];
+        assert!(
+            new_char.is_bold(),
+            "the style's bold reached its character shape"
+        );
+        assert_eq!(new_char.base_size, 1700);
+
+        // The new shapes start from the defaults' shapes, not from compose's row 0 and row 2.
+        // Row 5 differs from row 0 in its face ids and text colour, so a start from row 0 fails.
+        let from_default = &before.char_shapes[usize::from(defaults.char_shape.0)];
+        assert_ne!(from_default.face_ids, before.char_shapes[0].face_ids);
+        assert_ne!(from_default.text_color, before.char_shapes[0].text_color);
+        assert_eq!(new_char.face_ids, from_default.face_ids);
+        assert_eq!(new_char.text_color, from_default.text_color);
+        let from_para_default = &before.para_shapes[usize::from(defaults.para_shape.0)];
+        let new_para = &document.header.para_shapes[usize::from(new_style.para_shape.0)];
+        assert_eq!(new_para.margin_left, from_para_default.margin_left);
+
+        // Nothing already in the header moved or changed.
+        assert_eq!(
+            &document.header.char_shapes[..before.char_shapes.len()],
+            &before.char_shapes[..]
+        );
+        assert_eq!(
+            &document.header.para_shapes[..before.para_shapes.len()],
+            &before.para_shapes[..]
+        );
+        assert_eq!(
+            &document.header.styles[..before.styles.len()],
+            &before.styles[..]
+        );
+        assert_eq!(document.header.border_fills, before.border_fills);
+
+        // The table takes the caller's border fill, and so does each of its cells.
+        let hwp_model::Control::Table(table) = &paragraphs[2].controls[0] else {
+            panic!("a table control expected");
+        };
+        assert_eq!(table.border_fill, defaults.border_fill);
+        assert!(
+            table
+                .cells
+                .iter()
+                .all(|c| c.border_fill == defaults.border_fill)
+        );
+        assert_eq!(table.cells[0].paragraphs[0].para_shape, defaults.para_shape);
+        assert_eq!(
+            counts,
+            BlockCounts {
+                tables: 1,
+                ..BlockCounts::default()
+            }
+        );
+    }
+
+    /// Every empty-paragraph caller (a table's anchor paragraph, an empty cell, an image, an
+    /// equation, a field and the breaks) carries the target document's default style, not
+    /// compose's style 0: they all go through the same constructor, and a paragraph that names
+    /// style 0 in a document whose default style is another row restyles itself on the next
+    /// open (T19-F1).
+    #[test]
+    fn every_empty_paragraph_kind_carries_the_documents_default_style() {
+        let defaults = BlockDefaults {
+            style: hwp_model::StyleId(23),
+            para_shape: hwp_model::ParaShapeId(5),
+            char_shape: hwp_model::CharShapeId(5),
+            border_fill: hwp_model::BorderFillId(11),
+        };
+        let root = std::env::temp_dir().join(format!("hwp-bc-style-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("p.gif"), b"GIF89a\x01\x00\x01\x00").unwrap();
+        let mut compiler = BlockCompiler::over_document(existing_document(), defaults, &root, &[]);
+
+        let empty_cell_table = BlockSpec::Table {
+            width_mm: None,
+            columns: vec![TableColumnSpec { width_mm: 30.0 }],
+            rows: vec![TableRowSpec {
+                cells: vec![TableCellSpec {
+                    col_span: 1,
+                    row_span: 1,
+                    blocks: Vec::new(),
+                }],
+            }],
+        };
+        let blocks: Vec<(&str, BlockSpec)> = vec![
+            ("table anchor", one_cell_table("셀")),
+            ("empty-cell table anchor", empty_cell_table),
+            (
+                "image",
+                BlockSpec::Image {
+                    path: PathBuf::from("p.gif"),
+                    width_mm: 10.0,
+                    height_mm: Some(10.0),
+                    alt: None,
+                    placement: ImagePlacement::Inline,
+                },
+            ),
+            (
+                "equation",
+                BlockSpec::Equation {
+                    script: "a+b".to_string(),
+                    width_mm: None,
+                    height_mm: None,
+                },
+            ),
+            (
+                "field",
+                BlockSpec::Field {
+                    name: "n".to_string(),
+                    value: "v".to_string(),
+                    style: None,
+                },
+            ),
+            (
+                "page break",
+                BlockSpec::Break {
+                    kind: BreakKind::Page,
+                },
+            ),
+            (
+                "column break",
+                BlockSpec::Break {
+                    kind: BreakKind::Column,
+                },
+            ),
+        ];
+        let mut checked = 0;
+        for (label, block) in &blocks {
+            let paragraphs = compiler
+                .compile_block(block, "$.blocks[0]")
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            for paragraph in &paragraphs {
+                assert_eq!(paragraph.style, defaults.style, "{label}");
+                assert_eq!(paragraph.para_shape, defaults.para_shape, "{label}");
+                checked += 1;
+            }
+            // The cells of a table are paragraphs too, including the one filled in for an empty
+            // cell.
+            if let Some(hwp_model::Control::Table(table)) = paragraphs[0].controls.first() {
+                for cell in &table.cells {
+                    for inner in &cell.paragraphs {
+                        assert_eq!(inner.style, defaults.style, "{label} cell paragraph");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        // 7 blocks give 7 anchor paragraphs; the two tables add their cells' paragraphs: one
+        // with text, one with the empty-cell placeholder.
+        assert_eq!(
+            checked, 9,
+            "every kind and every cell paragraph was visited"
+        );
+    }
+
+    /// A font family resolves to the face of THAT name in every language table. The seven tables
+    /// of a real document differ in length and order (in `report-tables.hwpx`, `휴먼고딕` is the
+    /// fourth Hangul face but `휴먼명조` is the fourth Latin one), so one id reused for all seven
+    /// names a different font in six of them. A font the document lacks is appended to every
+    /// table, at that table's own next index (T19-F2).
+    #[test]
+    fn font_family_resolves_per_language_table_in_an_existing_document() {
+        let document = existing_document();
+        let before: Vec<Vec<String>> = document
+            .header
+            .fonts
+            .iter()
+            .map(|table| table.iter().map(|face| face.name.clone()).collect())
+            .collect();
+        // The premise of the bug: the tables are not parallel.
+        assert_eq!(before[0][3], "휴먼고딕");
+        assert_ne!(before[1][3], "휴먼고딕");
+        assert_ne!(before[0].len(), before[1].len());
+
+        let mut compiler =
+            BlockCompiler::over_document(document, BlockDefaults::COMPOSE, Path::new(""), &[]);
+        let mut styles = BTreeMap::new();
+        for (name, font) in [("기존", "휴먼고딕"), ("새것", "나눔손글씨")] {
+            styles.insert(
+                name.to_string(),
+                StyleSpec {
+                    font_family: Some(font.to_string()),
+                    ..StyleSpec::default()
+                },
+            );
+        }
+        compiler.compile_styles(&styles).expect("styles register");
+        let document = compiler.into_document();
+
+        for (style_name, font) in [("기존", "휴먼고딕"), ("새것", "나눔손글씨")] {
+            let style = document
+                .header
+                .styles
+                .iter()
+                .find(|style| style.name == style_name)
+                .expect("the style was registered");
+            let shape = &document.header.char_shapes[usize::from(style.char_shape.0)];
+            for (language, table) in document.header.fonts.iter().enumerate() {
+                let id = usize::from(shape.face_ids[language]);
+                assert_eq!(
+                    table.get(id).map(|face| face.name.as_str()),
+                    Some(font),
+                    "{style_name}: language table {language} names {:?} at id {id}, expected {font}",
+                    table.get(id).map(|face| &face.name),
+                );
+            }
+        }
+        // A face is appended to a table only when that table lacks the name, at the table's own
+        // end, and rows that were there did not move. `휴먼고딕` exists only in the Hangul table
+        // here; `나눔손글씨` exists in none.
+        for (language, names) in before.iter().enumerate() {
+            let table = &document.header.fonts[language];
+            let mut expected = names.clone();
+            for font in ["휴먼고딕", "나눔손글씨"] {
+                if !expected.iter().any(|name| name == font) {
+                    expected.push(font.to_string());
+                }
+            }
+            let actual: Vec<&str> = table.iter().map(|face| face.name.as_str()).collect();
+            assert_eq!(actual, expected, "language table {language}");
+        }
+        assert_eq!(
+            before
+                .iter()
+                .filter(|names| names.iter().any(|n| n == "휴먼고딕"))
+                .count(),
+            1,
+            "the premise: the existing font is in exactly one language table"
+        );
+    }
+
+    /// The compose defaults are the values the compiler used before it was factored, so
+    /// `hwp compose` output does not move.
+    #[test]
+    fn the_compose_defaults_are_the_pre_factoring_constants() {
+        let defaults = BlockDefaults::COMPOSE;
+        assert_eq!(defaults.style, hwp_model::StyleId(0));
+        assert_eq!(defaults.para_shape, hwp_model::ParaShapeId(2));
+        assert_eq!(defaults.char_shape, hwp_model::CharShapeId(0));
+        assert_eq!(defaults.border_fill, hwp_model::BorderFillId(3));
     }
 
     fn issue_codes(error: ComposeError) -> Vec<String> {
