@@ -64,7 +64,8 @@ fn read_bounded(reader: impl std::io::Read, cap: u64) -> anyhow::Result<String> 
 
 /// Read operation input, validate its schema, deserialize OpsEntry, then convert into Op.
 /// Refuse input, schema and semantic-constraint failures with Korean errors. Schema
-/// violations retain the instance path and jsonschema error wording.
+/// Legacy violations retain jsonschema wording. Binding-plan failures omit payloads because
+/// values, keys and unknown property names may contain private document content.
 pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     let raw = read_ops_source(path)?;
     let value: serde_json::Value = serde_json::from_str(&raw)
@@ -74,6 +75,12 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
 
 /// Validate every JSON channel against the same closed vocabulary before normalization.
 pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<TypedEditOperation>> {
+    let binding_input = value.as_array().is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            entry.get("op").and_then(serde_json::Value::as_str) == Some("apply_form_bindings")
+                || entry.get("plan").is_some()
+        })
+    });
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json"))
             .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;
@@ -91,13 +98,20 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
         .build(&schema)
         .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 컴파일할 수 없습니다: {error}"))?;
     if let Some(error) = validator.iter_errors(&value).next() {
+        if binding_input {
+            anyhow::bail!(
+                "양식 바인딩 연산이 닫힌 edit-ops-v1 계약과 다릅니다. apply_form_bindings의 plan/values/receipt/preview 속성을 스키마와 비교해 수정하세요 (입력 내용 생략)"
+            );
+        }
         anyhow::bail!(
             "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {}: {error}",
             error.instance_path
         );
     }
-    let entries: Vec<OpsEntry> = serde_json::from_value(value)
-        .map_err(|error| anyhow::anyhow!("편집 연산을 해석할 수 없습니다: {error}"))?;
+    let entries: Vec<OpsEntry> = serde_json::from_value(value).map_err(|error| {
+        if binding_input { anyhow::anyhow!("양식 바인딩 JSON을 해석할 수 없습니다. 닫힌 스키마의 필수 속성과 자료형을 확인하세요 (입력 내용 생략)") }
+        else { anyhow::anyhow!("편집 연산을 해석할 수 없습니다: {error}") }
+    })?;
     if entries.len() > MAX_OPS_ITEMS {
         anyhow::bail!("편집 연산이 항목 상한({MAX_OPS_ITEMS}개)을 초과했습니다");
     }
@@ -470,6 +484,10 @@ pub(crate) struct MoveToSpec {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum OpsEntry {
+    ApplyFormBindings {
+        #[serde(flatten)]
+        request: crate::commands::edit::form_bindings::Request,
+    },
     Replace {
         /// Always required — unlike `pattern` on `set_para`/`set_align`, `from` is never purely
         /// a selector, it is always the matched substring (Task 3's WCHAR-drift fixture depends
@@ -718,6 +736,10 @@ impl OpsEntry {
     /// Error wording matches the MCP tool_edit boundary.
     pub(crate) fn into_typed(self) -> Result<TypedEditOperation, String> {
         match self {
+            OpsEntry::ApplyFormBindings { request } => {
+                request.plan.validate_values(&request.values)?;
+                Ok(TypedEditOperation::ApplyFormBindings { request })
+            }
             OpsEntry::Replace { from, address, to } => {
                 let address = address.map(AddressSpec::into_address).transpose()?;
                 Ok(TypedEditOperation::Replace { from, to, address })

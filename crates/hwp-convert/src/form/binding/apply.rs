@@ -69,6 +69,20 @@ fn refuse(cause: &str) -> String {
     )
 }
 
+/// JSON deliberately omits binary payloads and the preview image. Include their identities
+/// in the private prepare/apply guard so a caller cannot lose intervening in-memory changes.
+fn live_document_fingerprint(doc: &Document) -> Result<String, String> {
+    let binaries: Vec<_> = doc
+        .bin_streams
+        .iter()
+        .map(|stream| (&stream.name, digest(&stream.data)))
+        .collect();
+    let preview = doc.hwpx_preview_image.as_ref().map(|bytes| digest(bytes));
+    let bytes = serde_json::to_vec(&(structural_fingerprint(doc)?, binaries, preview))
+        .map_err(|_| refuse("prepare/apply 문서 상태를 식별할 수 없음"))?;
+    Ok(digest(&bytes))
+}
+
 fn mapped(path: &SegmentPath, insertions: &[(usize, usize)]) -> SegmentPath {
     let mut path = path.clone();
     for &(section, at) in insertions {
@@ -119,13 +133,18 @@ pub fn prepare_binding_plan(
         .collect();
     let mut selected = Vec::new();
     let mut claims = BTreeMap::<(usize, Vec<usize>, usize), Vec<(usize, usize)>>::new();
-    for binding in &plan.bindings {
-        for target in &binding.targets {
+    for (binding_index, binding) in plan.bindings.iter().enumerate() {
+        for (target_index, target) in binding.targets.iter().enumerate() {
+            let target_refuse = |cause: &str| {
+                refuse(&format!(
+                    "binding[{binding_index}].targets[{target_index}]: {cause}"
+                ))
+            };
             let occurrence = occurrences
                 .get(target.occurrence_id.as_str())
-                .ok_or_else(|| refuse("occurrence_id가 원본 목록에 없음"))?;
+                .ok_or_else(|| target_refuse("occurrence_id가 원본 목록에 없음"))?;
             if !occurrence.bindable {
-                return Err(refuse(
+                return Err(target_refuse(
                     "선택한 occurrence는 native/rich/raw/caption 대상으로 지원하지 않음",
                 ));
             }
@@ -134,17 +153,26 @@ pub fn prepare_binding_plan(
                 && (text.contains(['\n', '\t'])
                     || text.encode_utf16().count() > occurrence.old_text.encode_utf16().count())
             {
-                return Err(refuse("명시적 reflow 허용 없이 원래 텍스트 범위를 초과함"));
+                return Err(target_refuse(
+                    "명시적 reflow 허용 없이 원래 텍스트 범위를 초과함",
+                ));
             }
             for &copy in &target.copies {
+                if selected.len() >= 20_000 {
+                    return Err(target_refuse(
+                        "적용 위치 합계가 20000개를 초과함; 계획을 분리해야 함",
+                    ));
+                }
                 let ranges = claims
                     .entry((occurrence.section, occurrence.indices.clone(), copy))
                     .or_default();
-                if ranges
-                    .iter()
-                    .any(|&(start, end)| start <= occurrence.end && occurrence.start <= end)
-                {
-                    return Err(refuse("선택한 occurrence의 텍스트 범위가 중복/겹침"));
+                if ranges.iter().any(|&(start, end)| {
+                    (start < occurrence.end && occurrence.start < end)
+                        || (start == end
+                            && occurrence.start == occurrence.end
+                            && start == occurrence.start)
+                }) {
+                    return Err(target_refuse("선택한 occurrence의 텍스트 범위가 중복/겹침"));
                 }
                 ranges.push((occurrence.start, occurrence.end));
                 selected.push((*occurrence, target, text, copy));
@@ -156,8 +184,9 @@ pub fn prepare_binding_plan(
     let mut routes = Vec::<CopyRoute>::new();
     let mut repeated = BTreeSet::new();
     for (repeat_index, repeat) in plan.repeats.iter().enumerate() {
+        let repeat_refuse = |cause: &str| refuse(&format!("repeats[{repeat_index}]: {cause}"));
         if !repeated.insert(repeat.table_id.as_str()) {
-            return Err(refuse("같은 표의 repeat 선언이 중복됨"));
+            return Err(repeat_refuse("같은 표의 repeat 선언이 중복됨"));
         }
         // V1 repeats whole top-level profile tables. Nested/caption/raw tables are not
         // promoted to body tables, because doing so would silently change their context.
@@ -183,9 +212,10 @@ pub fn prepare_binding_plan(
                 }
             }
         }
-        let source =
-            source.ok_or_else(|| refuse("repeat 표가 최상위 본문 표가 아니거나 원본 id가 없음"))?;
-        let anchor = anchor.ok_or_else(|| refuse("repeat 삽입 앵커의 원본 문단 id가 없음"))?;
+        let source = source
+            .ok_or_else(|| repeat_refuse("repeat 표가 최상위 본문 표가 아니거나 원본 id가 없음"))?;
+        let anchor =
+            anchor.ok_or_else(|| repeat_refuse("repeat 삽입 앵커의 원본 문단 id가 없음"))?;
         let anchor_para = &doc.sections[anchor.section].paragraphs[anchor.indices[0]];
         let anchor_text: String = anchor_para
             .chars
@@ -207,7 +237,7 @@ pub fn prepare_binding_plan(
                 .count()
                 != 1
         {
-            return Err(refuse(
+            return Err(repeat_refuse(
                 "repeat 앵커 텍스트가 비어 있거나 여러 본문 문단과 일치함; 고유 본문 앵커 필요",
             ));
         }
@@ -223,7 +253,7 @@ pub fn prepare_binding_plan(
                         && item.indices.len() == current_source.indices.len() + 2
                 })
                 .and_then(|item| item.table_index)
-                .ok_or_else(|| refuse("복제할 표의 현재 주소를 확인할 수 없음"))?;
+                .ok_or_else(|| repeat_refuse("복제할 표의 현재 주소를 확인할 수 없음"))?;
             let current_anchor = mapped(&anchor, &insertions);
             let insertion = (current_anchor.section, current_anchor.indices[0] + 1);
             crate::edit::clone_table(
@@ -232,7 +262,9 @@ pub fn prepare_binding_plan(
                 &anchor_text,
                 crate::edit::CloneTextMode::Keep,
             )
-            .map_err(|_| refuse("기존 clone_table preflight가 보존할 수 없는 표/개체를 발견함"))?;
+            .map_err(|_| {
+                repeat_refuse("기존 clone_table preflight가 보존할 수 없는 표/개체를 발견함")
+            })?;
             for route in &mut routes {
                 if route.destination.section == insertion.0
                     && route.destination.indices[0] >= insertion.1
@@ -294,7 +326,8 @@ pub fn prepare_binding_plan(
     let mut edits = BTreeMap::<(usize, Vec<usize>), Vec<_>>::new();
     for (occurrence, target, text, copy) in selected {
         let route = routes.iter().find(|route| {
-            occurrence.table_id.as_deref() == Some(plan.repeats[route.repeat].table_id.as_str())
+            occurrence.section == route.source.section
+                && occurrence.indices.starts_with(&route.source.indices)
                 && route.copy == copy
         });
         let (path, profile_id) = if let Some(route) = route {
@@ -360,7 +393,7 @@ pub fn prepare_binding_plan(
     let plan_bytes = serde_json::to_vec(plan).map_err(|_| refuse("계획 직렬화 실패"))?;
     let value_bytes = serde_json::to_vec(values).map_err(|_| refuse("값 직렬화 실패"))?;
     Ok(PreparedBindings {
-        before,
+        before: live_document_fingerprint(doc)?,
         document: candidate,
         preview: BindingPreview {
             version: 1,
@@ -377,7 +410,7 @@ pub fn apply_prepared_bindings(
     doc: &mut Document,
     prepared: PreparedBindings,
 ) -> Result<BindingPreview, String> {
-    if structural_fingerprint(doc)? != prepared.before {
+    if live_document_fingerprint(doc)? != prepared.before {
         return Err(refuse("prepare 이후 문서가 바뀜"));
     }
     *doc = prepared.document;

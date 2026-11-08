@@ -2,6 +2,8 @@
 
 mod apply;
 pub mod contract;
+#[cfg(test)]
+mod tests;
 pub use apply::{
     BindingChange, BindingPreview, PreparedBindings, ProfileCopy, apply_prepared_bindings,
     prepare_binding_plan,
@@ -115,10 +117,13 @@ impl Scan<'_> {
         if self.out.len() >= 20_000 {
             return Err("양식 위치가 20000개를 초과했습니다. 범위를 split으로 줄인 뒤 discovery를 다시 실행하세요".into());
         }
+        // Opaque paragraph records can contain source text positions. A precise splice cannot
+        // promise to relocate them, so they remain visible but unbindable rather than guessed.
         let rich = !para.controls.is_empty()
+            || !para.extras.is_empty()
             || para.chars.iter().enumerate().any(|(index, ch)| {
-                !matches!(ch, HwpChar::Text(_))
-                    && !(index + 1 == para.chars.len() && matches!(ch, HwpChar::CharCtrl(13)))
+                !(matches!(ch, HwpChar::Text(_))
+                    || index + 1 == para.chars.len() && matches!(ch, HwpChar::CharCtrl(13)))
             })
             || para
                 .char_shape_runs

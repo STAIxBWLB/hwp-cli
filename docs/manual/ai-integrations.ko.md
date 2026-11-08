@@ -176,6 +176,103 @@ id는 해당 연산 직후의 문서를 기준으로 한다. 이후 편집을 �
 {"input":"doc.hwpx","output":"with-component.hwpx","base_dir":"/work/assets","insert_blocks":[{"address":{"at":{"section":0,"paragraph":2}},"position":"after","blocks":[{"type":"image","path":"logo.png","width_mm":20}]}]}
 ```
 
+### 네이티브 양식 바인딩 검토와 적용
+
+실제로 편집할 원본에서 정확한 개별 위치를 발견한다.
+
+```bash
+hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
+```
+
+버전 1 목록은 `source_sha256`, 파싱 IR의 `structural_sha256`, 원본에 결속된 개별 위치 ID를
+담는다. 문서 텍스트가 포함되므로 명시적인 검토를 위해 로컬에 보관한다. 셀 문단은 목록의
+대상이며 이웃 레이블은 근거이지 자동 값 소유 관계가 아니다. 연결 가능한 겹치지 않는 범위를
+명시적으로 선택한다. 캡션·원본 보존/혼합 내용 대상·네이티브 이름 있는 필드는 미지원으로
+보이되 네이티브 필드는 `hwp fields`로 안내한다. 이 거부를 광범위한 텍스트 치환으로 우회하지 않는다.
+
+다음 요청 구조를 `OPS.json`으로 저장한다. 예시 해시와 개별 위치 ID는 목록의 정확한 값으로
+바꾸고 의도한 범위, 입력 값과 예산을 검토한다.
+
+```json
+[
+  {
+    "op": "apply_form_bindings",
+    "plan": {
+      "version": 1,
+      "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "structural_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "bindings": [
+        {
+          "key": "course.name",
+          "targets": [
+            {
+              "occurrence_id": "occ-2222222222222222222222222222222222222222222222222222222222222222",
+              "copies": [
+                0
+              ],
+              "max_chars": 100,
+              "allow_reflow": true
+            }
+          ]
+        }
+      ],
+      "repeats": [],
+      "constraints": []
+    },
+    "values": {
+      "course.name": "Reviewed course title"
+    },
+    "receipt": "./binding-receipt.json",
+    "preview": "./binding-preview.json"
+  }
+]
+```
+
+```bash
+hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
+hwp validate bound.hwpx
+```
+
+`apply_form_bindings`는 배치의 유일한 연산이어야 한다. 영수증은 필수이며 문서·선택한 로컬
+미리보기와 함께 원자적으로 발행한다. `--allow-partial`, `--report`와 함께 쓰지 말고 이 연산의
+영수증을 사용한다. 미리보기에는 정확한 값과 주소가 들어간다. 기본 영수증·로그는 레이블이나
+값이 아닌 식별자·해시·횟수·개별 위치 ID를 담는다. 결과를 확인하고 원본·계획·출력 식별자를 유지한다.
+
+대안으로 편집 호출에 `--dry-run`을 추가한다. 비공개 네이티브 후보를 작성·검증한 다음
+`published: false`인 영수증과 요청한 미리보기를 발행하며 네이티브 출력은 발행하지 않는다.
+이는 검토 단계이며 변경된 원본 바이트에 적용해도 안전하다는 약속이 아니다.
+
+HWP와 HWPX 모두 같은 형식으로만 적용한다. 다른 네이티브 형식을 쓰려면 먼저 변환하고 변환된
+원본에서 새로 발견한다. 수정한 값은 같은 최초 원본 바이트와 검토된 계획에 다시 적용할 수
+있다. 이전 출력을 오래된 계획에 넣거나 이전 출력 위에서 다시 복제하지 않는다. 원본이
+바뀌면 새 발견과 검토가 필요하다.
+
+대상마다 `copies`, `max_chars`, `allow_reflow`를 명시적으로 선택한다. `max_chars`는 Unicode
+scalar 예산이다. 재배치 허용이 없으면 교체 WCHAR 길이는 이전 범위를 넘을 수 없고 LF·TAB도
+거부한다. 검토된 허용은 유계 텍스트 증가를 허용할 뿐 폰트 축소·그리드/서식 변경·쪽 안의
+배치 적합성을 증명하지 않는다. 렌더·폰트·한컴 증거는 별도 #419 수용 단계이며 의미 영수증이
+그 증거를 제공하지 않는다.
+
+반복에는 지원되는 최상위 표 ID와 텍스트가 고유한 삽입 앵커인 기존 본문 문단 ID를 사용한다.
+`copies`는 원본을 포함하므로 네 개면 세 번 복제한다. 개수와 정확히 일치하는 고유한 호출자
+지정 `profile_ids`를 주고 대상의 복제 인덱스를 각각 선택한다(0은 원본). 반환된 원본→복제
+맵을 확인한다. 추출한 양식이면 실제 #417 범위 리포트와 원본→출력 맵을 유지한다. 이동한
+표 인덱스를 추론하거나 IR을 수동으로 자르지 않는다. 일반 배치의 #358 스냅샷 규칙은 유지된다.
+
+제약은 명시적 키와 호출자 제공 총계에 대한 정수 `equal`, `sum`이다. 정수는 부호 없는 ASCII
+숫자와 선택적인 올바른 세 자리 쉼표 묶음이며 `i64::MAX` 이하다. `1,000`, `1000`은 같고
+부호·단위·소수·공백은 거부한다. 덧셈은 오버플로를 검사하며 불일치는 거부한다. 표현식
+평가기나 암묵적인 총계 계산은 없다.
+
+MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면 같은 목록을 받는다.
+`hwp_edit`에는 `input`, `output`, `apply_form_bindings` **객체** 하나를 전달한다. 배열이 아니다.
+그 객체는 위의 `plan`, `values`, `receipt`, 선택적인 `preview`를 담고 `op`는 제외한다.
+스키마 검사·쓰기 경로 검사를 거쳐 같은 ops 정규화와 엔진을 사용한다. MCP `verify` 플래그는
+없으며 네이티브 검증이 연산에 포함된다.
+
+필드·상한·증거 경계는 [바인딩 설계](../design/25-form-binding-plan.ko.md)와 버전 계약
+`schemas/form-discovery-v1.schema.json`, `schemas/form-binding-plan-v1.schema.json`을 참고한다.
+
 ### 보존 손실 원장
 
 `convert`·`merge`·`split`은 보존하지 못한 항목을 모두 `hwp-preservation-report-v1` 원장에

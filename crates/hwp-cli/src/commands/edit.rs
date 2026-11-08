@@ -18,6 +18,8 @@ use sha2::{Digest, Sha256};
 
 use crate::commands::cat::load_document;
 
+pub(crate) mod form_bindings;
+
 enum EditOperation {
     Replace(Vec<String>),
     SetCell(Vec<String>),
@@ -64,6 +66,9 @@ enum EditOperation {
 /// Separators =>, =, : and @ inside strings remain data. Keep CLI-only string parsers
 /// on EditOperation; use this type at JSON/MCP boundaries.
 pub(crate) enum TypedEditOperation {
+    ApplyFormBindings {
+        request: form_bindings::Request,
+    },
     CreateStyle {
         request: hwp_convert::styles::edit::CreateStyle,
     },
@@ -466,6 +471,7 @@ pub struct EditReport {
 /// symmetry), so a consumer never has to learn a second vocabulary for the same op kinds.
 fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
     match operation {
+        TypedEditOperation::ApplyFormBindings { .. } => "apply_form_bindings",
         TypedEditOperation::CreateStyle { .. } => "create_style",
         TypedEditOperation::UpdateStyle { .. } => "update_style",
         TypedEditOperation::ApplyStyle { .. } => "apply_style",
@@ -1010,6 +1016,24 @@ pub(crate) fn emit_edit_report(plan: &EditPlan, report: &EditReport) -> anyhow::
 }
 
 pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<EditReport> {
+    if plan
+        .typed_operations
+        .iter()
+        .any(|op| matches!(op, TypedEditOperation::ApplyFormBindings { .. }))
+    {
+        let [TypedEditOperation::ApplyFormBindings { request }] = plan.typed_operations.as_slice()
+        else {
+            anyhow::bail!(
+                "apply_form_bindings는 단독 compound 연산입니다. 다른 편집 요청을 별도 호출로 분리하고 새 원본 discovery를 만드세요"
+            );
+        };
+        if !plan.operations.is_empty() {
+            anyhow::bail!(
+                "apply_form_bindings와 개별 편집 플래그를 섞을 수 없습니다. --ops에 단독 연산만 지정하세요"
+            );
+        }
+        return form_bindings::execute(input, output, plan, request);
+    }
     let output_format = OutputFormat::from_path(output)?;
     if plan.verify && !output_format.supports_verify() {
         anyhow::bail!(
@@ -3003,7 +3027,8 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         | Op::SetPage { .. } => "no change",
         // These fail with an error rather than an unapplied request; listed so a new op kind
         // has to pick its cause here.
-        Op::InsertBlocks { .. }
+        Op::ApplyFormBindings { .. }
+        | Op::InsertBlocks { .. }
         | Op::CreateStyle { .. }
         | Op::ApplyStyle { .. }
         | Op::UpdateStyle { .. }
@@ -3239,6 +3264,11 @@ fn apply_typed_operation(
         .next()
         .expect("resolved_move_destinations is aligned 1:1 with typed_operations");
     match operation {
+        TypedEditOperation::ApplyFormBindings { .. } => {
+            anyhow::bail!(
+                "apply_form_bindings는 단독 실행 경로가 필요합니다. compound 연산을 다른 요청과 분리하세요"
+            );
+        }
         TypedEditOperation::CreateStyle { request } => {
             // hwp5/src/write.rs::emit_paragraph narrows StyleId to one byte.
             // Reject before mutation rather than allowing the writer's narrowing cast.

@@ -1382,7 +1382,7 @@ mod tests {
             .1
     }
 
-    /// A cell holding a control (here a 누름틀) is never written: kordoc never removed markup.
+    /// A cell holding a control (here a native field) is never written: kordoc never removed markup.
     #[test]
     fn a_value_cell_with_controls_is_left_alone() {
         let mut doc = from_markdown("| 성명 | 누름 |\n|---|---|\n| 주소 | |\n");

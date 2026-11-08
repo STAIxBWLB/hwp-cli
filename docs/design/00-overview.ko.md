@@ -93,6 +93,7 @@
 | 22 | [remote-mcp-deployment](22-remote-mcp-deployment.ko.md) | **Remote MCP deployment 설계** — doc 20을 무엇으로 만들고 어디에 올리는지: 공유 `hwp serve` HTTP adapter, `httparse` dependency 결정(doc 20 §8 gate), 두 tier(Cloudflare Workers + Containers, Amazon Quick connector 뒤의 AgentCore) |
 | 23 | [hwpx-skill-absorption](23-hwpx-skill-absorption.ko.md) | **hwpx 스킬 흡수** — 서브커맨드 단위 패리티 매트릭스(구 서브커맨드 28개 + 스크립트 수준 보장, verified/inferred 표기), D-14 여백 기록, Phase 2.2~2.5가 제자리에서 갱신하는 살아있는 체크리스트 (issue #121, skills#35) |
 | 24 | [original-form-contract](24-original-form-contract.ko.md) | **원본 서식 보존 계약** - 합성 P0 fixture, 셀·격자·서식·자원 투영, 명시적 변경, 상대 앵커와 별도의 글꼴·실기 근거 (#411, #416) |
+| 25 | [form-binding-plan](25-form-binding-plan.ko.md) | **원본 결속 양식 바인딩 계획** - 검토된 개별 위치, 명시적 프로필 복제, 유계 정수 제약, 원자적 적용과 별도 레이아웃·실기 증거 (#411, #418) |
 
 ---
 

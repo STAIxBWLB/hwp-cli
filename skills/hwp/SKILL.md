@@ -357,6 +357,25 @@ hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.js
   `[{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]`. Ids describe the
   document right after that op.
 
+### Review and apply native form bindings
+
+Before binding supplied forms, read the [canonical binding recipe](https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/ai-integrations.md#review-and-apply-native-form-bindings) for the closed plan schema, copy maps and refusal boundaries.
+
+```bash
+hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
+hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify --dry-run
+hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
+hwp validate bound.hwpx
+```
+
+- Build and review one exclusive `apply_form_bindings` request in `OPS.json` from that exact source catalogue. Select explicit nonoverlapping occurrence IDs and per-target budgets; do not infer ownership from repeated labels.
+- Keep the catalogue and optional exact preview local. Use the mandatory content-free receipt; do not combine this operation with `--report` or `--allow-partial`.
+- Inspect the dry-run preview and copy maps before applying. Replay revisions against the same original bytes; discover and review again after source edits or conversion.
+- Use `hwp fields` for inventoried native fields. Do not bypass raw/rich/caption refusals with broad text replacement.
+- For MCP, use `hwp_slots` with `forms`/`occurrences` true and `hwp_edit` with one `apply_form_bindings` object, following the same recipe and advertised schemas. Do not send a `verify` property.
+- Collect render/font and person-run Hancom evidence separately under #419; the semantic receipt does not establish it.
+
+
 ## MCP server
 
 `hwp mcp` speaks synchronous JSON-RPC 2.0 over stdio (line-delimited; stdout carries the

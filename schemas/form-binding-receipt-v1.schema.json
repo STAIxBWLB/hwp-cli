@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/form-binding-receipt-v1.schema.json",
+  "title": "hwp-cli Form Binding Receipt v1",
+  "description": "Content-free result of applying one reviewed source-bound plan. No source text, semantic keys, logical profile names or model addresses. published=false identifies a verified dry-run candidate; output_sha256 hashes that staged native document. Render/font/Hancom proof is separate.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "plan_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "values_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "output_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "published": {
+      "type": "boolean"
+    },
+    "occurrence_ids": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": {
+        "type": "string",
+        "pattern": "^occ-[0-9a-f]{64}$"
+      }
+    },
+    "targets": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cloned_profiles": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "semantic_budget": {
+      "const": "selected_text_and_declared_clones_only"
+    },
+    "render_font_native": {
+      "const": "unverified"
+    }
+  },
+  "required": [
+    "version",
+    "source_sha256",
+    "plan_sha256",
+    "values_sha256",
+    "output_sha256",
+    "published",
+    "occurrence_ids",
+    "targets",
+    "cloned_profiles",
+    "semantic_budget",
+    "render_font_native"
+  ]
+}

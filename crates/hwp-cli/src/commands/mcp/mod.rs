@@ -721,6 +721,19 @@ fn tool_styles(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, Stri
 
 fn tool_slots(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String> {
     let path = checked_read_path(ctx, arg_str(args, "path")?)?;
+    if arg_bool(args, "occurrences", false)? {
+        if !arg_bool(args, "forms", false)? {
+            return Err("occurrences는 forms=true가 필요합니다. 개별 양식 위치 discovery를 명시적으로 요청하세요".into());
+        }
+        let discovery =
+            crate::commands::slots::discover(&path).map_err(|error| error.to_string())?;
+        return Ok(vec![text_content(
+            &serde_json::to_string_pretty(&discovery).map_err(|_| {
+                "양식 discovery를 직렬화할 수 없습니다. 원본 validate 후 다시 실행하세요"
+                    .to_string()
+            })?,
+        )]);
+    }
     let doc = load_document(&path).map_err(|e| e.to_string())?;
     let items: Vec<Value> = hwp_convert::scan_placeholders(&doc)
         .iter()
@@ -1483,6 +1496,12 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     // Named-style arrays share the ops-file schema and fixed create/update/apply order.
     // Empty arrays leave every existing request on its original path.
     let mut style_items = Vec::new();
+    if let Some(binding) = args.get("apply_form_bindings") {
+        style_items.push(
+            crate::edit_ops::named_style_item(binding.clone(), "apply_form_bindings")
+                .map_err(|error| error.to_string())?,
+        );
+    }
     for operation in ["create_style", "update_style", "apply_style"] {
         for item in arg_array(args, operation)? {
             style_items.push(
@@ -1498,6 +1517,28 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
             format!("{error:#}. 이름 있는 스타일 항목을 schemas/edit-ops-v1.schema.json과 --ops 예제에 맞게 수정한 뒤 다시 실행하세요")
         })?
     };
+    for operation in &mut operations {
+        if let Op::ApplyFormBindings { request } = operation {
+            request.receipt = checked_write_path(
+                ctx,
+                request
+                    .receipt
+                    .to_str()
+                    .ok_or("바인딩 receipt 경로는 UTF-8이어야 합니다. 경로를 수정하세요")?,
+            )?;
+            request.preview = request
+                .preview
+                .as_ref()
+                .map(|path| {
+                    checked_write_path(
+                        ctx,
+                        path.to_str()
+                            .ok_or("바인딩 preview 경로는 UTF-8이어야 합니다. 경로를 수정하세요")?,
+                    )
+                })
+                .transpose()?;
+        }
+    }
 
     for item in arg_array(args, "replace")? {
         operations.push(Op::Replace {
@@ -2504,6 +2545,7 @@ fn tool_defs() -> Vec<Value> {
                 "create_style": crate::edit_ops::named_style_schema("create_style"),
                 "update_style": crate::edit_ops::named_style_schema("update_style"),
                 "apply_style": crate::edit_ops::named_style_schema("apply_style"),
+                "apply_form_bindings": crate::edit_ops::named_style_schema("apply_form_bindings")["items"].clone(),
                 "replace": {"type": "array", "items": {"type": "object", "properties": {
                     "from": {"type": "string"}, "to": {"type": "string"},
                     "address": {"type": "object", "additionalProperties": false,
@@ -2884,7 +2926,8 @@ fn tool_defs() -> Vec<Value> {
             "description": "`{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록을 등장 순서로 반환. 이름은 중괄호·제어문자를 뺀 임의 텍스트이며 `{{ name }}`의 안쪽 공백은 제거(hwp_fill과 같은 문법). forms=true면 한국 공문서 양식 필드(레이블 셀·본문 \"라벨: 값\"·자리표시자)를 fields [{key, label, source, confidence, occurrences, required}]로 추가.",
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"},
-                "forms": {"type": "boolean", "description": "true면 양식 필드(fields)도 반환; 기본 false"}
+                "forms": {"type": "boolean", "description": "true면 양식 필드(fields)도 반환; 기본 false"},
+                "occurrences": {"type":"boolean", "description":"forms=true와 함께 원본 해시에 묶인 개별 위치/지원하지 않는 대상의 local discovery를 반환. 원문을 포함하며 공개 receipt가 아님"}
             }, "required": ["path"]}
         }),
         json!({

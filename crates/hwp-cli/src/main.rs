@@ -1,8 +1,8 @@
-//! hwp — HWP/HWPX 문서 처리 CLI.
+//! hwp: HWP/HWPX document processing CLI.
 //!
-//! CLI 정의(`Cli`/`Cmd`/value_enum)는 lib 타깃(`hwp_cli::cli`)에 있다 — 문서 자동
-//! 생성 테스트가 명령 트리를 introspect할 수 있게 하기 위함. 여기서는 파싱과
-//! 서브커맨드 디스패치만 담당한다.
+//! CLI definitions (`Cli`/`Cmd`/value_enum) live in the library target (`hwp_cli::cli`) so
+//! generated-document tests can introspect the command tree. This target only parses
+//! arguments and dispatches commands.
 
 // Large json! literals like the hwp_edit tool schema in mcp.rs exceed the default recursion limit (128).
 #![recursion_limit = "256"]
@@ -22,22 +22,22 @@ use hwp_cli::i18n;
 const WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
 
 fn main() -> anyhow::Result<()> {
-    // clap derive가 만드는 명령 트리 생성/파싱은 디버그 빌드에서 프레임이 커져
-    // Windows 기본 main 스레드 스택(1MB)을 넘는다(실기 CI 확정). 모든 작업을
-    // 큰 스택의 워커 스레드에서 실행해 플랫폼·빌드 프로파일 차이를 흡수한다.
+    // Clap's derived command construction/parsing exceeds Windows' default 1 MiB main
+    // stack in debug builds (observed in CI). Run on a larger worker stack across
+    // platforms and build profiles.
     let worker = std::thread::Builder::new()
         .name("hwp-main".to_string())
         .stack_size(WORKER_STACK_BYTES)
         .spawn(real_main)?;
     match worker.join() {
         Ok(result) => result,
-        // 워커의 패닉을 그대로 다시 던져 패닉 메시지·동작을 보존한다.
+        // Resume the worker panic to preserve its message and behavior.
         Err(payload) => std::panic::resume_unwind(payload),
     }
 }
 
 fn real_main() -> anyhow::Result<()> {
-    // 도움말 언어는 clap이 help/오류를 출력하기 전에 정해야 한다.
+    // Select the language before clap prints help or errors.
     let command = i18n::localize(Cli::command(), i18n::Lang::detect());
     let cli = match Cli::from_arg_matches(&command.get_matches()) {
         Ok(cli) => cli,

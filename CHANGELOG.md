@@ -29,6 +29,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- `hwp slots --forms --json --occurrences` and MCP `hwp_slots` expose individual,
+  source-bound form targets. The exclusive `apply_form_bindings` edit op and matching
+  MCP object apply reviewed literal bindings, explicit profile copies and checked integer
+  totals through existing clone/splice primitives. Plans bind exact source bytes and IR
+  identity; stale, overlapping, unsupported or over-budget targets refuse before publication.
+  Native output, a content-free receipt and an optional local preview publish atomically.
+  Same-format HWP/HWPX workflows preserve untouched form structure and formatting; dry-run
+  verifies a staged native candidate. Captions, raw/rich targets and native named fields
+  are inventoried but not bindable. Render, font and Hancom proof remain separate
+  ([#418](https://github.com/STAIxBWLB/hwp-cli/issues/418)).
+
 - `hwp_edit` exposes `create_style`, `update_style` and `apply_style` arrays using the
   same closed property/address vocabulary as `hwp edit --ops`. Named-style requests run
   in create/update/apply order; direct formatting stays unless `clear_direct` is explicit.

@@ -2,7 +2,7 @@
 
 # Source-bound form binding plan
 
-**Status: approved design, implementation in progress.** This contract belongs to #418 under
+**Status: version 1 implementation.** This contract belongs to #418 under
 #411; English is canonical. The compound `apply_form_bindings` API and initial plan contract
 have been approved. This document specifies their design, not availability in a released CLI,
 MCP tool or binary. Existing operations and #358 snapshot rules remain unchanged.
