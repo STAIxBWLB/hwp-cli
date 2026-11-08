@@ -570,8 +570,14 @@ pub(crate) fn execute(
     // D-15: write the loss report before any strict refusal, so the evidence
     // for a failed run survives on disk even when the run itself does not
     // publish.
+    // The loss report is its own transaction, so the set published below cannot compare against
+    // it by itself. Its identity is recorded and handed to that publish, which refuses to
+    // replace it: two spellings of one file (Unicode normalization, case) would otherwise let
+    // the range report overwrite the ledger without a word.
+    let mut published_alone = Vec::new();
     if let Some(report_path) = loss_report {
         crate::commands::convert::write_loss_report(report_path, &report.preservation)?;
+        published_alone.push(crate::commands::output::PublishedFile::record(report_path)?);
     }
     // #174: the ledger keeps D-08 roundings for audit, but --strict and the
     // loss summary judge only genuine preservation losses.
@@ -601,7 +607,11 @@ pub(crate) fn execute(
 
     // D-16: publish the whole fragment set in one transaction — never per
     // member inside the build loop above, which has no outer transaction.
-    crate::commands::output::write_validated_files(&fragment_bytes, Some(input))?;
+    crate::commands::output::write_validated_files_avoiding(
+        &fragment_bytes,
+        Some(input),
+        &published_alone,
+    )?;
     // #177: only after the publish succeeded, drop fragments a previous,
     // larger run left behind.
     remove_stale_fragments(out_dir, &stem, &extension, &destinations);

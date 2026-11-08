@@ -1519,3 +1519,161 @@ fn a_report_spelled_in_the_other_unicode_normalization_follows_the_volume() {
         assert_eq!(&fragment[..2], b"PK", "the fragment is still a package");
     }
 }
+
+/// A heading anchor names the text `hwp cat` prints for a paragraph, tabs, line breaks and
+/// non-breaking spaces included. Dropping the non-text characters would make `FORMPROFILE` match
+/// a paragraph that reads `FORM<tab>PROFILE`, and make the real text impossible to select.
+#[test]
+fn a_heading_with_a_tab_a_line_break_and_a_nbsp_is_selected_by_the_text_cat_prints() {
+    let Some(ws) = Workspace::new("rich-heading") else {
+        return;
+    };
+    rewrite_zip(
+        &ws.dir.join("source.hwpx"),
+        &ws.dir.join("rich.hwpx"),
+        |name, data| {
+            if name.starts_with("Contents/section") && name.ends_with(".xml") {
+                return Some((
+                    name.to_string(),
+                    swap_text(
+                        data,
+                        &[(
+                            "FORM_START_PROFILE_2",
+                            "FORM<hp:tab width=\"4000\" leader=\"0\" type=\"1\"/>PROFILE<hp:lineBreak/>TWO\u{a0}X",
+                        )],
+                    ),
+                ));
+            }
+            Some((name.to_string(), data))
+        },
+    );
+    // What cat prints for the paragraph.
+    let cat = hwp(&ws.dir, &["cat", "rich.hwpx"]);
+    let printed = String::from_utf8_lossy(&cat.stdout).into_owned();
+    let shown = "FORM\tPROFILE\nTWO\u{a0}X";
+    assert!(
+        printed.contains(shown),
+        "cat prints the heading as {shown:?}: {printed:?}"
+    );
+
+    let by_text = hwp(
+        &ws.dir,
+        &[
+            "split",
+            "rich.hwpx",
+            "--out-dir",
+            "rich-out",
+            "--from",
+            &format!("heading:{shown}"),
+            "--to",
+            "heading:FORM_START_PROFILE_3",
+            "--end-exclusive",
+            "--range-report",
+            "rich-out.json",
+        ],
+    );
+    assert!(
+        by_text.status.success(),
+        "the text cat prints must select the paragraph: {}",
+        String::from_utf8_lossy(&by_text.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(ws.dir.join("rich-out.json")).unwrap()).unwrap();
+    assert_eq!(report["selection"]["first_paragraph"], 13);
+
+    // The text with the controls simply dropped is a different text.
+    let dropped = hwp(
+        &ws.dir,
+        &[
+            "split",
+            "rich.hwpx",
+            "--out-dir",
+            "rich-dropped",
+            "--from",
+            "heading:FORMPROFILETWO\u{a0}X",
+        ],
+    );
+    assert!(
+        !dropped.status.success(),
+        "dropping the controls must not match"
+    );
+    assert!(!ws.dir.join("rich-dropped").exists());
+}
+
+/// `--loss-report` is published in its own transaction, before the fragment and the range report.
+/// Two spellings of one file (the NFC and NFD forms of a Korean name on APFS) must not let the
+/// range report replace the ledger. On a volume that keeps them apart they are two files.
+#[test]
+fn a_range_report_spelled_like_the_loss_report_cannot_replace_it() {
+    let Some(ws) = Workspace::new("two-reports") else {
+        return;
+    };
+    let nfc = "\u{bcf4}\u{ace0}\u{c11c}"; // 보고서
+    let nfd = "\u{1107}\u{1169}\u{1100}\u{1169}\u{1109}\u{1165}"; // the same, decomposed
+    // The two literals must be the same text in two normalizations; a typo in either would make
+    // them different names on every volume and leave the "folds" arm untested.
+    assert_ne!(nfc, nfd);
+    assert_eq!(nfc.chars().count(), 3, "three precomposed syllables");
+    assert_eq!(
+        nfd.chars().count(),
+        6,
+        "each decomposed into a lead and a vowel jamo here"
+    );
+    std::fs::write(ws.dir.join(nfc), b"x").unwrap();
+    let folds = ws.dir.join(nfd).exists();
+    std::fs::remove_file(ws.dir.join(nfc)).unwrap();
+    if cfg!(target_os = "macos") {
+        assert!(
+            folds,
+            "APFS and HFS+ treat the two normalizations as one name: the literals are wrong"
+        );
+    }
+    let result = hwp(
+        &ws.dir,
+        &[
+            "split",
+            "source.hwpx",
+            "--out-dir",
+            "out",
+            "--from",
+            "heading:FORM_START_PROFILE_1",
+            "--loss-report",
+            &format!("{nfc}.json"),
+            "--range-report",
+            &format!("{nfd}.json"),
+        ],
+    );
+    if folds {
+        assert!(
+            !result.status.success(),
+            "the range report replaced the loss report"
+        );
+        let ledger = std::fs::read_to_string(ws.dir.join(format!("{nfc}.json"))).unwrap();
+        let ledger: Value = serde_json::from_str(&ledger).unwrap();
+        assert_eq!(
+            ledger["contract"], "hwp-preservation-report-v1",
+            "the loss report is still the ledger: {ledger}"
+        );
+        let out: Vec<_> = std::fs::read_dir(ws.dir.join("out"))
+            .map(|entries| entries.flatten().map(|e| e.file_name()).collect())
+            .unwrap_or_default();
+        assert!(
+            out.is_empty(),
+            "no fragment is published for a refused set: {out:?}"
+        );
+    } else {
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let ledger: Value =
+            serde_json::from_slice(&std::fs::read(ws.dir.join(format!("{nfc}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(ledger["contract"], "hwp-preservation-report-v1");
+        let range: Value =
+            serde_json::from_slice(&std::fs::read(ws.dir.join(format!("{nfd}.json"))).unwrap())
+                .unwrap();
+        assert_eq!(range["contract"], "hwp-range-extraction-v1");
+    }
+}

@@ -36,7 +36,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - `hwp split --from <anchor> [--to <anchor>] [--end-exclusive] [--source-sha256 <hex>]
   [--range-report <file>]` and the matching `hwp_split` arguments extract one typed range instead
   of splitting by section or page. An anchor is `heading:<text>` (a top-level body paragraph whose
-  whole text equals it), `bookmark:<name>` or `at:<section>.<paragraph>`. The range is a run of
+  own text equals it, trimmed, exactly as `hwp cat` prints it: a tab is a tab, a line break a
+  line break and a non-breaking space a space, and the text of a table or other object inside
+  the paragraph is not part of it), `bookmark:<name>` or `at:<section>.<paragraph>`. The range is a run of
   top-level body paragraphs of one section, so a table is taken whole and never cut. The fragment
   keeps the section setup and the whole header. Its binaries come from one closure pass over the
   built fragment: a binary is dropped only when nothing in the fragment (pictures, captions,
@@ -100,7 +102,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   came from. Resolving a picture's id now consults the package
   manifest first, so an id that differs from its file name (`id="logo"`,
   `href="BinData/p1.png"`) finds its image, where `hwp convert` used to drop it as a removed
-  binary asset; an id the manifest lists never falls back to a same-named file of another item
+  binary asset, both to HWPX and to HWP5 (the HWP5 writer used its own resolver, which ignored
+  the manifest and matched by substring; it now follows the manifest and an id the manifest
+  lists never falls back to a same-named file of another item)
   ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
 - The HWPX reader now reads `hh:style@type` (`PARA`/`CHAR`) into the style kind that HWP5 stores in
   the low bits of `STYLE.attr`, and the HWPX writer writes `CHAR` back for a character style

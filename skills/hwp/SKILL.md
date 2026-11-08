@@ -57,8 +57,9 @@ syntax (used by `fill`, `slots` and the template tools).
   estimate that may not match Hancom's own pagination. `--from` with `heading:TEXT`,
   `bookmark:NAME` or `at:SECTION.PARAGRAPH` (0-based), plus optional `--to`, `--end-exclusive` and
   `--source-sha256 HEX`, instead extracts ONE typed range: top-level body paragraphs of one section (a table is taken
-  whole), with the section setup and every binary the range uses. A heading must equal the whole
-  paragraph text, so cell text is not an anchor, and an anchor matching twice is refused. Nothing
+  whole), with the section setup and every binary the range uses. A heading must equal the
+  paragraph's own text as `hwp cat` prints it (tabs, line breaks and non-breaking spaces count),
+  so cell text is not an anchor, and an anchor matching twice is refused. Nothing
   is written on a refusal. `--range-report FILE` publishes `hwp-range-extraction-v1` (source
   hash, source-to-output addresses, kept, kept-unverified, excluded and dropped-by-format
   binaries) together with the fragment. A binary is excluded only when the fragment provably does

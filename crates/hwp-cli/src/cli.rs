@@ -211,7 +211,8 @@ pub enum Cmd {
         #[arg(long)]
         pages: Vec<String>,
         /// Extract one typed range instead of splitting: where it starts, as
-        /// "heading:<text>" (the one body paragraph whose whole text equals it),
+        /// "heading:<text>" (the one body paragraph whose own text equals it, as
+        /// `hwp cat` prints it: tabs, line breaks and non-breaking spaces count),
         /// "bookmark:<name>" or "at:<section>.<paragraph>" (both 0-based). The
         /// range is a run of top-level body paragraphs of one section, so a table
         /// is taken whole; the fragment keeps the section setup, the whole header

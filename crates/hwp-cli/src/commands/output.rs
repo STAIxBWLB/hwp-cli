@@ -231,6 +231,39 @@ pub(crate) fn write_validated_files(
     outputs: &[(PathBuf, Vec<u8>)],
     input: Option<&Path>,
 ) -> anyhow::Result<Option<String>> {
+    write_validated_files_avoiding(outputs, input, &[])
+}
+
+/// A file a command published EARLIER, in a transaction of its own, that a later output set must
+/// not replace. Its identity is read from the file itself, so it holds whatever spelling of the
+/// path reached it.
+pub(crate) struct PublishedFile {
+    path: PathBuf,
+    identity: FileIdentity,
+}
+
+impl PublishedFile {
+    /// Records the file now at `path`.
+    pub(crate) fn record(path: &Path) -> anyhow::Result<Self> {
+        let metadata = fs::symlink_metadata(path).with_context(|| {
+            format!("게시한 출력 파일을 확인하지 못했습니다: {}", path.display())
+        })?;
+        Ok(Self {
+            identity: FileIdentity::from_metadata(&metadata, path)?,
+            path: path.to_path_buf(),
+        })
+    }
+}
+
+/// [`write_validated_files`] for a command that already published other files on its own
+/// (`split` writes `--loss-report` before the fragments so a strict refusal still leaves it).
+/// A destination in this set that turns out to be one of `already_published` is refused before
+/// anything in the set replaces it, even when no name comparison could have told.
+pub(crate) fn write_validated_files_avoiding(
+    outputs: &[(PathBuf, Vec<u8>)],
+    input: Option<&Path>,
+    already_published: &[PublishedFile],
+) -> anyhow::Result<Option<String>> {
     if outputs.is_empty() {
         anyhow::bail!("게시할 출력 파일이 없습니다");
     }
@@ -280,7 +313,7 @@ pub(crate) fn write_validated_files(
             );
         }
     }
-    publish_output_set(&mut staged, |_| Ok(()))
+    publish_output_set(&mut staged, already_published, |_| Ok(()))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -291,12 +324,32 @@ enum SetPublishStep {
 
 fn publish_output_set(
     outputs: &mut [StagedOutput],
+    already_published: &[PublishedFile],
     mut hook: impl FnMut(SetPublishStep) -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<String>> {
     // Mutation을 시작하기 전에 집합 전체의 경쟁 여부와 staged 파일 상태를 확정한다.
     for output in outputs.iter() {
         recheck_destination(&output.destination, &output.snapshot)?;
         output.sync_file()?;
+    }
+    // A destination that already exists as one of the files this command published on its own
+    // earlier is that file, however its path is spelled. The check reads the identity recorded in
+    // the destination's snapshot, before anything is moved: once an existing destination has been
+    // backed up the path no longer reaches the file, and the comparison would find nothing.
+    for output in outputs.iter() {
+        let DestinationSnapshot::Regular { identity, .. } = &output.snapshot else {
+            continue;
+        };
+        if let Some(earlier) = already_published
+            .iter()
+            .find(|published| published.identity.same_file(identity))
+        {
+            anyhow::bail!(
+                "출력 경로가 앞서 따로 게시한 파일과 같은 파일입니다 (파일시스템이 같은 이름으로 취급): {} 와 {} — 덮어쓰게 되어 게시하지 않습니다",
+                earlier.path.display(),
+                output.destination.display()
+            );
+        }
     }
     #[cfg(unix)]
     for output in outputs.iter() {
@@ -363,6 +416,7 @@ fn publish_output_set(
             // own identity can, and it is compared here, before the replacing rename.
             if let Ok(metadata) = fs::symlink_metadata(&output.destination) {
                 let reached = FileIdentity::from_metadata(&metadata, &output.destination)?;
+
                 for (earlier, identity) in published_identity.iter().enumerate() {
                     if let Some(identity) = identity
                         && identity.same_file(&reached)
@@ -3125,7 +3179,7 @@ mod tests {
         fs::write(&destinations[1], b"OLD-1").unwrap();
         let mut staged = staged_file_set(&destinations);
 
-        let result = publish_output_set(&mut staged, |step| {
+        let result = publish_output_set(&mut staged, &[], |step| {
             if step == SetPublishStep::Publish(1) {
                 anyhow::bail!("강제 두 번째 게시 실패");
             }
@@ -3145,7 +3199,7 @@ mod tests {
         let destinations = [dir.join("page-1.svg"), dir.join("page-2.svg")];
         let mut staged = staged_file_set(&destinations);
 
-        let result = publish_output_set(&mut staged, |step| {
+        let result = publish_output_set(&mut staged, &[], |step| {
             if step == SetPublishStep::Publish(1) {
                 anyhow::bail!("강제 두 번째 게시 실패");
             }
@@ -3168,7 +3222,7 @@ mod tests {
         let mut staged = staged_file_set(&destinations);
         let backup = staged[0].workspace.join("destination.backup");
 
-        let result = publish_output_set(&mut staged, |step| match step {
+        let result = publish_output_set(&mut staged, &[], |step| match step {
             SetPublishStep::Publish(1) => anyhow::bail!("강제 두 번째 게시 실패"),
             SetPublishStep::Restore(0) => anyhow::bail!("강제 첫 번째 복원 실패"),
             _ => Ok(()),
@@ -3347,6 +3401,59 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A file published earlier by the same command, in a transaction of its own (`split`'s
+    /// `--loss-report`), that a later set names through another spelling of the same path.
+    #[test]
+    fn output_set_refuses_to_replace_a_file_the_command_published_earlier() {
+        let dir = test_dir("set-avoid");
+        let folds = volume_folds_normalization(&dir);
+        fs::remove_file(dir.join("\u{d55c}\u{ae00}")).unwrap();
+        // The earlier transaction: one file, spelled in NFC.
+        write_validated_files(&[(dir.join(NFC_NAME), b"LEDGER".to_vec())], None).unwrap();
+        let earlier = PublishedFile::record(&dir.join(NFC_NAME)).unwrap();
+        // The later set names it in NFD.
+        let outputs = vec![
+            (dir.join("fragment.bin"), b"FRAGMENT".to_vec()),
+            (dir.join(NFD_NAME), b"REPORT".to_vec()),
+        ];
+        let result = write_validated_files_avoiding(&outputs, None, &[earlier]);
+        if folds {
+            let error = format!("{:#}", result.expect_err("the earlier file was replaced"));
+            assert!(error.contains("앞서 따로 게시한 파일"), "{error}");
+            assert_eq!(
+                fs::read(dir.join(NFC_NAME)).unwrap(),
+                b"LEDGER",
+                "the earlier file is intact"
+            );
+            assert!(
+                !dir.join("fragment.bin").exists(),
+                "nothing from the refused set remains"
+            );
+            assert_no_debris(&dir);
+        } else {
+            // Two distinct names: the later set is free to write its own file.
+            result.unwrap();
+            assert_eq!(fs::read(dir.join(NFC_NAME)).unwrap(), b"LEDGER");
+            assert_eq!(fs::read(dir.join(NFD_NAME)).unwrap(), b"REPORT");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn output_set_with_unrelated_earlier_files_is_unaffected() {
+        let dir = test_dir("set-avoid-unrelated");
+        write_validated_files(&[(dir.join("ledger.bin"), b"LEDGER".to_vec())], None).unwrap();
+        let earlier = PublishedFile::record(&dir.join("ledger.bin")).unwrap();
+        let outputs = vec![
+            (dir.join("a.bin"), b"A".to_vec()),
+            (dir.join("b.bin"), b"B".to_vec()),
+        ];
+        write_validated_files_avoiding(&outputs, None, &[earlier]).unwrap();
+        assert_eq!(fs::read(dir.join("a.bin")).unwrap(), b"A");
+        assert_eq!(fs::read(dir.join("ledger.bin")).unwrap(), b"LEDGER");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn output_set_preflight_rejects_duplicate_and_race_before_mutation() {
         let dir = test_dir("set-preflight");
@@ -3365,7 +3472,7 @@ mod tests {
         let destinations = [first.clone(), second.clone()];
         let mut staged = staged_file_set(&destinations);
         fs::write(&second, b"RACER").unwrap();
-        assert!(publish_output_set(&mut staged, |_| Ok(())).is_err());
+        assert!(publish_output_set(&mut staged, &[], |_| Ok(())).is_err());
         assert_eq!(fs::read(&first).unwrap(), b"OLD-0");
         assert_eq!(fs::read(&second).unwrap(), b"RACER");
         drop(staged);

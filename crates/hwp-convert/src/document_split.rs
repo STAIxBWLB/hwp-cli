@@ -560,17 +560,12 @@ pub fn source_sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The text a heading anchor is compared with: the paragraph's own text as `hwp cat` prints it
+/// (line breaks, hyphens, non-breaking and fixed-width spaces and tabs included), trimmed, and
+/// without the content of any control in it. One shared projection
+/// ([`hwp_model::Paragraph::own_text`]), so what `cat` shows is what an anchor can name.
 fn paragraph_text(paragraph: &Paragraph) -> String {
-    paragraph
-        .chars
-        .iter()
-        .filter_map(|ch| match ch {
-            HwpChar::Text(c) => Some(*c),
-            _ => None,
-        })
-        .collect::<String>()
-        .trim()
-        .to_string()
+    paragraph.own_text().trim().to_string()
 }
 
 /// Whether `paragraph` itself (not a nested one) holds a bookmark named `name`.
@@ -1199,7 +1194,11 @@ fn scan_references(fragment: &Document) -> ReferenceScan {
 }
 
 /// Tables in `paragraph`, in the order `hwp edit` numbers them: a table, then the tables
-/// nested in its cells, then the next control.
+/// nested in its cells, then the next control. Tables inside a CAPTION are not counted, because
+/// `hwp edit --set-cell` does not number them either (its walker enters cells and the paragraph
+/// lists of generic objects, not captions); they are kept in the fragment but have no table
+/// ordinal to map, which `schemas/range-extraction-v1.schema.json` says. The test
+/// `table_ordinals_follow_the_set_cell_walker` pins this function to that walker.
 fn count_tables(paragraph: &Paragraph) -> usize {
     paragraph
         .controls
@@ -1327,7 +1326,11 @@ pub fn extract_range(
                 *ctrl_index = Some(new_index as u32);
             }
         }
-        // The paragraph keeps no text, line cache or run map of the original.
+        // The paragraph keeps no text, line cache or run map of the original, and no opaque
+        // records either: they belong to the excluded paragraph's text and layout (a range tag
+        // indexes characters that are not here, and the HWP5 writer counts them in the header),
+        // and the setup controls already carry their own child records inside `controls`.
+        setup.extras.clear();
         setup
             .chars
             .push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
@@ -2970,6 +2973,323 @@ mod tests {
         // split, so it must not be offered.
         assert!(!message.contains("embed-bin"), "{message}");
         assert!(!message.contains("json"), "{message}");
+    }
+
+    // ───────────── T9-F23, T9-F25 ─────────────
+
+    /// A body paragraph whose characters are exactly `chars`.
+    fn paragraph_of(chars: Vec<HwpChar>) -> Paragraph {
+        let mut paragraph = text_paragraph("");
+        paragraph.chars = chars;
+        paragraph
+    }
+
+    fn text(value: &str) -> Vec<HwpChar> {
+        value.chars().map(HwpChar::Text).collect()
+    }
+
+    /// `range_doc` with the paragraph "A" (index 1) replaced.
+    fn doc_with_heading(chars: Vec<HwpChar>) -> Document {
+        let mut doc = range_doc();
+        doc.sections[0].paragraphs[1] = paragraph_of(chars);
+        doc
+    }
+
+    fn start_of(doc: &Document, anchor: &str) -> Result<usize, RangeError> {
+        extract_range(doc, "h", &selector(heading(anchor), None, true)).map(|outcome| outcome.start)
+    }
+
+    #[test]
+    fn 제목은_cat이_보여_주는_문단_텍스트와_같아야_한다() {
+        // "A<NBSP>B": `hwp cat` prints "A B" (a non-breaking space is a space), so that is what a
+        // heading anchor must name. "AB", which is only the Text characters, must not match.
+        let mut chars = text("A");
+        chars.push(HwpChar::CharCtrl(hwp_model::ctrl_char::NB_SPACE));
+        chars.extend(text("B"));
+        let doc = doc_with_heading(chars);
+        assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "A B");
+        assert_eq!(start_of(&doc, "A B"), Ok(1));
+        assert!(matches!(
+            start_of(&doc, "AB"),
+            Err(RangeError::AnchorMissing { .. })
+        ));
+    }
+
+    #[test]
+    fn 제목에_탭과_줄바꿈과_하이픈과_고정폭_공백이_있어도_고를_수_있다() {
+        for (label, control, shown) in [
+            (
+                "hyphen",
+                HwpChar::CharCtrl(hwp_model::ctrl_char::HYPHEN),
+                "A-B",
+            ),
+            (
+                "fixed-width space",
+                HwpChar::CharCtrl(hwp_model::ctrl_char::FW_SPACE),
+                "A B",
+            ),
+            (
+                "line break",
+                HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK),
+                "A\nB",
+            ),
+            (
+                "tab",
+                HwpChar::InlineCtrl {
+                    code: hwp_model::ctrl_char::TAB,
+                    payload: vec![0; 12],
+                },
+                "A\tB",
+            ),
+        ] {
+            let mut chars = text("A");
+            chars.push(control);
+            chars.extend(text("B"));
+            let doc = doc_with_heading(chars);
+            assert_eq!(doc.sections[0].paragraphs[1].plain_text(), shown, "{label}");
+            assert_eq!(
+                start_of(&doc, shown),
+                Ok(1),
+                "{label}: the text cat prints is selectable"
+            );
+            assert!(
+                matches!(start_of(&doc, "AB"), Err(RangeError::AnchorMissing { .. })),
+                "{label}: dropping the control must not match"
+            );
+        }
+    }
+
+    #[test]
+    fn 제목_앞뒤_공백은_무시하고_안쪽은_그대로_비교한다() {
+        let doc = doc_with_heading(text("  A  B  "));
+        assert_eq!(start_of(&doc, "A  B"), Ok(1));
+        assert_eq!(
+            start_of(&doc, "  A  B  "),
+            Ok(1),
+            "the anchor is trimmed too"
+        );
+        assert!(matches!(
+            start_of(&doc, "A B"),
+            Err(RangeError::AnchorMissing { .. })
+        ));
+    }
+
+    #[test]
+    fn 표를_담은_문단은_표_텍스트가_아니라_자기_문단_텍스트로_고른다() {
+        // A table inside the paragraph contributes its cell text to the projection, so a heading
+        // anchor must not match a paragraph only because of what its table holds.
+        let mut doc = range_doc();
+        let mut with_table = text_paragraph("본문");
+        let mut cell_paragraph = text_paragraph("셀 글");
+        cell_paragraph.controls.clear();
+        let table = crate::from_markdown("<table><tr><td>셀 글</td></tr></table>\n").sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .find(|c| matches!(c, Control::Table(_)))
+            .cloned()
+            .expect("a table");
+        with_table.chars.push(HwpChar::ExtCtrl {
+            code: 11,
+            ctrl_id: *b"tbl ",
+            payload: Vec::new(),
+            ctrl_index: Some(0),
+        });
+        with_table.controls.push(table);
+        doc.sections[0].paragraphs[1] = with_table;
+        assert_eq!(start_of(&doc, "본문"), Ok(1));
+        assert!(
+            matches!(
+                start_of(&doc, "셀 글"),
+                Err(RangeError::AnchorMissing { .. })
+            ),
+            "cell text is not the paragraph's own text"
+        );
+        assert!(
+            matches!(
+                start_of(&doc, "본문셀 글"),
+                Err(RangeError::AnchorMissing { .. })
+            ),
+            "nor is the paragraph text with the table's text appended"
+        );
+        let _ = cell_paragraph;
+    }
+
+    #[test]
+    fn 합성_설정_문단은_제외한_첫_문단의_원본_레코드를_가져오지_않는다() {
+        let mut doc = range_doc();
+        // The first paragraph carries opaque records that belong to ITS text and layout: a range
+        // tag whose positions index text that is not in the fragment, and an arbitrary record.
+        doc.sections[0].paragraphs[0].extras = vec![
+            hwp_model::OpaqueRecord {
+                tag: 0x10 + 54, // PARA_RANGE_TAG
+                data: vec![0, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0],
+                children: Vec::new(),
+            },
+            opaque(0x10 + 99),
+        ];
+        let outcome = extract_range(
+            &doc,
+            "h",
+            &selector(heading("B"), Some(heading("C")), false),
+        )
+        .unwrap();
+        let setup = &outcome.fragment.sections[0].paragraphs[0];
+        assert!(
+            has_section_def(setup),
+            "the carried setup paragraph is the first one"
+        );
+        assert!(
+            setup.extras.is_empty(),
+            "the synthetic paragraph must not carry the excluded paragraph's records: {:?}",
+            setup.extras
+        );
+        // The source is untouched.
+        assert_eq!(doc.sections[0].paragraphs[0].extras.len(), 2);
+    }
+
+    #[test]
+    fn 범위가_첫_문단에서_시작하면_그_문단의_레코드는_그대로_남는다() {
+        let mut doc = range_doc();
+        doc.sections[0].paragraphs[0].extras = vec![opaque(0x10 + 99)];
+        let outcome = extract_range(
+            &doc,
+            "h",
+            &selector(
+                RangeAnchor::Address {
+                    section: 0,
+                    paragraph: 0,
+                },
+                Some(heading("A")),
+                true,
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.fragment.sections[0].paragraphs[0].extras.len(),
+            1,
+            "a paragraph taken whole keeps its own records"
+        );
+    }
+
+    /// A table holding a table in a cell, a shape whose text box holds a table, and a table in a
+    /// caption, in one paragraph. The ordinal `count_tables` assigns must equal the one
+    /// `hwp edit --set-cell` reaches (the n-th table in its walk), and a caption table must not
+    /// take one.
+    fn tables_everywhere() -> Paragraph {
+        let table_of = |cell_text: &str| {
+            crate::from_markdown(&format!("<table><tr><td>{cell_text}</td></tr></table>\n"))
+                .sections[0]
+                .paragraphs
+                .iter()
+                .flat_map(|p| p.controls.iter())
+                .find(|c| matches!(c, Control::Table(_)))
+                .cloned()
+                .expect("a table")
+        };
+        let mut outer = table_of("OUTER");
+        if let Control::Table(table) = &mut outer {
+            let mut inner_holder = text_paragraph("");
+            inner_holder.controls.push(table_of("NESTED"));
+            table.cells[0].paragraphs.push(inner_holder);
+            let mut in_caption = text_paragraph("");
+            in_caption.controls.push(table_of("IN-CAPTION"));
+            table.caption = Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 0,
+                width: None,
+                last_width: 0,
+                paragraphs: vec![in_caption],
+            });
+        }
+        let mut text_box = generic(b"gso ");
+        let mut box_holder = text_paragraph("");
+        box_holder.controls.push(table_of("IN-TEXTBOX"));
+        text_box.paragraph_lists.push(hwp_model::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: vec![box_holder],
+        });
+        let mut paragraph = text_paragraph("");
+        paragraph.controls = vec![outer, Control::Generic(text_box)];
+        paragraph
+    }
+
+    #[test]
+    fn table_ordinals_follow_the_set_cell_walker() {
+        let paragraph = tables_everywhere();
+        let mut doc = range_doc();
+        doc.sections[0].paragraphs[1] = paragraph.clone();
+        // How many tables does `--set-cell` reach? Walk it until it runs out.
+        let mut reached = 0;
+        while crate::edit::with_nth_table_readonly(&mut doc, reached, |_| ()).is_some() {
+            reached += 1;
+        }
+        assert_eq!(
+            count_tables(&paragraph),
+            reached,
+            "count_tables must number tables exactly as hwp edit --set-cell does"
+        );
+        // outer, nested in its cell, and the text-box table; the caption table takes none.
+        assert_eq!(reached, 3);
+        // Each ordinal reaches the table the map says it does.
+        let texts: Vec<String> = (0..reached)
+            .map(|n| {
+                crate::edit::with_nth_table_readonly(&mut doc, n, |t| {
+                    t.cells[0].paragraphs[0].plain_text()
+                })
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(texts, vec!["OUTER", "NESTED", "IN-TEXTBOX"]);
+    }
+
+    #[test]
+    fn a_caption_table_stays_in_the_fragment_without_an_address() {
+        let mut doc = range_doc();
+        doc.sections[0].paragraphs[4] = tables_everywhere();
+        let outcome = extract_range(
+            &doc,
+            "h",
+            &selector(heading("B"), Some(heading("C")), false),
+        )
+        .unwrap();
+        let table_entries = outcome
+            .address_map
+            .iter()
+            .filter(|a| a.kind == AddressKind::Table)
+            .count();
+        assert_eq!(
+            table_entries, 3,
+            "outer, nested and text-box tables are mapped"
+        );
+        // The caption table is still in the fragment, found structurally: the outer table's
+        // caption holds a paragraph that holds a table whose cell reads IN-CAPTION.
+        let outer = outcome.fragment.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("the outer table");
+        let caption_table = outer
+            .caption
+            .as_ref()
+            .expect("the caption is kept")
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .expect("the table inside the caption is kept");
+        assert_eq!(
+            caption_table.cells[0].paragraphs[0].plain_text(),
+            "IN-CAPTION"
+        );
     }
 
     #[test]

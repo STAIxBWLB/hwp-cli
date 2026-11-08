@@ -28,7 +28,7 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
 - `hwp split {in} --out-dir {dir}` / `hwp_split` — one fragment per Section by default; `--pages`
   splits on page ranges instead, estimated from the layout cache Hancom saved rather than
   recomputed, so it may not match Hancom's own pagination. `--from`/`--to` (`from`/`to` in
-  `hwp_split`) extract one typed range instead, anchored on a heading, a bookmark or a
+  `hwp_split`) extract one typed range instead, anchored on a heading (the paragraph's own text as `hwp cat` prints it), a bookmark or a
   `section.paragraph` address, with the binaries the range uses. The `hwp-range-extraction-v1`
   report of where each paragraph and table went and which binaries were kept, kept unverified,
   excluded or dropped by the output format (HWP5 writes only the binaries its BIN_DATA table

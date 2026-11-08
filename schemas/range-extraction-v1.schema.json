@@ -84,7 +84,7 @@
     },
     "addresses": {
       "type": "array",
-      "description": "Every kept source body paragraph in source order, each followed by the tables it holds. A table's ordinal is its position in document order, nested tables included (the numbering `hwp edit --set-cell` uses), counted in the source and, from zero, in the fragment.",
+      "description": "Every kept source body paragraph in source order, each followed by the tables it holds. A table's ordinal is its position in document order, nested tables included (the numbering `hwp edit --set-cell` uses), counted in the source and, from zero, in the fragment. A table inside a caption is kept in the fragment but has no entry: `--set-cell` gives it no ordinal, so there is nothing to map.",
       "items": {
         "oneOf": [
           {

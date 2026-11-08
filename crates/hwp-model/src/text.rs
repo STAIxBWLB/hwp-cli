@@ -39,22 +39,47 @@ impl Section {
     }
 }
 
+/// The text one character of a paragraph contributes by itself, which is the mapping every
+/// text projection shares (`hwp cat`, [`Paragraph::own_text`], heading anchors): a text
+/// character is itself, a line break is `\n`, a hyphen is `-`, a non-breaking and a fixed-width
+/// space are a space, a tab is `\t`. Anything else, and every extended control, contributes
+/// nothing HERE (an extended control's content is the caller's business).
+pub fn char_text(ch: &HwpChar, out: &mut String) {
+    match ch {
+        HwpChar::Text(c) => out.push(*c),
+        HwpChar::CharCtrl(code) => match *code {
+            ctrl_char::LINE_BREAK => out.push('\n'),
+            ctrl_char::HYPHEN => out.push('-'),
+            ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => out.push(' '),
+            _ => {} // 문단 끝(13) 등은 문단 경계에서 처리
+        },
+        HwpChar::InlineCtrl { code, .. } => {
+            if *code == ctrl_char::TAB {
+                out.push('\t');
+            }
+        }
+        HwpChar::ExtCtrl { .. } => {}
+    }
+}
+
 impl Paragraph {
+    /// The paragraph's OWN text, exactly as `hwp cat` prints those characters, without the
+    /// content of any control in it (a table's cells, a picture's caption, a header). A heading
+    /// anchor is compared against this: it is what the paragraph reads like on its own line.
+    pub fn own_text(&self) -> String {
+        let mut out = String::new();
+        for ch in &self.chars {
+            char_text(ch, &mut out);
+        }
+        out
+    }
+
     /// 이 문단의 텍스트를 out에 덧붙인다 (문단 끝 개행은 호출자 책임).
     pub fn extract_into(&self, out: &mut String, opts: &TextOptions) {
         for ch in &self.chars {
             match ch {
-                HwpChar::Text(c) => out.push(*c),
-                HwpChar::CharCtrl(code) => match *code {
-                    ctrl_char::LINE_BREAK => out.push('\n'),
-                    ctrl_char::HYPHEN => out.push('-'),
-                    ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => out.push(' '),
-                    _ => {} // 문단 끝(13) 등은 문단 경계에서 처리
-                },
-                HwpChar::InlineCtrl { code, .. } => {
-                    if *code == ctrl_char::TAB {
-                        out.push('\t');
-                    }
+                HwpChar::Text(_) | HwpChar::CharCtrl(_) | HwpChar::InlineCtrl { .. } => {
+                    char_text(ch, out);
                 }
                 HwpChar::ExtCtrl {
                     code, ctrl_index, ..

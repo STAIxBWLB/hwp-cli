@@ -2928,7 +2928,7 @@ fn tool_defs() -> Vec<Value> {
                     "input": {"type": "string"},
                     "out_dir": {"type": "string", "description": "조각 출력 디렉터리 (파일명은 \"<입력스템>-NNN.<소문자 확장자>\")"},
                     "pages": {"type": "array", "items": {"type": "string"}, "description": "구역 대신 사용할 쪽 범위 \"N\" 또는 \"N-M\" 목록(1-based, 양끝 포함, 선택)"},
-                    "from": {"type": "string", "description": "분할 대신 형식 있는 범위를 추출할 시작 지점: \"heading:<제목>\", \"bookmark:<이름>\", \"at:<구역>.<문단>\"(0-based). pages와 함께 쓸 수 없다. 범위는 한 구역의 최상위 본문 문단 연속 구간이며 표는 통째로 포함된다"},
+                    "from": {"type": "string", "description": "분할 대신 형식 있는 범위를 추출할 시작 지점: \"heading:<제목>\"(`hwp cat`이 출력하는 문단 자신의 텍스트, 탭·줄바꿈·고정 공백 포함), \"bookmark:<이름>\", \"at:<구역>.<문단>\"(0-based). pages와 함께 쓸 수 없다. 범위는 한 구역의 최상위 본문 문단 연속 구간이며 표는 통째로 포함된다"},
                     "to": {"type": "string", "description": "범위 끝 지점(from과 같은 문법, 기본은 시작 구역의 끝). from과 함께만 사용"},
                     "end_exclusive": {"type": "boolean", "description": "to 문단을 범위에서 제외; 기본 false"},
                     "source_sha256": {"type": "string", "description": "선택을 만든 원본 파일의 SHA-256(16진수); 다르면 아무것도 쓰지 않고 거부"},
