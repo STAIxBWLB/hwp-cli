@@ -381,7 +381,10 @@ impl AssetPlan {
             Some(
                 ops.parent()
                     .filter(|parent| !parent.as_os_str().is_empty())
-                    .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf),
+                    .map_or_else(
+                        || std::path::PathBuf::from("."),
+                        std::path::Path::to_path_buf,
+                    ),
             )
         };
         Self {

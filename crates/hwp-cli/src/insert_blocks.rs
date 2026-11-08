@@ -155,14 +155,15 @@ fn check_target(doc: &Document, target: &SegmentPath) -> Result<f32, String> {
         "insert_blocks 삽입 위치가 본문 또는 표 셀 문단이 아닙니다. 최신 문서에서 본문/표 셀 문단 주소를 다시 선택하세요".to_owned()
     };
     let section = doc.sections.get(target.section).ok_or_else(invalid)?;
-    let mut width = section
-        .section_def()
-        .and_then(|def| def.page)
-        .map_or(DEFAULT_CONTAINER_MM, |page| {
-            hwpunit_to_mm(
-                page.width.0 - page.margin_left.0 - page.margin_right.0 - page.gutter.0,
-            )
-        });
+    let mut width =
+        section
+            .section_def()
+            .and_then(|def| def.page)
+            .map_or(DEFAULT_CONTAINER_MM, |page| {
+                hwpunit_to_mm(
+                    page.width.0 - page.margin_left.0 - page.margin_right.0 - page.gutter.0,
+                )
+            });
     let mut paragraph = section
         .paragraphs
         .get(*target.indices.first().ok_or_else(invalid)?)
@@ -176,14 +177,16 @@ fn check_target(doc: &Document, target: &SegmentPath) -> Result<f32, String> {
             return Err(invalid());
         };
         let cell = table.cells.get(*cell).ok_or_else(invalid)?;
-        width = hwpunit_to_mm(
-            cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]),
-        );
+        width =
+            hwpunit_to_mm(cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]));
         paragraph = cell.paragraphs.get(*para).ok_or_else(invalid)?;
         rest = tail;
     }
     if !width.is_finite() || width <= 0.0 {
-        return Err("삽입 위치의 본문 폭을 알 수 없습니다. 표 셀 폭과 여백이 유효한 문서인지 확인하세요".into());
+        return Err(
+            "삽입 위치의 본문 폭을 알 수 없습니다. 표 셀 폭과 여백이 유효한 문서인지 확인하세요"
+                .into(),
+        );
     }
     Ok(width)
 }
@@ -601,7 +604,8 @@ mod tests {
 
         // Same name and the same bytes: shared, not duplicated.
         let (mut doc, at) = target();
-        doc.bin_streams.push(first.bin_streams.last().unwrap().clone());
+        doc.bin_streams
+            .push(first.bin_streams.last().unwrap().clone());
         let streams = doc.bin_streams.len();
         apply(&mut doc, &at, &request("assets/logo.png"), false, &ctx).unwrap();
         assert_eq!(doc.bin_streams.len(), streams);

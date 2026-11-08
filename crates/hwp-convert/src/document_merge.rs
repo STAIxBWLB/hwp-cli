@@ -2742,7 +2742,9 @@ mod tests {
         let Control::Table(table) = &mut inserted[1].controls[0] else {
             unreachable!()
         };
-        table.cells[0].paragraphs[0].controls.push(field_control(0, "b"));
+        table.cells[0].paragraphs[0]
+            .controls
+            .push(field_control(0, "b"));
         renumber_inserted_objects(&target, &mut inserted).unwrap();
         let first = stored_field_id(&inserted[0].controls[0]);
         let Control::Table(table) = &inserted[1].controls[0] else {
@@ -2757,7 +2759,10 @@ mod tests {
     fn renumbering_nothing_changes_nothing() {
         let target = from_markdown("target\n");
         let mut inserted = vec![Paragraph::default()];
-        assert_eq!(renumber_inserted_objects(&target, &mut inserted).unwrap(), 0);
+        assert_eq!(
+            renumber_inserted_objects(&target, &mut inserted).unwrap(),
+            0
+        );
         assert_eq!(inserted, vec![Paragraph::default()]);
     }
 }

@@ -1681,7 +1681,13 @@ fn tables_of(doc: &Document) -> Vec<&Table> {
     doc_paragraphs(doc)
         .into_iter()
         .flat_map(|p| &p.controls)
-        .filter_map(|c| if let Control::Table(t) = c { Some(t) } else { None })
+        .filter_map(|c| {
+            if let Control::Table(t) = c {
+                Some(t)
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -1689,7 +1695,13 @@ fn pictures_of(doc: &Document) -> Vec<&hwp_model::Picture> {
     doc_paragraphs(doc)
         .into_iter()
         .flat_map(|p| &p.controls)
-        .filter_map(|c| if let Control::Picture(p) = c { Some(p) } else { None })
+        .filter_map(|c| {
+            if let Control::Picture(p) = c {
+                Some(p)
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -1715,7 +1727,11 @@ fn field_ids(doc: &Document) -> Vec<u32> {
 
 fn assert_distinct(ids: &[u32], what: &str) {
     let unique: std::collections::BTreeSet<_> = ids.iter().collect();
-    assert_eq!(unique.len(), ids.len(), "{what} ids must be distinct: {ids:x?}");
+    assert_eq!(
+        unique.len(),
+        ids.len(),
+        "{what} ids must be distinct: {ids:x?}"
+    );
 }
 
 fn validates(path: &Path) {
@@ -1770,9 +1786,17 @@ fn table_image_field_components_insert_in_order_with_distinct_ids_in_both_format
             .map(|p| p.plain_text())
             .collect();
         let lead = body.iter().position(|t| t == "Component lead.").unwrap();
-        assert_eq!(body[lead - 1], ANCHOR, "{extension}: inserted after the anchor");
+        assert_eq!(
+            body[lead - 1],
+            ANCHOR,
+            "{extension}: inserted after the anchor"
+        );
         let tail = body.iter().position(|t| t == "Component tail.").unwrap();
-        assert_eq!(body[tail + 1], "Body tail.", "{extension}: original order resumes");
+        assert_eq!(
+            body[tail + 1],
+            "Body tail.",
+            "{extension}: original order resumes"
+        );
         assert!(
             after.sections[0].paragraphs[lead + 1]
                 .controls
@@ -1782,7 +1806,15 @@ fn table_image_field_components_insert_in_order_with_distinct_ids_in_both_format
         );
         let tables = tables_of(&after);
         assert_eq!(tables.len(), existing_tables + 1, "{extension}");
-        let inserted = tables.iter().find(|t| t.cells.iter().flat_map(|c| &c.paragraphs).any(|p| p.plain_text() == "Approval cell A.")).unwrap();
+        let inserted = tables
+            .iter()
+            .find(|t| {
+                t.cells
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .any(|p| p.plain_text() == "Approval cell A.")
+            })
+            .unwrap();
         let fill = after.header.border_fills[usize::from(inserted.border_fill.0) - 1].clone();
         assert!(
             fill.sides.iter().all(|side| side.line_type == 1),
@@ -1798,12 +1830,16 @@ fn table_image_field_components_insert_in_order_with_distinct_ids_in_both_format
         if extension == "hwp" {
             let table_ids: Vec<u32> = tables.iter().map(|t| common_id(&t.common_data)).collect();
             assert_distinct(&table_ids, "table");
-            let picture_ids: Vec<u32> = pictures.iter().map(|p| common_id(&p.common_data)).collect();
+            let picture_ids: Vec<u32> =
+                pictures.iter().map(|p| common_id(&p.common_data)).collect();
             assert_distinct(&picture_ids, "picture");
             let fields = field_ids(&after);
             assert_eq!(fields.len(), 3, "three field blocks/runs");
             assert_distinct(&fields, "field");
-            assert!(fields.iter().all(|id| *id != 0), "field ids are non-zero: {fields:x?}");
+            assert!(
+                fields.iter().all(|id| *id != 0),
+                "field ids are non-zero: {fields:x?}"
+            );
         }
     }
 }
@@ -1817,7 +1853,13 @@ fn successive_hwp_image_insertions_do_not_reuse_a_picture_instance_id() {
     let (first, run) = fixture.edit(
         &fixture.base,
         "first-image",
-        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), image.clone())]),
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            image.clone()
+        )]),
         false,
     );
     success(run, "first image insertion");
@@ -1825,13 +1867,25 @@ fn successive_hwp_image_insertions_do_not_reuse_a_picture_instance_id() {
     let (second, run) = fixture.edit(
         &first,
         "second-image",
-        json!([insert(at(&middle, ANCHOR), "after", "create", json!({}), image)]),
+        json!([insert(
+            at(&middle, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            image
+        )]),
         false,
     );
-    success(run, "second image insertion into an output that already holds a picture");
+    success(
+        run,
+        "second image insertion into an output that already holds a picture",
+    );
     validates(&second);
     let after = read(&second);
-    let ids: Vec<u32> = pictures_of(&after).iter().map(|p| common_id(&p.common_data)).collect();
+    let ids: Vec<u32> = pictures_of(&after)
+        .iter()
+        .map(|p| common_id(&p.common_data))
+        .collect();
     assert_eq!(ids.len(), 2);
     assert_distinct(&ids, "picture");
 }
@@ -1845,7 +1899,13 @@ fn equation_blocks_insert_into_hwpx_and_refuse_for_hwp_output() {
     let (output, run) = fixture.edit(
         &fixture.base,
         "equation",
-        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), blocks.clone())]),
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            blocks.clone()
+        )]),
         false,
     );
     success(run, "equation blocks into HWPX");
@@ -1865,7 +1925,13 @@ fn equation_blocks_insert_into_hwpx_and_refuse_for_hwp_output() {
     let diagnostic = fixture.refuse(
         &fixture.base.clone(),
         "equation-hwp",
-        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), blocks)]),
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            blocks
+        )]),
         false,
     );
     assert!(
@@ -1925,12 +1991,21 @@ fn nested_table_inside_cell_target_and_oversize_table_follow_the_cell_width() {
     let (output, run) = fixture.edit(
         &fixture.base,
         "narrow",
-        json!([insert(json!({"id":id}), "after", "create", json!({}), narrow)]),
+        json!([insert(
+            json!({"id":id}),
+            "after",
+            "create",
+            json!({}),
+            narrow
+        )]),
         false,
     );
     success(run, "narrow table inside the cell");
     validates(&output);
-    assert_eq!(tables_of(&read(&output)).len(), tables_of(&before).len() + 1);
+    assert_eq!(
+        tables_of(&read(&output)).len(),
+        tables_of(&before).len() + 1
+    );
 }
 
 #[test]
@@ -1948,10 +2023,19 @@ fn inserted_table_borders_come_from_the_target_header_not_compose_fill_three() {
             .iter_mut()
             .flat_map(|s| &mut s.paragraphs)
             .flat_map(|p| &mut p.controls)
-            .filter_map(|c| if let Control::Table(t) = c { Some(t) } else { None })
+            .filter_map(|c| {
+                if let Control::Table(t) = c {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
         {
             table.border_fill = hwp_model::BorderFillId(1);
-            table.cells.iter_mut().for_each(|c| c.border_fill = hwp_model::BorderFillId(1));
+            table
+                .cells
+                .iter_mut()
+                .for_each(|c| c.border_fill = hwp_model::BorderFillId(1));
         }
         let source = fixture.path("no-borders");
         if extension == "hwp" {
@@ -1978,7 +2062,12 @@ fn inserted_table_borders_come_from_the_target_header_not_compose_fill_three() {
         let after = read(&output);
         let inserted = tables_of(&after)
             .into_iter()
-            .find(|t| t.cells.iter().flat_map(|c| &c.paragraphs).any(|p| p.plain_text() == "Bordered."))
+            .find(|t| {
+                t.cells
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .any(|p| p.plain_text() == "Bordered.")
+            })
             .unwrap();
         let fill = &after.header.border_fills[usize::from(inserted.border_fill.0) - 1];
         assert!(bordered(fill), "{extension}: inserted table fill {fill:?}");
