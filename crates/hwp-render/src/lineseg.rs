@@ -1,12 +1,12 @@
-//! 합성 문서(md/hwpx 출신)의 줄 배치(PARA_LINE_SEG) 합성.
+//! Synthesize line layout (PARA_LINE_SEG) for authored documents originating from Markdown/HWPX.
 //!
-//! 5.1.x 한글은 본문 문단에 줄 배치 캐시가 없으면 글자를 0 높이로 그려
-//! '검은 바'/'빈 내용'/'손상'으로 표시한다. 단순 합성(문단당 1줄)은 여러 줄
-//! 문단·긴 표 셀에서 겹침/높이 붕괴를 일으킨다. 여기서는 폰트 셰이핑
-//! (shape_range)으로 글자 폭을 측정해 본문 폭 기준 그리디 줄바꿈을 하고,
-//! 줄 수만큼 PARA_LINE_SEG를 생성한다. v_pos는 섹션/셀 내 누적.
+//! Hangul 5.1.x renders body text at zero height without line-layout caches,
+//! producing black bars, blank content or corruption. One-line-per-paragraph synthesis
+//! causes overlap and collapsed heights in multiline paragraphs and long table cells.
+//! Measure character widths with font shaping (shape_range), wrap greedily at body width,
+//! and generate one PARA_LINE_SEG per line. Body v_pos is page-relative; cell v_pos is cumulative.
 //!
-//! 정확도의 핵심은 한글과 동일한 폰트(함초롬바탕)로 셰이핑하는 것이다.
+//! Accurate wrapping requires the same font as Hangul (HCR Batang).
 
 use hwp_model::{Control, Document, LineSeg, Paragraph, Table};
 
@@ -15,16 +15,16 @@ use crate::issues::RenderIssueAccumulator;
 use crate::layout::TAB_INTERVAL_PT;
 use crate::shape::{InlineItem, glyph_source_sequences, shape_range, source_has_no_break_space};
 
-/// 표 블록의 고정 세로 여유 (HWPUNIT). 정품 한글이 표 전체에 더하는 상수.
+/// Fixed vertical table-block padding in HWPUNIT, added by genuine Hangul to the whole table.
 ///
-/// 정품 실측(첫째 문단입니다.hwp 5.1.1.0, work_report.hwp 5.0.2.4)에서 두
-/// 파일 모두 `표 advance − Σ행높이 = 566`으로 일치한다(=2.0mm, 566.93 HWPUNIT).
-/// 표 안쪽 위/아래 여백(상141·하141)·셀 좌우여백과 무관하게 같은 값이라,
-/// 행 높이 합산과 별도로 표마다 한 번 더해지는 표 고유의 외곽 여유로 본다.
+/// Measurements of the genuine first-paragraph sample (5.1.1.0) and work_report.hwp (5.0.2.4)
+/// both yield table advance minus summed row heights = 566 (2.0mm is 566.93 HWPUNIT).
+/// It stays constant regardless of table top/bottom margins (141 each) or cell side margins,
+/// so treat it as table-specific outer padding added once, separately from row heights.
 const TABLE_BLOCK_PADDING: i32 = 566;
 
-/// 합성 문서 전체에 줄 배치를 합성한다 (본문·표 셀 문단).
-/// `store`는 함초롬바탕이 로드된 FontStore여야 한글과 줄바꿈이 일치한다.
+/// Synthesize line layout for the whole authored document, including body and table-cell paragraphs.
+/// To match Hangul's line breaks, store must have HCR Batang loaded.
 pub fn synthesize_linesegs(
     doc: &mut Document,
     store: &mut FontStore,
@@ -80,11 +80,11 @@ pub fn synthesize_linesegs(
         let body_width = page.map_or(42520, |pg| {
             pg.width.0 - pg.margin_left.0 - pg.margin_right.0
         });
-        // 페이지 본문 높이(상·하 여백 제외). 줄/표가 이 높이를 넘으면 다음 페이지로
-        // 넘겨 v_pos를 0부터 다시 쌓는다 — 정품 멀티페이지는 페이지 상대 v_pos다
-        // (정품 한라대 hwpx 실측: 본문 vertpos가 페이지마다 0으로 리셋, 최댓값
-        // 59668 < 본문높이). 페이지 리셋 없이 단조 누적하면(섹션 누적) v_pos가
-        // 페이지 높이를 한참 초과해(예: 354408) 한글이 '손상'으로 판정한다.
+        // Body height excludes top/bottom margins. Lines/tables crossing this height move
+        // to a new page and restart v_pos at zero: genuine multipage caches are page-relative.
+        // Measured in a genuine university HWPX: body vertpos resets on every page,
+        // and its maximum 59668 is below body height. Without resetting, accumulated v_pos
+        // can greatly exceed page height (such as 354408), which Hangul flags as corruption.
         let content_h = page
             .map_or(75686, |pg| {
                 pg.height.0 - pg.margin_top.0 - pg.margin_bottom.0
@@ -92,11 +92,11 @@ pub fn synthesize_linesegs(
             .max(1);
         let mut v_pos = 0i32;
         for pi in 0..doc.sections[si].paragraphs.len() {
-            // 문단 위/아래 간격(spacing_top/bottom)을 v_pos에 반영한다. 한글은 줄
-            // 배치 v_pos로 문단 세로 위치를 그리므로, 간격이 빠지면 문단 사이 여백
-            // 없이 압축돼 보인다(제목 위 여백 사라짐 등 '세로 위치 어긋남'의 원인).
-            // 문단 사이 간격 = 앞 문단 아래 간격 + 이 문단 위 간격(가산). 단 섹션
-            // 첫 문단의 위 간격은 페이지 상단이라 적용하지 않는다(정품: 첫 문단 v_pos=0).
+            // Include paragraph space-before/after (spacing_top/bottom) in v_pos. Hangul uses
+            // cached v_pos for vertical placement; omitting spacing compresses paragraphs
+            // together and loses heading space-before, causing vertical displacement.
+            // Paragraph gaps add the preceding space-after and current space-before. Omit
+            // space-before at a section's first paragraph, which starts at page top (genuine v_pos=0).
             let (sp_top, sp_bottom) = snap
                 .header
                 .para_shapes
@@ -119,14 +119,14 @@ pub fn synthesize_linesegs(
                     warnings,
                 );
             }
-            // 이 문단의 표 총높이.
+            // Total table height in this paragraph.
             let mut table_total = 0i32;
             for ctrl in &doc.sections[si].paragraphs[pi].controls {
                 if let Control::Table(t) = ctrl {
                     table_total += table_height(t);
                 }
             }
-            // 표가 현재 페이지 잔여 공간에 안 들어가면 표 전체를 다음 페이지로 내린다.
+            // Move the whole table to the next page when it does not fit in the current remainder.
             if section_anchors.is_none()
                 && table_total > 0
                 && v_pos > 0
@@ -134,8 +134,8 @@ pub fn synthesize_linesegs(
             {
                 v_pos = 0;
             }
-            // 표 앵커 문단의 줄 배치는 진입 시점 커서(=직전 문단 누적 후)에 놓인다.
-            // 정품 첫째문단.hwp: 본문 문단(advance 1600) → 표 앵커 문단 v_pos=1600.
+            // A table anchor's cache starts at the incoming cursor after the preceding paragraph.
+            // Genuine first-paragraph sample: body advance 1600, then table-anchor v_pos=1600.
             if let Some(anchors) = section_anchors {
                 v_pos = anchors[si][pi];
             }
@@ -145,27 +145,27 @@ pub fn synthesize_linesegs(
                 store, &snap, src, body_width, content_h, &mut v_pos, warnings,
             );
             doc.sections[si].paragraphs[pi].line_segs = segs;
-            // 표가 있는 문단은 한 줄(line_advance)이 아니라 표 높이만큼 커서를 내려야
-            // 다음 본문 문단이 표와 겹치지 않는다(겹치면 한글이 '손상' 판정). 앵커
-            // 문단은 compute_linesegs가 이미 line_advance를 1회 더했으므로, 커서를
-            // 진입값 + 표 높이로 덮어쓴다(여러 표가 한 문단에 있으면 높이를 누적).
+            // A table paragraph advances by table height rather than one line_advance, keeping
+            // following text from overlapping the table (which Hangul flags as corruption).
+            // compute_linesegs has already added one line_advance for the anchor paragraph,
+            // so replace the cursor with entry position plus table heights, summing multiple tables.
             if table_total > 0 {
                 v_pos = anchor_v + table_total;
             }
-            // 문단 아래 간격: 다음 문단 첫 줄을 그만큼 더 내린다.
+            // Space-after moves the next paragraph's first line down accordingly.
             v_pos += sp_bottom;
         }
     }
 }
 
-/// 한 문단이 품은 **모든** 중첩 문단 리스트에 줄 배치를 합성한다 — 표 캡션·표 셀·
-/// 셀 문단이 다시 품은 컨트롤(중첩 표 포함)·그림 캡션·개체 문단 리스트·개체 캡션.
-/// hwp-convert `walk_para_lists`가 문단을 넣을 수 있는 리스트와 같은 집합이다:
-/// 거기 삽입된 문단이 줄 배치 없이 남으면 한글이 0높이로 그리고(B2), 그 문단이
-/// 리스트의 마지막이면 bit31과 빈 PARA_LINE_SEG가 모순된다(B3).
+/// Synthesize every nested paragraph list: table captions/cells, controls within cells
+/// (including nested tables), picture captions, object paragraph lists and object captions.
+/// This matches the lists where hwp-convert walk_para_lists can insert paragraphs.
+/// Leaving an inserted paragraph cacheless makes Hangul draw it at zero height (B2);
+/// a final list paragraph also contradicts bit31 with an empty PARA_LINE_SEG (B3).
 ///
-/// `snap`은 `doc`의 별도 복제본이므로 여기서 `doc`을 자유롭게 빌려도 충돌하지 않는다
-/// (문단 모양·글자 모양 조회 용도).
+/// snap is a separate clone of doc, so doc can be borrowed freely here without conflict
+/// while looking up paragraph and character properties.
 fn fill_nested(
     para: &mut Paragraph,
     body_width: i32,
@@ -195,8 +195,8 @@ fn fill_nested(
                     .collect();
                 for (cell, (ml, mr, _, _)) in t.cells.iter_mut().zip(margins) {
                     let w = (cell.width.0 - ((ml + mr) * 100.0).round() as i32).max(1);
-                    // 셀은 기존 동작대로 항상 재계산한다 — 셀 줄 수가 표 높이의 입력이고,
-                    // 편집으로 낡은 줄 배치를 그대로 두면 표가 어긋난다.
+                    // Always recompute cells, as before: their line counts determine table height,
+                    // and stale pre-edit caches would misalign the table.
                     fill_list(
                         &mut cell.paragraphs,
                         w,
@@ -223,7 +223,7 @@ fn fill_nested(
                 }
             }
             Control::Generic(g) => {
-                // 글상자(gso_shapes 보유): LIST_HEADER 안쪽 여백(283×2)을 뺀 박스 폭.
+                // Text box with gso_shapes: subtract LIST_HEADER inner margins (283 twice) from box width.
                 let bw = g
                     .gso_shapes
                     .first()
@@ -257,7 +257,7 @@ fn fill_nested(
     }
 }
 
-/// 캡션 본문 폭. `None`은 "여백까지 넓힘"이라 본문 폭으로 본다.
+/// Caption text width. None means extending into margins, so use body width.
 fn caption_width(width: Option<u32>, body_width: i32) -> i32 {
     width
         .and_then(|w| i32::try_from(w).ok())
@@ -265,9 +265,9 @@ fn caption_width(width: Option<u32>, body_width: i32) -> i32 {
         .unwrap_or(body_width)
 }
 
-/// 문단 리스트 하나를 채운다. v_pos는 **리스트 단위**로 누적한다(문단마다 리셋하지
-/// 않는다 — `table_height`가 마지막 문단의 v_pos를 셀 전체 높이로 읽는 근거).
-/// `force`가 거짓이면 이미 줄 배치가 있는 문단은 원본을 그대로 둔다.
+/// Fill one paragraph list. Accumulate v_pos per list rather than resetting each paragraph;
+/// table_height reads the last paragraph's v_pos as the whole cell's height on that basis.
+/// With force=false, preserve paragraphs that already carry line layout.
 fn fill_list(
     paras: &mut [Paragraph],
     width: i32,
@@ -283,38 +283,38 @@ fn fill_list(
         if !force && !para.line_segs.is_empty() {
             continue;
         }
-        // 리스트 안쪽은 페이지 분할 안 함(content_h=MAX): 페이지 넘침은 표/개체
-        // 단위로 synthesize_linesegs가 처리한다.
+        // Do not paginate inside lists (content_h=MAX); synthesize_linesegs handles overflow
+        // at the table/object level.
         let segs = compute_box_linesegs(store, snap, para, width, &mut v, warnings);
         para.line_segs = segs;
     }
 }
 
-/// 표 한 개의 세로 높이(HWPUNIT)를 정품 한글 규칙으로 계산한다.
+/// Compute one table's vertical height in HWPUNIT using measured genuine Hangul rules.
 ///
-/// 셀 안 문단의 줄 배치(line_segs)는 이 함수 호출 전에 fill_nested가 채워 둔다.
-/// 정품 실측(첫째 문단입니다.hwp·work_report.hwp)으로 도출한 공식:
+/// fill_nested must populate cell paragraph line_segs before this function runs.
+/// Formula derived from genuine first-paragraph and work_report.hwp measurements:
 ///
 /// ```text
-/// 행 높이 rowH = cell.top_margin + cell.bottom_margin + 줄블록
-/// 줄블록(N줄) = (마지막 줄.v_pos) + (마지막 줄.line_height)
+/// Row height rowH = cell.top_margin + cell.bottom_margin + line block.
+/// Line block of N lines = last line.v_pos + last line.line_height.
 ///            = (N-1)*line_advance + line_height
-/// 표 높이 = Σ_행 max(rowH over 그 행의 셀) + TABLE_BLOCK_PADDING(566)
+/// Table height = sum over rows of max(rowH among that row's cells) + TABLE_BLOCK_PADDING(566).
 /// ```
 ///
-/// 근거: 첫째문단.hwp(3행, 셀 1줄, 여백 상141/하141, lh=1000, la=1600)
-/// → 3*(141+1000+141)+566 = 4412 = 정품 표 advance(6012−1600). work_report.hwp
-/// 첫 표(1행 2열, 한 셀 2줄)도 (141+(3200+2000)+141)+566 = 5482+566 = 6048 = 정품
-/// advance와 일치. 두 파일 모두 상수 566(=2.0mm)으로 떨어진다.
+/// Evidence: first-paragraph sample (3 rows, one line/cell, margins top141/bottom141, lh=1000, la=1600)
+/// gives 3*(141+1000+141)+566 = 4412, the genuine advance (6012-1600). work_report.hwp's
+/// first table (one row, two columns, two lines in one cell) gives (141+(3200+2000)+141)+566
+/// = 5482+566 = 6048, also matching genuine advance. Both yield the same 566 (2.0mm) constant.
 ///
-/// 병합 셀(row_span>1)은 시작 행 하나에만 높이를 싣지 않고 건너뛴다(각 행의
-/// row_span==1 셀들로 행 높이를 잡는다 — 정품도 행 높이는 단일 행 셀 기준).
-/// 행을 채우는 단일 행 셀이 하나도 없으면(전부 병합) 안전하게 폴백 높이를 쓴다.
+/// Skip row_span>1 cells rather than assigning their full height to their starting row.
+/// Derive row heights from row_span==1 cells, matching genuine single-row height measurements.
+/// If a row has no single-row cells because all are merged, use a safe fallback height.
 fn table_height(table: &Table) -> i32 {
-    // 행별 최대 셀 높이(rowH). 인덱스 = Cell.row.
+    // Maximum cell height per row (rowH), indexed by Cell.row.
     let mut row_heights = vec![0i32; usize::from(table.rows)];
     for cell in &table.cells {
-        // 병합 셀은 시작 행에만 단일 높이를 강제하지 않는다(아래 폴백이 처리).
+        // Do not force a merged cell's height onto its starting row; use the fallback below.
         if cell.row_span != 1 {
             continue;
         }
@@ -322,18 +322,18 @@ fn table_height(table: &Table) -> i32 {
         if r >= row_heights.len() {
             continue;
         }
-        // 셀의 줄블록은 **마지막 문단**의 줄블록이다. 셀 v_pos는 fill_nested가
-        // 셀 단위로 누적하므로(문단마다 리셋하지 않는다) 마지막 문단 마지막 줄의
-        // v_pos + line_height가 곧 셀 전체 세로 크기다 — 문단별로 더하면 앞 문단
-        // 높이가 뒤 문단 v_pos에 이미 들어 있어 다중 문단 셀이 중복 계산된다.
+        // The cell line block is that of its last paragraph alone. fill_nested accumulates
+        // v_pos across the cell rather than resetting each paragraph, so the final line's
+        // v_pos + line_height is already the whole cell height. Summing paragraph heights
+        // would count earlier paragraphs twice because their heights are included in later v_pos.
         let block = cell.paragraphs.last().map_or(0, para_line_block);
         let cell_h = i32::from(cell.margins[2]) + block + i32::from(cell.margins[3]);
         if cell_h > row_heights[r] {
             row_heights[r] = cell_h;
         }
     }
-    // row_span>1 셀만 있는 행(높이 0)은 폴백 1줄 높이로 보정해 겹침을 막는다.
-    let fallback = 141 + 1000 + 141; // 상여백 + 1줄(lh) + 하여백 (정품 기본)
+    // Rows containing only row_span>1 cells have zero height; use one fallback line to prevent overlap.
+    let fallback = 141 + 1000 + 141; // Top margin + one line (lh) + bottom margin, using genuine defaults.
     let sum: i32 = row_heights
         .iter()
         .map(|&h| if h > 0 { h } else { fallback })
@@ -341,13 +341,13 @@ fn table_height(table: &Table) -> i32 {
     sum + TABLE_BLOCK_PADDING
 }
 
-/// 셀 안 문단 하나의 줄블록 높이(HWPUNIT) = 마지막 줄.v_pos + 마지막 줄.line_height.
-/// 셀 v_pos는 셀 내부 0부터 누적되므로(fill_nested), 마지막 줄.v_pos가 곧
-/// (줄수−1)*line_advance 이고 거기에 마지막 줄 높이를 더하면 문단 전체 세로 크기다.
+/// One cell paragraph's line-block height (HWPUNIT): last line.v_pos + last line.line_height.
+/// Cell-local v_pos accumulates from zero in fill_nested, so the final v_pos is
+/// (line count - 1) * line_advance; adding final line height gives cumulative cell extent.
 fn para_line_block(para: &Paragraph) -> i32 {
     match para.line_segs.last() {
         Some(seg) => seg.v_pos + seg.line_height,
-        // 줄 배치가 없으면(이론상 없음) 기본 1줄 높이로 폴백.
+        // Without line layout (theoretically impossible), fall back to one default line.
         None => 1000,
     }
 }
@@ -463,10 +463,10 @@ pub(crate) fn compute_linesegs(
     let line_spacing = line_advance.saturating_sub(base).max(0);
     let baseline_gap = metrics.baseline_gap;
     let seg_width = body_width.max(1);
-    // 줄 폭은 렌더러가 줄 안에서 주는 들여쓰기(layout::line_indents)만큼 좁다:
-    // 들여쓰기(양수)는 첫 줄, 내어쓰기(음수)는 둘째 줄부터. 여기서 빼지 않으면
-    // 합성한 줄이 렌더 시 문단 우변을 넘는다. 목록 마커 폭은 셰이핑이 필요해
-    // 반영하지 않으므로, 마커가 내어쓰기 폭보다 넓은 문단의 첫 줄은 그만큼 길 수 있다.
+    // Reduce line width by the renderer's indent (layout::line_indents): positive indent
+    // affects the first line, hanging indent subsequent lines. Without subtracting it,
+    // synthesized lines exceed the paragraph's right edge. List-marker width requires shaping
+    // and is not included here; a marker wider than the hanging indent can lengthen the first line.
     let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
     let first_indent_hu = ps.map_or(0, |p| p.indent.max(0) / 2);
     let rest_indent_hu = ps.map_or(0, |p| (-p.indent).max(0) / 2);
@@ -503,8 +503,8 @@ pub(crate) fn compute_linesegs(
         *v_pos = (*v_pos).saturating_add(line_advance);
     };
 
-    // 폰트 셰이핑으로 글자 폭을 재고, 본문 폭 기준 그리디 줄바꿈.
-    // place_wrapped(layout.rs)와 동일한 글리프 x_advance 누적 규칙.
+    // Shape fonts to measure character widths and wrap greedily within body width.
+    // Use the same glyph x_advance accumulation as place_wrapped in layout.rs.
     let items = shape_range(store, doc, para, (0, total), warnings);
     // Match place_wrapped: prefer explicit tab stops, then use the default interval.
     let tabs = crate::tab::tab_stops(doc, para);
@@ -550,11 +550,11 @@ pub(crate) fn compute_linesegs(
     // Commit the final line, which is also the only line for an empty paragraph.
     place(&mut segs, v_pos, line_start);
 
-    // 문단 좌여백을 col_start(HWPUNIT)로 인코딩한다. 정품 line_seg는 horzpos에 좌여백만
-    // 담고 첫 줄 들여쓰기/내어쓰기는 담지 않는다(정품 실측: 내어쓰기 문단도
-    // horzpos = margin_left). 들여쓰기는 렌더러가 줄상자 안에서 준다 —
-    // `layout::line_indents`. IR 여백류는 2×HWPUNIT라 ÷2. 좌여백이 0이면 col_start=0으로
-    // 종전과 바이트 동일.
+    // Encode the paragraph's left margin in col_start (HWPUNIT). Genuine line_seg horzpos
+    // stores only this margin, not first-line/hanging indent; measured hanging-indent paragraphs
+    // also have horzpos = margin_left. The renderer applies indent within the line box via
+    // layout::line_indents. IR margins use twice HWPUNIT, so divide by two. With zero left margin,
+    // col_start stays zero and retains the previous bytes.
     let ps = doc.header.para_shapes.get(para.para_shape.0 as usize);
     let ml_hu = ps.map_or(0, |p| p.margin_left / 2).max(0);
     for seg in segs.iter_mut() {
@@ -591,8 +591,8 @@ mod tests {
     use super::*;
     use hwp_model::{Cell, HwpUnit, ids::BorderFillId};
 
-    /// 셀 v_pos는 셀 단위 누적(fill_nested)이므로, 문단 N개짜리 셀의 줄블록은
-    /// 마지막 문단의 것 하나다.
+    /// Because fill_nested accumulates v_pos within each cell, a cell's line block with N paragraphs
+    /// is the last paragraph's line block alone.
     fn seg(v_pos: i32, line_height: i32) -> LineSeg {
         LineSeg {
             text_start: 0,
@@ -608,7 +608,7 @@ mod tests {
     }
 
     fn cell_with(blocks: &[i32]) -> Cell {
-        // blocks[i] = i번째 문단 마지막 줄의 v_pos (line_height는 1000 고정).
+        // blocks[i] is paragraph i's final line v_pos; line_height is fixed at 1000.
         Cell {
             list_attr: 0,
             col: 0,
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn table_height_multi_paragraph_cell_is_not_double_counted() {
-        // 문단 4개, v_pos 0/1600/3200/4800 — 셀 줄블록 = 4800 + 1000.
+        // Four paragraphs at v_pos 0/1600/3200/4800 give cell line block 4800 + 1000.
         let h = table_height(&table_with(cell_with(&[0, 1600, 3200, 4800])));
         assert_eq!(h, 141 + (4800 + 1000) + 141 + TABLE_BLOCK_PADDING);
     }
@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn table_height_empty_cell_falls_back() {
-        // 문단이 없는 셀은 줄블록 0 — 여백만 남고, 폴백 경로가 패닉 없이 돈다.
+        // With no paragraphs, the cell line block is zero; only margins remain and fallback does not panic.
         let h = table_height(&table_with(cell_with(&[])));
         assert_eq!(h, 141 + 141 + TABLE_BLOCK_PADDING);
     }
