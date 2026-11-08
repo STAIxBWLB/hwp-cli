@@ -2235,6 +2235,11 @@ fn object_ids_in_para(para: &Paragraph, visit: &mut dyn FnMut(u32)) {
                         object_ids_in_para(p, visit);
                     }
                 }
+                if let Some(cap) = &g.caption {
+                    for p in &cap.paragraphs {
+                        object_ids_in_para(p, visit);
+                    }
+                }
             }
             _ => {}
         }

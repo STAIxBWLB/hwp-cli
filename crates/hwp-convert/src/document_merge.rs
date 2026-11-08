@@ -1136,6 +1136,9 @@ fn renumber_table_object_id(
 ///   field of `doc` or of an earlier inserted paragraph carries. The compiler writes id 0 for
 ///   all of them.
 ///
+/// Both walks reach every place `merge` does: cells, `Generic` paragraph lists and the captions
+/// of tables, pictures and `Generic` shapes.
+///
 /// Pictures keep their identity: the HWP writer draws each synthesized picture id from a
 /// counter seeded past the ids the document already holds, and the HWPX writer numbers objects
 /// per write. Returns the number of tables and fields renumbered.
@@ -1187,6 +1190,10 @@ fn max_field_id_in_para(para: &Paragraph, max: &mut u32) {
                         .iter()
                         .for_each(|p| max_field_id_in_para(p, max));
                 }
+                g.caption
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .for_each(|p| max_field_id_in_para(p, max));
             }
             Control::Table(t) => {
                 t.caption
@@ -1264,6 +1271,11 @@ fn renumber_inserted_in_para(
                 }
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
+                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                    }
+                }
+                if let Some(caption) = &mut g.caption {
+                    for p in &mut caption.paragraphs {
                         renumber_inserted_in_para(p, used, next_z, next_field, count)?;
                     }
                 }
