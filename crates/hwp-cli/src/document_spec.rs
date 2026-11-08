@@ -1775,6 +1775,7 @@ impl<'a> BlockCompiler<'a> {
 
     fn empty_paragraph(&self) -> hwp_model::Paragraph {
         hwp_model::Paragraph {
+            style: self.defaults.style,
             para_shape: self.defaults.para_shape,
             char_shape_runs: vec![(0, self.defaults.char_shape)],
             ..hwp_model::Paragraph::default()
@@ -2718,8 +2719,7 @@ fn apply_char_style(
     style: &StyleSpec,
 ) {
     if let Some(font) = &style.font_family {
-        let id = ensure_font(header, font);
-        shape.face_ids = [id; hwp_model::LANG_COUNT];
+        shape.face_ids = ensure_font(header, font);
     }
     if let Some(size) = style.font_size_pt {
         shape.base_size = pt_to_hwp(size);
@@ -2799,20 +2799,31 @@ fn apply_para_style(shape: &mut hwp_model::ParaShape, style: &StyleSpec) {
     }
 }
 
-fn ensure_font(header: &mut hwp_model::DocHeader, font: &str) -> u16 {
-    if let Some(index) = header.fonts[0].iter().position(|face| face.name == font) {
-        return u16::try_from(index).unwrap_or(u16::MAX);
-    }
-    let id = u16::try_from(header.fonts[0].len()).unwrap_or(u16::MAX);
-    for language in &mut header.fonts {
-        language.push(hwp_model::FaceName {
-            attr: 1,
-            name: font.to_string(),
-            default_name: Some(font.to_string()),
-            ..hwp_model::FaceName::default()
-        });
-    }
-    id
+/// The face id of `font` in each of the seven language tables, appending the face to every table
+/// that lacks it.
+///
+/// The tables are separate and need not be parallel: a real document's Hangul table can hold
+/// `휴먼고딕` at index 3 while its Latin table holds `휴먼명조` there, and the tables differ in
+/// length. So each table is searched for the name on its own, and a missing face is appended at
+/// that table's own next index. Reusing one id for all seven (the compose document's tables are
+/// built identical, which is why that worked there) names a different font in six of them.
+fn ensure_font(header: &mut hwp_model::DocHeader, font: &str) -> [u16; hwp_model::LANG_COUNT] {
+    std::array::from_fn(|language| {
+        let table = &mut header.fonts[language];
+        let index = table
+            .iter()
+            .position(|face| face.name == font)
+            .unwrap_or_else(|| {
+                table.push(hwp_model::FaceName {
+                    attr: 1,
+                    name: font.to_string(),
+                    default_name: Some(font.to_string()),
+                    ..hwp_model::FaceName::default()
+                });
+                table.len() - 1
+            });
+        u16::try_from(index).unwrap_or(u16::MAX)
+    })
 }
 
 fn find_or_push_char_shape(
@@ -3226,6 +3237,185 @@ mod tests {
                 tables: 1,
                 ..BlockCounts::default()
             }
+        );
+    }
+
+    /// Every empty-paragraph caller (a table's anchor paragraph, an empty cell, an image, an
+    /// equation, a field and the breaks) carries the target document's default style, not
+    /// compose's style 0: they all go through the same constructor, and a paragraph that names
+    /// style 0 in a document whose default style is another row restyles itself on the next
+    /// open (T19-F1).
+    #[test]
+    fn every_empty_paragraph_kind_carries_the_documents_default_style() {
+        let defaults = BlockDefaults {
+            style: hwp_model::StyleId(23),
+            para_shape: hwp_model::ParaShapeId(5),
+            char_shape: hwp_model::CharShapeId(5),
+            border_fill: hwp_model::BorderFillId(11),
+        };
+        let root = std::env::temp_dir().join(format!("hwp-bc-style-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("p.gif"), b"GIF89a\x01\x00\x01\x00").unwrap();
+        let mut compiler = BlockCompiler::over_document(existing_document(), defaults, &root, &[]);
+
+        let empty_cell_table = BlockSpec::Table {
+            width_mm: None,
+            columns: vec![TableColumnSpec { width_mm: 30.0 }],
+            rows: vec![TableRowSpec {
+                cells: vec![TableCellSpec {
+                    col_span: 1,
+                    row_span: 1,
+                    blocks: Vec::new(),
+                }],
+            }],
+        };
+        let blocks: Vec<(&str, BlockSpec)> = vec![
+            ("table anchor", one_cell_table("셀")),
+            ("empty-cell table anchor", empty_cell_table),
+            (
+                "image",
+                BlockSpec::Image {
+                    path: PathBuf::from("p.gif"),
+                    width_mm: 10.0,
+                    height_mm: Some(10.0),
+                    alt: None,
+                    placement: ImagePlacement::Inline,
+                },
+            ),
+            (
+                "equation",
+                BlockSpec::Equation {
+                    script: "a+b".to_string(),
+                    width_mm: None,
+                    height_mm: None,
+                },
+            ),
+            (
+                "field",
+                BlockSpec::Field {
+                    name: "n".to_string(),
+                    value: "v".to_string(),
+                    style: None,
+                },
+            ),
+            (
+                "page break",
+                BlockSpec::Break {
+                    kind: BreakKind::Page,
+                },
+            ),
+            (
+                "column break",
+                BlockSpec::Break {
+                    kind: BreakKind::Column,
+                },
+            ),
+        ];
+        let mut checked = 0;
+        for (label, block) in &blocks {
+            let paragraphs = compiler
+                .compile_block(block, "$.blocks[0]")
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            for paragraph in &paragraphs {
+                assert_eq!(paragraph.style, defaults.style, "{label}");
+                assert_eq!(paragraph.para_shape, defaults.para_shape, "{label}");
+                checked += 1;
+            }
+            // The cells of a table are paragraphs too, including the one filled in for an empty
+            // cell.
+            if let Some(hwp_model::Control::Table(table)) = paragraphs[0].controls.first() {
+                for cell in &table.cells {
+                    for inner in &cell.paragraphs {
+                        assert_eq!(inner.style, defaults.style, "{label} cell paragraph");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        // 7 blocks give 7 anchor paragraphs; the two tables add their cells' paragraphs: one
+        // with text, one with the empty-cell placeholder.
+        assert_eq!(
+            checked, 9,
+            "every kind and every cell paragraph was visited"
+        );
+    }
+
+    /// A font family resolves to the face of THAT name in every language table. The seven tables
+    /// of a real document differ in length and order (in `report-tables.hwpx`, `휴먼고딕` is the
+    /// fourth Hangul face but `휴먼명조` is the fourth Latin one), so one id reused for all seven
+    /// names a different font in six of them. A font the document lacks is appended to every
+    /// table, at that table's own next index (T19-F2).
+    #[test]
+    fn font_family_resolves_per_language_table_in_an_existing_document() {
+        let document = existing_document();
+        let before: Vec<Vec<String>> = document
+            .header
+            .fonts
+            .iter()
+            .map(|table| table.iter().map(|face| face.name.clone()).collect())
+            .collect();
+        // The premise of the bug: the tables are not parallel.
+        assert_eq!(before[0][3], "휴먼고딕");
+        assert_ne!(before[1][3], "휴먼고딕");
+        assert_ne!(before[0].len(), before[1].len());
+
+        let mut compiler =
+            BlockCompiler::over_document(document, BlockDefaults::COMPOSE, Path::new(""), &[]);
+        let mut styles = BTreeMap::new();
+        for (name, font) in [("기존", "휴먼고딕"), ("새것", "나눔손글씨")] {
+            styles.insert(
+                name.to_string(),
+                StyleSpec {
+                    font_family: Some(font.to_string()),
+                    ..StyleSpec::default()
+                },
+            );
+        }
+        compiler.compile_styles(&styles).expect("styles register");
+        let document = compiler.into_document();
+
+        for (style_name, font, existed) in
+            [("기존", "휴먼고딕", true), ("새것", "나눔손글씨", false)]
+        {
+            let style = document
+                .header
+                .styles
+                .iter()
+                .find(|style| style.name == style_name)
+                .expect("the style was registered");
+            let shape = &document.header.char_shapes[usize::from(style.char_shape.0)];
+            for (language, table) in document.header.fonts.iter().enumerate() {
+                let id = usize::from(shape.face_ids[language]);
+                assert_eq!(
+                    table.get(id).map(|face| face.name.as_str()),
+                    Some(font),
+                    "{style_name}: language table {language} names {:?} at id {id}, expected {font}",
+                    table.get(id).map(|face| &face.name),
+                );
+            }
+        }
+        // A face is appended to a table only when that table lacks the name, at the table's own
+        // end, and rows that were there did not move. `휴먼고딕` exists only in the Hangul table
+        // here; `나눔손글씨` exists in none.
+        for (language, names) in before.iter().enumerate() {
+            let table = &document.header.fonts[language];
+            let mut expected = names.clone();
+            for font in ["휴먼고딕", "나눔손글씨"] {
+                if !expected.iter().any(|name| name == font) {
+                    expected.push(font.to_string());
+                }
+            }
+            let actual: Vec<&str> = table.iter().map(|face| face.name.as_str()).collect();
+            assert_eq!(actual, expected, "language table {language}");
+        }
+        assert_eq!(
+            before
+                .iter()
+                .filter(|names| names.iter().any(|n| n == "휴먼고딕"))
+                .count(),
+            1,
+            "the premise: the existing font is in exactly one language table"
         );
     }
 
