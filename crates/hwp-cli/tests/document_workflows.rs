@@ -117,7 +117,7 @@ fn write_hwpx_border_fixture(document: &hwp_model::Document, path: &Path, count:
         regex::Regex::new(r#"(?s)<hh:borderFill id="[0-9]+".*?</hh:borderFill>"#).unwrap();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
-        let name = entry.name().to_string();
+        let name = entry.name().unwrap().into_owned();
         let method = entry.compression();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();

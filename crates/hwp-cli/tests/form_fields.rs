@@ -47,7 +47,7 @@ fn entries(path: &Path) -> Vec<(String, Vec<u8>)> {
             let mut entry = archive.by_index(i).unwrap();
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
-            (entry.name().to_string(), bytes)
+            (entry.name().unwrap().into_owned(), bytes)
         })
         .collect()
 }
@@ -315,7 +315,7 @@ fn tiny_png(path: &Path) {
     std::fs::write(path, &png).unwrap();
 }
 
-/// A value cell holding a 누름틀 or a picture is never written; the fill says so.
+/// A value cell holding a form field or a picture is never written; the fill reports this.
 #[test]
 fn fill_forms_leaves_cells_with_fields_and_pictures_alone() {
     let (dir, form) = template("controls", "| 성명 | 누름 |\n|---|---|\n| 주소 | 그림 |\n");
@@ -378,18 +378,18 @@ fn mark_second_section(from: &Path, to: &Path) {
         let mut entry = source.by_index(i).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        if entry.name() == "Contents/section1.xml" {
+        if entry.name().unwrap() == "Contents/section1.xml" {
             let xml = String::from_utf8(data).unwrap();
             let at = xml.find("?>").unwrap() + 2;
             data = format!("{}<!-- untouched -->{}", &xml[..at], &xml[at..]).into_bytes();
         }
-        let method = if entry.name() == "mimetype" {
+        let method = if entry.name().unwrap() == "mimetype" {
             zip::CompressionMethod::Stored
         } else {
             zip::CompressionMethod::Deflated
         };
         out.start_file(
-            entry.name(),
+            entry.name().unwrap(),
             SimpleFileOptions::default().compression_method(method),
         )
         .unwrap();

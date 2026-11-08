@@ -1,4 +1,4 @@
-//! HWPX writer 테스트: 왕복 + 패키지 규칙.
+//! HWPX writer tests: round trips and package rules.
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -187,7 +187,7 @@ fn typed_report_records_both_gso_drop_paths() {
     );
 }
 
-/// hwpx → IR → hwpx → IR 왕복: 의미 동등성.
+/// hwpx-to-IR-to-hwpx-to-IR round trip: semantic equivalence.
 #[test]
 fn 왕복_의미_동등() {
     if skip_if_no_fixtures() {
@@ -223,7 +223,7 @@ fn 왕복_의미_동등() {
             .map(|s| &s.name)
             .collect::<Vec<_>>(),
     );
-    // PageDef 보존
+    // Preserve PageDef.
     let (a, b) = (
         original.sections[0].section_def().unwrap().page.unwrap(),
         doc.sections[0].section_def().unwrap().page.unwrap(),
@@ -300,7 +300,7 @@ fn character_style_kind_round_trips() {
     );
 }
 
-/// 패키지 규칙: mimetype이 첫 엔트리 + 무압축.
+/// Package rule: mimetype is first and uncompressed.
 #[test]
 fn 패키지_mimetype_규칙() {
     if skip_if_no_fixtures() {
@@ -315,7 +315,7 @@ fn 패키지_mimetype_규칙() {
     let file = std::fs::File::open(&out).unwrap();
     let mut zip = zip::ZipArchive::new(file).unwrap();
     let first = zip.by_index(0).unwrap();
-    assert_eq!(first.name(), "mimetype");
+    assert_eq!(first.name().unwrap(), "mimetype");
     assert_eq!(first.compression(), zip::CompressionMethod::Stored);
     drop(first);
 
@@ -327,8 +327,8 @@ fn 패키지_mimetype_규칙() {
     assert_eq!(mime, "application/hwp+zip");
 }
 
-/// 같은 IR은 실행 시각과 출력 경로가 달라도 byte-identical HWPX여야 한다.
-/// ZIP writer 기본값이 현재 시각으로 바뀌어도 회귀하지 않도록 DOS epoch도 직접 확인한다.
+/// The same IR must produce byte-identical HWPX regardless of run time or output path.
+/// Also pin DOS epoch timestamps against a ZIP writer default changing to current time.
 #[test]
 fn 새_패키지는_시간과_경로에_무관하게_결정적() {
     let doc = hwp_convert::from_markdown("# 결정적 합성\n\n같은 입력은 같은 출력이어야 한다.\n");
@@ -336,7 +336,7 @@ fn 새_패키지는_시간과_경로에_무관하게_결정적() {
     let second = tmp("deterministic-second.hwpx");
 
     hwpx::write_document(&doc, &first).unwrap();
-    // DOS timestamp 해상도(2초)를 넘겨 현재 시각 기반 기본값의 false green을 막는다.
+    // Exceed DOS timestamp resolution (two seconds) to reject time-dependent false greens.
     std::thread::sleep(std::time::Duration::from_millis(2_100));
     hwpx::write_document(&doc, &second).unwrap();
 
@@ -355,13 +355,13 @@ fn 새_패키지는_시간과_경로에_무관하게_결정적() {
                 entry.last_modified(),
                 Some(zip::DateTime::default()),
                 "{} timestamp",
-                entry.name()
+                entry.name().unwrap()
             );
         }
     }
 }
 
-/// markdown → hwpx → markdown 왕복: 구조 보존.
+/// Markdown-to-HWPX-to-Markdown round trip: preserve structure.
 #[test]
 fn markdown_생성_왕복() {
     let md = "# 제목\n\n본문 **굵게** 그리고 *기울임*.\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n";
@@ -376,7 +376,7 @@ fn markdown_생성_왕복() {
     assert!(text.contains("본문 굵게 그리고 기울임."));
     assert!(text.contains("1\t2"), "표 셀: {text:?}");
 
-    // 헤딩 스타일과 서식 스팬이 md로 되돌아온다
+    // Heading styles and formatted spans return in Markdown.
     let md_out = hwp_convert::to_markdown(&reread);
     assert!(md_out.contains("# "), "{md_out}");
     assert!(md_out.contains("**굵게**"), "{md_out}");
@@ -711,7 +711,7 @@ fn margin_sentinel_hwpx_round_trip() {
     assert_eq!(table.cells[0].margins, [u16::MAX, 510, u16::MAX, 141]);
 }
 
-/// GI-3/GI-4 왕복: md(이미지+인라인 코드) → hwpx 저장 → 재읽기에서 Picture·bin·코드 글자모양 생존.
+/// GI-3/GI-4 round trip: Markdown images/inline code retain Picture, binary and code character shapes.
 #[test]
 fn md_이미지_코드_hwpx_왕복() {
     use std::io::Write as _;
@@ -768,9 +768,9 @@ fn md_이미지_코드_hwpx_왕복() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// GE-9: 부유(글 앞) 그림의 세로/가로 오프셋·z-order가 hwpx `<hp:pos>`/zOrder에
-/// 방출된다. hwp5 read가 실값을 승계하면(parse_picture_gso) writer가 그대로 쓴다 —
-/// 이전엔 0 하드코딩이라 떠 있는 그림이 좌상단(offset 0)에 뭉쳤다.
+/// GE-9: floating front-of-text picture offsets and z-order appear in HWPX hp:pos/zOrder.
+/// The writer retains actual values inherited through parse_picture_gso on HWP5 read;
+/// previously hardcoded zeros crowded floating pictures into the top-left corner.
 #[test]
 fn 부유_그림_배치_hwpx_방출() {
     use std::io::Write as _;
@@ -790,7 +790,7 @@ fn 부유_그림_배치_hwpx_방출() {
             ..Default::default()
         },
     );
-    // 그림을 부유(글 앞) + 오프셋·z-order로 바꾼다(hwp5 read가 승계했을 값을 모사).
+    // Make the picture floating with offsets/z-order, simulating inherited HWP5 values.
     for para in &mut doc.sections[0].paragraphs {
         for c in &mut para.controls {
             if let hwp_model::Control::Picture(p) = c {
@@ -814,7 +814,7 @@ fn 부유_그림_배치_hwpx_방출() {
         .read_to_end(&mut raw)
         .unwrap();
     let xml = String::from_utf8(raw).unwrap();
-    // 부유 <hp:pic zOrder="7"> + <hp:pos ... vertOffset="5000" horzOffset="3000">.
+    // Floating hp:pic zOrder=7 and hp:pos vertOffset=5000, horzOffset=3000.
     assert!(xml.contains(r#"zOrder="7""#), "z-order 방출: {xml}");
     assert!(
         xml.contains(r#"vertOffset="5000""#),
@@ -905,7 +905,7 @@ fn floating_picture_negative_offset_emits_unsigned_and_round_trips() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// GI-1/GI-2 왕복 (b): md(각주·취소선·순서목록·중첩) → hwpx 저장 → 재읽기 → md.
+/// GI-1/GI-2 round trip (b): Markdown footnotes, strikeout, ordered/nested lists through HWPX.
 #[test]
 fn markdown_각주_취소선_목록_hwpx_완전왕복() {
     let md = "\
@@ -924,14 +924,14 @@ fn markdown_각주_취소선_목록_hwpx_완전왕복() {
     let doc = hwp_convert::from_markdown(md);
     let out = tmp("from_md_notes.hwpx");
     let warnings = hwpx::write_document(&doc, &out).unwrap();
-    // 각주·목록은 DROP 경고 없이 방출돼야 한다.
+    // Emit footnotes and lists without DROP warnings.
     assert!(
         !warnings.iter().any(|w| w.contains("DROP")),
         "DROP 경고: {warnings:?}"
     );
 
     let reread = hwpx::read_document(&out).unwrap().document;
-    // 각주 컨트롤이 hwpx 왕복에서 fn GenericControl로 되살아난다.
+    // Footnote controls reread from HWPX as fn GenericControl.
     let has_fn = reread.sections[0].paragraphs.iter().any(|p| {
         p.controls.iter().any(|c| matches!(c,
             hwp_model::Control::Generic(g) if g.ctrl_id == *b"fn  " && !g.paragraph_lists.is_empty()))
@@ -950,16 +950,16 @@ fn markdown_각주_취소선_목록_hwpx_완전왕복() {
     assert!(md_out.contains("- 안쪽 가"), "중첩 불릿: {md_out}");
 }
 
-/// 머리말/꼬리말 적용쪽(applyPageType)이 hwpx write→read 왕복에서 보존된다(GE-α9).
-/// 이전엔 writer가 `applyPageType="BOTH"` 상수라 짝수/홀수 구분 머리말이 항상
-/// "양쪽"으로 뭉개졌다. `g.data` 선두 u32(적용쪽)를 read의 역매핑으로 방출한다.
+/// Header/footer applyPageType survives HWPX write/read (GE-α9).
+/// Previously a constant BOTH collapsed even/odd headers into both-page headers.
+/// Reverse the read mapping to emit the leading g.data u32 apply-page value.
 #[test]
 fn 머리말_적용쪽_hwpx_왕복() {
     use hwp_model::{Control, GenericControl, HwpChar, Paragraph, ParagraphList};
 
     for (apply, want, tag) in [(1u32, "EVEN", 1u8), (2u32, "ODD", 2u8)] {
         let mut doc = hwp_convert::from_markdown("본문");
-        // head_foot_data 레이아웃: apply(u32)@0 + id(u32)@4.
+        // head_foot_data layout: apply(u32)@0 + id(u32)@4.
         let mut data = Vec::with_capacity(8);
         data.extend_from_slice(&apply.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
@@ -979,7 +979,7 @@ fn 머리말_적용쪽_hwpx_왕복() {
             hwpx_raw_xml: None,
             container_box: None,
         };
-        // 머리말 컨트롤을 문단에 ExtCtrl(코드 16)로 부착.
+        // Attach the header control to the paragraph as ExtCtrl code 16.
         let para = &mut doc.sections[0].paragraphs[0];
         let idx = para.controls.len() as u32;
         para.chars.push(HwpChar::ExtCtrl {
@@ -994,7 +994,7 @@ fn 머리말_적용쪽_hwpx_왕복() {
         let warnings = hwpx::write_document(&doc, &out).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
 
-        // 방출 XML에 상수 BOTH가 아니라 실제 적용쪽이 들어간다.
+        // Output XML contains the actual apply-page value rather than constant BOTH.
         let bytes = std::fs::read(&out).unwrap();
         let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         let mut raw = Vec::new();
@@ -1008,7 +1008,7 @@ fn 머리말_적용쪽_hwpx_왕복() {
             "applyPageType={want} 방출: {xml}"
         );
 
-        // 되읽은 head 컨트롤의 g.data 선두 u32가 적용쪽을 보존.
+        // The leading g.data u32 of the reread head control retains the apply-page value.
         let reread = hwpx::read_document(&out).unwrap().document;
         let apply_byte = reread.sections[0]
             .paragraphs
@@ -1022,9 +1022,9 @@ fn 머리말_적용쪽_hwpx_왕복() {
     }
 }
 
-/// 본문 탭이 hwpx에서 `<hp:t>` **안**의 중첩 `<hp:tab width leader type/>`(정품 mixed
-/// content)로 방출되고 raw 0x09가 절대 없어야 한다. t 밖 형제 bare 탭은 한글이 폭 0으로
-/// 무시하고(D3 밀착), raw 0x09를 t 안에 그대로 두면 한글이 파일을 열지 못한다(D3 먹통).
+/// Emit body tabs as nested hp:tab width/leader/type inside hp:t, matching genuine mixed
+/// content, never raw 0x09. Hangul ignores sibling tabs outside t as zero-width (D3 crowding),
+/// and cannot open files containing raw 0x09 inside t (D3 hang).
 #[test]
 fn 본문_탭_hwpx_tab요소_raw없음() {
     let doc = hwp_convert::from_markdown("앞\t뒤\n");
@@ -1040,7 +1040,7 @@ fn 본문_탭_hwpx_tab요소_raw없음() {
         .read_to_end(&mut raw)
         .unwrap();
     let xml = String::from_utf8(raw).unwrap();
-    // 속성 있는 탭 요소(<hp:tab · width/leader/type)로 방출.
+    // Emit a tab element with width/leader/type attributes.
     assert!(
         xml.contains("<hp:tab ")
             && xml.contains("width=\"")
@@ -1048,12 +1048,12 @@ fn 본문_탭_hwpx_tab요소_raw없음() {
             && xml.contains("type=\""),
         "탭이 속성 있는 <hp:tab …/>로 방출돼야: {xml}"
     );
-    // 탭 정의 없는 문단 → 정품 기본 탭(왼쪽·채움없음): type="1" leader="0".
+    // Without a tab definition, use the genuine default left tab with no leader: type=1, leader=0.
     assert!(
         xml.contains(r#"leader="0" type="1""#),
         "기본 탭은 leader=0 type=1이어야: {xml}"
     );
-    // <hp:t>…</hp:t> 블록을 지운 뒤 <hp:tab이 남으면 t 밖 형제로 방출된 것(먹통 원인).
+    // A remaining hp:tab after removing hp:t blocks indicates an invalid sibling tab outside t.
     let stripped = regex_lite_strip_t(&xml);
     assert!(
         !stripped.contains("<hp:tab"),
@@ -1064,7 +1064,7 @@ fn 본문_탭_hwpx_tab요소_raw없음() {
         "section XML에 raw 0x09가 있으면 안 됨"
     );
 
-    // 재읽기: 탭이 InlineCtrl(9)로 복원되고 텍스트 순서 보존.
+    // Reread tabs as InlineCtrl(9), preserving text order.
     let reread = hwpx::read_document(&out).unwrap().document;
     assert!(reread.plain_text().contains("앞\t뒤"), "탭 왕복");
     let tabs = reread.sections[0].paragraphs[0]
@@ -1075,8 +1075,8 @@ fn 본문_탭_hwpx_tab요소_raw없음() {
     assert_eq!(tabs, 1, "재읽기 본문 탭 InlineCtrl(9) 1개");
 }
 
-/// `<hp:t …>…</hp:t>` 블록을 모두 제거한다(비탐욕, 정규식 없이 문자열 스캔). 남은 문자열에
-/// `<hp:tab`이 있으면 탭이 t 바깥 형제로 방출된 것이다.
+/// Remove every hp:t block using a nongreedy string scan without regex. If hp:tab remains,
+/// the writer emitted a tab outside t as a sibling.
 fn regex_lite_strip_t(xml: &str) -> String {
     let mut out = String::new();
     let mut rest = xml;
@@ -1094,7 +1094,7 @@ fn regex_lite_strip_t(xml: &str) -> String {
     out
 }
 
-/// 필드(누름틀) hwpx 왕복: create_field → write → read → list_fields로 이름·값 복원.
+/// Form-field HWPX round trip: create_field, write, read, then list_fields restores names/values.
 #[test]
 fn 필드_생성_hwpx_왕복() {
     let mut doc = hwp_convert::from_markdown("수신: 부서명");
@@ -1105,7 +1105,7 @@ fn 필드_생성_hwpx_왕복() {
     let warnings = hwpx::write_document(&doc, &out).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
 
-    // 쓴 XML에 fieldBegin/fieldEnd가 있다.
+    // Written XML contains fieldBegin/fieldEnd.
     let bytes = std::fs::read(&out).unwrap();
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut xml = String::new();
@@ -1123,7 +1123,7 @@ fn 필드_생성_hwpx_왕복() {
     assert!(xml.contains(r#"name="수신처""#), "필드 이름 없음");
     assert!(xml.contains("<hp:fieldEnd"), "fieldEnd 없음");
 
-    // 재읽기 → list_fields로 이름·종류·값 복원.
+    // Reread list_fields restores names, kinds and values.
     let reread = hwpx::read_document(&out).unwrap().document;
     let fields = hwp_convert::list_fields(&reread);
     assert_eq!(fields.len(), 1, "{fields:?}");
@@ -1132,15 +1132,15 @@ fn 필드_생성_hwpx_왕복() {
     assert_eq!(fields[0].value, "홍길동");
 }
 
-/// GF-4: 표 128의 확장 필드(변경추적·차례·개인정보)가 hwpx write에서 DROP되지
-/// 않고 fieldBegin/End·내용 텍스트로 방출된다. OWPML type은 근거 없어 UNKNOWN 폴백
-/// (라벨은 잃어도 필드·내용 보존 — GF-1 등급). 재읽기 시 %unk로 되살아나 왕복 성립.
+/// GF-4: extended table-128 fields (change tracking, TOC and privacy) emit fieldBegin/End
+/// and content text rather than DROP. Unevidenced OWPML types fall back to UNKNOWN,
+/// retaining fields/content at GF-1 fidelity; rereading restores %unk.
 #[test]
 fn 확장필드_hwp5출신_hwpx_방출() {
     use hwp_model::{Control, GenericControl, HwpChar};
 
-    // 대표 3종: 변경추적(삭제, %%*d)·차례(%toc)·개인정보(%cpr). 각 필드를 한
-    // 문단에 FIELD_START(코드3)+내용+FIELD_END(코드4)로 배치.
+    // Three representative fields: deletion tracking (%%*d), TOC (%toc), privacy (%cpr).
+    // Place FIELD_START(code 3), content and FIELD_END(code 4) in each paragraph.
     let fields: [(&[u8; 4], &str); 3] = [
         (b"%%*d", "삭제된 문장"),
         (b"%toc", "제1장 서론"),
@@ -1164,7 +1164,7 @@ fn 확장필드_hwp5출신_hwpx_방출() {
         });
         para.controls.push(Control::Generic(GenericControl {
             ctrl_id: **id,
-            data: vec![0u8; 11], // 속성4 기타1 len2=0 id4
+            data: vec![0u8; 11], // attr4, other1, len2=0, id4
             paragraph_lists: Vec::new(),
             extras: Vec::new(),
             raw_children: Vec::new(),
@@ -1180,7 +1180,7 @@ fn 확장필드_hwp5출신_hwpx_방출() {
 
     let out = tmp("ext_fields.hwpx");
     let warnings = hwpx::write_document(&doc, &out).unwrap();
-    // 확장 필드는 DROP 경고 없이 방출돼야 한다.
+    // Extended fields must emit without DROP warnings.
     assert!(
         !warnings.iter().any(|w| w.contains("DROP")),
         "DROP 경고: {warnings:?}"
@@ -1207,7 +1207,7 @@ fn 확장필드_hwp5출신_hwpx_방출() {
     for (_, text) in &fields {
         assert!(xml.contains(text), "내용 텍스트 보존({text}): {xml}");
     }
-    // 차례(%toc)는 코퍼스 실측 OWPML type으로, 변경추적·개인정보는 UNKNOWN 폴백으로.
+    // TOC (%toc) uses the corpus-observed OWPML type; tracking/privacy fall back to UNKNOWN.
     assert!(
         xml.contains(r#"type="TABLEOFCONTENTS""#),
         "%toc→TABLEOFCONTENTS: {xml}"
@@ -1218,8 +1218,8 @@ fn 확장필드_hwp5출신_hwpx_방출() {
         "%%*d·%cpr→UNKNOWN 2개: {xml}"
     );
 
-    // 재읽기: 필드가 되살아나고 내용 텍스트가 보존된다(왕복 성립). %toc는 종류까지
-    // 왕복(%toc), 변경추적·개인정보는 %unk로 하향(내용은 보존).
+    // Reread fields and their content; %toc retains its kind while tracking/privacy
+    // degrade to %unk with their content preserved.
     let reread = hwpx::read_document(&out).unwrap().document;
     let got = hwp_convert::list_fields(&reread);
     assert_eq!(got.len(), 3, "필드 3개 왕복: {got:?}");
@@ -1244,7 +1244,7 @@ fn 확장필드_hwp5출신_hwpx_방출() {
     );
 }
 
-/// 책갈피(bokm) hwpx 왕복: create_bookmark → write → `<hp:bookmark name>` → read → list_bookmarks.
+/// Bookmark HWPX round trip: create_bookmark, write hp:bookmark name, read, list_bookmarks.
 #[test]
 fn 책갈피_생성_hwpx_왕복() {
     let mut doc = hwp_convert::from_markdown("제목 문단\n\n본문");
@@ -1258,7 +1258,7 @@ fn 책갈피_생성_hwpx_왕복() {
     let warnings = hwpx::write_document(&doc, &out).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
 
-    // 쓴 XML에 <hp:bookmark name="…"/>가 있다.
+    // Written XML contains hp:bookmark with its name attribute.
     let bytes = std::fs::read(&out).unwrap();
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut xml = String::new();
@@ -1274,14 +1274,14 @@ fn 책갈피_생성_hwpx_왕복() {
         "hp:bookmark 없음: {xml}"
     );
 
-    // 재읽기 → list_bookmarks로 이름 복원.
+    // Reread list_bookmarks restores the name.
     let reread = hwpx::read_document(&out).unwrap().document;
     let bms = hwp_convert::list_bookmarks(&reread);
     assert_eq!(bms.len(), 1, "{bms:?}");
     assert_eq!(bms[0].name, "책갈피테스트");
 }
 
-/// 하이퍼링크(%hlk) hwpx 왕복: create_hyperlink → write → fieldBegin HYPERLINK+Command → read.
+/// Hyperlink (%hlk) round trip: create_hyperlink, write fieldBegin HYPERLINK/Command, read.
 #[test]
 fn 하이퍼링크_생성_hwpx_왕복() {
     let mut doc = hwp_convert::from_markdown("문서: 참고");
@@ -1296,7 +1296,7 @@ fn 하이퍼링크_생성_hwpx_왕복() {
     let warnings = hwpx::write_document(&doc, &out).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
 
-    // 쓴 XML에 fieldBegin type=HYPERLINK + Command(URL)가 있다.
+    // Written XML contains fieldBegin type=HYPERLINK and the Command URL.
     let bytes = std::fs::read(&out).unwrap();
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut xml = String::new();
@@ -1310,7 +1310,7 @@ fn 하이퍼링크_생성_hwpx_왕복() {
     assert!(xml.contains(r#"type="HYPERLINK""#), "HYPERLINK 없음: {xml}");
     assert!(xml.contains("example.com"), "Command URL 없음: {xml}");
 
-    // 재읽기 → list_fields로 종류·값·command 복원.
+    // Reread list_fields restores kind, value and command.
     let reread = hwpx::read_document(&out).unwrap().document;
     let fields = hwp_convert::list_fields(&reread);
     let hlk: Vec<_> = fields.iter().filter(|f| f.ctrl_id == "%hlk").collect();
@@ -1322,18 +1322,18 @@ fn 하이퍼링크_생성_hwpx_왕복() {
     );
 }
 
-/// 요약정보 8필드가 hwpx 패키지 왕복(write_document → read_document)에서 보존된다.
+/// Preserve eight summary fields across write_document/read_document package round trips.
 ///
-/// 정품 content.hpf 형식(creator/subject/keyword/description/lastsaveby meta +
-/// CreatedDate/ModifiedDate ISO-8601)을 방출·재파싱한다. FILETIME은 **초 단위 정밀도**로
-/// 왕복하며, 하위 100ns(FT_PER_SEC 미만)는 ISO 초 절사로 소실되므로 여기선 초 경계 값을
-/// 사용한다. 이 테스트는 fixtures가 필요 없다(합성 문서).
+/// Emit and reparse genuine content.hpf creator/subject/keyword/description/lastsaveby metadata
+/// and ISO-8601 CreatedDate/ModifiedDate. FILETIME round trips at second precision;
+/// subsecond 100 ns ticks below FT_PER_SEC are lost through ISO second truncation, so use
+/// second-boundary values here. This synthetic-document test needs no fixtures.
 #[test]
 fn 요약정보_8필드_hwpx_패키지_왕복() {
     use hwp_model::iso8601_utc_to_filetime as iso2ft;
 
     let mut doc = hwp_convert::from_markdown("요약정보 검증 본문\n");
-    // 모두 초 경계(FT_PER_SEC 배수)라 왕복 무손실.
+    // All timestamps lie on second boundaries (multiples of FT_PER_SEC), making the round trip lossless.
     let created = iso2ft("2025-09-17T04:32:50Z").unwrap();
     let modified = iso2ft("2025-09-17T04:33:13Z").unwrap();
     doc.metadata = hwp_model::Metadata {
@@ -1358,19 +1358,19 @@ fn 요약정보_8필드_hwpx_패키지_왕복() {
     assert_eq!(m.keywords, doc.metadata.keywords);
     assert_eq!(m.description, doc.metadata.description);
     assert_eq!(m.last_saved_by, doc.metadata.last_saved_by);
-    // FILETIME은 초 정밀도로 보존(하위 100ns는 애초에 없음).
+    // Retain FILETIME to second precision; these inputs have no subsecond ticks.
     assert_eq!(m.create_time, Some(created));
     assert_eq!(m.modify_time, Some(modified));
 }
 
-/// GE-β5: settings.xml·version.xml 원문 pass-through.
+/// GE-β5: pass through original settings.xml/version.xml.
 ///
-/// 커스텀 settings.xml(앱 설정·캐럿 위치)·version.xml(버전 메타)을 슬롯에 담아
-/// write→read 왕복하면 원문이 상수로 대체되지 않고 그대로 보존된다. 슬롯이 없는
-/// (hwp5 출신 등) 문서는 기존 기본 상수 출력이 바이트 동일하게 유지된다.
+/// Put custom app settings/caret positions and version metadata in their slots, then
+/// write/read them without replacement by constants. Documents without those slots,
+/// such as HWP5 sources, retain byte-identical default-constant output.
 #[test]
 fn ge_b5_settings_version_원문_passthrough_왕복() {
-    // 정품과 다른 값(캐럿 위치·appVersion)을 넣어 상수 대체가 아님을 검증한다.
+    // Use nondefault caret/appVersion values to detect replacement with constants.
     let settings = r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><ha:HWPApplicationSetting xmlns:ha="http://www.hancom.co.kr/hwpml/2011/app" xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0"><ha:CaretPosition listIDRef="3" paraIDRef="7" pos="42"/></ha:HWPApplicationSetting>"##;
     let version = r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hv:HCFVersion xmlns:hv="http://www.hancom.co.kr/hwpml/2011/version" tagetApplication="WORDPROCESSOR" major="5" minor="1" micro="1" buildNumber="0" os="1" xmlVersion="1.5" application="Hancom Office Hangul" appVersion="9.1.1.4321"/>"##;
 
@@ -1381,7 +1381,7 @@ fn ge_b5_settings_version_원문_passthrough_왕복() {
     let out = tmp("passthrough_parts.hwpx");
     hwpx::write_document(&doc, &out).unwrap();
 
-    // ZIP에서 두 파트의 바이트가 원문과 동일한지 직접 확인.
+    // Directly compare both ZIP parts against the original bytes.
     let bytes = std::fs::read(&out).unwrap();
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let read_part = |zip: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str| -> String {
@@ -1400,12 +1400,12 @@ fn ge_b5_settings_version_원문_passthrough_왕복() {
         "version 원문 보존"
     );
 
-    // read 왕복에서도 슬롯이 원문 그대로 복원된다.
+    // The read round trip also restores the slots unchanged.
     let reread = hwpx::read_document(&out).unwrap().document;
     assert_eq!(reread.hwpx_settings_xml.as_deref(), Some(settings));
     assert_eq!(reread.hwpx_version_xml.as_deref(), Some(version));
 
-    // JSON 왕복에서도 슬롯이 보존된다.
+    // The JSON round trip preserves the slots too.
     let json = hwp_convert::to_json(&reread, false, false).unwrap();
     let back = hwp_convert::from_json(&json).unwrap();
     assert_eq!(back.hwpx_settings_xml.as_deref(), Some(settings));
@@ -1434,8 +1434,8 @@ fn preview_image_bytes_are_preserved_on_same_format_rewrite() {
     assert_eq!(reread.hwpx_preview_image.as_deref(), Some(VALID_PNG_1X1));
 }
 
-/// GE-β5 보강: 슬롯이 None이면 두 파트가 기존 기본 상수와 바이트 동일하게 방출된다
-/// (구형 IR·hwp5 출신 문서의 출력 불변).
+/// GE-β5 reinforcement: absent slots emit both parts byte-identically to existing defaults,
+/// retaining output for old IR and HWP5-source documents.
 #[test]
 fn ge_b5_슬롯_없으면_기본상수_불변() {
     let doc = hwp_convert::from_markdown("기본 상수 경로 본문\n");
@@ -1458,28 +1458,28 @@ fn ge_b5_슬롯_없으면_기본상수_불변() {
         .read_to_string(&mut version)
         .unwrap();
 
-    // 기존 상수(concat! 결과 포함)와 바이트 동일.
+    // Byte-identical to existing constants, including concat! results.
     assert!(settings.contains(r##"<ha:CaretPosition listIDRef="0" paraIDRef="0" pos="0"/>"##));
     assert!(version.contains(r##"application="hwp-cli""##));
     assert!(version.contains(&format!(r##"appVersion="{}""##, env!("CARGO_PKG_VERSION"))));
 }
 
-/// GC-5: hwpx `<hp:secPr>` 미해석 자식(grid/startNum/visibility/lineNumberShape/
-/// footNotePr/pageBorderFill 등) 원문 pass-through.
+/// GC-5: pass through unparsed hp:secPr children, including grid/startNum/visibility/
+/// lineNumberShape/footNotePr/pageBorderFill.
 ///
-/// 정품과 다른 사용자 값(startNum·grid·visibility·pageBorderFill)을 담은 secPr을
-/// parse→write→parse 왕복하면, 원문 자식이 상수 템플릿으로 대체되지 않고 등장 순서대로
-/// 그대로 보존된다. pagePr만 페이지 정의로 재생성된다(같은 자리).
+/// Use nondefault startNum/grid/visibility/pageBorderFill values in secPr, then parse/write/parse.
+/// Retain original children in source order without replacing them with constant templates.
+/// Only pagePr is regenerated from PageDef at its original position.
 #[test]
 fn gc5_secpr_자식_원문_passthrough_왕복() {
-    // 상수 템플릿과 다른 사용자 값(grid charGrid=7, startNum page=3, visibility HIDE_ALL,
-    // lineNumberShape restartType=2, pageBorderFill borderFillIDRef=2)을 넣는다.
+    // Use values unlike the template: grid charGrid=7, startNum page=3, visibility HIDE_ALL,
+    // lineNumberShape restartType=2 and pageBorderFill borderFillIDRef=2.
     let sec_pr = r##"<hp:secPr id="" textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" tabStopVal="4000" tabStopUnit="HWPUNIT" outlineShapeIDRef="1" memoShapeIDRef="0" textVerticalWidthHead="0" masterPageCnt="0"><hp:grid lineGrid="5" charGrid="7" wonggojiFormat="1"/><hp:startNum pageStartsOn="ODD" page="3" pic="2" tbl="4" equation="1"/><hp:visibility hideFirstHeader="1" hideFirstFooter="1" hideFirstMasterPage="0" border="HIDE_ALL" fill="SHOW_ALL" hideFirstPageNum="1" hideFirstEmptyLine="0" showLineNumber="1"/><hp:lineNumberShape restartType="2" countBy="3" distance="100" startNumber="9"/><hp:pagePr landscape="WIDELY" width="59528" height="84186" gutterType="LEFT_ONLY"><hp:margin header="4252" footer="4252" gutter="0" left="8504" right="8504" top="5668" bottom="4252"/></hp:pagePr><hp:footNotePr><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/></hp:footNotePr><hp:pageBorderFill type="BOTH" borderFillIDRef="2" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill></hp:secPr>"##;
     let xml = format!(
         r##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"><hp:p id="1" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0">{sec_pr}</hp:run></hp:p></hs:sec>"##
     );
 
-    // read: 미해석 자식이 원문으로 캡처되고 pagePr 자리엔 마커.
+    // Read captures unparsed children as raw XML and marks the pagePr position.
     let (section, warns) = hwpx::read::section::parse_section(&xml).unwrap();
     assert!(warns.is_empty(), "{warns:?}");
     let def = section.section_def().expect("secPr");
@@ -1504,14 +1504,14 @@ fn gc5_secpr_자식_원문_passthrough_왕복() {
         raw.iter().any(|c| c == hwp_model::SECPR_PAGEPR_SLOT),
         "pagePr 자리 마커"
     );
-    // pagePr은 원문이 아니라 페이지 정의로 파싱(원문 목록에 pagePr 태그가 없어야 함).
+    // Parse pagePr into PageDef, not raw children; the raw list must contain no pagePr tag.
     assert!(
         !raw.iter().any(|c| c.contains("<hp:pagePr")),
         "pagePr는 원문 아닌 페이지 정의"
     );
     assert_eq!(def.page.expect("페이지 정의").width.0, 59528);
 
-    // write: 원문 자식이 순서대로 그대로, pagePr만 페이지 정의로 재생성.
+    // Write raw children unchanged in order, regenerating only pagePr from PageDef.
     let doc = hwp_model::Document::default();
     let mut bins = hwpx::write::section::BinCollector::default();
     let mut wwarn = Vec::new();
@@ -1544,7 +1544,7 @@ fn gc5_secpr_자식_원문_passthrough_왕복() {
         out.contains(r##"<hp:pagePr landscape="WIDELY" width="59528" height="84186""##),
         "pagePr 재생성"
     );
-    // 상수 템플릿 값(charGrid="0", page="0")으로 덮이지 않았다.
+    // Template constants charGrid=0 and page=0 did not overwrite the values.
     assert!(
         !out.contains(r##"charGrid="0""##),
         "상수 grid로 대체되지 않음"
@@ -1554,7 +1554,7 @@ fn gc5_secpr_자식_원문_passthrough_왕복() {
         "상수 startNum으로 대체되지 않음"
     );
 
-    // 순서 보존: grid < startNum < pagePr < footNotePr < pageBorderFill.
+    // Preserve order: grid < startNum < pagePr < footNotePr < pageBorderFill.
     let pos = |needle: &str| {
         out.find(needle)
             .unwrap_or_else(|| panic!("미발견: {needle}"))
@@ -1576,7 +1576,7 @@ fn gc5_secpr_자식_원문_passthrough_왕복() {
         "footNotePr→pageBorderFill 순서"
     );
 
-    // 재파싱 왕복: 원문 보존과 페이지 정의가 유지된다.
+    // Reparse round trip retains raw XML and PageDef.
     let (section2, _) = hwpx::read::section::parse_section(&out).unwrap();
     let def2 = section2.section_def().expect("secPr 2회차");
     assert!(
@@ -1594,8 +1594,8 @@ fn gc5_secpr_자식_원문_passthrough_왕복() {
     assert_eq!(def2.page.unwrap().width.0, 59528);
 }
 
-/// GC-5 보강: secpr_raw_children가 비면(hwp5 출신·구형 IR) 기존 상수 템플릿이
-/// 방출된다 — 출력 불변(hwp5→hwpx 합성 경로 회귀 방지).
+/// GC-5 reinforcement: empty secpr_raw_children (HWP5 sources/old IR) emits the existing
+/// constant template unchanged, protecting the HWP5-to-HWPX synthesis path.
 #[test]
 fn gc5_슬롯_없으면_기본상수_불변() {
     use hwp_model::{Control, HwpChar, HwpUnit, PageDef, Paragraph, Section, SectionDef};
@@ -1622,7 +1622,7 @@ fn gc5_슬롯_없으면_기본상수_불변() {
         data: Vec::new(),
         page: Some(page),
         extras: Vec::new(),
-        secpr_raw_children: Vec::new(), // 슬롯 없음(hwp5 출신)
+        secpr_raw_children: Vec::new(), // No slot (HWP5 source).
         footnote_shape_raw: None,
         endnote_shape_raw: None,
         page_border_fills_raw: Vec::new(),
@@ -1637,7 +1637,7 @@ fn gc5_슬롯_없으면_기본상수_불변() {
     let mut warns = Vec::new();
     let out = hwpx::write::section::write_section(&doc, &section, false, &mut bins, &mut warns);
 
-    // 상수 템플릿의 표준 자식이 그대로 방출된다.
+    // Emit the constant template's standard children unchanged.
     assert!(
         out.contains(r##"<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/>"##),
         "상수 grid"
@@ -1660,19 +1660,19 @@ fn gc5_슬롯_없으면_기본상수_불변() {
         out.contains(r##"<hp:pageBorderFill type="ODD""##),
         "상수 pageBorderFill ODD"
     );
-    // 페이지 정의는 반영된다.
+    // Reflect PageDef.
     assert!(
         out.contains(r##"<hp:pagePr landscape="WIDELY" width="59528" height="84186""##),
         "pagePr 반영"
     );
 }
 
-/// GI-XC(교차변환 손실 차단): hwp5 출신 구역의 FOOTNOTE_SHAPE/PAGE_BORDER_FILL raw가
-/// 있으면 hwpx writer가 상수 대신 실측 값을 재구성한다.
+/// GI-XC cross-conversion loss prevention: when HWP5 section raw FOOTNOTE_SHAPE/
+/// PAGE_BORDER_FILL data exists, reconstruct observed values instead of constants.
 ///
-/// raw 바이트는 **정답지 실측**이다(11.19 제안요청서 hwp, gc23 조사 보고서 확정 레이아웃):
-/// PAGE_BORDER_FILL 3종이 순서로 BOTH(테두리ID=7 실선)/EVEN(1)/ODD(1)이고, FOOTNOTE_SHAPE
-/// 2개가 각주/미주다. BOTH의 borderFillIDRef가 실테두리(BF#7)를 승계하는지 단언한다.
+/// These raw bytes come from the existing oracle measurement (11.19 RFP HWP, gc23 final layout):
+/// three PAGE_BORDER_FILL records in BOTH(border 7, solid)/EVEN(1)/ODD(1) order and two
+/// FOOTNOTE_SHAPE records for footnotes/endnotes. BOTH must inherit actual border BF#7.
 #[test]
 fn gixc_hwp5_raw_secpr_실측값_방출_정답지대조() {
     use hwp_model::{Control, HwpChar, HwpUnit, PageDef, Paragraph, Section, SectionDef};
@@ -1688,7 +1688,7 @@ fn gixc_hwp5_raw_secpr_실측값_방출_정답지대조() {
         gutter: HwpUnit(0),
         attr: 0,
     };
-    // 정답지 실측 raw (dump BodyText/Section0 --raw).
+    // Existing oracle-measured raw data from dump BodyText/Section0 --raw.
     let foot: Vec<u8> = vec![
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x29, 0x00, 0x01, 0x00, 0xff, 0xff, 0xff,
         0xff, 0x52, 0x03, 0x37, 0x02, 0x1b, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
@@ -1697,7 +1697,7 @@ fn gixc_hwp5_raw_secpr_실측값_방출_정답지대조() {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x29, 0x00, 0x01, 0x00, 0xf8, 0x2f, 0xe0,
         0x00, 0x52, 0x03, 0x37, 0x02, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
     ];
-    // BOTH=테두리ID 7(실선), EVEN/ODD=1(무테두리). gap 0x0589=1417.
+    // BOTH uses solid border 7; EVEN/ODD use no-border ID 1. gap 0x0589=1417.
     let pbf_both: Vec<u8> = vec![
         0x01, 0x00, 0x00, 0x00, 0x89, 0x05, 0x89, 0x05, 0x89, 0x05, 0x89, 0x05, 0x07, 0x00,
     ];
@@ -1732,7 +1732,7 @@ fn gixc_hwp5_raw_secpr_실측값_방출_정답지대조() {
     let mut warns = Vec::new();
     let out = hwpx::write::section::write_section(&doc, &section, false, &mut bins, &mut warns);
 
-    // 핵심: BOTH가 실테두리(BF#7)를 승계한다 — 상수 "1"로 대체되지 않았다.
+    // BOTH inherits actual border BF#7 instead of being replaced by constant 1.
     assert!(
         out.contains(
             r##"<hp:pageBorderFill type="BOTH" borderFillIDRef="7" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>"##
@@ -1748,7 +1748,7 @@ fn gixc_hwp5_raw_secpr_실측값_방출_정답지대조() {
         "ODD=무테두리 id=1"
     );
 
-    // 각주/미주 실측값 재구성(구분선 길이가 각주 -1, 미주 14692344로 구분됨).
+    // Reconstruct observed footnote/endnote values: separator lengths -1 and 14692344 respectively.
     assert!(
         out.contains(
             r##"<hp:footNotePr><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/><hp:noteLine length="-1" type="SOLID" width="0.12 mm" color="#000000"/><hp:noteSpacing betweenNotes="283" belowLine="567" aboveLine="850"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="EACH_COLUMN" beneathText="0"/></hp:footNotePr>"##
@@ -1759,13 +1759,13 @@ fn gixc_hwp5_raw_secpr_실측값_방출_정답지대조() {
         out.contains(r##"<hp:endNotePr><hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/><hp:noteLine length="14692344" type="SOLID" width="0.12 mm" color="#000000"/><hp:noteSpacing betweenNotes="0" belowLine="567" aboveLine="850"/><hp:numbering type="CONTINUOUS" newNum="1"/><hp:placement place="END_OF_DOCUMENT" beneathText="0"/></hp:endNotePr>"##),
         "endNotePr 실측 재구성: {out}"
     );
-    // secPr 유효성: 파싱 왕복이 성공하고 페이지 정의가 유지된다.
+    // secPr validity: parsing round trip succeeds and retains PageDef.
     let (section2, w2) = hwpx::read::section::parse_section(&out).unwrap();
     assert!(w2.is_empty(), "{w2:?}");
     assert_eq!(section2.section_def().unwrap().page.unwrap().width.0, 59528);
 }
 
-/// 문단 끝에 gso 컨트롤(ExtCtrl 코드 11 + Generic)을 부착한다.
+/// Attach a gso control (ExtCtrl code 11 + Generic) at the paragraph end.
 fn attach_gso(para: &mut hwp_model::Paragraph, g: hwp_model::GenericControl) {
     use hwp_model::HwpChar;
     let idx = para.controls.len() as u32;
@@ -1779,15 +1779,15 @@ fn attach_gso(para: &mut hwp_model::Paragraph, g: hwp_model::GenericControl) {
     para.header.ctrl_mask = 0;
 }
 
-/// 적대적 점검(codex) 반영 ①: hwpx 출신 수식의 **비기본 속성**이 왕복에서 보존된다.
-/// 이전엔 read가 script/sz/pos만 취해 zOrder·textWrap·baseUnit·글자색·수식 글꼴·PAGE
-/// 기준 배치가 전부 기본값으로 재작성됐다(22pt 빨간 수식 → 10pt 검정). 원문 pass-through.
-/// ②: `lineMode`는 한컴 모델 열거값(LINE|CHAR)이라 합성 경로가 `"0"`을 쓰면 스키마 위반.
+/// Adversarial review (codex), item 1: nondefault HWPX equation attributes survive round trips.
+/// Previously only script/sz/pos were read; zOrder, textWrap, baseUnit, color, font and PAGE
+/// placement reset to defaults, changing a red 22 pt equation to black 10 pt. Pass raw XML through.
+/// Item 2: lineMode is a Hancom model enum (LINE|CHAR); synthetic value 0 violates the schema.
 #[test]
 fn 수식_속성_원문_보존() {
     use hwp_model::Control;
 
-    // 정품 형태의 비기본 속성 수식 — 우리가 합성하는 값과 전부 다르게 잡았다.
+    // Genuine-shaped equation with nondefault attributes, all different from synthesized defaults.
     let src = concat!(
         r##"<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"><hp:p><hp:run charPrIDRef="0">"##,
         r##"<hp:equation id="9" zOrder="7" numberingType="EQUATION" textWrap="BEHIND_TEXT" textFlow="LEFT_ONLY" lock="1" version="Equation Version 60" baseLine="70" textColor="#FF0000" baseUnit="2200" lineMode="LINE" font="맑은 고딕">"##,
@@ -1829,7 +1829,7 @@ fn 수식_속성_원문_보존() {
     ] {
         assert!(xml.contains(keep), "속성 유실: {keep}\n{xml}");
     }
-    // 스크립트는 여전히 IR 정본에서 나온다(원문 pass-through 대상이 아님).
+    // Script still comes from canonical IR and is excluded from raw pass-through.
     let eq = hwpx::read_document(&out).unwrap().document.sections[0]
         .paragraphs
         .iter()
@@ -1841,7 +1841,7 @@ fn 수식_속성_원문_보존() {
         .expect("수식 왕복");
     assert_eq!(eq.script, "x < y");
 
-    // 합성 경로(원문 없음)는 스키마 유효한 lineMode 열거값을 써야 한다.
+    // Without raw XML, synthesis must emit a schema-valid lineMode enum.
     let mut synth = hwp_convert::from_markdown("본문\n\n둘째");
     attach_gso(
         &mut synth.sections[0].paragraphs[1],
@@ -1866,15 +1866,15 @@ fn 수식_속성_원문_보존() {
     );
 }
 
-/// 적대적 점검(codex) 반영 ③: hwp5 출신 부유 수식의 배치(PAGE 기준·오프셋·z-order)가
-/// gso 공통 헤더에서 복원된다. 이전엔 PARA/PARA·zOrder 0 상수라 페이지 기준으로 놓인
-/// 수식이 문단 기준으로 옮겨갔다(그림 GE-9와 같은 결함).
+/// Adversarial review (codex), item 3: restore floating HWP5 equations' PAGE-relative placement,
+/// offsets and z-order from the gso common header. PARA/PARA and zero zOrder previously
+/// moved page-relative equations to paragraph-relative positions, like picture defect GE-9.
 #[test]
 fn 수식_hwp5출신_배치_복원() {
-    // gso 공통 헤더 24B: attr(bit0=인라인 off, bits3-4=vertRel PAGE, bits8-9=horzRel PAGE)
+    // 24-byte gso common header: attr bit0=not inline, bits3-4=vertical PAGE, bits8-9=horizontal PAGE.
     // + voff + hoff + width + height + zorder.
     let mut data = Vec::new();
-    let attr: u32 = (1 << 3) | (1 << 8); // vertRelTo=PAGE(1), horzRelTo=PAGE(1), 부유
+    let attr: u32 = (1 << 3) | (1 << 8); // vertRelTo=PAGE(1), horzRelTo=PAGE(1), floating.
     data.extend(attr.to_le_bytes());
     data.extend(1000i32.to_le_bytes()); // voff
     data.extend(2000i32.to_le_bytes()); // hoff
@@ -1916,7 +1916,7 @@ fn 수식_hwp5출신_배치_복원() {
     }
 }
 
-/// eqed 컨트롤(수식) 하나를 만든다.
+/// Build one eqed equation control.
 fn eqed_control(equation: hwp_model::Equation) -> hwp_model::GenericControl {
     hwp_model::GenericControl {
         ctrl_id: *b"eqed",
@@ -1933,9 +1933,9 @@ fn eqed_control(equation: hwp_model::Equation) -> hwp_model::GenericControl {
     }
 }
 
-/// GE-14: 수식이 `<hp:equation>`으로 방출되고 스크립트·크기·배치가 왕복에서 살아남는다.
-/// 이전엔 writer arm이 없어 통째로 DROP — 각주 든 문서를 편집만 해도 수식이 사라졌다.
-/// XML 특수문자(`<`·`&`) 케이스는 writer `esc()` ↔ reader 엔티티 해석의 짝을 고정한다.
+/// GE-14: emit equations as hp:equation and preserve script/size/placement through round trips.
+/// Previously no writer arm existed, dropping equations even when merely editing a document.
+/// XML special characters < and & pin the writer esc()/reader entity-decoding pair.
 #[test]
 fn 수식_hwpx_왕복() {
     use hwp_model::{Control, Equation, GenericControl};
@@ -1950,7 +1950,7 @@ fn 수식_hwpx_왕복() {
             y: 0,
             ..Equation::default()
         },
-        // 특수문자: esc()가 &lt;·&amp;로 쓰고 reader가 되돌리지 못하면 글자가 사라진다.
+        // Characters disappear if esc() emits &lt;/&amp; but the reader fails to decode them.
         Equation {
             script: "x < y & y > z".to_string(),
             width: 2000,
@@ -2006,18 +2006,18 @@ fn 수식_hwpx_왕복() {
         assert_eq!((got.width, got.height), (want.width, want.height), "크기");
         assert_eq!(got.inline, want.inline, "글자처럼 취급");
     }
-    // 부유 수식의 오프셋은 <hp:pos>에 실려야 한다(0으로 뭉개면 좌상단에 몰린다).
+    // Floating equation offsets belong in hp:pos; zeroing them crowds equations into the top-left corner.
     assert_eq!((got[1].x, got[1].y), (3000, 5000), "부유 오프셋");
 }
 
-/// hwp5-출신 글상자(gso + 문단)가 hwpx `<hp:rect>+<hp:drawText>` 왕복을 통과한다 —
-/// 이전엔 통째로 드롭돼 안의 텍스트가 소실됐다.
+/// HWP5 text boxes (gso and paragraphs) survive HWPX hp:rect/hp:drawText round trips;
+/// previously they were dropped with their text.
 #[test]
 fn 글상자_hwp5출신_hwpx_왕복() {
     use hwp_model::{CharShapeId, GenericControl, HwpChar, Paragraph, ParagraphList};
 
     let mut doc = hwp_convert::from_markdown("본문 문단\n\n둘째 문단");
-    // hwp5형 gso: 40B 공통 헤더(attr bit0=글자처럼, 크기 4000x2000) + 글상자 문단 1개.
+    // HWP5-shaped gso: 40-byte header (attr bit0=inline, size 4000x2000) plus one text-box paragraph.
     let mut data = vec![0u8; 40];
     data[0] = 1; // treatAsChar
     data[12..16].copy_from_slice(&4000i32.to_le_bytes());
@@ -2070,7 +2070,7 @@ fn 글상자_hwp5출신_hwpx_왕복() {
         "treatAsChar 보존: {xml}"
     );
 
-    // 재읽기: 텍스트 보존 + 도형 기하 복원(rect 4000x2000).
+    // Reread preserves text and restores rectangle geometry, 4000x2000.
     let reread = hwpx::read_document(&out).unwrap().document;
     assert!(
         reread.plain_text().contains("상자속글"),
@@ -2090,8 +2090,8 @@ fn 글상자_hwp5출신_hwpx_왕복() {
     assert_eq!((shape.w, shape.h), (4000, 2000));
 }
 
-/// hwpx-출신 구조화 도형(ShapeGeom)이 쓰기→읽기 왕복에서 기하·스타일을 보존한다 —
-/// 이전엔 드롭. Polygon 점(pt0..)·Rect 채움/테두리 색 왕복 확인.
+/// Structured HWPX shapes (ShapeGeom) retain geometry/style across write/read;
+/// previously dropped. Check polygon points and rectangle fill/border-color round trips.
 #[test]
 fn 도형_shapegeom_hwpx_왕복() {
     use hwp_model::{GenericControl, ShapeGeom, ShapeKind};
@@ -2106,7 +2106,7 @@ fn 도형_shapegeom_hwpx_왕복() {
         points: Vec::new(),
         fill: 0x00CC8040, // BGR
         fill_gradient: None,
-        border_color: 0x000000FF, // 빨강(BGR)
+        border_color: 0x000000FF, // Red (BGR).
         border_width: 40,
         round_ratio: 10,
         border_style: 1, // DASH
@@ -2204,14 +2204,14 @@ fn 도형_shapegeom_hwpx_왕복() {
     assert_eq!(p.description, poly.description);
 }
 
-/// hwp5-출신 장식 도형(텍스트 없는 gso)이 hwpx 도형 요소로 왕복된다 — 실쌍 바이트
-/// (코퍼스 원본.hwp의 SHAPE_COMPONENT+SC_LINE; 한글 export와 lineShape width=32 등 일치 검증됨).
+/// HWP5 decorative shapes (gso without text) round-trip through HWPX shape elements using existing
+/// paired corpus SHAPE_COMPONENT/SC_LINE bytes, checked against Hangul export including lineShape width=32.
 #[test]
 fn 장식_도형_hwp5출신_hwpx_왕복() {
     use hwp_model::opaque::OpaqueRecord;
     use hwp_model::{GenericControl, ShapeKind};
 
-    // 실쌍 SHAPE_COMPONENT(252B) + SC_LINE(20B) — hwp-convert/src/gso.rs 테스트와 동일 출처.
+    // Paired SHAPE_COMPONENT(252B)/SC_LINE(20B) bytes, from the same source as hwp-convert/src/gso.rs tests.
     const LINE_SC: &str = "6e696c246e696c240000000000000000000001006400000064000000c8c1000004000000000000000000e4600000020000000100000000000000f03f000000000000000000000000000000000000000000000000000000000000f03f0000000000000000e17a14ae47017f400000000000000000000000000000000000000000000000007b14ae47e17aa43f0000000000000000000000000000f03f000000000000008000000000000000000000000000000000000000000000f03f00000000000000000000000020000000410000c000010000000000000000000000ffffffff00000000000000000000000000000000000000000001e76b390000";
     const LINE_GEOM: &str = "0000000000000000640000006400000000000000";
     fn hex(s: &str) -> Vec<u8> {
@@ -2222,7 +2222,7 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
     }
 
     let mut doc = hwp_convert::from_markdown("본문\n\n둘째");
-    // gso 40B 공통 헤더: attr=0x042a2211(글자처럼·PARA/COLUMN), 49608×4 — 실쌍 값.
+    // 40-byte gso header: attr=0x042a2211 (inline, PARA/COLUMN), size 49608x4, from the existing pair.
     let mut data = vec![0u8; 40];
     data[0..4].copy_from_slice(&0x042a_2211u32.to_le_bytes());
     data[12..16].copy_from_slice(&49608i32.to_le_bytes());
@@ -2236,7 +2236,7 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
     let gso = GenericControl {
         ctrl_id: *b"gso ",
         data,
-        paragraph_lists: Vec::new(), // 텍스트 없음 = 장식 도형
+        paragraph_lists: Vec::new(), // No text: decorative shape.
         extras: Vec::new(),
         raw_children: vec![OpaqueRecord {
             tag: 0x4C,
@@ -2260,7 +2260,7 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
     let warnings = hwpx::write_document(&doc, &out).unwrap();
     assert!(!warnings.iter().any(|w| w.contains("DROP")), "{warnings:?}");
 
-    // 쓴 XML이 한글 export와 동형: hp:line + lineShape width=32 + treatAsChar=1 PARA/COLUMN.
+    // Written XML matches Hangul export structurally: hp:line, lineShape width=32, treatAsChar=1, PARA/COLUMN.
     let bytes = std::fs::read(&out).unwrap();
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut xml = String::new();
@@ -2285,7 +2285,7 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
         "HWP GSO 설명 승격: {xml}"
     );
 
-    // 재읽기 → 도형 기하 복원.
+    // Reread restores shape geometry.
     let reread = hwpx::read_document(&out).unwrap().document;
     let s = reread.sections[0]
         .paragraphs
@@ -2300,17 +2300,17 @@ fn 장식_도형_hwp5출신_hwpx_왕복() {
     assert_eq!((s.w, s.h), (49608, 4));
     assert_eq!(s.border_width, 32);
     assert_eq!(s.description.as_deref(), Some(description));
-    // 글자처럼취급(gso attr bit0=1)이 anchored로 복원 — 재렌더 시 흐름 위치 배치의 근거.
+    // Inline treatment (gso attr bit0=1) restores anchored placement, determining flow position on rerender.
     assert!(s.anchored, "treatAsChar=1 → anchored");
 }
 
-// ── GE-α1~α7: 글자효과·번호형식 write 대칭(hwpx→IR→hwpx→IR 왕복 보존) ─────────
+// GE-α1 through α7: character effects/number formats, symmetric HWPX-to-IR-to-HWPX-to-IR preservation.
 //
-// fixture 불필요: 각 속성을 켠 합성 header XML을 parse_header로 읽고, write_header로
-// 되쓴 뒤 다시 parse_header 하여 속성이 살아남는지 단언한다. write가 상수/미방출로
-// 누르던 회귀(글자 그림자·외곽선·양각/음각·첨자·밑줄 모양·번호 형식)를 잡는다.
+// No fixture needed: parse synthetic header XML with each property, write_header, then parse_header
+// again and assert preservation. Catch constant/omitted-output regressions in shadows, outlines,
+// emboss/engrave, scripts, underline shapes and numbering formats.
 
-/// charPr 자식 XML을 감싸 read→write→read 왕복하고 (원본 CharShape, 재읽기 CharShape)를 돌려준다.
+/// Wrap charPr child XML, round-trip read/write/read and return original/reread CharShape values.
 fn 왕복_charpr(inner: &str) -> (hwp_model::CharShape, hwp_model::CharShape) {
     let xml = format!(
         r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000" textColor="#000000" shadeColor="#FFFFFF">{inner}</hh:charPr></hh:charProperties></hh:head>"##
@@ -2321,7 +2321,7 @@ fn 왕복_charpr(inner: &str) -> (hwp_model::CharShape, hwp_model::CharShape) {
     (h1.char_shapes[0].clone(), h2.char_shapes[0].clone())
 }
 
-/// GE-α1 글자 그림자: type/색/간격이 왕복에서 보존된다(이전엔 상수 NONE).
+/// GE-α1 text shadow: preserve type/color/spacing, previously constant NONE.
 #[test]
 fn ge_a1_글자_그림자_왕복() {
     let (cs1, cs2) =
@@ -2333,18 +2333,18 @@ fn ge_a1_글자_그림자_왕복() {
     assert_eq!(cs2.shadow_color, cs1.shadow_color, "그림자 색 보존");
 }
 
-/// GE-α2 외곽선: 유무가 왕복에서 보존된다(이전엔 상수 NONE).
+/// GE-α2 outline: preserve presence, previously constant NONE.
 #[test]
 fn ge_a2_외곽선_왕복() {
     let (cs1, cs2) = 왕복_charpr(r#"<hh:outline type="SOLID"/>"#);
     assert!(cs1.has_outline(), "원본 외곽선 파싱");
     assert!(cs2.has_outline(), "재읽기 외곽선 보존");
-    // 외곽선 없음도 여전히 없음으로 유지.
+    // An absent outline remains absent.
     let (_, cs_none) = 왕복_charpr(r#"<hh:outline type="NONE"/>"#);
     assert!(!cs_none.has_outline(), "NONE은 외곽선 없음 유지");
 }
 
-/// GE-α3 양각: 왕복에서 보존된다(이전엔 미방출).
+/// GE-α3 emboss survives the round trip, previously omitted.
 #[test]
 fn ge_a3_양각_왕복() {
     let (cs1, cs2) = 왕복_charpr("<hh:emboss/>");
@@ -2353,7 +2353,7 @@ fn ge_a3_양각_왕복() {
     assert!(!cs2.is_engrave(), "음각은 켜지지 않음");
 }
 
-/// GE-α3 음각: 왕복에서 보존된다(이전엔 미방출).
+/// GE-α3 engrave survives the round trip, previously omitted.
 #[test]
 fn ge_a3_음각_왕복() {
     let (cs1, cs2) = 왕복_charpr("<hh:engrave/>");
@@ -2362,7 +2362,7 @@ fn ge_a3_음각_왕복() {
     assert!(!cs2.is_emboss(), "양각은 켜지지 않음");
 }
 
-/// GE-α4 위첨자: 왕복에서 보존된다(이전엔 미방출).
+/// GE-α4 superscript survives the round trip, previously omitted.
 #[test]
 fn ge_a4_위첨자_왕복() {
     let (cs1, cs2) = 왕복_charpr("<hh:supscript/>");
@@ -2371,7 +2371,7 @@ fn ge_a4_위첨자_왕복() {
     assert!(!cs2.is_subscript(), "아래첨자는 켜지지 않음");
 }
 
-/// GE-α4 아래첨자: 왕복에서 보존된다(이전엔 미방출).
+/// GE-α4 subscript survives the round trip, previously omitted.
 #[test]
 fn ge_a4_아래첨자_왕복() {
     let (cs1, cs2) = 왕복_charpr("<hh:subscript/>");
@@ -2506,7 +2506,7 @@ fn gg10_strike_shape_roundtrip() {
     assert!(!cs_plain.has_strike());
 }
 
-/// GE-α7 문단번호 형식: 수준별 start/numFormat/템플릿이 왕복에서 보존된다(이전엔 상수 ^{{level}}.).
+/// GE-α7 paragraph numbering: retain per-level start/numFormat/template, formerly constant ^{{level}}.
 #[test]
 fn ge_a7_번호_형식_왕복() {
     let xml = r#"<hh:head><hh:numberings itemCnt="1"><hh:numbering id="1" start="0"><hh:paraHead start="3" level="1" numFormat="ROMAN_CAPITAL">제^1조</hh:paraHead><hh:paraHead start="1" level="2" numFormat="HANGUL_SYLLABLE">(^2)</hh:paraHead></hh:numbering></hh:numberings></hh:head>"#;
@@ -2522,7 +2522,7 @@ fn ge_a7_번호_형식_왕복() {
     assert_eq!(lv2.fmt, hwp_model::NumFmt::HangulSyllable);
     assert_eq!(lv2.template, "(^2)");
 
-    // 재읽기에서 동일 값 보존.
+    // Reread retains the same values.
     let r1 = &h2.numbering_levels[0][0];
     let r2 = &h2.numbering_levels[0][1];
     assert_eq!(r1.start, lv1.start, "시작 번호 보존");
@@ -2532,16 +2532,16 @@ fn ge_a7_번호_형식_왕복() {
     assert_eq!(r2.template, lv2.template);
 }
 
-/// GE-α8: 문단 paraPr에 걸린 heading(목록 링크)이 write→re-read 왕복에서 보존된다.
-/// 이전엔 write가 heading을 상수 NONE으로 고정해, 한글에서 번호 정의는 남지만 문단에
-/// 번호가 표시되지 않았다(C6_번호형식). read가 인코딩한 head_type/level/numbering_id를
-/// write가 역방출하는지 단정한다.
+/// GE-α8: paraPr heading/list links survive write/reread. Constant NONE previously left numbering
+/// definitions intact but hid paragraph numbers in Hangul (C6 numbering-format case).
+/// Assert the writer reverses the reader's encoded head_type/level/numbering_id
+/// values into the output.
 #[test]
 fn ge_a8_문단머리_heading_왕복() {
     let xml = r#"<hh:head><hh:numberings itemCnt="2"><hh:numbering id="7" start="0"><hh:paraHead start="1" level="1" numFormat="ROMAN_CAPITAL">^1.</hh:paraHead></hh:numbering><hh:numbering id="42" start="0"><hh:paraHead start="1" level="1" numFormat="DIGIT">^1.</hh:paraHead></hh:numbering></hh:numberings><hh:paraProperties itemCnt="1"><hh:paraPr id="0" tabPrIDRef="0"><hh:align horizontal="JUSTIFY" vertical="BASELINE"/><hh:heading type="NUMBER" idRef="42" level="2"/></hh:paraPr></hh:paraProperties></hh:head>"#;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
 
-    // 외부 idRef=42는 두 번째 정의인 IR index 1로 정규화된다.
+    // Normalize external idRef=42 to the second definition, IR index 1.
     let ps1 = &h1.para_shapes[0];
     assert_eq!(ps1.head_type(), 2, "번호형 머리");
     assert_eq!(ps1.head_level(), 3, "수준 3");
@@ -2555,13 +2555,13 @@ fn ge_a8_문단머리_heading_왕복() {
     );
     let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
 
-    // 재읽기에서 heading 링크 보존.
+    // Reread retains the heading link.
     let ps2 = &h2.para_shapes[0];
     assert_eq!(ps2.head_type(), 2, "재읽기 번호형 머리 보존");
     assert_eq!(ps2.head_level(), 3, "재읽기 수준 보존");
     assert_eq!(ps2.numbering_id, 1, "재읽기 번호정의 링크 보존");
 
-    // 번호 정의도 함께 보존.
+    // Retain numbering definitions too.
     assert_eq!(h2.numbering_levels[1][0].fmt, hwp_model::NumFmt::Digit);
 }
 
@@ -2586,8 +2586,8 @@ fn 글머리표_definition_id_왕복() {
     assert_eq!(reread.bullet_chars, vec!['■']);
 }
 
-/// GE-α8 보강: heading이 없는(기본) paraPr은 write에서 여전히 NONE으로 나가
-/// 기본 출력 바이트가 변하지 않는다.
+/// GE-α8 reinforcement: paraPr without a heading still emits NONE,
+/// keeping default output bytes unchanged.
 #[test]
 fn ge_a8_기본문단_heading_none_유지() {
     let xml = r#"<hh:head><hh:paraProperties itemCnt="1"><hh:paraPr id="0" tabPrIDRef="0"><hh:align horizontal="JUSTIFY" vertical="BASELINE"/><hh:heading type="NONE" idRef="0" level="0"/></hh:paraPr></hh:paraProperties></hh:head>"#;
@@ -2710,15 +2710,15 @@ fn existing_seven_level_hwpx_does_not_gain_a_synthetic_eighth_definition() {
     );
 }
 
-/// GC-4 탭 정의: tabPr/tabItem(위치·종류·채움)이 hwpx read→write→re-read 왕복에서
-/// 보존된다(이전엔 read가 tabPrIDRef만 읽고 tabItem을 버렸으며 write는 빈 상수만 냈다).
+/// GC-4: tabPr/tabItem positions, types and leaders survive HWPX read/write/reread. Previously
+/// read retained only tabPrIDRef and discarded tabItem; write emitted empty constants.
 #[test]
 fn gc4_탭정의_hwpx_왕복() {
-    // 탭 2개 정의: 자동왼탭 + 항목 2개(오른/소수점, 채움 DASH/DOT), 그리고 자동오른탭 빈 정의.
+    // Two tab definitions: automatic left with right/decimal DASH/DOT stops, and empty automatic right.
     let xml = r#"<hh:head><hh:tabProperties itemCnt="2"><hh:tabPr id="0" autoTabLeft="1" autoTabRight="0"><hh:tabItem pos="4000" type="RIGHT" leader="DASH"/><hh:tabItem pos="8000" type="DECIMAL" leader="DOT"/></hh:tabPr><hh:tabPr id="1" autoTabLeft="0" autoTabRight="1"/></hh:tabProperties></hh:head>"#;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
 
-    // read 파싱 확인.
+    // Check read-side parsing.
     assert_eq!(h1.tab_stops.len(), 2, "탭 정의 2개");
     let t0 = &h1.tab_stops[0];
     assert!(t0.auto_tab_left() && !t0.auto_tab_right(), "0번 자동왼탭");
@@ -2733,8 +2733,8 @@ fn gc4_탭정의_hwpx_왕복() {
     assert!(!t1.auto_tab_left() && t1.auto_tab_right(), "1번 자동오른탭");
     assert!(t1.items.is_empty(), "1번은 항목 없음");
 
-    // write → 방출 XML에 항목이 정품 구조(hp:switch/case[unit=HWPUNIT,pos=X]/
-    // default[pos=2X])로 실린다. naked tabItem은 한글 먹통 원인이므로 금지.
+    // Write items in the genuine hp:switch/case[unit=HWPUNIT,pos=X]/default[pos=2X] structure.
+    // Bare tabItem can make Hangul hang and is forbidden.
     let out = hwpx::write::header::write_header(&h1, 1);
     assert!(
         out.contains(
@@ -2751,14 +2751,14 @@ fn gc4_탭정의_hwpx_왕복() {
         "자동오른탭 빈 정의 보존: {out}"
     );
 
-    // re-read → case값만 취하고 default는 무시해 중복 없이 동일 값 보존.
+    // Reread only case values, ignoring default to avoid duplicates while retaining values.
     let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
     assert_eq!(h2.tab_stops[0].items.len(), 2, "재읽기 항목 중복 수집 없음");
     assert_eq!(h2.tab_stops, h1.tab_stops, "왕복 후 탭 정의 완전 보존");
 }
 
-/// GC-4 하위호환: 정품 hp:switch 구조를 읽을 때 case(HwpUnitChar, pos=X)만 취하고
-/// default(pos=2X)는 버려 항목이 중복 수집되지 않는다.
+/// GC-4 compatibility: read only case(HwpUnitChar,pos=X) from genuine hp:switch,
+/// discarding default(pos=2X) so items are not collected twice.
 #[test]
 fn gc4_정품_switch_구조_case만_읽음() {
     let xml = r#"<hh:head><hh:tabProperties itemCnt="1"><hh:tabPr id="0" autoTabLeft="0" autoTabRight="0"><hp:switch><hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar"><hh:tabItem pos="2900" type="LEFT" leader="NONE" unit="HWPUNIT"/></hp:case><hp:default><hh:tabItem pos="5800" type="LEFT" leader="NONE"/></hp:default></hp:switch><hp:switch><hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar"><hh:tabItem pos="44026" type="RIGHT" leader="DASH" unit="HWPUNIT"/></hp:case><hp:default><hh:tabItem pos="88052" type="RIGHT" leader="DASH"/></hp:default></hp:switch></hh:tabPr></hh:tabProperties></hh:head>"#;
@@ -2766,7 +2766,7 @@ fn gc4_정품_switch_구조_case만_읽음() {
     assert_eq!(h.tab_stops.len(), 1, "탭 정의 1개");
     let t = &h.tab_stops[0];
     assert_eq!(t.items.len(), 2, "switch 항목 2개(default 중복 배제)");
-    // case의 HWPUNIT pos(X)만 취한다 — default의 2X가 아니어야.
+    // Use the case HWPUNIT position X, never default's 2X.
     assert_eq!(t.items[0].pos, 2900, "첫 항목 case pos=X");
     assert_eq!(t.items[0].kind, 0, "LEFT 탭");
     assert_eq!(t.items[0].fill, 0, "NONE 채움");
@@ -2775,7 +2775,7 @@ fn gc4_정품_switch_구조_case만_읽음() {
     assert_eq!(t.items[1].fill, 2, "DASH 채움");
 }
 
-/// GC-4 하위호환: switch 없는 naked tabItem(구형 출력·타 구현체)도 그대로 읽는다.
+/// GC-4 compatibility: also read bare tabItem without switch from old output/other implementations.
 #[test]
 fn gc4_naked_tabitem_하위호환_읽기() {
     let xml = r#"<hh:head><hh:tabProperties itemCnt="1"><hh:tabPr id="0" autoTabLeft="0" autoTabRight="0"><hh:tabItem pos="8504" type="LEFT" leader="DASH"/></hh:tabPr></hh:tabProperties></hh:head>"#;
@@ -2787,7 +2787,7 @@ fn gc4_naked_tabitem_하위호환_읽기() {
     assert_eq!(t.items[0].fill, 2, "DASH 채움");
 }
 
-/// GC-4 회귀 방어: 탭 정의가 없으면 write_tab_properties 출력이 기존 빈 상수와 바이트 동일.
+/// GC-4 regression: with no tab definitions, write_tab_properties remains byte-identical to the empty constant.
 #[test]
 fn gc4_탭정의_없으면_기본상수_불변() {
     let h = hwp_model::DocHeader::default();
@@ -2800,18 +2800,18 @@ fn gc4_탭정의_없으면_기본상수_불변() {
     );
 }
 
-/// 쪽 컨트롤(쪽번호/감추기/새번호/자동번호)이 hwpx 왕복에서 hwp5 페이로드를 바이트
-/// 동일하게 복원한다 — writer(속성 방출)와 reader(build_*)가 정확한 역쌍임을 단정.
-/// 이전엔 writer가 전부 드롭(코퍼스 87건).
+/// Page controls (page number/hide/new number/automatic number) restore byte-identical HWP5 payloads
+/// through HWPX round trips, asserting writer attributes and reader build_* are exact inverses.
+/// Previously all were dropped by the writer (87 corpus cases).
 #[test]
 fn 쪽_컨트롤_hwpx_페이로드_왕복() {
     use hwp_model::{Control, GenericControl, HwpChar};
 
-    // (ctrl_id, code, payload) — reader build_* 레이아웃/실측 표준값.
+    // (ctrl_id, code, payload): reader build_* layout and existing measured standard values.
     let mut pgnp = vec![0u8; 12];
     pgnp[0..4].copy_from_slice(&(5u32 << 8).to_le_bytes()); // BOTTOM_CENTER
     pgnp[10..12].copy_from_slice(&(u16::from(b'-')).to_le_bytes());
-    let pghd = 0x21u32.to_le_bytes().to_vec(); // 머리말+쪽번호 감춤(정품 실측 표지값)
+    let pghd = 0x21u32.to_le_bytes().to_vec(); // Hide header and page number (existing observed genuine-cover value).
     let mut nwno = vec![0u8; 6];
     nwno[4..6].copy_from_slice(&7u16.to_le_bytes());
     let atno = {
@@ -2858,7 +2858,7 @@ fn 쪽_컨트롤_hwpx_페이로드_왕복() {
     let warnings = hwpx::write_document(&doc, &out).unwrap();
     assert!(!warnings.iter().any(|w| w.contains("DROP")), "{warnings:?}");
 
-    // XML 정답지 형식 확인.
+    // Check the oracle XML format.
     let bytes = std::fs::read(&out).unwrap();
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut xml = String::new();
@@ -2883,7 +2883,7 @@ fn 쪽_컨트롤_hwpx_페이로드_왕복() {
     );
     assert!(xml.contains("<hp:autoNum "), "autoNum: {xml}");
 
-    // 재읽기 → 페이로드 바이트 동일.
+    // Reread payload bytes are identical.
     let reread = hwpx::read_document(&out).unwrap().document;
     for (cid, _, want) in &specs {
         let got = reread.sections[0]
@@ -2899,8 +2899,8 @@ fn 쪽_컨트롤_hwpx_페이로드_왕복() {
     }
 }
 
-/// 스타일 사다리 hwpx 왕복: H1~H3 절 번호 접두와 H2/H3 SECTION 들여쓰기 모양이
-/// 보존되고, 목록은 네이티브 번호/글머리 정의(head_type)로 왕복된다.
+/// Style ladder HWPX round trip: retain H1-H3 section-number prefixes and H2/H3 SECTION indentation;
+/// lists round-trip as native numbering/bullet definitions via head_type.
 #[test]
 fn 왕복_스타일_사다리() {
     let doc = hwp_convert::from_markdown("# 제목\n\n## 절\n\n- 항목\n  - 하위\n\n1. 첫\n");
@@ -2909,11 +2909,11 @@ fn 왕복_스타일_사다리() {
     assert!(warnings.is_empty(), "{warnings:?}");
     let reread = hwpx::read_document(&out).unwrap().document;
 
-    // 텍스트 보존(절 번호 접두 포함).
+    // Preserve text, including section-number prefixes.
     assert_eq!(reread.plain_text(), doc.plain_text());
     assert!(reread.plain_text().contains("1. 제목"));
     assert!(reread.plain_text().contains("1-1. 절"));
-    // 네이티브 목록 정의 왕복: 글머리 정의 + 머리(head_type) 문단모양.
+    // Native list definitions round-trip: bullet definitions and head_type paragraph shapes.
     assert!(!reread.header.bullet_chars.is_empty(), "글머리 정의 왕복");
     assert!(
         reread
@@ -2931,7 +2931,7 @@ fn 왕복_스타일_사다리() {
             .any(|ps| ps.head_type() == 2),
         "NUMBER 머리 문단모양"
     );
-    // H2/H3 SECTION 들여쓰기(margin_left 2000, 머리 없음) 모양 왕복.
+    // H2/H3 SECTION indentation (margin_left 2000, no heading) survives the round trip.
     assert!(
         reread
             .header
@@ -2942,8 +2942,8 @@ fn 왕복_스타일_사다리() {
     );
 }
 
-/// secPr/tabPr 왕복: secPr 자식 pass-through(`secpr_raw_children`) + 의미 탭 정의
-/// (`tab_stops`)로 hwpx read → write가 원문과 슬라이스 수준 동등해야 한다 (Gap B/C).
+/// secPr/tabPr round trip: raw secpr_raw_children and semantic tab_stops retain slice-level
+/// equivalence between source and HWPX read/write output (Gap B/C).
 #[test]
 fn 왕복_secpr_tabpr_raw() {
     use hwp_model::Control;
@@ -2952,7 +2952,7 @@ fn 왕복_secpr_tabpr_raw() {
     assert!(src.exists(), "커밋된 픽스처 없음: {}", src.display());
     let doc = hwpx::read_document(&src).unwrap().document;
 
-    // 읽기 단계 캡처: 탭 정의 의미 파싱 + secPr 자식 원문 보존.
+    // Read captures semantic tab definitions and original secPr child XML.
     assert_eq!(doc.header.tab_stops.len(), 5, "tabPr 5종 의미 파싱");
     let secpr_children = doc.sections[0]
         .paragraphs
@@ -2965,14 +2965,14 @@ fn 왕복_secpr_tabpr_raw() {
         .expect("SectionDef");
     assert!(!secpr_children.is_empty(), "secPr 자식 pass-through 캡처");
 
-    // 쓰기 → 재읽기 자기일관.
+    // Write/reread self-consistency.
     let out = tmp("secpr_tabpr_raw.hwpx");
     let warnings = hwpx::write_document(&doc, &out).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     let reread = hwpx::read_document(&out).unwrap().document;
     assert_eq!(reread.header.tab_stops, doc.header.tab_stops);
 
-    // zip 슬라이스 수준: 입력과 출력의 secPr/tabProperties가 바이트 동일.
+    // ZIP slices: input/output secPr and tabProperties are byte-identical.
     let slice = |path: &std::path::Path, entry: &str, open: &str, close: &str| {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
         let mut s = String::new();
@@ -3003,14 +3003,14 @@ fn 왕복_secpr_tabpr_raw() {
     );
 }
 
-/// 각주/미주 write arm: fn/en이 `<hp:footNote>`/`<hp:endNote>`로 방출되고
-/// 노트 문단이 왕복된다 (Gap A — 기존에는 DROP arm으로 드롭).
+/// Footnote/endnote writer arm emits fn/en as hp:footNote/hp:endNote,
+/// with note paragraphs surviving the round trip (Gap A, previously dropped).
 #[test]
 fn 각주_미주_왕복() {
     use hwp_model::{Control, GenericControl, HwpChar, Paragraph, ParagraphList};
     let mut doc = hwp_convert::from_markdown("본문 문장입니다.\n");
     let note = |id: &[u8; 4], txt: &str| {
-        // 정품 IR 형태: 노트 본문 첫 run에 자동 번호(atno) 컨트롤 + 텍스트.
+        // Genuine IR layout: the note body's first run contains automatic-number atno and text.
         let mut chars = vec![HwpChar::ExtCtrl {
             code: 18,
             ctrl_id: *b"atno",
@@ -3079,7 +3079,7 @@ fn 각주_미주_왕복() {
         .unwrap();
     assert!(xml.contains("<hp:footNote"), "footNote 방출: {xml}");
     assert!(xml.contains("<hp:endNote"), "endNote 방출: {xml}");
-    // 한글 저장본 실측 형태: number/suffixChar/instId 속성 + 본문 autoNum(종류·번호).
+    // Observed Hangul-saved layout: number/suffixChar/instId attributes and body autoNum kind/number.
     assert!(
         xml.contains(r##"<hp:footNote number="1" suffixChar="41" instId="##),
         "footNote 속성 형태: {xml}"
@@ -3097,7 +3097,7 @@ fn 각주_미주_왕복() {
         "미주 본문 autoNum: {xml}"
     );
 
-    // 재읽기 — 노트 문단이 paragraph_lists로 복원되고 plain_text에 포함.
+    // Reread restores note paragraphs in paragraph_lists and includes them in plain_text.
     let reread = hwpx::read_document(&out).unwrap().document;
     let text = reread.plain_text();
     assert!(text.contains("각주 내용"), "각주 본문 왕복: {text}");
@@ -3127,7 +3127,7 @@ fn 그림_변환_보정_속성_hwpx_왕복() {
     for para in &mut doc.sections[0].paragraphs {
         for c in &mut para.controls {
             if let hwp_model::Control::Picture(p) = c {
-                p.flip = 1; // 가로 뒤집기
+                p.flip = 1; // Horizontal flip.
                 p.rotation = Some(30.0);
                 p.crop = Some([100.0, 200.0, 3900.0, 2800.0]);
                 p.brightness = 30;

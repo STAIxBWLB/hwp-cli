@@ -15,7 +15,12 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+# Maintenance-risk exceptions accepted by the owner on 2026-11-08.
+# Acceptance is the owner's decision, not an agent finding that vulnerabilities are unreachable.
+ignore = [
+    { id = "RUSTSEC-2026-0206", reason = "Accepted by the owner 2026-11-08: rustybuzz has no patched maintained release. Replacing it with HarfRust changes shaping metrics and glyph/cluster mapping, so it is not a drop-in dependency fix. Remove when a validated shaping migration eliminates rustybuzz, or a maintained fixed release is adopted." },
+    { id = "RUSTSEC-2026-0192", reason = "Accepted by the owner 2026-11-08: ttf-parser has no patched maintained release and is also retained through fontdb. A Skrifa migration changes font parsing/outline/advance APIs across rendering, so it is not a drop-in dependency fix. Remove when validated font parsing and fontdb migrations eliminate ttf-parser, or a maintained fixed release is adopted." },
+]
 
 [licenses]
 version = 2
@@ -24,9 +29,9 @@ allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "MIT-0",         # borrow-or-share, constant_time_eq, ppmd-rust (zip 8 dependencies)
+    "MIT-0",         # borrow-or-share, constant_time_eq, ppmd-rust (archive dependencies)
     "CC0-1.0",       # constant_time_eq, ppmd-rust
-    "bzip2-1.0.6",   # libbz2-rs-sys (zip 8 bzip2 support)
+    "bzip2-1.0.6",   # libbz2-rs-sys (archive bzip2 support)
     "Unicode-3.0",
     "Zlib",
 ]
