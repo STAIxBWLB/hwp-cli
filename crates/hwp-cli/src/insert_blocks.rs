@@ -900,6 +900,14 @@ mod tests {
             "portrait body {portrait} mm"
         );
         // Genuine landscape: portrait dimensions, rotate bit set. The renderer's paper is 297 mm.
+        // A binding gutter comes off the body in either orientation: 10 mm here.
+        let mut bound = a4_page(59528, 84189, 1);
+        bound.gutter = hwp_model::HwpUnit(2835);
+        let bound = width_with(bound);
+        assert!(
+            (bound - 247.0).abs() < 1.0,
+            "a 10 mm gutter leaves 257 - 10 = 247 mm, got {bound} mm"
+        );
         let landscape = width_with(a4_page(59528, 84189, 1));
         assert!(
             (landscape - 257.0).abs() < 1.0,
