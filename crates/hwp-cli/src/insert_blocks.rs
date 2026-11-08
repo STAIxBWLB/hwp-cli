@@ -810,4 +810,205 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn set_page(doc: &mut Document, page: hwp_model::PageDef) {
+        for control in doc.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|p| &mut p.controls)
+        {
+            if let Control::SectionDef(def) = control {
+                def.page = Some(page);
+            }
+        }
+    }
+
+    fn a4_page(width: i32, height: i32, attr: u32) -> hwp_model::PageDef {
+        hwp_model::PageDef {
+            width: hwp_model::HwpUnit(width),
+            height: hwp_model::HwpUnit(height),
+            margin_left: hwp_model::HwpUnit(5669),
+            margin_right: hwp_model::HwpUnit(5669),
+            margin_top: hwp_model::HwpUnit(5669),
+            margin_bottom: hwp_model::HwpUnit(5669),
+            margin_header: hwp_model::HwpUnit(2835),
+            margin_footer: hwp_model::HwpUnit(2835),
+            gutter: hwp_model::HwpUnit(0),
+            attr,
+        }
+    }
+
+    /// `hwp-render` reads PAGE_DEF attr bit 0 as "rotate the paper": the horizontal extent is
+    /// then `height`, not `width`. Genuine landscape files store the portrait width and height
+    /// with the bit set, so a landscape form is 297 mm wide and its body 257 mm.
+    #[test]
+    fn insertion_width_follows_the_renderers_page_orientation() {
+        let at = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let width_with = |page: hwp_model::PageDef| {
+            let mut doc = hwp_convert::from_markdown("anchor\n");
+            set_page(&mut doc, page);
+            check_target(&doc, &at).expect("body paragraph target")
+        };
+        let portrait = width_with(a4_page(59528, 84189, 0));
+        assert!(
+            (portrait - 170.0).abs() < 1.0,
+            "portrait body {portrait} mm"
+        );
+        // Genuine landscape: portrait dimensions, rotate bit set. The renderer's paper is 297 mm.
+        let landscape = width_with(a4_page(59528, 84189, 1));
+        assert!(
+            (landscape - 257.0).abs() < 1.0,
+            "a landscape body is 297 - 2 * 20 = 257 mm, got {landscape} mm"
+        );
+        // Landscape dimensions with the bit set (what `compose` stores): the renderer rotates
+        // them again, so its paper, and the width the insertion may use, is 210 mm.
+        let rotated_again = width_with(a4_page(84189, 59528, 1));
+        assert!(
+            (rotated_again - 170.0).abs() < 1.0,
+            "the renderer reads height as the width here: {rotated_again} mm"
+        );
+    }
+
+    fn column_control(count: u16) -> Control {
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"cold",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: Some(hwp_model::ColumnDef {
+                count,
+                kind: 0,
+                direction: 0,
+                same_width: true,
+                gap: 2835,
+                widths: Vec::new(),
+                divider: None,
+            }),
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    /// A section can change its column layout partway: the layout that applies to a block is
+    /// the last column definition at or before the paragraph it lands next to.
+    #[test]
+    fn insertion_width_uses_the_column_definition_in_effect_at_the_target() {
+        let mut doc = hwp_convert::from_markdown("first\n\nsecond\n\nthird\n");
+        assert!(doc.sections[0].paragraphs.len() >= 3);
+        doc.sections[0].paragraphs[1]
+            .controls
+            .push(column_control(2));
+        let width_at = |doc: &Document, paragraph: usize| {
+            check_target(
+                doc,
+                &SegmentPath {
+                    section: 0,
+                    indices: vec![paragraph],
+                },
+            )
+            .unwrap()
+        };
+        let before = width_at(&doc, 0);
+        let at_change = width_at(&doc, 1);
+        let after = width_at(&doc, 2);
+        assert!(before > 150.0, "before the change: one column, {before} mm");
+        assert!(
+            at_change < 90.0,
+            "at the change: two columns, {at_change} mm"
+        );
+        assert!(after < 90.0, "after the change: two columns, {after} mm");
+        // A later single-column definition ends the two-column run.
+        doc.sections[0].paragraphs[2]
+            .controls
+            .push(column_control(1));
+        let back = width_at(&doc, 2);
+        assert!(back > 150.0, "back to one column, {back} mm");
+    }
+
+    fn picture_name(dir: &Path) -> String {
+        let canonical = std::fs::canonicalize(dir).unwrap();
+        let ctx = AssetContext {
+            base_dir: Some(&canonical),
+            roots: &[],
+        };
+        let (mut probe, at) = target();
+        apply(&mut probe, &at, &request("assets/logo.png"), false, &ctx).unwrap();
+        probe.bin_streams.last().unwrap().name.clone()
+    }
+
+    /// The resolver also matches a stream whose path ends in `/<name>`. A target already
+    /// carrying the same image under a folder must not get a second copy.
+    #[test]
+    fn an_identical_stream_the_resolver_already_finds_by_suffix_is_shared() {
+        let dir = scratch("suffix-same");
+        let name = picture_name(&dir);
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let ctx = AssetContext {
+            base_dir: Some(&canonical),
+            roots: &[],
+        };
+        let (mut doc, at) = target();
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: format!("BinData/{name}"),
+            data: PNG.to_vec(),
+        });
+        apply(&mut doc, &at, &request("assets/logo.png"), false, &ctx).unwrap();
+        assert_eq!(
+            doc.bin_streams.len(),
+            1,
+            "the image is already stored as BinData/{name}: {:?}",
+            doc.bin_streams.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        let picture = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(doc.resolve_bin(&picture.bin_ref), Some(PNG));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same suffix match with different bytes would send the new picture to the old file.
+    #[test]
+    fn a_different_stream_the_resolver_would_find_by_suffix_forces_a_fresh_name() {
+        let dir = scratch("suffix-other");
+        let name = picture_name(&dir);
+        let canonical = std::fs::canonicalize(&dir).unwrap();
+        let ctx = AssetContext {
+            base_dir: Some(&canonical),
+            roots: &[],
+        };
+        let (mut doc, at) = target();
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: format!("BinData/{name}"),
+            data: b"another image entirely".to_vec(),
+        });
+        apply(&mut doc, &at, &request("assets/logo.png"), false, &ctx).unwrap();
+        let picture = doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Picture(p) => Some(p),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            doc.resolve_bin(&picture.bin_ref),
+            Some(PNG),
+            "the picture resolved to the older stream that shares its file name"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

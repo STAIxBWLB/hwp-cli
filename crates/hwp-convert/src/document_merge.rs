@@ -2936,4 +2936,38 @@ mod tests {
             "the inserted caption field must clear the target caption's field id 77"
         );
     }
+
+    /// Placement tables draw their synthesized HWP id from 65,536 values
+    /// (`0x5000_0000 | z & 0xffff`). When the target holds every one of them there is nothing
+    /// to hand out, and the search must stop with a named error rather than walk z-orders up to
+    /// the i32 limit (about 2^31 attempts).
+    #[test]
+    fn a_target_holding_every_synthesized_table_id_fails_fast_with_a_named_error() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: (0..=0xffff_u32)
+                    .map(|low| table_with_common_id(0x5000_0000 | low))
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut inserted = vec![Paragraph {
+                controls: vec![placement_table(0)],
+                ..Default::default()
+            }];
+            let _ = sender.send(renumber_inserted_objects(&target, &mut inserted));
+        });
+        let outcome = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("renumbering did not finish within 10 s: the id search is unbounded");
+        let error = outcome.expect_err("no table id is left to hand out");
+        assert!(
+            error.contains("65536") && error.contains("표"),
+            "the error must name the exhausted id space and the object: {error}"
+        );
+    }
 }
