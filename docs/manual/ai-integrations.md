@@ -195,6 +195,8 @@ Cell paragraphs are inventory targets; neighboring labels are evidence, not auto
 ownership. Select explicit, nonoverlapping bindable claims. Captions, raw-preserved/rich targets
 and native named fields remain visible but unsupported; native fields direct callers to
 `hwp fields`. Do not replace that refusal with a broad text replacement.
+`label_occurrences` counts exact same-kind label matches and `label_ambiguous` marks repeated
+labels. These expose ambiguity for review; they never select one occurrence automatically.
 
 Save the following request shape as `OPS.json`, replacing the example hashes and occurrence ID
 with the exact catalogue values, selecting the intended claim and reviewing its value/budget:

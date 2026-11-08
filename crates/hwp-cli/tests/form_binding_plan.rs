@@ -75,6 +75,12 @@ fn discovery_keeps_repeated_occurrences_and_binds_the_source_bytes() {
             "individual repeated targets must survive discovery"
         );
         assert_ne!(occurrences[0]["id"], occurrences[1]["id"]);
+        assert!(
+            occurrences
+                .iter()
+                .all(|item| item["label_occurrences"] == 2 && item["label_ambiguous"] == true),
+            "a repeated label is evidence, never an implicit single-target selector"
+        );
         assert!(occurrences.iter().all(|item| item["bindable"] == true));
         let again = hwp()
             .args(["slots", "--json", "--forms", "--occurrences"])

@@ -20,6 +20,10 @@ pub struct FormOccurrence {
     pub id: String,
     pub kind: String,
     pub label: String,
+    /// Literal same-kind label matches in this catalogue. Empty labels have no match group.
+    pub label_occurrences: usize,
+    /// A label alone cannot select one target; an explicit occurrence ID still resolves it.
+    pub label_ambiguous: bool,
     pub paragraph_id: Option<String>,
     pub section: usize,
     pub indices: Vec<usize>,
@@ -75,6 +79,21 @@ pub fn scan_form_occurrences(doc: &Document, source_sha256: &str) -> Result<Form
             };
             scan.paragraph(para, &path, &format!("s{section}/p{index}"), None, None, 0)?;
         }
+    }
+    let mut labels = std::collections::BTreeMap::new();
+    for item in &scan.out {
+        if !item.label.is_empty() {
+            *labels
+                .entry((item.kind.clone(), item.label.clone()))
+                .or_insert(0) += 1;
+        }
+    }
+    for item in &mut scan.out {
+        item.label_occurrences = labels
+            .get(&(item.kind.clone(), item.label.clone()))
+            .copied()
+            .unwrap_or(0);
+        item.label_ambiguous = item.label_occurrences > 1;
     }
     Ok(FormDiscovery {
         version: 1,
@@ -147,6 +166,8 @@ impl Scan<'_> {
             id: format!("occ-{}", digest(&identity)),
             kind: kind.into(),
             label: label.into(),
+            label_occurrences: 0,
+            label_ambiguous: false,
             paragraph_id: if unsupported == Some("caption_target") {
                 None
             } else {

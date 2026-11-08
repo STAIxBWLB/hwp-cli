@@ -178,6 +178,16 @@
               "type": "null"
             }
           ]
+        },
+        "label_occurrences": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000,
+          "description": "Exact same-kind, same-literal-label matches including unsupported occurrences. Empty labels have0. No legacy label normalization or automatic target choice."
+        },
+        "label_ambiguous": {
+          "type": "boolean",
+          "description": "True when the literal label names multiple occurrences; explicit IDs still select exact reviewed targets."
         }
       },
       "required": [
@@ -198,7 +208,9 @@
         "prior_sha256",
         "bindable",
         "cause",
-        "next_step"
+        "next_step",
+        "label_occurrences",
+        "label_ambiguous"
       ],
       "description": "Exact local-review inventory. start/end are half-open Paragraph.chars indices, not UTF-8 bytes, WCHAR offsets or Markdown ranges. Repeated labels and overlapping claims remain separate; bindable does not select a target or assert unique label ownership.",
       "allOf": [
