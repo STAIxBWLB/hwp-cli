@@ -1,16 +1,16 @@
 //! Text-block insertion using the existing DocumentSpec compiler against target header tables.
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use hwp_convert::SegmentPath;
 use hwp_convert::styles::{StyleKind, list_named_styles};
-use hwp_model::{BorderFillId, Control, Document, StyleId};
+use hwp_model::{BorderFill, BorderFillId, BorderLine, Control, Document, StyleId};
 use serde::Deserialize;
 
 use crate::document_spec::{
     BlockCompiler, BlockDefaults, BlockSpec, BreakKind, DocumentSpec, ListKind, ListSpec,
     MAX_BLOCKS, MetadataSpec, PageSpec, RunSpec, SectionSpec, SpecVersion, StyleSpec,
-    validate_spec,
+    validate_spec_in_width,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Default, serde::Serialize)]
@@ -55,69 +55,114 @@ impl InsertBlocks {
     }
 }
 
-fn unsupported(kind: &str) -> String {
-    format!(
-        "insert_blocks는 현재 paragraph/text/line_break 및 page/column break만 지원합니다 ({kind}). 표/이미지/필드/수식은 #428 T3 후속 작업이며, 지금은 지원하는 텍스트 블록으로 나누어 요청하세요"
-    )
+/// What the blocks (and, through table cells, the blocks nested in them) reference.
+#[derive(Default)]
+struct Referenced {
+    styles: BTreeSet<String>,
+    lists: BTreeSet<String>,
+    tables: bool,
+    images: bool,
+    equations: bool,
 }
 
-fn referenced_styles(request: &InsertBlocks) -> Result<BTreeSet<String>, String> {
-    if request.blocks.is_empty() || request.blocks.len() > MAX_BLOCKS {
-        return Err(format!(
-            "insert_blocks의 blocks 개수가 제한을 벗어났습니다. 1..={MAX_BLOCKS}개 블록으로 나누어 요청하세요"
-        ));
-    }
-    let mut names = BTreeSet::new();
-    let mut lists = BTreeSet::new();
-    for block in &request.blocks {
+fn scan_blocks(blocks: &[BlockSpec], found: &mut Referenced) -> Result<(), String> {
+    for block in blocks {
         match block {
             BlockSpec::Paragraph {
                 style, list, runs, ..
             } => {
-                names.extend(style.iter().cloned());
+                found.styles.extend(style.iter().cloned());
                 if let Some(list) = list {
-                    lists.insert(list.name.clone());
+                    found.lists.insert(list.name.clone());
                 }
                 for run in runs {
                     match run {
-                        RunSpec::Text { style, .. } => names.extend(style.iter().cloned()),
+                        RunSpec::Text { style, .. } | RunSpec::Field { style, .. } => {
+                            found.styles.extend(style.iter().cloned());
+                        }
+                        RunSpec::Equation { .. } => found.equations = true,
+                        RunSpec::Image { .. } => found.images = true,
                         RunSpec::LineBreak => {}
-                        RunSpec::Image { .. } => return Err(unsupported("image run")),
-                        RunSpec::Equation { .. } => return Err(unsupported("equation run")),
-                        RunSpec::Field { .. } => return Err(unsupported("field run")),
                     }
                 }
             }
+            BlockSpec::Field { style, .. } => found.styles.extend(style.iter().cloned()),
+            BlockSpec::Equation { .. } => found.equations = true,
+            BlockSpec::Image { .. } => found.images = true,
             BlockSpec::Break {
                 kind: BreakKind::Page | BreakKind::Column,
             } => {}
             BlockSpec::Break {
                 kind: BreakKind::Section,
-            } => return Err(unsupported("section break")),
-            BlockSpec::Table { .. } => return Err(unsupported("table")),
-            BlockSpec::Image { .. } => return Err(unsupported("image")),
-            BlockSpec::Equation { .. } => return Err(unsupported("equation")),
-            BlockSpec::Field { .. } => return Err(unsupported("field")),
+            } => {
+                return Err("insert_blocks는 section break 블록을 지원하지 않습니다. 구역 나누기는 insert_blocks 밖에서 처리하고, 이 요청에서는 section break 블록을 제거하세요".into());
+            }
+            BlockSpec::Table { rows, .. } => {
+                found.tables = true;
+                for row in rows {
+                    for cell in &row.cells {
+                        scan_blocks(&cell.blocks, found)?;
+                    }
+                }
+            }
         }
     }
-    for name in lists {
-        let list = request.lists.get(&name).ok_or_else(|| format!(
+    Ok(())
+}
+
+fn referenced(request: &InsertBlocks) -> Result<Referenced, String> {
+    if request.blocks.is_empty() || request.blocks.len() > MAX_BLOCKS {
+        return Err(format!(
+            "insert_blocks의 blocks 개수가 제한을 벗어났습니다. 1..={MAX_BLOCKS}개 블록으로 나누어 요청하세요"
+        ));
+    }
+    let mut found = Referenced::default();
+    scan_blocks(&request.blocks, &mut found)?;
+    for name in &found.lists {
+        let list = request.lists.get(name).ok_or_else(|| format!(
             "목록 '{name}'의 lists 정의가 없습니다. lists에 DocumentSpec 목록 정의를 추가한 뒤 다시 시도하세요"
         ))?;
         for level in &list.levels {
-            names.extend(level.style.iter().cloned());
+            found.styles.extend(level.style.iter().cloned());
         }
     }
-    Ok(names)
+    Ok(found)
 }
 
-/// Limit this phase to the body and table cells. Opaque Generic objects need a writer
-/// regeneration proof, not merely a readable address into their extracted model lists.
-fn check_target(doc: &Document, target: &SegmentPath) -> Result<(), String> {
+/// Where `base_dir`-relative image assets are read from and which roots contain them: the same
+/// containment [`crate::asset_snapshot::read_contained_with_roots`] applies to `compose`.
+#[derive(Debug, Clone, Copy)]
+pub struct AssetContext<'a> {
+    /// Directory that relative asset paths resolve against. `None` refuses image blocks.
+    pub base_dir: Option<&'a Path>,
+    /// MCP sandbox roots (canonical). Empty means no extra root check, as for the CLI.
+    pub roots: &'a [PathBuf],
+}
+
+/// Writable width of an A4 portrait page with 20 mm margins, for a section without a page
+/// definition (PageSpec default).
+const DEFAULT_CONTAINER_MM: f32 = 170.0;
+
+fn hwpunit_to_mm(units: i32) -> f32 {
+    (f64::from(units) * 25.4 / f64::from(hwp_model::HwpUnit::PER_INCH)) as f32
+}
+
+/// Limit this phase to the body and table cells, and return the width in mm of the text column
+/// or table cell the blocks will land in. Opaque Generic objects need a writer regeneration
+/// proof, not merely a readable address into their extracted model lists.
+fn check_target(doc: &Document, target: &SegmentPath) -> Result<f32, String> {
     let invalid = || {
         "insert_blocks 삽입 위치가 본문 또는 표 셀 문단이 아닙니다. 최신 문서에서 본문/표 셀 문단 주소를 다시 선택하세요".to_owned()
     };
     let section = doc.sections.get(target.section).ok_or_else(invalid)?;
+    let mut width = section
+        .section_def()
+        .and_then(|def| def.page)
+        .map_or(DEFAULT_CONTAINER_MM, |page| {
+            hwpunit_to_mm(
+                page.width.0 - page.margin_left.0 - page.margin_right.0 - page.gutter.0,
+            )
+        });
     let mut paragraph = section
         .paragraphs
         .get(*target.indices.first().ok_or_else(invalid)?)
@@ -130,14 +175,56 @@ fn check_target(doc: &Document, target: &SegmentPath) -> Result<(), String> {
         let Some(Control::Table(table)) = paragraph.controls.get(*control) else {
             return Err(invalid());
         };
-        paragraph = table
-            .cells
-            .get(*cell)
-            .and_then(|cell| cell.paragraphs.get(*para))
-            .ok_or_else(invalid)?;
+        let cell = table.cells.get(*cell).ok_or_else(invalid)?;
+        width = hwpunit_to_mm(
+            cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]),
+        );
+        paragraph = cell.paragraphs.get(*para).ok_or_else(invalid)?;
         rest = tail;
     }
-    Ok(())
+    if !width.is_finite() || width <= 0.0 {
+        return Err("삽입 위치의 본문 폭을 알 수 없습니다. 표 셀 폭과 여백이 유효한 문서인지 확인하세요".into());
+    }
+    Ok(width)
+}
+
+/// 1-based id of a solid black four-sided border fill, appended to the target header when it
+/// has none. Compose's template keeps this look at fixed id 3, which another document's table
+/// does not share, so an inserted table asks the target for the fill instead of assuming it.
+fn table_border_fill(header: &mut hwp_model::DocHeader) -> Result<BorderFillId, String> {
+    let solid = BorderLine {
+        line_type: 1,
+        width: 1,
+        color: 0,
+    };
+    let wanted = BorderFill {
+        sides: [solid; 4],
+        diagonal: BorderLine {
+            line_type: 1,
+            width: 0,
+            color: 0,
+        },
+        ..BorderFill::default()
+    };
+    let same = |fill: &BorderFill| {
+        fill.attr == wanted.attr
+            && fill.sides == wanted.sides
+            && fill.diagonal == wanted.diagonal
+            && fill.fill_type == 0
+            && fill.bg_color.is_none()
+            && fill.hatch.is_none()
+            && fill.gradient.is_none()
+    };
+    let index = match header.border_fills.iter().position(same) {
+        Some(index) => index,
+        None => {
+            header.border_fills.push(wanted);
+            header.border_fills.len() - 1
+        }
+    };
+    u16::try_from(index + 1)
+        .map(BorderFillId)
+        .map_err(|_| "대상 문서의 테두리/배경 표가 가득 차 표 테두리를 추가할 수 없습니다. 표 개수를 줄이거나 다른 문서에 삽입하세요".to_owned())
 }
 
 /// Non-raw HWP NUMBERING definitions become the writer's synthesized record.
@@ -269,15 +356,23 @@ impl StyleResolver<'_, '_> {
     }
 }
 
-/// Compile on a candidate and publish its header/content only after every check succeeds.
-/// HWP output is bounded by the existing writer's style IDs and numbering records.
+/// Compile the blocks against a header-only copy of the target and publish them only after
+/// every check succeeds. HWP output is bounded by the existing writer's style IDs, numbering
+/// records and (for equations) its lack of an equation record.
+///
+/// The compiler works on `Document { header, ..Default }`, not on a clone of the whole target:
+/// it only appends to header tables and to `bin_streams`, so cloning the target's sections and
+/// binary payloads for every op was pure cost. New binaries are grafted by name afterwards; an
+/// asset the target already holds under the same name and bytes is shared, a same name with
+/// different bytes is refused.
 pub fn apply(
     doc: &mut Document,
     target: &SegmentPath,
     request: &InsertBlocks,
     hwp_output: bool,
+    assets: &AssetContext,
 ) -> Result<usize, String> {
-    check_target(doc, target)?;
+    let container_mm = check_target(doc, target)?;
     if request.styles.len() > 256 || request.lists.len() > 256 {
         return Err(
             "insert_blocks의 styles/lists 정의가 상한 256개를 넘습니다. 정의를 나누어 요청하세요"
@@ -289,21 +384,38 @@ pub fn apply(
     } else {
         u16::MAX
     };
-    let names = referenced_styles(request)?;
+    let found = referenced(request)?;
+    if hwp_output && found.equations {
+        return Err("HWP 출력은 수식 블록을 저장하지 못합니다 (수식 개체가 제거됩니다). 수식이 필요하면 HWPX 출력으로 다시 시도하거나 수식 블록을 제거하세요".into());
+    }
+    let base_dir = match (found.images, assets.base_dir) {
+        (true, None) => {
+            return Err("이 호출 경로에는 이미지 자산 기준 디렉터리가 없어 이미지 블록을 삽입할 수 없습니다. --ops 파일 옆에 이미지를 두고 CLI로 실행하세요".into());
+        }
+        (_, base) => base.unwrap_or(Path::new(".")),
+    };
+    let names = found.styles;
     let styles = list_named_styles(doc, &[]).map_err(|error| error.to_string())?;
     let default = doc.header.styles.first().ok_or_else(|| "대상 문서의 기본 스타일 0이 없습니다. hwp styles로 유효한 문서인지 확인한 뒤 다시 시도하세요".to_owned())?;
     if styles.first().and_then(|style| style.kind) != Some(StyleKind::Paragraph) {
         return Err("기본 스타일 0의 종류가 paragraph가 아닙니다. 문단 기본 스타일이 있는 원본 문서를 선택하세요".into());
     }
+    let mut shell = Document {
+        header: doc.header.clone(),
+        ..Document::default()
+    };
+    let border_fill = if found.tables {
+        table_border_fill(&mut shell.header)?
+    } else {
+        BorderFillId(0)
+    };
     let defaults = BlockDefaults {
         style: StyleId(0),
         para_shape: default.para_shape,
         char_shape: default.char_shape,
-        border_fill: BorderFillId(0),
+        border_fill,
     };
-    // T2 stages a whole-document clone per op, including binary payloads. T3 must
-    // revisit that cost along with real asset base paths and sandbox roots.
-    let mut compiler = BlockCompiler::over_document(doc.clone(), defaults, Path::new("."), &[]);
+    let mut compiler = BlockCompiler::over_document(shell, defaults, base_dir, assets.roots);
     compiler
         .register_target_style("", StyleId(0))
         .map_err(|error| format!("기본 스타일 0의 서식 참조가 유효하지 않습니다: {error}. 원본 문서의 기본 스타일 참조를 복구한 뒤 다시 시도하세요"))?;
@@ -319,21 +431,10 @@ pub fn apply(
     for name in names {
         resolver.resolve(&name)?;
     }
-    let lists: BTreeMap<_, _> = request
-        .blocks
+    let lists: BTreeMap<_, _> = found
+        .lists
         .iter()
-        .filter_map(|block| match block {
-            BlockSpec::Paragraph {
-                list: Some(list), ..
-            } => Some(list.name.clone()),
-            _ => None,
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|name| {
-            let definition = request.lists[&name].clone();
-            (name, definition)
-        })
+        .map(|name| (name.clone(), request.lists[name].clone()))
         .collect();
     let validation = DocumentSpec {
         version: SpecVersion::V1,
@@ -350,7 +451,7 @@ pub fn apply(
             blocks: request.blocks.clone(),
         }],
     };
-    validate_spec(&validation, Path::new(".")).map_err(|error| format!("insert_blocks 블록/스타일/목록 정의가 유효하지 않습니다: {error}. DocumentSpec v1 정의를 수정한 뒤 다시 시도하세요"))?;
+    validate_spec_in_width(&validation, base_dir, Some(container_mm)).map_err(|error| format!("insert_blocks 블록/스타일/목록 정의가 유효하지 않습니다: {error}. DocumentSpec v1 정의를 수정한 뒤 다시 시도하세요 (삽입 위치의 폭은 {container_mm:.1}mm입니다)"))?;
     if hwp_output {
         check_hwp_lists(doc, request, &lists)?;
     }
@@ -362,13 +463,26 @@ pub fn apply(
         paragraphs.extend(compiler.compile_block(block, &format!("$.blocks[{index}]")).map_err(|error| format!("insert_blocks 컴파일 실패: {error}. DocumentSpec v1 정의를 확인한 뒤 다시 시도하세요"))?);
     }
     let count = paragraphs.len();
-    let mut candidate = compiler.into_document();
-    hwp_convert::structure::insert_paragraphs_at(
-        &mut candidate,
-        target,
-        request.before(),
-        paragraphs,
-    )?;
-    *doc = candidate;
+    let compiled = compiler.into_document();
+    for stream in &compiled.bin_streams {
+        if let Some(existing) = doc.bin_streams.iter().find(|have| have.name == stream.name)
+            && existing.data != stream.data
+        {
+            return Err(format!(
+                "대상 문서에 같은 이름의 다른 바이너리 '{}'가 이미 있습니다. 이미지 파일을 바꾸거나 다른 이름의 문서에 삽입하세요",
+                stream.name
+            ));
+        }
+    }
+    hwp_convert::document_merge::renumber_inserted_objects(doc, &mut paragraphs)?;
+    // The only fallible step that touches the target: it validates before it splices, so a
+    // refusal leaves `doc` exactly as it was.
+    hwp_convert::structure::insert_paragraphs_at(doc, target, request.before(), paragraphs)?;
+    doc.header = compiled.header;
+    for stream in compiled.bin_streams {
+        if !doc.bin_streams.iter().any(|have| have.name == stream.name) {
+            doc.bin_streams.push(stream);
+        }
+    }
     Ok(count)
 }

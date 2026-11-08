@@ -358,6 +358,54 @@ pub struct EditPlan {
     /// of receiving only an error string. The MCP `tool_edit` boundary (D-12) writes the same
     /// artifact through [`emit_edit_report`].
     report: Option<std::path::PathBuf>,
+    /// #428 T3: where `insert_blocks` image assets resolve from and the MCP sandbox roots that
+    /// must contain them. `None` base means no asset directory exists for this call path, so
+    /// image blocks are refused rather than read from the process directory.
+    assets: AssetPlan,
+}
+
+/// Owned form of [`hwp_cli::insert_blocks::AssetContext`] carried by an [`EditPlan`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AssetPlan {
+    base_dir: Option<std::path::PathBuf>,
+    roots: Vec<std::path::PathBuf>,
+}
+
+impl AssetPlan {
+    /// CLI `--ops FILE`: assets sit beside the ops file. Reading ops from stdin has no
+    /// directory, so image blocks are refused there.
+    fn beside_ops(ops: &std::path::Path) -> Self {
+        let base_dir = if ops.as_os_str() == "-" {
+            None
+        } else {
+            Some(
+                ops.parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf),
+            )
+        };
+        Self {
+            base_dir,
+            roots: Vec::new(),
+        }
+    }
+
+    /// MCP `hwp_edit`: the sandbox roots bind every asset read. `insert_blocks` is not an MCP
+    /// argument until T4 (#428), so there is no asset directory to offer yet and image blocks
+    /// stay refused on this path rather than reading from the server's working directory.
+    pub(crate) fn for_mcp(roots: &[std::path::PathBuf]) -> Self {
+        Self {
+            base_dir: None,
+            roots: roots.to_vec(),
+        }
+    }
+
+    fn context(&self) -> hwp_cli::insert_blocks::AssetContext<'_> {
+        hwp_cli::insert_blocks::AssetContext {
+            base_dir: self.base_dir.as_deref(),
+            roots: &self.roots,
+        }
+    }
 }
 
 struct ResolvedLabelEdit {
@@ -665,6 +713,7 @@ impl EditPlan {
                 allow_partial,
                 dry_run,
                 report,
+                assets: AssetPlan::default(),
             },
         )
     }
@@ -689,6 +738,7 @@ impl EditPlan {
         } = args;
         let ops = ops.expect("from_ops is only called when --ops is set");
         let typed_operations = crate::edit_ops::load_ops(&ops)?;
+        let assets = AssetPlan::beside_ops(&ops);
         Ok((
             input,
             output,
@@ -699,6 +749,7 @@ impl EditPlan {
                 allow_partial,
                 dry_run,
                 report,
+                assets,
             },
         ))
     }
@@ -713,6 +764,7 @@ impl EditPlan {
         allow_partial: bool,
         dry_run: bool,
         report: Option<std::path::PathBuf>,
+        assets: AssetPlan,
     ) -> Self {
         Self {
             operations: Vec::new(),
@@ -721,6 +773,7 @@ impl EditPlan {
             allow_partial,
             dry_run,
             report,
+            assets,
         }
     }
 
@@ -1714,6 +1767,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             &mut resolved_move_destinations,
             &mut offsets,
             output_format,
+            &plan.assets.context(),
         )?;
         if tables_before.is_some_and(|before| table_count(&doc) != before) {
             tables_changed_by.get_or_insert(index);
@@ -3089,6 +3143,7 @@ fn apply_typed_operation(
     >,
     offsets: &mut IndexOffsets,
     output_format: OutputFormat,
+    assets: &hwp_cli::insert_blocks::AssetContext,
 ) -> anyhow::Result<()> {
     // One slot per `plan.typed_operations` entry (`preflight_addressed_ops`), consumed in
     // lockstep with this loop regardless of operation kind so the position alignment holds.
@@ -3382,6 +3437,7 @@ fn apply_typed_operation(
                 &current,
                 request,
                 output_format == OutputFormat::Hwp,
+                assets,
             )
             .map_err(|error| anyhow::anyhow!(error))?;
             let mut inserted = current;

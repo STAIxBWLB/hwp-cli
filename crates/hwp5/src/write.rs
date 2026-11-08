@@ -1896,7 +1896,9 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     // (bin_stream 인덱스, 새 이름)
     let mut renames: Vec<(usize, String)> = Vec::new();
     // gso 개체마다 유니크 instance_id (같은 값이면 한글이 같은 개체로 보고 무시 가능).
-    let mut inst: u32 = 0x3000_0000;
+    // A document that already carries synthesized pictures (a re-read output of this writer)
+    // holds ids from this same range, so start past the highest one instead of reusing it.
+    let mut inst: u32 = next_synthesized_instance_id(doc);
 
     // 머리말/꼬리말 LIST_HEADER를 구역 PageDef 치수로 채운다(hwpx 출신, 빈 것만).
     // textWidth=본문 폭(용지−좌우 여백), textHeight=머리말/꼬리말 여백. 과거에는
@@ -1938,6 +1940,61 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     for (idx, new_name) in renames {
         doc.bin_streams[idx].name = new_name;
     }
+}
+
+/// First `0x3000_0000..0x3010_0000` gso instance id no picture, table or gso container of
+/// `doc` already uses. Ids outside that range (genuine Hancom ids) never collide with a value
+/// drawn from it by this writer, so only the synthesized range is scanned.
+fn next_synthesized_instance_id(doc: &Document) -> u32 {
+    const BASE: u32 = 0x3000_0000;
+    const END: u32 = 0x3010_0000;
+    fn common_id(common: &[u8]) -> Option<u32> {
+        common
+            .get(32..36)
+            .map(|b| u32::from_le_bytes(b.try_into().expect("slice len checked")))
+            .filter(|id| (BASE..END).contains(id))
+    }
+    fn walk(para: &Paragraph, next: &mut u32) {
+        for control in &para.controls {
+            match control {
+                Control::Picture(p) => {
+                    if let Some(id) = common_id(&p.common_data) {
+                        *next = (*next).max(id + 1);
+                    }
+                    if let Some(caption) = &p.caption {
+                        caption.paragraphs.iter().for_each(|q| walk(q, next));
+                    }
+                }
+                Control::Table(t) => {
+                    if let Some(id) = common_id(&t.common_data) {
+                        *next = (*next).max(id + 1);
+                    }
+                    if let Some(caption) = &t.caption {
+                        caption.paragraphs.iter().for_each(|q| walk(q, next));
+                    }
+                    for cell in &t.cells {
+                        cell.paragraphs.iter().for_each(|q| walk(q, next));
+                    }
+                }
+                Control::Generic(g) => {
+                    if g.ctrl_id == *b"gso "
+                        && let Some(id) = common_id(&g.data)
+                    {
+                        *next = (*next).max(id + 1);
+                    }
+                    for list in &g.paragraph_lists {
+                        list.paragraphs.iter().for_each(|q| walk(q, next));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut next = BASE;
+    for section in &doc.sections {
+        section.paragraphs.iter().for_each(|p| walk(p, &mut next));
+    }
+    next
 }
 
 /// 구역의 PageDef를 찾는다 (SectionDef 컨트롤).

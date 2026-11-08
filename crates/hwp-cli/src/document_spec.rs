@@ -560,7 +560,19 @@ pub fn infer_input_format(path: &Path) -> Result<SpecInputFormat, ComposeError> 
     }
 }
 
-pub fn validate_spec(spec: &DocumentSpec, _base_dir: &Path) -> Result<(), ComposeError> {
+pub fn validate_spec(spec: &DocumentSpec, base_dir: &Path) -> Result<(), ComposeError> {
+    validate_spec_in_width(spec, base_dir, None)
+}
+
+/// [`validate_spec`] for blocks that will be spliced into an existing document: when
+/// `body_width_mm` is set it replaces every section's writable page width, so a table or image
+/// is measured against the text column (or table cell) it will land in rather than the page the
+/// spec itself declares.
+pub(crate) fn validate_spec_in_width(
+    spec: &DocumentSpec,
+    _base_dir: &Path,
+    body_width_mm: Option<f32>,
+) -> Result<(), ComposeError> {
     let mut validator = Validator {
         spec,
         issues: Vec::new(),
@@ -568,6 +580,7 @@ pub fn validate_spec(spec: &DocumentSpec, _base_dir: &Path) -> Result<(), Compos
         runs: 0,
         cells: 0,
         text_chars: 0,
+        body_width_override: body_width_mm,
     };
     validator.validate();
     if validator.issues.is_empty() {
@@ -586,6 +599,7 @@ struct Validator<'a> {
     runs: usize,
     cells: usize,
     text_chars: usize,
+    body_width_override: Option<f32>,
 }
 
 impl Validator<'_> {
@@ -767,7 +781,9 @@ impl Validator<'_> {
                 );
             }
             let page = section.page.as_ref().unwrap_or(&self.spec.page);
-            let body_width_mm = writable_page_width(*page);
+            let body_width_mm = self
+                .body_width_override
+                .unwrap_or_else(|| writable_page_width(*page));
             if let Some(header) = &section.header {
                 self.validate_header_footer(header, &format!("{path}.header"), 0, body_width_mm);
             }

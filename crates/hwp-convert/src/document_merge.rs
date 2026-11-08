@@ -1125,6 +1125,155 @@ fn renumber_table_object_id(
     Ok(())
 }
 
+/// Gives freshly compiled paragraphs the object identities they need before they are spliced
+/// into `doc`, the remapping `merge` applies to a grafted input, narrowed to what a block
+/// compiler produces:
+///
+/// - every placement-only table gets a z-order whose synthesized HWP instance id
+///   (`0x5000_0000 | z_order & 0xffff`) no table, picture or gso container of `doc` and no
+///   earlier inserted table uses;
+/// - every field gets a non-zero instance id (spec table 152, "unique in the document") that no
+///   field of `doc` or of an earlier inserted paragraph carries. The compiler writes id 0 for
+///   all of them.
+///
+/// Pictures keep their identity: the HWP writer draws each synthesized picture id from a
+/// counter seeded past the ids the document already holds, and the HWPX writer numbers objects
+/// per write. Returns the number of tables and fields renumbered.
+pub fn renumber_inserted_objects(
+    doc: &Document,
+    paragraphs: &mut [Paragraph],
+) -> Result<usize, String> {
+    let mut used = crate::edit::doc_object_ids(doc);
+    let mut next_z = crate::edit::doc_max_table_z_order(doc)
+        .checked_add(1)
+        .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
+    let mut next_field = 0u32;
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            max_field_id_in_para(para, &mut next_field);
+        }
+    }
+    let mut next_field = next_field
+        .checked_add(1)
+        .ok_or_else(|| "필드 id 오버플로".to_string())?;
+    let mut count = 0usize;
+    for para in paragraphs {
+        renumber_inserted_in_para(para, &mut used, &mut next_z, &mut next_field, &mut count)?;
+    }
+    Ok(count)
+}
+
+/// `attr(4) etc(1) len(2) WCHAR[len] id(4)` (spec table 152): the byte range of the id.
+fn field_id_range(data: &[u8]) -> Option<std::ops::Range<usize>> {
+    let len = usize::from(u16::from_le_bytes([*data.get(5)?, *data.get(6)?]));
+    let start = 7usize.checked_add(len.checked_mul(2)?)?;
+    let end = start.checked_add(4)?;
+    (data.len() >= end).then_some(start..end)
+}
+
+fn max_field_id_in_para(para: &Paragraph, max: &mut u32) {
+    for control in &para.controls {
+        match control {
+            Control::Generic(g) => {
+                if crate::field::is_field_ctrl_id(&g.ctrl_id)
+                    && let Some(range) = field_id_range(&g.data)
+                {
+                    *max = (*max).max(u32::from_le_bytes(
+                        g.data[range].try_into().expect("range is four bytes"),
+                    ));
+                }
+                for list in &g.paragraph_lists {
+                    list.paragraphs
+                        .iter()
+                        .for_each(|p| max_field_id_in_para(p, max));
+                }
+            }
+            Control::Table(t) => {
+                t.caption
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .for_each(|p| max_field_id_in_para(p, max));
+                t.cells
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .for_each(|p| max_field_id_in_para(p, max));
+            }
+            Control::Picture(pic) => pic
+                .caption
+                .iter()
+                .flat_map(|c| &c.paragraphs)
+                .for_each(|p| max_field_id_in_para(p, max)),
+            Control::SectionDef(_) => {}
+        }
+    }
+}
+
+fn renumber_inserted_in_para(
+    para: &mut Paragraph,
+    used: &mut std::collections::BTreeSet<u32>,
+    next_z: &mut i32,
+    next_field: &mut u32,
+    count: &mut usize,
+) -> Result<(), String> {
+    for control in &mut para.controls {
+        match control {
+            Control::Table(t) => {
+                if t.common_data.is_empty()
+                    && let Some(placement) = &mut t.placement
+                {
+                    loop {
+                        let z = *next_z;
+                        *next_z = z
+                            .checked_add(1)
+                            .ok_or_else(|| "개체 z-order 오버플로".to_string())?;
+                        if used.insert(crate::edit::synthesized_table_object_id(z)) {
+                            placement.z_order = z;
+                            *count += 1;
+                            break;
+                        }
+                    }
+                }
+                if let Some(caption) = &mut t.caption {
+                    for p in &mut caption.paragraphs {
+                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                    }
+                }
+                for cell in &mut t.cells {
+                    for p in &mut cell.paragraphs {
+                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                    }
+                }
+            }
+            Control::Picture(pic) => {
+                if let Some(caption) = &mut pic.caption {
+                    for p in &mut caption.paragraphs {
+                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                if crate::field::is_field_ctrl_id(&g.ctrl_id)
+                    && let Some(range) = field_id_range(&g.data)
+                {
+                    let id = *next_field;
+                    *next_field = id
+                        .checked_add(1)
+                        .ok_or_else(|| "필드 id 오버플로".to_string())?;
+                    g.data[range].copy_from_slice(&id.to_le_bytes());
+                    *count += 1;
+                }
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        renumber_inserted_in_para(p, used, next_z, next_field, count)?;
+                    }
+                }
+            }
+            Control::SectionDef(_) => {}
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

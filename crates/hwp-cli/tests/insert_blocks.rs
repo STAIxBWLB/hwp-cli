@@ -637,60 +637,27 @@ fn cell_component_insertion_preserves_other_cell_and_body_paragraphs() {
 }
 
 #[test]
-fn unsupported_resource_blocks_and_runs_refuse_atomically() {
-    let unsupported = vec![
-        (
-            "table",
-            json!({"type":"table","columns":[{"width_mm":20}],"rows":[{"cells":[{"blocks":[block("body","Nested table text.")]}]}]}),
-        ),
-        (
-            "image",
-            json!({"type":"image","path":"must-not-read.png","width_mm":20}),
-        ),
-        (
-            "field",
-            json!({"type":"field","name":"component-field","value":"value"}),
-        ),
-        ("equation", json!({"type":"equation","script":"x^2"})),
-        (
-            "run-image",
-            json!({"type":"paragraph","style":"body","runs":[{"type":"image","path":"must-not-read.png","width_mm":20}]}),
-        ),
-        (
-            "run-field",
-            json!({"type":"paragraph","style":"body","runs":[{"type":"field","name":"component-field","value":"value"}]}),
-        ),
-        (
-            "run-equation",
-            json!({"type":"paragraph","style":"body","runs":[{"type":"equation","script":"x^2"}]}),
-        ),
-    ];
+fn section_break_stays_unsupported_and_refuses_atomically() {
     for extension in ["hwp", "hwpx"] {
-        let fixture = Fixture::new("unsupported", extension);
+        let fixture = Fixture::new("section-break", extension);
         let source = fixture.base.clone();
         let before = read(&source);
-        for (label, unsupported) in &unsupported {
-            let diagnostic = fixture.refuse(
-                &source,
-                label,
-                json!([insert(
-                    at(&before, ANCHOR),
-                    "after",
-                    "create",
-                    json!({}),
-                    json!([block("body", "Not partially published."), unsupported])
-                )]),
-                false,
-            );
-            let kind = label.strip_prefix("run-").unwrap_or(label);
-            assert!(
-                diagnostic.contains("insert_blocks는 현재")
-                    && diagnostic.contains("지원")
-                    && diagnostic.contains(kind)
-                    && diagnostic.contains("#428 T3"),
-                "unsupported {kind} must identify its supported-scope remedy, not merely fail schema validation: {diagnostic}"
-            );
-        }
+        let diagnostic = fixture.refuse(
+            &source,
+            "section-break",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "Not partially published."), {"type":"break","kind":"section"}])
+            )]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("section"),
+            "section break must name itself in the refusal: {diagnostic}"
+        );
     }
 }
 
@@ -1664,4 +1631,304 @@ fn official_hwpx_bullet_insertion_to_hwp_grows_only_bullets_and_retains_official
         '•'
     );
     assert!(std::fs::read(&source).unwrap() == source_bytes);
+}
+
+// ---- #428 T3: tables, images, fields and equations through the id remapper ----
+
+const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+fn write_png(dir: &Path, name: &str) {
+    use base64::Engine as _;
+    std::fs::write(
+        dir.join(name),
+        base64::engine::general_purpose::STANDARD
+            .decode(PNG_B64)
+            .unwrap(),
+    )
+    .unwrap();
+}
+
+fn all_paragraphs<'a>(paragraphs: &'a [Paragraph], out: &mut Vec<&'a Paragraph>) {
+    for paragraph in paragraphs {
+        out.push(paragraph);
+        for control in &paragraph.controls {
+            match control {
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        all_paragraphs(&cell.paragraphs, out);
+                    }
+                }
+                Control::Generic(generic) => {
+                    for list in &generic.paragraph_lists {
+                        all_paragraphs(&list.paragraphs, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn doc_paragraphs(doc: &Document) -> Vec<&Paragraph> {
+    let mut out = Vec::new();
+    for section in &doc.sections {
+        all_paragraphs(&section.paragraphs, &mut out);
+    }
+    out
+}
+
+fn tables_of(doc: &Document) -> Vec<&Table> {
+    doc_paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| if let Control::Table(t) = c { Some(t) } else { None })
+        .collect()
+}
+
+fn pictures_of(doc: &Document) -> Vec<&hwp_model::Picture> {
+    doc_paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| if let Control::Picture(p) = c { Some(p) } else { None })
+        .collect()
+}
+
+fn common_id(common: &[u8]) -> u32 {
+    u32::from_le_bytes(common[32..36].try_into().expect("gso common id"))
+}
+
+/// Field instance id: attr(4) etc(1) len(2) WCHAR[len] id(4) (spec table 152).
+fn field_ids(doc: &Document) -> Vec<u32> {
+    doc_paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| match c {
+            Control::Generic(g) if hwp_convert::field::is_field_ctrl_id(&g.ctrl_id) => {
+                let len = u16::from_le_bytes([g.data[5], g.data[6]]) as usize;
+                let at = 7 + 2 * len;
+                Some(u32::from_le_bytes(g.data[at..at + 4].try_into().unwrap()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_distinct(ids: &[u32], what: &str) {
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "{what} ids must be distinct: {ids:x?}");
+}
+
+fn validates(path: &Path) {
+    success(
+        hwp().arg("validate").arg(path).output().unwrap(),
+        "validate of the edited output",
+    );
+}
+
+fn component_blocks() -> Value {
+    json!([
+        block("body", "Component lead."),
+        {"type":"table","columns":[{"width_mm":30},{"width_mm":30}],"rows":[
+            {"cells":[{"blocks":[block("body","Approval cell A.")]},{"blocks":[block("note","Approval cell B.")]}]},
+            {"cells":[{"blocks":[{"type":"image","path":"logo.png","width_mm":10}]},
+                      {"blocks":[{"type":"field","name":"cell-field","value":"cell value"}]}]}
+        ]},
+        {"type":"image","path":"logo.png","width_mm":12},
+        {"type":"field","name":"body-field","value":"body value"},
+        {"type":"paragraph","style":"body","runs":[
+            {"type":"text","text":"Inline run "},
+            {"type":"field","name":"run-field","value":"run value"}]},
+        block("body", "Component tail.")
+    ])
+}
+
+#[test]
+fn table_image_field_components_insert_in_order_with_distinct_ids_in_both_formats() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("objects", extension);
+        write_png(&fixture.dir, "logo.png");
+        let before = read(&fixture.base);
+        let existing_tables = tables_of(&before).len();
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "objects",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                component_blocks()
+            )]),
+            false,
+        );
+        success(run, "insert_blocks with table, image and field blocks");
+        validates(&output);
+        let after = read(&output);
+        let body: Vec<_> = after.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        let lead = body.iter().position(|t| t == "Component lead.").unwrap();
+        assert_eq!(body[lead - 1], ANCHOR, "{extension}: inserted after the anchor");
+        let tail = body.iter().position(|t| t == "Component tail.").unwrap();
+        assert_eq!(body[tail + 1], "Body tail.", "{extension}: original order resumes");
+        assert!(
+            after.sections[0].paragraphs[lead + 1]
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::Table(_))),
+            "{extension}: the table follows the lead paragraph"
+        );
+        let tables = tables_of(&after);
+        assert_eq!(tables.len(), existing_tables + 1, "{extension}");
+        let inserted = tables.iter().find(|t| t.cells.iter().flat_map(|c| &c.paragraphs).any(|p| p.plain_text() == "Approval cell A.")).unwrap();
+        let fill = after.header.border_fills[usize::from(inserted.border_fill.0) - 1].clone();
+        assert!(
+            fill.sides.iter().all(|side| side.line_type == 1),
+            "{extension}: the inserted table must draw its borders, got {fill:?}"
+        );
+        let pictures = pictures_of(&after);
+        assert_eq!(pictures.len(), 2, "{extension}: both image blocks survive");
+        assert_eq!(
+            after.bin_streams.len(),
+            before.bin_streams.len() + 1,
+            "{extension}: one shared asset stream for the repeated image"
+        );
+        if extension == "hwp" {
+            let table_ids: Vec<u32> = tables.iter().map(|t| common_id(&t.common_data)).collect();
+            assert_distinct(&table_ids, "table");
+            let picture_ids: Vec<u32> = pictures.iter().map(|p| common_id(&p.common_data)).collect();
+            assert_distinct(&picture_ids, "picture");
+            let fields = field_ids(&after);
+            assert_eq!(fields.len(), 3, "three field blocks/runs");
+            assert_distinct(&fields, "field");
+            assert!(fields.iter().all(|id| *id != 0), "field ids are non-zero: {fields:x?}");
+        }
+    }
+}
+
+#[test]
+fn successive_hwp_image_insertions_do_not_reuse_a_picture_instance_id() {
+    let fixture = Fixture::new("two-images", "hwp");
+    write_png(&fixture.dir, "logo.png");
+    let image = json!([{"type":"image","path":"logo.png","width_mm":10}]);
+    let before = read(&fixture.base);
+    let (first, run) = fixture.edit(
+        &fixture.base,
+        "first-image",
+        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), image.clone())]),
+        false,
+    );
+    success(run, "first image insertion");
+    let middle = read(&first);
+    let (second, run) = fixture.edit(
+        &first,
+        "second-image",
+        json!([insert(at(&middle, ANCHOR), "after", "create", json!({}), image)]),
+        false,
+    );
+    success(run, "second image insertion into an output that already holds a picture");
+    validates(&second);
+    let after = read(&second);
+    let ids: Vec<u32> = pictures_of(&after).iter().map(|p| common_id(&p.common_data)).collect();
+    assert_eq!(ids.len(), 2);
+    assert_distinct(&ids, "picture");
+}
+
+#[test]
+fn equation_blocks_insert_into_hwpx_and_refuse_for_hwp_output() {
+    let blocks = json!([{"type":"equation","script":"x^2+y^2"},
+        {"type":"paragraph","style":"body","runs":[{"type":"equation","script":"a over b"}]}]);
+    let fixture = Fixture::new("equation", "hwpx");
+    let before = read(&fixture.base);
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "equation",
+        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), blocks.clone())]),
+        false,
+    );
+    success(run, "equation blocks into HWPX");
+    validates(&output);
+    let scripts: Vec<String> = doc_paragraphs(&read(&output))
+        .into_iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| match c {
+            Control::Generic(g) => g.equation.as_ref().map(|e| e.script.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(scripts, ["x^2+y^2", "a over b"]);
+
+    let fixture = Fixture::new("equation", "hwp");
+    let before = read(&fixture.base);
+    let diagnostic = fixture.refuse(
+        &fixture.base.clone(),
+        "equation-hwp",
+        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), blocks)]),
+        false,
+    );
+    assert!(
+        diagnostic.contains("수식") && diagnostic.contains("HWPX"),
+        "the HWP refusal must name the equation and the HWPX remedy: {diagnostic}"
+    );
+}
+
+#[test]
+fn image_assets_stay_inside_the_ops_directory_and_leave_the_file_untouched_on_refusal() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("asset-refusals", extension);
+        let source = fixture.base.clone();
+        let before = read(&source);
+        for (label, path) in [
+            ("parent", "../logo.png"),
+            ("absolute", "/etc/hosts"),
+            ("missing", "absent.png"),
+        ] {
+            let diagnostic = fixture.refuse(
+                &source,
+                label,
+                json!([insert(
+                    at(&before, ANCHOR),
+                    "after",
+                    "create",
+                    json!({}),
+                    json!([block("body", "Not partially published."),
+                           {"type":"image","path":path,"width_mm":10}])
+                )]),
+                false,
+            );
+            assert!(
+                !diagnostic.contains("insert_blocks는 현재"),
+                "{label}: images are supported now, only this asset is refused: {diagnostic}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_table_inside_cell_target_and_oversize_table_follow_the_cell_width() {
+    let fixture = Fixture::new("cell-width", "hwpx");
+    let before = read(&fixture.base);
+    let id = para_id(&fixture.base, CELL);
+    let wide = json!([{"type":"table","columns":[{"width_mm":90}],
+        "rows":[{"cells":[{"blocks":[block("body","Too wide for a 40 mm cell.")]}]}]}]);
+    let diagnostic = fixture.refuse(
+        &fixture.base.clone(),
+        "wide",
+        json!([insert(json!({"id":id}), "after", "create", json!({}), wide)]),
+        false,
+    );
+    assert!(diagnostic.contains("mm"), "{diagnostic}");
+    let narrow = json!([{"type":"table","columns":[{"width_mm":20}],
+        "rows":[{"cells":[{"blocks":[block("body","Fits the cell.")]}]}]}]);
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "narrow",
+        json!([insert(json!({"id":id}), "after", "create", json!({}), narrow)]),
+        false,
+    );
+    success(run, "narrow table inside the cell");
+    validates(&output);
+    assert_eq!(tables_of(&read(&output)).len(), tables_of(&before).len() + 1);
 }
