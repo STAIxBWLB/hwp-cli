@@ -5059,6 +5059,76 @@ mod tests {
         Some(decompress(&raw, "/BinData/BIN0003.png").unwrap())
     }
 
+    fn picture_with_instance_id(id: u32) -> Control {
+        let mut common_data = vec![0u8; 44];
+        common_data[32..36].copy_from_slice(&id.to_le_bytes());
+        Control::Picture(hwp_model::Picture {
+            common_data,
+            width: hwp_model::HwpUnit(100),
+            height: hwp_model::HwpUnit(100),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
+            caption: None,
+            bin_ref: hwp_model::BinRef::ItemRef("x".to_string()),
+            extras: Vec::new(),
+        })
+    }
+
+    fn shape_caption_holding(controls: Vec<Control>) -> Control {
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 0,
+                width: None,
+                last_width: 0,
+                paragraphs: vec![Paragraph {
+                    controls,
+                    ..Paragraph::default()
+                }],
+            }),
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    /// The HWP5 reader keeps a shape's caption apart from its paragraph lists, so a picture
+    /// whose only home is a shape caption still holds an instance id from the synthesized
+    /// range. The allocator must start past it, or the next synthesized picture repeats it and
+    /// the raw-preserved caption leaves two objects with one id.
+    #[test]
+    fn synthesized_picture_ids_start_past_ids_held_in_shape_captions() {
+        let mut doc = Document::default();
+        doc.sections.push(Section {
+            paragraphs: vec![Paragraph {
+                controls: vec![shape_caption_holding(vec![picture_with_instance_id(
+                    0x3000_0004,
+                )])],
+                ..Paragraph::default()
+            }],
+            extras: Vec::new(),
+        });
+        assert_eq!(next_synthesized_instance_id(&doc), 0x3000_0005);
+    }
+
     #[test]
     fn picture_binref_id_resolves_to_its_own_stream() {
         // S1: BinRef::Id(2) names bin_streams[1] (storage_id 2) through header.bin_data,

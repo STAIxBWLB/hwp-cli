@@ -2092,3 +2092,122 @@ fn inserted_table_borders_come_from_the_target_header_not_compose_fill_three() {
         );
     }
 }
+
+// ---- #428 T3 review round 1 (T21-F1, T21-F3) ----
+
+#[test]
+fn content_inside_an_inserted_table_cell_is_measured_against_that_cell() {
+    // The cell is 30 mm wide minus 510+510 HWPUNIT of margins (about 3.6 mm): 26.4 mm usable.
+    let cases = [
+        (
+            "image",
+            json!({"type":"image","path":"logo.png","width_mm":100}),
+        ),
+        (
+            "nested-table",
+            json!({"type":"table","columns":[{"width_mm":100}],
+                "rows":[{"cells":[{"blocks":[block("body","Too wide.")]}]}]}),
+        ),
+    ];
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("cell-content", extension);
+        write_png(&fixture.dir, "logo.png");
+        let source = fixture.base.clone();
+        let before = read(&source);
+        for (label, content) in &cases {
+            let blocks = json!([{"type":"table","columns":[{"width_mm":30}],
+                "rows":[{"cells":[{"blocks":[content]}]}]}]);
+            let diagnostic = fixture.refuse(
+                &source,
+                &format!("wide-{label}"),
+                json!([insert(at(&before, ANCHOR), "after", "create", json!({}), blocks)]),
+                false,
+            );
+            assert!(
+                diagnostic.contains("mm") && diagnostic.contains("layout_overflow"),
+                "{extension} {label}: an oversized block in a 30 mm cell must name the overflow: {diagnostic}"
+            );
+        }
+        // A block that fits the cell still inserts.
+        let fits = json!([{"type":"table","columns":[{"width_mm":30}],
+            "rows":[{"cells":[{"blocks":[{"type":"image","path":"logo.png","width_mm":20}]}]}]}]);
+        let (output, run) = fixture.edit(
+            &source,
+            "fits",
+            json!([insert(at(&before, ANCHOR), "after", "create", json!({}), fits)]),
+            false,
+        );
+        success(run, "an image narrower than its cell");
+        validates(&output);
+    }
+}
+
+#[test]
+fn spanned_cells_are_measured_by_their_column_span() {
+    let fixture = Fixture::new("cell-span", "hwpx");
+    write_png(&fixture.dir, "logo.png");
+    let before = read(&fixture.base);
+    // Two 30 mm columns: a spanning cell is 60 mm minus margins, so 50 mm fits and 70 mm does not.
+    let table = |image_mm: u32| {
+        json!([{"type":"table","columns":[{"width_mm":30},{"width_mm":30}],
+            "rows":[{"cells":[{"col_span":2,"blocks":[{"type":"image","path":"logo.png","width_mm":image_mm}]}]}]}])
+    };
+    let diagnostic = fixture.refuse(
+        &fixture.base.clone(),
+        "span-wide",
+        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), table(70))]),
+        false,
+    );
+    assert!(diagnostic.contains("layout_overflow"), "{diagnostic}");
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "span-fits",
+        json!([insert(at(&before, ANCHOR), "after", "create", json!({}), table(50))]),
+        false,
+    );
+    success(run, "an image inside the span width");
+    validates(&output);
+}
+
+#[test]
+fn hwp_list_format_guard_sees_list_levels_used_only_inside_table_cells() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("list-in-cell", extension);
+        let before = read(&fixture.base);
+        let mut operation = insert(
+            at(&before, ANCHOR),
+            "after",
+            "refuse",
+            json!({}),
+            json!([{"type":"table","columns":[{"width_mm":60}],"rows":[{"cells":[{"blocks":[
+                {"type":"paragraph","style":"body","list":{"name":"ladder-ordered","level":1},
+                 "runs":[{"type":"text","text":"Ordered cell item."}]}
+            ]}]}]}]),
+        );
+        operation["lists"] = json!({"ladder-ordered":{"kind":"ordered","levels":[
+            {"marker":"{n}.","start":1},{"marker":"{n}.","start":1}]}});
+        if extension == "hwp" {
+            let diagnostic = fixture.refuse(
+                &fixture.base,
+                "cell-ordered-refused",
+                json!([operation]),
+                false,
+            );
+            assert!(
+                diagnostic.contains("ladder-ordered")
+                    && diagnostic.contains("HWPX")
+                    && diagnostic.contains("번호 형식"),
+                "a level-1 decimal list used only in a cell must be refused for HWP like a body one: {diagnostic}"
+            );
+        } else {
+            let (output, run) = fixture.edit(
+                &fixture.base,
+                "cell-ordered-inserted",
+                json!([operation]),
+                false,
+            );
+            success(run, "HWPX authors the numbering as written");
+            validates(&output);
+        }
+    }
+}
