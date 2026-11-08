@@ -67,6 +67,41 @@ fn resolved(doc: &Document, para: &Paragraph) -> Value {
         "runs":para.char_shape_runs.iter().map(|(position,id)|json!([position,doc.header.char_shapes[id.0 as usize]])).collect::<Vec<_>>()})
 }
 
+fn assert_policy_report(report: &Value, expected: &str) {
+    for operation in report["ops"].as_array().unwrap() {
+        assert!(
+            operation["reason"].is_null(),
+            "applied reason must remain null: {operation}"
+        );
+        assert_eq!(
+            operation["missing_style"], expected,
+            "selected policy needs its own report field"
+        );
+    }
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .unwrap();
+    assert!(validator.is_valid(report));
+    let mut broken = report.clone();
+    broken["ops"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("missing_style");
+    assert!(
+        !validator.is_valid(&broken),
+        "applied insert_blocks needs its policy"
+    );
+    let mut broken = report.clone();
+    broken["ops"][0]["reason"] = json!("applied policy cannot overload the failure reason");
+    assert!(
+        !validator.is_valid(&broken),
+        "reason is reserved for failures"
+    );
+}
+
 struct Fixture {
     dir: PathBuf,
     base: PathBuf,
@@ -236,13 +271,7 @@ fn paragraphs_and_page_column_breaks_insert_before_after_original_addresses_in_b
             &std::fs::read(fixture.dir.join("ordered-report.json")).unwrap(),
         )
         .unwrap();
-        assert!(
-            report["ops"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|op| op["reason"] == "insert_blocks: missing_style=refuse")
-        );
+        assert_policy_report(&report, "refuse");
         let after = read(&output);
         let paragraphs = &after.sections[0].paragraphs;
         let prefix = index(&after, PREFIX);
@@ -301,6 +330,19 @@ fn existing_target_style_wins_over_supplied_definition_and_lists_new_user() {
             false,
         );
         success(setup, "existing create_style target setup");
+        let legacy: Value = serde_json::from_slice(
+            &std::fs::read(fixture.dir.join("target-created-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            legacy["ops"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|operation| operation.get("missing_style").is_none()
+                    && operation["reason"].is_null()),
+            "legacy outcomes keep their original report shape"
+        );
         let before = read(&source);
         let (body_id, body) = before
             .header
@@ -660,10 +702,7 @@ fn omitted_missing_style_policy_defaults_to_create_from_definition() {
             &std::fs::read(fixture.dir.join("default-created-report.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            report["ops"][0]["reason"],
-            "insert_blocks: missing_style=create"
-        );
+        assert_policy_report(&report, "create");
         let after = read(&output);
         let (id, style) = after
             .header
