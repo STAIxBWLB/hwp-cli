@@ -1,7 +1,7 @@
-//! CLI 파일 출력의 공통 트랜잭션 계층.
+//! Shared transaction layer for CLI file output.
 //!
-//! writer는 최종 경로와 같은 디렉터리의 비공개 작업공간에 먼저 쓴다. 쓰기와 검증이
-//! 모두 끝난 뒤에만 최종 경로를 교체하므로, 실패한 명령은 기존 출력을 훼손하지 않는다.
+//! Writers first write into a private workspace beside the final path. Only after writing
+//! and verification both succeed is the final path replaced, preserving existing output on failure.
 
 use std::fs;
 use std::io::{Read as _, Write as _};
@@ -14,11 +14,11 @@ use sha2::{Digest as _, Sha256};
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// `destination` 옆에 실제 확장자를 유지한 임시 파일을 쓰고 검증한 뒤 게시한다.
+/// Writes a temporary file beside `destination`, retaining its extension, verifies it, then publishes.
 ///
-/// `input`은 입력과 출력의 안전한 제자리 사용 여부 및 별칭을 검사하는 데만 쓴다.
-/// 같은 일반 파일의 직접 경로(`file`, `./file`, 절대경로)는 허용하지만, 심볼릭
-/// 링크나 하드 링크를 통한 별칭은 어느 디렉터리 항목을 교체해야 하는지 모호하므로 거부한다.
+/// `input` is used only to check safe in-place input/output use and aliases.
+/// Direct paths to the same regular file (`file`, `./file`, absolute paths) are allowed, but
+/// symlink and hard-link aliases are refused because the directory entry to replace is ambiguous.
 pub(crate) fn write_validated<T>(
     destination: &Path,
     input: Option<&Path>,
@@ -30,8 +30,8 @@ pub(crate) fn write_validated<T>(
     staged.sync_file()?;
     verifier(staged.path(), &value)
         .with_context(|| format!("출력 검증 실패 (대상: {})", destination.display()))?;
-    // verifier는 읽기 전용이라는 계약이지만, 게시 직전 fsync를 한 번 더 수행해 그
-    // 계약이 실수로 깨져도 rename 전에 모든 바이트가 동기화되도록 한다.
+    // The verifier is read-only by contract. Sync again immediately before publication so an
+    // accidental violation still leaves every byte synchronized before rename.
     staged.sync_file()?;
     if let Some(warning) = staged.publish()? {
         eprintln!("경고: {warning}");
@@ -105,38 +105,87 @@ pub(crate) fn write_snapshot_output_set<T>(
     destinations: &[(PathBuf, bool)],
     writer: impl FnOnce(&Path, &[PathBuf], &str) -> anyhow::Result<T>,
 ) -> anyhow::Result<(String, T)> {
-    let first = destinations
-        .first()
-        .context("출력 집합이 비어 있습니다. native 출력과 receipt 경로를 지정하세요")?;
-    write_with_private_input_snapshot(
-        &first.0,
-        input,
-        max_bytes,
-        SnapshotOutputMode::PlanOnly,
-        |snapshot, native_stage, hash| {
-            let mut paths = vec![native_stage.to_owned()];
-            for index in 1..destinations.len() {
-                paths.push(
-                    native_stage
-                        .parent()
-                        .expect("private stage parent")
-                        .join(format!("artifact-{index}.json")),
-                );
+    if destinations.is_empty() || !destinations.iter().any(|(_, publish)| *publish) {
+        anyhow::bail!("게시할 출력이 없습니다. native 출력 또는 receipt 경로를 지정하세요");
+    }
+    for (index, (destination, _)) in destinations.iter().enumerate() {
+        let mut inputs = vec![input];
+        inputs.extend(destinations[..index].iter().map(|(path, _)| path.as_path()));
+        reject_output_aliases(destination, &inputs)?;
+    }
+    let mut staged = destinations
+        .iter()
+        .map(|(destination, _)| StagedOutput::new(destination, Some(input)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let (snapshot, hash) = copy_input_snapshot(input, max_bytes, &staged[0].workspace)?;
+    let paths: Vec<_> = staged
+        .iter()
+        .map(|output| output.path().to_owned())
+        .collect();
+    let value = writer(&snapshot, &paths, &hash)?;
+    for output in &staged {
+        output.sync_file()?;
+        recheck_destination(&output.destination, &output.snapshot)?;
+    }
+    // Probe spellings inside the existing private stages on the actual destination volume.
+    // This reserves even a non-published dry-run native path against case/Unicode aliases;
+    // publish_output_set's final identity checks still protect the real replacing renames.
+    for (index, output) in staged.iter().enumerate() {
+        let parent = output
+            .destination
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent_identity = FileIdentity::from_metadata(&fs::metadata(parent)?, parent)?;
+        let stage_identity =
+            FileIdentity::from_metadata(&fs::metadata(output.path())?, output.path())?;
+        for later in &staged[index + 1..] {
+            let later_parent = later
+                .destination
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            if !parent_identity.same_file(&FileIdentity::from_metadata(
+                &fs::metadata(later_parent)?,
+                later_parent,
+            )?) {
+                continue;
             }
-            let value = writer(snapshot, &paths, hash)?;
-            let outputs = destinations
-                .iter()
-                .zip(&paths)
-                .filter(|((_, publish), _)| *publish)
-                .map(|((destination, _), stage)| Ok((destination.clone(), fs::read(stage)?)))
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            if let Some(warning) = write_validated_files(&outputs, Some(input))? {
-                eprintln!("경고: {warning}");
+            let probe = output.workspace.join(
+                later
+                    .destination
+                    .file_name()
+                    .context("출력 파일 이름이 없습니다. 파일 경로를 지정하세요")?,
+            );
+            match fs::metadata(&probe) {
+                Ok(metadata)
+                    if stage_identity
+                        .same_file(&FileIdentity::from_metadata(&metadata, &probe)?) =>
+                {
+                    anyhow::bail!(
+                        "출력 집합의 경로가 파일시스템에서 같은 이름입니다. native 출력, receipt, preview에 서로 다른 파일 이름을 지정하세요"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).context(
+                        "출력 별칭을 확인할 수 없습니다. 대상 디렉터리 권한을 확인하세요",
+                    );
+                }
             }
-            Ok(value)
-        },
-        |_, _| Ok(()),
-    )
+        }
+    }
+    let mut index = 0;
+    staged.retain(|_| {
+        let publish = destinations[index].1;
+        index += 1;
+        publish
+    });
+    if let Some(warning) = publish_output_set(&mut staged, &[], |_| Ok(()))? {
+        eprintln!("경고: {warning}");
+    }
+    Ok((hash, value))
 }
 
 fn copy_input_snapshot(
@@ -264,11 +313,11 @@ pub(crate) fn reject_output_aliases(destination: &Path, inputs: &[&Path]) -> any
     Ok(())
 }
 
-/// 여러 파일을 모두 준비·검증한 뒤 하나의 복구 가능한 게시 단위로 교체한다.
+/// Prepares and verifies multiple files, then replaces them as one recoverable publication unit.
 ///
-/// PNG/SVG 다중 페이지처럼 결과 집합의 일부만 새 버전으로 보이면 안 되는 호출에 쓴다.
-/// 모든 destination을 게시 직전 재확인하고 기존 파일을 먼저 backup한 뒤 새 파일을
-/// 게시한다. 후반 게시 실패 시 앞서 게시한 새 파일을 제거하고 모든 기존 파일을 복원한다.
+/// Used when a result set, such as multipage PNG/SVG output, must not expose only some new files.
+/// Rechecks every destination immediately before publication, backs up existing files, then
+/// publishes new ones. A later failure removes published new files and restores all originals.
 pub(crate) fn write_validated_files(
     outputs: &[(PathBuf, Vec<u8>)],
     input: Option<&Path>,
@@ -369,7 +418,7 @@ fn publish_output_set(
     already_published: &[PublishedFile],
     mut hook: impl FnMut(SetPublishStep) -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<String>> {
-    // Mutation을 시작하기 전에 집합 전체의 경쟁 여부와 staged 파일 상태를 확정한다.
+    // Establish race-free destination snapshots and staged-file readiness before any mutation.
     for output in outputs.iter() {
         recheck_destination(&output.destination, &output.snapshot)?;
         output.sync_file()?;
@@ -545,13 +594,13 @@ fn publish_output_set(
     Ok((!warnings.is_empty()).then(|| warnings.join("; ")))
 }
 
-/// Markdown 본문과 이미지 sidecar 디렉터리를 하나의 복구 가능한 게시 단위로 쓴다.
+/// Writes Markdown content and its image sidecar directory as one recoverable publication unit.
 ///
-/// sidecar는 최종 디렉터리와 같은 파일시스템의 비공개 작업공간에서 완성한다. 기존
-/// sidecar가 있으면 작업공간으로 먼저 복제하므로 exporter의 기존 충돌 계약(동일
-/// 바이트만 재사용, 다른 바이트는 거부)과 관계없는 파일 보존이 그대로 유지된다.
-/// 검증 후 본문과 sidecar 양쪽 destination을 다시 확인하고, 기존 항목을 backup으로
-/// 옮긴 뒤 게시한다. 두 번째 게시가 실패하면 이미 게시한 첫 번째 항목까지 되돌린다.
+/// Completes the sidecar in a private workspace on the destination filesystem. An existing
+/// sidecar is copied into the workspace first, retaining the exporter's collision contract
+/// (reuse identical bytes, reject different bytes) and preserving unrelated files.
+/// After verification, rechecks both destinations, backs up their existing entries and
+/// publishes them. Failure on the second publication also rolls back the first.
 pub(crate) fn write_validated_with_sidecar<T>(
     destination: &Path,
     input: Option<&Path>,
@@ -714,8 +763,8 @@ impl StagedOutput {
             .with_context(|| format!("임시 출력 동기화 실패: {}", self.staged.display()))
     }
 
-    // Windows에서는 아래 cfg(windows) 블록이 함수의 마지막이라 조기 return이 tail로 보인다.
-    // 다른 플랫폼에서는 뒤에 cfg 블록이 더 있어 return이 필요하다.
+    // On Windows, the cfg(windows) block below is last, so an early return appears as a tail return.
+    // Other platforms have later cfg blocks and still require the return.
     #[cfg_attr(windows, allow(clippy::needless_return))]
     fn publish(&mut self) -> anyhow::Result<Option<String>> {
         recheck_destination(&self.destination, &self.snapshot)?;
@@ -749,8 +798,8 @@ impl StagedOutput {
                     ) {
                         RecoveryState::Published { warning } => {
                             if warning.is_some() {
-                                // 백업 파일을 직접 지우지 못했다면 Drop의 재귀 정리로
-                                // 삭제하지 않는다. 경고에 표시한 복구 사본을 남긴다.
+                                // If explicit backup deletion failed, do not let Drop's recursive cleanup remove it.
+                                // Leave the recovery copy named in the warning.
                                 self.preserve_workspace = true;
                             }
                             warning
@@ -818,8 +867,8 @@ impl StagedOutput {
 
         #[cfg(unix)]
         {
-            // rename 성공 뒤 sync 실패를 명령 실패로 바꾸면 "실패했지만 목적지는 변경됨"이라는
-            // 더 위험한 계약이 된다. 게시 성공을 유지하고 호출자에게 경고만 노출한다.
+            // Treating a post-rename sync failure as command failure would mean a failed command changed
+            // its destination. Retain successful publication and expose only a warning to the caller.
             let warning = sync_parent_directory(&self.destination)
                 .err()
                 .map(|e| format!("{e:#}"));
@@ -854,8 +903,8 @@ struct TreeState {
 }
 
 impl TreeState {
-    /// 복제 과정에서 수정 시각이 달라져도 실제 출력 내용/권한이 같으면 변경으로 보지 않는다.
-    /// 원본 destination 재검사에서는 `Eq`를 사용해 수정 시각 변화까지 경쟁으로 감지한다.
+    /// Copies with different modification times are unchanged when content and permissions match.
+    /// Original destination rechecks use `Eq`, detecting modification-time changes as races too.
     fn equivalent_output(&self, other: &Self) -> bool {
         self.entries.len() == other.entries.len()
             && self
@@ -1818,9 +1867,9 @@ fn reject_unsafe_alias(
                 destination.display()
             );
         }
-        // destination의 링크 수가 1임은 inspect_destination에서 확인했다. 따라서
-        // 같은 identity의 일반 파일은 `./file`과 절대경로처럼 같은 디렉터리 항목의
-        // 다른 철자이며, 하드 링크 별칭이 아니다.
+        // inspect_destination established a link count of one. The same regular-file identity
+        // therefore represents another spelling of the same directory entry, such as `./file`
+        // or an absolute path, rather than a hard-link alias.
         return Ok(());
     }
     Ok(())
@@ -1961,7 +2010,7 @@ fn create_private_workspace(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 
     fs::DirBuilder::new().mode(0o700).create(path)?;
-    // 일부 비표준 파일시스템의 생성 모드 처리와 호출자 umask에 관계없이 정확히 0700.
+    // Enforce exactly 0700 regardless of unusual filesystem creation modes or the caller's umask.
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
 }
 
@@ -1976,9 +2025,9 @@ fn create_private_workspace(path: &Path) -> std::io::Result<()> {
     use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
 
-    // 보호된 DACL에 object owner(OW)만 모든 권한을 부여한다. OI/CI는 작업공간 안에
-    // 만드는 staged 파일과 디렉터리에도 같은 제한을 상속한다. CreateDirectoryW에
-    // SECURITY_ATTRIBUTES를 직접 넘기므로 생성과 ACL 적용 사이의 공개 race가 없다.
+    // The protected DACL grants full access only to the object owner (OW). OI/CI propagate
+    // that restriction to staged files and directories inside the workspace. Passing
+    // SECURITY_ATTRIBUTES directly to CreateDirectoryW avoids a race between creation and ACL setup.
     let sddl: Vec<u16> = "D:P(A;OICI;FA;;;OW)\0".encode_utf16().collect();
     let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
     let converted = unsafe {
@@ -2117,20 +2166,20 @@ fn windows_apply_parent_default_dacl(
     windows_apply_inherited_dacl(path, parent, is_directory)
 }
 
-/// 닫히는 Windows 토큰 핸들.
+/// A Windows token handle closed on drop.
 #[cfg(windows)]
 struct WindowsToken(windows_sys::Win32::Foundation::HANDLE);
 
 #[cfg(windows)]
 impl Drop for WindowsToken {
     fn drop(&mut self) {
-        // SAFETY: 생성 시에만 유효한 핸들을 담으며 여기서 한 번만 닫는다.
+        // SAFETY: Construction stores a valid handle, which is closed exactly once here.
         unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
     }
 }
 
-/// `CreatePrivateObjectSecurityEx`는 임퍼소네이션 토큰을 요구한다. CLI는 임퍼소네이션을
-/// 하지 않으므로 프로세스 토큰을 복제해서 쓴다.
+/// `CreatePrivateObjectSecurityEx` requires an impersonation token. The CLI does not
+/// impersonate, so it duplicates the process token.
 #[cfg(windows)]
 fn windows_impersonation_token() -> anyhow::Result<WindowsToken> {
     use std::ptr;
@@ -2141,7 +2190,7 @@ fn windows_impersonation_token() -> anyhow::Result<WindowsToken> {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut primary: HANDLE = ptr::null_mut();
-    // SAFETY: 출력 핸들 포인터만 넘기며, 성공 시에만 사용한다.
+    // SAFETY: Passes only an output-handle pointer and uses it only on success.
     let opened = unsafe {
         OpenProcessToken(
             GetCurrentProcess(),
@@ -2156,7 +2205,7 @@ fn windows_impersonation_token() -> anyhow::Result<WindowsToken> {
     let primary = WindowsToken(primary);
 
     let mut impersonation: HANDLE = ptr::null_mut();
-    // SAFETY: primary는 살아 있는 토큰 핸들이고 출력만 새로 받는다.
+    // SAFETY: primary is a live token handle; only the output handle is newly received.
     let duplicated =
         unsafe { DuplicateToken(primary.0, SecurityImpersonation, &mut impersonation) };
     if duplicated == 0 {
@@ -2188,9 +2237,9 @@ fn windows_apply_inherited_dacl(
         GenericExecute: FILE_GENERIC_EXECUTE,
         GenericAll: FILE_ALL_ACCESS,
     };
-    // Token을 NULL로 두면 스레드의 유효 토큰을 쓰는데, 임퍼소네이션 중이 아닌 일반
-    // 프로세스에서는 ERROR_NO_TOKEN(1008)이 된다. 프로세스 토큰을 임퍼소네이션 토큰으로
-    // 복제해 명시적으로 넘긴다.
+    // A NULL Token uses the thread's effective token, yielding ERROR_NO_TOKEN (1008) in
+    // an ordinary process without impersonation. Duplicate the process token as an
+    // impersonation token and pass it explicitly.
     let token = windows_impersonation_token()?;
     let mut inherited_descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
     let created = unsafe {
@@ -2314,9 +2363,9 @@ fn windows_prepare_staged_tree(
                     staged_path.display()
                 )
             })?;
-            // 부모 staged 항목은 앞선 정렬 순회에서 이미 최종 ACL을 받았다. 그
-            // descriptor로 새 자식의 상속 DACL을 계산해야 private workspace의
-            // owner-only ACL이 게시 후 남지 않는다.
+            // The parent staged entry already received its final ACL in the earlier sorted walk.
+            // Derive the new child's inherited DACL from that descriptor so the private workspace's
+            // owner-only ACL does not remain after publication.
             windows_apply_inherited_dacl(&staged_path, staged_parent, is_directory)?;
         }
     }
@@ -2325,8 +2374,8 @@ fn windows_prepare_staged_tree(
 
 #[cfg(not(any(unix, windows)))]
 fn create_private_workspace(path: &Path) -> std::io::Result<()> {
-    // 지원되는 Unix/Windows와 달리 이 fallback은 owner-only ACL을 보장하지 않는다.
-    // 현재 배포 대상에는 해당하지 않으며, 새 플랫폼을 추가할 때 전용 구현이 필요하다.
+    // Unlike the supported Unix/Windows paths, this fallback cannot guarantee an owner-only ACL.
+    // No current deployment uses it; new platforms need a dedicated implementation.
     fs::create_dir(path)
 }
 
@@ -2410,8 +2459,8 @@ fn windows_replace_preserving_acl(
     let destination_wide = wide(destination);
     let backup_wide = wide(backup);
     let replaced = unsafe {
-        // flags=0은 ACL/스트림 병합 오류를 무시하지 않는다. 성공 시 ReplaceFileW가
-        // 교체 대상의 DACL을 새 파일에 원자적으로 승계하고 원본은 backup에 둔다.
+        // flags=0 does not ignore ACL/stream merge errors. On success, ReplaceFileW atomically
+        // transfers the destination DACL to the new file and retains the original as the backup.
         ReplaceFileW(
             destination_wide.as_ptr(),
             staged_wide.as_ptr(),
@@ -2479,7 +2528,7 @@ fn windows_replace_preserving_acl(
     }
 }
 
-/// 기존 파일 위 rename을 보장하지 않는 플랫폼의 명시적 복구 상태 머신.
+/// Explicit recovery state machine for platforms without rename-over-existing guarantees.
 #[cfg(any(not(any(unix, windows)), test))]
 fn publish_with_recovery(
     ops: &impl RecoveryFs,
@@ -2550,41 +2599,86 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
 
+    fn snapshot_output_set_changed_case(changed: usize) {
+        let dir = test_dir(&format!("snapshot-output-set-{changed}"));
+        let input = dir.join("source.hwpx");
+        fs::write(&input, b"source").unwrap();
+        let destinations: Vec<_> = ["result.hwpx", "receipt.json", "preview.json"]
+            .iter()
+            .map(|name| (dir.join(name), true))
+            .collect();
+        for (destination, _) in &destinations {
+            fs::write(destination, b"original").unwrap();
+        }
+        let result =
+            write_snapshot_output_set(&input, 1024, &destinations, |snapshot, stages, _| {
+                assert_eq!(fs::read(snapshot)?, b"source");
+                fs::write(&destinations[changed].0, b"external update")?;
+                for stage in stages {
+                    fs::write(stage, b"candidate")?;
+                }
+                Ok(())
+            });
+        assert!(
+            result.is_err(),
+            "command-start destination {changed} must not be overwritten after external mutation"
+        );
+        for (index, (destination, _)) in destinations.iter().enumerate() {
+            assert_eq!(
+                fs::read(destination).unwrap(),
+                if index == changed {
+                    b"external update".as_slice()
+                } else {
+                    b"original".as_slice()
+                }
+            );
+        }
+        assert_no_debris(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
-    fn snapshot_output_set_rejects_each_destination_changed_during_prepare() {
-        for changed in 0..3 {
-            let dir = test_dir(&format!("snapshot-output-set-{changed}"));
+    fn snapshot_output_set_rejects_native_changed_during_prepare() {
+        snapshot_output_set_changed_case(0);
+    }
+    #[test]
+    fn snapshot_output_set_rejects_receipt_changed_during_prepare() {
+        snapshot_output_set_changed_case(1);
+    }
+    #[test]
+    fn snapshot_output_set_rejects_preview_changed_during_prepare() {
+        snapshot_output_set_changed_case(2);
+    }
+
+    #[test]
+    fn snapshot_output_set_reserves_dry_run_names_using_the_destination_filesystem() {
+        for (first, second) in [("native.hwpx", "NATIVE.HWPX"), ("café.json", "café.json")] {
+            let dir = test_dir("snapshot-reserved-names");
             let input = dir.join("source.hwpx");
             fs::write(&input, b"source").unwrap();
-            let destinations: Vec<_> = ["result.hwpx", "receipt.json", "preview.json"]
-                .iter()
-                .map(|name| (dir.join(name), true))
-                .collect();
-            for (destination, _) in &destinations {
-                fs::write(destination, b"original").unwrap();
-            }
-            let result =
-                write_snapshot_output_set(&input, 1024, &destinations, |snapshot, stages, _| {
-                    assert_eq!(fs::read(snapshot)?, b"source");
-                    fs::write(&destinations[changed].0, b"external update")?;
-                    for stage in stages {
-                        fs::write(stage, b"candidate")?;
-                    }
-                    Ok(())
-                });
-            assert!(
-                result.is_err(),
-                "command-start destination {changed} must not be overwritten after external mutation"
-            );
-            for (index, (destination, _)) in destinations.iter().enumerate() {
-                assert_eq!(
-                    fs::read(destination).unwrap(),
-                    if index == changed {
-                        b"external update".as_slice()
-                    } else {
-                        b"original".as_slice()
-                    }
+            let native = dir.join(first);
+            let receipt = dir.join(second);
+            fs::write(&native, b"probe").unwrap();
+            let folded = receipt.exists();
+            fs::remove_file(&native).unwrap();
+            let outputs = vec![(native.clone(), false), (receipt.clone(), true)];
+            let result = write_snapshot_output_set(&input, 1024, &outputs, |_, stages, _| {
+                for stage in stages {
+                    fs::write(stage, b"candidate")?;
+                }
+                Ok(())
+            });
+            if folded {
+                assert!(
+                    result.is_err(),
+                    "a folded reserved native name must not receive JSON in dry-run"
                 );
+                assert!(!native.exists());
+                assert!(!receipt.exists());
+            } else {
+                assert!(result.is_ok());
+                assert!(!native.exists());
+                assert_eq!(fs::read(&receipt).unwrap(), b"candidate");
             }
             assert_no_debris(&dir);
             fs::remove_dir_all(&dir).unwrap();
@@ -2827,7 +2921,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// SDDL DACL에서 제어 플래그(`D:PAI` 등)를 떼고 ACE 목록만 남긴다.
+    /// Removes control flags (such as `D:PAI`) from an SDDL DACL, retaining only its ACE list.
     #[cfg(windows)]
     fn dacl_aces(sddl: &str) -> &str {
         sddl.find('(').map_or("", |start| &sddl[start..])
@@ -3007,9 +3101,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(fs::read(&destination).unwrap(), b"NEW");
-        // ReplaceFileW는 ACE를 그대로 옮기면서 SE_DACL_AUTO_INHERITED(SDDL의 "AI") 표시만
-        // 덧붙일 수 있다. P(protected)가 남아 상속은 여전히 차단되므로 실효 권한은 같다.
-        // 검사 대상은 ACE 목록이다.
+        // ReplaceFileW may preserve the ACEs while adding SE_DACL_AUTO_INHERITED (SDDL "AI").
+        // P (protected) still blocks inheritance, so effective permissions remain unchanged.
+        // Compare the ACE list.
         assert_eq!(
             dacl_aces(&windows_dacl_sddl(&destination)),
             dacl_aces(&expected)
@@ -3379,7 +3473,7 @@ mod tests {
     /// Whether `dir`'s filesystem treats the NFC and NFD spellings of a Korean name as one file,
     /// decided by the filesystem: write one, look it up by the other.
     fn volume_folds_normalization(dir: &Path) -> bool {
-        let nfc = "\u{d55c}\u{ae00}"; // 한글, precomposed
+        let nfc = "\u{d55c}\u{ae00}"; // Hangul, precomposed
         let nfd = "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}"; // the same, decomposed
         fs::write(dir.join(nfc), b"x").unwrap();
         dir.join(nfd).exists()
@@ -3748,7 +3842,7 @@ mod tests {
             &media,
             |staged, staged_media| {
                 fs::write(staged, b"SECOND BODY")?;
-                // 기존 tree를 복제하므로 동일 미디어와 관계없는 파일을 그대로 유지한다.
+                // Copying the existing tree retains identical media and unrelated files.
                 assert_eq!(fs::read(staged_media.join("image1.png"))?, b"FIRST IMAGE");
                 fs::write(staged_media.join("image2.png"), b"SECOND IMAGE")?;
                 Ok(())
@@ -3973,7 +4067,7 @@ mod tests {
     fn non_unix_recovery_preserves_backup_when_restore_rename_fails() {
         let ops = FaultFs {
             rename_calls: Cell::new(0),
-            // 1: destination->backup 성공, 2: publish 실패, 3: restore rename 실패.
+            // 1: destination->backup succeeds, 2: publish fails, 3: restore rename fails.
             fail_rename_calls: vec![2, 3],
             copy_fails: false,
             remove_fails: false,
@@ -4005,7 +4099,7 @@ mod tests {
     fn non_unix_recovery_reports_restored_state() {
         let ops = FaultFs {
             rename_calls: Cell::new(0),
-            // 1: backup 성공, 2: publish 실패, 3: restore 성공.
+            // 1: backup succeeds, 2: publish fails, 3: restore succeeds.
             fail_rename_calls: vec![2],
             copy_fails: false,
             remove_fails: false,

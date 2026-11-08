@@ -7,7 +7,7 @@ use hwp_convert::form::binding::{BindingPreview, digest, prepare_binding_plan};
 use serde::{Deserialize, Serialize};
 
 use super::{EditPlan, EditReport, OpOutcome, OpStatus, OutputFormat, load_document, write_output};
-use crate::commands::output::{self, SnapshotOutputMode};
+use crate::commands::output;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,22 +58,21 @@ pub(super) fn execute(
             "apply_form_bindings는 native HWP/HWPX 출력이 필요합니다. 출력 확장자를 .hwp 또는 .hwpx로 지정하세요"
         );
     }
-    let mut artifacts = vec![input, output, request.receipt.as_path()];
+    let mut destinations = vec![
+        (output.to_owned(), !edit.dry_run),
+        (request.receipt.clone(), true),
+    ];
     if let Some(preview) = &request.preview {
-        artifacts.push(preview);
+        destinations.push((preview.clone(), true));
     }
-    for (index, artifact) in artifacts.iter().enumerate().skip(1) {
-        output::reject_output_aliases(artifact, &artifacts[..index])?;
-    }
-    // PlanOnly here owns an immutable private source and a native stage. The actual native
-    // writer, read-back verifier and loss checks run below. The final document and JSON
-    // artifacts are then one shared atomic output set, including filesystem-identity guards.
-    let (_, (preview, preservation)) = output::write_with_private_input_snapshot(
-        output,
+    // Capture every destination baseline before any prepare/write work. Publication uses
+    // those same snapshots and the existing atomic-set identity/rollback machinery.
+    let (_, (preview, preservation)) = output::write_snapshot_output_set(
         input,
         64 * 1024 * 1024,
-        SnapshotOutputMode::PlanOnly,
-        |snapshot, stage, hash| {
+        &destinations,
+        |snapshot, stages, hash| {
+            let stage = &stages[0];
             let original = load_document(snapshot).map_err(|_| anyhow::anyhow!(
                 "바인딩 원본 문서를 읽을 수 없습니다. 원본을 validate로 확인한 뒤 discovery를 다시 실행하세요"))?;
             if !matches!(
@@ -88,6 +87,12 @@ pub(super) fn execute(
                 .map_err(anyhow::Error::msg)?;
             let mut report = write_output(prepared.document(), stage, request.plan.repeats.iter().any(|repeat| repeat.copies > 1), format, Some((snapshot, &original)))
                 .map_err(|_| anyhow::anyhow!("바인딩 결과를 기존 native writer로 만들 수 없습니다. 지원하지 않는 개체/보존 항목을 validate로 확인하고 다른 대상을 선택하세요"))?;
+            if !report.warnings.is_empty() {
+                anyhow::bail!(
+                    "native writer 경고 {}건 때문에 양식 보존 범위를 확정할 수 없어 게시하지 않습니다. 원본 validate 결과와 지원 대상/서식을 확인한 뒤 계획을 다시 검토하세요",
+                    report.warnings.len()
+                );
+            }
             report.preservation.extend(
                 crate::commands::preservation::inspect_same_format_container_with_binary_allowance(
                     snapshot,
@@ -104,23 +109,12 @@ pub(super) fn execute(
             let bytes = std::fs::read(stage)?;
             let preview = prepared.preview;
             let receipt = receipt(&preview, &bytes, !edit.dry_run);
-            let mut outputs = Vec::new();
-            if !edit.dry_run {
-                outputs.push((output.to_owned(), bytes));
-            }
-            outputs.push((
-                request.receipt.clone(),
-                serde_json::to_vec_pretty(&receipt)?,
-            ));
-            if let Some(path) = &request.preview {
-                outputs.push((path.clone(), serde_json::to_vec_pretty(&preview)?));
-            }
-            if let Some(warning) = output::write_validated_files(&outputs, Some(input))? {
-                eprintln!("경고: {warning}");
+            std::fs::write(&stages[1], serde_json::to_vec_pretty(&receipt)?)?;
+            if request.preview.is_some() {
+                std::fs::write(&stages[2], serde_json::to_vec_pretty(&preview)?)?;
             }
             Ok((preview, report.preservation))
         },
-        |_, _| Ok(()),
     )?;
     let count = preview.changes.len();
     Ok(EditReport {

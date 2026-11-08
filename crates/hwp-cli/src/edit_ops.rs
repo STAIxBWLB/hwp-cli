@@ -75,12 +75,21 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
 
 /// Validate every JSON channel against the same closed vocabulary before normalization.
 pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<TypedEditOperation>> {
-    let binding_input = value.as_array().is_some_and(|entries| {
-        entries.iter().any(|entry| {
-            entry.get("op").and_then(serde_json::Value::as_str) == Some("apply_form_bindings")
-                || entry.get("plan").is_some()
-        })
-    });
+    fn contains_binding(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(object) => {
+                object.contains_key("plan")
+                    || object.contains_key("values")
+                    || object.get("op").and_then(serde_json::Value::as_str)
+                        == Some("apply_form_bindings")
+                    || object.values().any(contains_binding)
+            }
+            serde_json::Value::Array(items) => items.iter().any(contains_binding),
+            serde_json::Value::String(text) => text.contains("apply_form_bindings"),
+            _ => false,
+        }
+    }
+    let binding_input = contains_binding(&value);
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json"))
             .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;
