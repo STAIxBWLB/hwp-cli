@@ -180,7 +180,7 @@ fn column_width_hwp(section: &hwp_model::Section, at: usize, body: i32) -> i32 {
             Control::Generic(generic) => generic.column_def.as_ref(),
             _ => None,
         })
-        .last();
+        .next_back();
     let Some(def) = def else { return body };
     let count = i32::from(def.count.max(1));
     if count == 1 {
