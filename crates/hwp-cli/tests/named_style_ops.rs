@@ -737,7 +737,11 @@ fn character_style_kind_survives_creation_and_unrelated_edits_in_both_formats() 
         );
         success(run, "create a named character style");
         let before = read(&source);
-        assert_eq!(named(&before, "Character accent").1.attr & 7, 1);
+        assert_eq!(
+            named(&before, "Character accent").1.attr & 7,
+            1,
+            "{extension}: created character style must retain its kind"
+        );
         let (output, run) = fixture.edit(
             &source,
             "character-preserved",
