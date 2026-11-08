@@ -1932,3 +1932,60 @@ fn nested_table_inside_cell_target_and_oversize_table_follow_the_cell_width() {
     validates(&output);
     assert_eq!(tables_of(&read(&output)).len(), tables_of(&before).len() + 1);
 }
+
+#[test]
+fn inserted_table_borders_come_from_the_target_header_not_compose_fill_three() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("border-fill", extension);
+        // Move the bordered fill away from compose's id 3 so a hardcoded id draws no borders,
+        // and drop every other bordered fill so the target has none to reuse.
+        let mut doc = read(&fixture.base);
+        let bordered = |fill: &hwp_model::BorderFill| fill.sides.iter().all(|s| s.line_type == 1);
+        doc.header.border_fills.retain(|fill| !bordered(fill));
+        assert!(doc.header.border_fills.len() >= 3);
+        for table in doc
+            .sections
+            .iter_mut()
+            .flat_map(|s| &mut s.paragraphs)
+            .flat_map(|p| &mut p.controls)
+            .filter_map(|c| if let Control::Table(t) = c { Some(t) } else { None })
+        {
+            table.border_fill = hwp_model::BorderFillId(1);
+            table.cells.iter_mut().for_each(|c| c.border_fill = hwp_model::BorderFillId(1));
+        }
+        let source = fixture.path("no-borders");
+        if extension == "hwp" {
+            hwp5::write_document(&doc, &source, &hwp5::write::WriteOptions::default()).unwrap();
+        } else {
+            hwpx::write_document(&doc, &source).unwrap();
+        }
+        let before = read(&source);
+        assert!(before.header.border_fills.iter().all(|f| !bordered(f)));
+        let (output, run) = fixture.edit(
+            &source,
+            "bordered",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                json!([{"type":"table","columns":[{"width_mm":30}],"rows":[{"cells":[{"blocks":[block("body","Bordered.")]}]}]}])
+            )]),
+            false,
+        );
+        success(run, "table insertion into a target without a bordered fill");
+        validates(&output);
+        let after = read(&output);
+        let inserted = tables_of(&after)
+            .into_iter()
+            .find(|t| t.cells.iter().flat_map(|c| &c.paragraphs).any(|p| p.plain_text() == "Bordered."))
+            .unwrap();
+        let fill = &after.header.border_fills[usize::from(inserted.border_fill.0) - 1];
+        assert!(bordered(fill), "{extension}: inserted table fill {fill:?}");
+        assert_eq!(
+            after.header.border_fills.len(),
+            before.header.border_fills.len() + 1,
+            "{extension}: exactly one bordered fill is appended, none rewritten"
+        );
+    }
+}
