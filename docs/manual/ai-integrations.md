@@ -310,8 +310,13 @@ array of `hwp_edit` of the same name.
 - `set_indent_level` removes only the blank characters at the start of one paragraph (ASCII,
   ideographic and no-break spaces) and puts the indentation on the paragraph shape instead:
   `margin_left` is `level` times `step` and the first line hangs by `hanging` (default `0mm`).
-  `level` is 0 to 7. Words, inner spacing and labels stay as typed. Running it a second time
-  strips nothing, adds no paragraph shape and reports `pieces_touched` 0.
+  `level` is 0 to 7. Words, inner spacing and labels stay as typed. Invisible controls at the
+  start of the paragraph (the section and column definitions of a section's first paragraph, a
+  field start, a bookmark, a page control) stay in place and the blanks after them are removed;
+  the first remaining character keeps the character shape it had, so a plain blank before a bold
+  label does not unbold the label. Blanks after a visible leading item (an auto number, a tab,
+  an object) are a separator and stay, and a paragraph that holds only blanks keeps them. Running
+  it a second time strips nothing, adds no paragraph shape and reports `pieces_touched` 0.
 - `keep_together` (`keep_with_next`, `keep_lines`, `break_before_shape`) is always refused before
   anything is written. No Hangul-saved file available sets those paragraph-shape bits, so their
   storage cannot be established without guessing. To lift the refusal, save from Hangul a

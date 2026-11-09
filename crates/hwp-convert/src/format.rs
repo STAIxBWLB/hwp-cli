@@ -428,6 +428,8 @@ fn strip_leading_blanks(para: &mut Paragraph) -> bool {
 /// `level * step` and its `indent` becomes `-hanging` (a hanging first line), both given in
 /// HWPUNIT and stored in IR units like every [`ParaProps`] field; the leading blanks, and ONLY
 /// those, are removed from the text. Words, inner spacing and labels are never touched.
+/// Blanks that follow invisible leading controls are removed too and the controls stay (see
+/// [`strip_leading_blanks`]); the first surviving character keeps its character shape.
 ///
 /// Idempotent: a second application finds no leading blanks and an identical shape, so it
 /// returns `Ok(false)` and appends no shape. Refuses a `level` outside 0..=7.
