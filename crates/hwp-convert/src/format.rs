@@ -458,7 +458,9 @@ fn apply_blank_plan(para: &mut Paragraph, plan: &BlankPlan) {
 /// [`strip_leading_blanks`]); the first surviving character keeps its character shape.
 ///
 /// Idempotent: a second application finds no leading blanks and an identical shape, so it
-/// returns `Ok(false)` and appends no shape. Refuses a `level` outside 0..=7.
+/// returns `Ok(false)`, appends no shape and leaves the paragraph, line layout included,
+/// untouched. Refuses a `level` outside 0..=7, and a paragraph that carries a
+/// [`PARA_RANGE_TAG`] record when blanks would be removed (before anything is changed).
 pub fn set_indent_level_at(
     doc: &mut Document,
     path: &SegmentPath,

@@ -315,8 +315,12 @@ array of `hwp_edit` of the same name.
   field start, a bookmark, a page control) stay in place and the blanks after them are removed;
   the first remaining character keeps the character shape it had, so a plain blank before a bold
   label does not unbold the label. Blanks after a visible leading item (an auto number, a tab,
-  an object) are a separator and stay, and a paragraph that holds only blanks keeps them. Running
-  it a second time strips nothing, adds no paragraph shape and reports `pieces_touched` 0.
+  an object) are a separator and stay, and a paragraph that holds only blanks keeps them. A
+  paragraph that carries HWP highlight or proofreading marks (range tags) is refused when blanks
+  would be removed, because the marks hold text offsets that are not moved (#470): remove the
+  marks first, or use `set_para` with `left_mm` and `indent_mm`, which strips nothing. Running
+  it a second time strips nothing, adds no paragraph shape, keeps the paragraph's native line
+  layout and reports `pieces_touched` 0.
 - `keep_together` (`keep_with_next`, `keep_lines`, `break_before_shape`) is always refused before
   anything is written. No Hangul-saved file available sets those paragraph-shape bits, so their
   storage cannot be established without guessing. To lift the refusal, save from Hangul a

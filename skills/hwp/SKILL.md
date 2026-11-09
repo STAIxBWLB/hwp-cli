@@ -392,7 +392,8 @@ leading spaces with real indentation. Both take a paragraph `address` from
   with the cause. Repeating either op is a successful no-op.
 - `set_indent_level` strips only the leading blanks (also those after a section, field or
   bookmark control, which stays), never inner spacing or a numbering label. The first remaining
-  character keeps its bold or other character shape. A blank-only paragraph is left as is.
+  character keeps its bold or other character shape. A blank-only paragraph is left as is. A paragraph with highlight or proofreading marks is
+  refused when blanks would go: remove the marks first, or use `set_para` with `left_mm`.
 - `keep_together` (keep with next, keep lines) is always refused: no Hangul-saved sample shows
   those bits. Do not retry it. Use `set_break_before`, or ask for a sample saved from Hangul.
 - Over MCP use the `set_break_before` and `set_indent_level` arrays of `hwp_edit`.

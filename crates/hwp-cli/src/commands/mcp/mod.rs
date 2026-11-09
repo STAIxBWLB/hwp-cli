@@ -2832,7 +2832,7 @@ fn tool_defs() -> Vec<Value> {
                     "step": {"type": "string", "description": "수준당 들여쓰기 길이(예: 5mm)"},
                     "hanging": {"type": "string", "description": "내어쓰기(첫 줄 돌출) 길이(예: 3mm), 기본 0mm"}},
                     "required": ["address", "level", "step"]},
-                    "description": "문단 한 개의 앞쪽 공백만 제거하고(구역·필드·책갈피 같은 보이지 않는 선행 컨트롤은 제자리에 두고 그 뒤 공백을 지우며, 남은 첫 글자는 글자 모양 유지) 왼쪽 여백=level*step, 내어쓰기=hanging으로 문단 모양에 반영(멱등: 두 번째 실행은 변경 없음)"},
+                    "description": "문단 한 개의 앞쪽 공백만 제거하고(구역·필드·책갈피 같은 보이지 않는 선행 컨트롤은 제자리에 두고 그 뒤 공백을 지우며, 남은 첫 글자는 글자 모양 유지, 형광펜·교정 부호가 있는 문단은 거부) 왼쪽 여백=level*step, 내어쓰기=hanging으로 문단 모양에 반영(멱등: 두 번째 실행은 변경 없음)"},
                 "keep_together": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
