@@ -1360,10 +1360,12 @@ pub fn normalize_numbered_level_encoding(para_shape: &mut ParaShape) {
     }
     let level = para_shape.head_level();
     let zero_based = u32::from(level.saturating_sub(1));
-    // Use the reader's inverse rule: raw bits 7 also decode to level 8. Re-encoding an
-    // already agreeing record would change its original bytes, including unmeasured tails.
+    // Preserve the prior canonical-bit guard for the reader's official-numbering override,
+    // and the local decoder's agreeing encodings (raw bits 7 also decode to level 8).
+    // Neither case may rewrite an untouched record's unexplained tail.
     if para_shape.list_level.is_some()
-        && crate::doc_info::semantic_numbered_level(para_shape) == level
+        && ((para_shape.attr1 >> 25) & 0x7 == zero_based.min(6)
+            || crate::doc_info::semantic_numbered_level(para_shape) == level)
     {
         return;
     }

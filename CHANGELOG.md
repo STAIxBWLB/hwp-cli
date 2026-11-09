@@ -54,7 +54,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - HWP5 numbered paragraph shapes whose raw level bits are 7 now retain their exact
   bytes on read/write when the stored encoding already decodes to the semantic level.
   This preserves a representable but unobserved case rather than inventing a new Hangul
-  encoding; edited and grafted levels still normalize as before
+  encoding. The existing official-numbering override still preserves its untouched tail,
+  while edited and grafted levels normalize as before
   ([#478](https://github.com/STAIxBWLB/hwp-cli/issues/478)).
 
 - An ordered list written to HWP 5.0 (by `insert_blocks` into an HWP document, `hwp convert`
