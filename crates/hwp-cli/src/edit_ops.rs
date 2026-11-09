@@ -1416,6 +1416,69 @@ fn string_error<T>(result: anyhow::Result<T>) -> Result<T, String> {
 mod tests {
     use super::*;
 
+    fn typed(value: serde_json::Value) -> Result<TypedEditOperation, String> {
+        serde_json::from_value::<OpsEntry>(value)
+            .map_err(|error| error.to_string())?
+            .into_typed()
+    }
+
+    /// The refusal message of an entry that must not parse (`TypedEditOperation` has no Debug).
+    fn refusal(value: serde_json::Value) -> String {
+        match typed(value) {
+            Ok(_) => panic!("the entry must be refused"),
+            Err(message) => message,
+        }
+    }
+
+    #[test]
+    fn pagination_entries_validate_their_own_values_with_a_remedy() {
+        use serde_json::json;
+        let at = json!({"at": {"section": 0, "paragraph": 2}});
+        // Level 7 is accepted, 8 is not; the hanging length defaults to zero.
+        let TypedEditOperation::SetIndentLevel {
+            level,
+            step,
+            hanging,
+            ..
+        } = typed(json!({"op":"set_indent_level","address":at,"level":7,"step":"5mm"})).unwrap()
+        else {
+            panic!("wrong variant");
+        };
+        assert_eq!((level, hanging), (7, 0));
+        assert_eq!(step, 1417, "5 mm in HWPUNIT (5 * 7200 / 25.4)");
+        let error = refusal(json!({"op":"set_indent_level","address":at,"level":8,"step":"5mm"}));
+        assert!(error.contains("0..=7"), "{error}");
+        // A negative length reaches into_typed through MCP (no schema pattern there).
+        for field in ["step", "hanging"] {
+            let mut entry = json!({"op":"set_indent_level","address":at,"level":1,"step":"5mm"});
+            entry[field] = json!("-3mm");
+            let error = refusal(entry);
+            assert!(error.contains("0 이상"), "{field}: {error}");
+        }
+        // on/off map to true/false, anything else is refused with both words.
+        for (word, expected) in [("on", true), ("off", false)] {
+            let TypedEditOperation::SetBreakBefore { on, .. } =
+                typed(json!({"op":"set_break_before","address":at,"value":word})).unwrap()
+            else {
+                panic!("wrong variant");
+            };
+            assert_eq!(on, expected, "{word}");
+        }
+        let error = refusal(json!({"op":"set_break_before","address":at,"value":"yes"}));
+        assert!(error.contains("on 또는 off"), "{error}");
+        // keep_together never parses: a named request is echoed, an empty one says what to name.
+        let error = refusal(json!({"op":"keep_together","address":at,"keep_lines":true}));
+        assert!(
+            error.contains("keep_lines") && error.contains("set_break_before"),
+            "{error}"
+        );
+        let error = refusal(json!({"op":"keep_together","address":at}));
+        assert!(
+            error.contains("중 하나가 필요") && error.contains("set_break_before"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn named_style_transport_schemas_remain_closed_and_match_ops() {
         use serde_json::json;

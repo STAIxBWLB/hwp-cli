@@ -245,6 +245,10 @@ fn break_before_off_clears_only_the_page_bit_and_a_repeat_is_a_noop() {
         )
         .unwrap();
         assert_eq!(
+            report["ops"][0]["status"], "applied",
+            "{extension}: an already-in-effect request still succeeds"
+        );
+        assert_eq!(
             report["ops"][0]["pieces_touched"], 0,
             "{extension}: already in effect"
         );
@@ -410,6 +414,10 @@ fn indent_level_applied_twice_is_a_semantic_and_formatting_noop_the_second_time(
         let report: Value =
             serde_json::from_slice(&std::fs::read(fixture.dir.join("twice-report.json")).unwrap())
                 .unwrap();
+        assert_eq!(
+            report["ops"][0]["status"], "applied",
+            "{extension}: the repeat still succeeds"
+        );
         assert_eq!(
             report["ops"][0]["pieces_touched"], 0,
             "{extension}: the second run changes nothing"
