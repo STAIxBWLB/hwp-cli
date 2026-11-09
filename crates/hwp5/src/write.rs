@@ -1360,7 +1360,11 @@ pub fn normalize_numbered_level_encoding(para_shape: &mut ParaShape) {
     }
     let level = para_shape.head_level();
     let zero_based = u32::from(level.saturating_sub(1));
-    if para_shape.list_level.is_some() && (para_shape.attr1 >> 25) & 0x7 == zero_based.min(6) {
+    // Use the reader's inverse rule: raw bits 7 also decode to level 8. Re-encoding an
+    // already agreeing record would change its original bytes, including unmeasured tails.
+    if para_shape.list_level.is_some()
+        && crate::doc_info::semantic_numbered_level(para_shape) == level
+    {
         return;
     }
     para_shape.list_level = Some(level);
@@ -3999,6 +4003,27 @@ mod tests {
                 data,
                 "a read raw-7 record must retain both its level bits and tail (tail={tail_level})"
             );
+        }
+    }
+
+    #[test]
+    fn edited_and_grafted_numbered_shapes_still_emit_zero_based_levels() {
+        let mut edited = ParaShape {
+            attr1: (2 << 23) | (6 << 25),
+            list_level: Some(7),
+            ..ParaShape::default()
+        };
+        edited.set_head_level(3);
+        let grafted = ParaShape {
+            attr1: (2 << 23) | (3 << 25),
+            list_level: None,
+            ..ParaShape::default()
+        };
+        for shape in [edited, grafted] {
+            let emitted = emit_para_shape(&shape).data;
+            let attr = u32::from_le_bytes(emitted[..4].try_into().unwrap());
+            assert_eq!((attr >> 25) & 7, 2);
+            assert_eq!(u32::from_le_bytes(emitted[54..58].try_into().unwrap()), 2);
         }
     }
 
