@@ -213,7 +213,7 @@ The analyze, edit-one-section and guard workflows below were run verbatim agains
 When a native HWP/HWPX form is supplied, edit that form; use Markdown when reauthoring is
 intended. Before starting, check `hwp --version` against the
 [versioned capability evidence](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/original-form-capabilities-v1.json).
-Treat the complete #417-#420 workflow as main/unreleased; do not assume released v1.4.0 supports
+The complete #417-#420 workflow first ships in v1.5.0; v1.4.0 and earlier releases do not support
 `document.original_form` certification.
 
 Follow the [canonical original-form workflow](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/editing-recipes.md#original-form-workflow):

@@ -2,7 +2,8 @@
   "contract": "hwp-original-form-capabilities-v1",
   "version": 1,
   "availability": {
-    "status": "main_unreleased",
+    "status": "released",
+    "first_release": "v1.5.0",
     "checked_stable_release": "v1.4.0",
     "complete_workflow_in_checked_stable": false,
     "implementation_commit": "a2397e05c4e4f3848e18a868b5cf75501c7e8097"
@@ -63,7 +64,7 @@
     "Original-form certification checks expected values and table row/column dimensions, not a full source-to-output width/border/style/merge projection.",
     "No person-run Hancom open/export, universal native-table PDF, portable golden pages, or pixel-parity evidence.",
     "HWP retains one table_cell_content_overflow warning despite complete expected-text coverage and a passing selected policy; visual/native review remains separate.",
-    "This reference build has package version 1.4.0 but is unreleased main; version text alone does not establish feature availability.",
+    "This reference build was a pre-release main build that reported package version 1.4.0; version text alone does not establish feature availability. The workflow first ships in v1.5.0.",
     "Self-contained JSON re-entry was compared semantically on this fixture, not asserted byte-identical to the original native file or universal opaque-record preservation."
   ],
   "reference_run": {

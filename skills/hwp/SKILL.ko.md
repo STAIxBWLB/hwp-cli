@@ -206,8 +206,8 @@ retired `hwpx` 워크플로우의 정직한 한계를 포함한 이중 언어 �
 네이티브 HWP/HWPX 양식이 제공되면 그 양식을 편집한다. Markdown은 재작성하려는 경우에
 사용한다. 시작 전에 `hwp --version`을
 [버전별 기능 증거](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/original-form-capabilities-v1.json)와
-대조한다. #417-#420 전체 워크플로는 main의 미출시 기능으로 취급한다. 출시된 v1.4.0이
-`document.original_form` 인증을 지원한다고 가정하지 않는다.
+대조한다. #417-#420 전체 워크플로는 v1.5.0부터 포함된다. v1.4.0 이하 릴리스는
+`document.original_form` 인증을 지원하지 않는다.
 
 [정본 원본 양식 절차](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/editing-recipes.ko.md#원본-양식-워크플로)를 따른다.
 

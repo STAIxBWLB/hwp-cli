@@ -21,8 +21,8 @@ These hold for the CLI and the MCP server alike, whichever client drives them.
 ### Original-form workflow
 
 Prefer the supplied native HWP/HWPX form when completing an existing form. Choose Markdown
-when reauthoring is intended. The complete #417-#420 workflow described here targets main and is
-not yet released; released v1.4.0 must not be assumed to include `document.original_form`
+when reauthoring is intended. The complete #417-#420 workflow described here first ships in
+v1.5.0; v1.4.0 and earlier releases do not include `document.original_form`
 certification. Check the binary version and
 [versioned capability/limitation evidence](../../skills/hwp/references/original-form-capabilities-v1.json)
 before selecting the workflow.
