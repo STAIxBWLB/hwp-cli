@@ -26,7 +26,7 @@ anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 cfb = "0.16"
 flate2 = "1"
-quick-xml = "0.41"
+quick-xml = "0.42"
 libc = "0.2"
 resvg = { version = "=0.47.0", default-features = false }
 regex = "1.11"
