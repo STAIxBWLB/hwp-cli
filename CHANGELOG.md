@@ -10,6 +10,23 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.4.0]
+
+**Compatibility**
+
+- One change narrows an existing operation that the 1.0 SemVer scope covers: an addressed
+  `insert_para` (CLI `--ops` and MCP `hwp_edit`) now refuses `before` on a section's first
+  paragraph, the one that holds the section definition, instead of writing a document whose page
+  setup moved to the second paragraph. Insert after it instead
+  ([#428](https://github.com/STAIxBWLB/hwp-cli/issues/428)).
+- Outputs that the filesystem resolves to one file under different spellings (`..`, letter
+  case, Unicode normalization, hard links) are now refused before anything is published, instead
+  of one output silently replacing another ([#417](https://github.com/STAIxBWLB/hwp-cli/issues/417)).
+- Schemas: `styles-v1` and `range-extraction-v1` are new; `edit-ops-v1` adds the `create_style`,
+  `update_style`, `apply_style` and `insert_blocks` operations; `edit-report-v1` adds the optional
+  `missing_style` and `changed_total` fields and clarifies field descriptions. Documents valid
+  against the previous versions stay valid. No CLI flag or MCP argument was removed.
+
 **Added**
 
 - `hwp_edit` exposes `create_style`, `update_style` and `apply_style` arrays using the
@@ -152,6 +169,59 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   envelope's `style` level. `kind` is `null` when the document does not state it
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 
+- A reproducible owner-authored original-form fixture set and layered test contract cover
+  repeated labels, merged/signature cells, four profile tables and retained/outside images.
+  Shared helpers compare expected cells, grid/width/style/resource projections, relative anchors
+  and observed font identities; corruption self-checks exercise their failure boundaries.
+  Semantic control atoms distinguish character/inline controls and preserve extended-control
+  codes, IDs and anchor indices. Invalid tab references, including index 0, and incomplete font
+  resolution collections are rejected rather than accepted as equal observations.
+  Named-style references are validated and compared by resolved names; formatting runs after
+  interior paragraph-break controls remain in the WCHAR-bounded style projection. Table styles
+  include semantic page-break policy. Anchor collection requires document-derived table IDs to
+  match observed table rows, with at least one row per expected table; relative geometry remains
+  font-environment evidence. Retained-image checks resolve the authored table identity and cell,
+  rejecting an identical image moved to the same coordinates in another table. These bounded
+  checks do not prove complete table-fragment rendering or Hancom pagination.
+  This adds regression evidence and a bilingual design contract, not production extraction,
+  binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
+
+**Changed**
+
+- CI publishes a stable `ci-ok` gate for every PR, including lightweight docs/formula changes.
+  Bundled skill and corpus Markdown always run full gates. The aggregate rejects failed,
+  cancelled or unexpectedly skipped jobs; releases require it,
+  and formula PR auto-merge waits for its successful exact-head CI. GitHub's clean-status
+  auto-merge refusal uses a checked head-matched merge only after a fresh clean/mergeable proof
+  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+- CI no longer depends on package and font hosts for a pull request to go green. The Poppler and
+  `fonts-nanum` installs go through `scripts/ci-apt-install.sh`, which installs from `.deb` files
+  cached per runner image with downloads forbidden and falls back to the bounded mirror install;
+  the structured-corpus and PDF-parity fonts are cached and re-verified against their manifest
+  SHA-256 before use, and their downloads retry within a stated time budget (a retry window plus
+  one last attempt per file) that the step limits are checked to cover. The pinned Poppler version
+  is still asserted after installation, and fonts stay glyf TTFs (`fonts-nanum`). The long
+  `slot_fill_agreement` test directory names that hit Windows `os error 206` are replaced by short
+  unique ones ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+- Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)
+  and `--locked`, with `cargo-zigbuild` 0.23.4 and zig 0.16.0 pinned. The release `verify-ci`
+  gate now waits (up to 45 minutes) for a tag commit's still-running CI instead of failing, and
+  every release archive and checksum file carries a build provenance attestation
+  (`gh attestation verify <asset> -R STAIxBWLB/hwp-cli`)
+  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+- Added a `cargo-deny` dependency policy (`deny.toml`: advisories, bans, licenses, sources) in
+  `.github/workflows/deny.yml`. It runs weekly, when `Cargo.lock` or `deny.toml` changes on
+  main, and as a required prerequisite of the release workflow; it is not a pull request check.
+  Dependabot now opens weekly grouped cargo update PRs
+  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+
+- Update the archive/Markdown/crypto dependency chain to fixed versions: zip 9.1.2,
+  pulldown-cmark 0.13.6, ctutils 0.4.8 and the patched zstd stack. The YAML dependency now
+  uses the maintained serde_norway fork under the existing serde_yaml crate alias.
+  ZIP entry-name failures propagate through the existing archive error path. Two advisory-specific
+  font-crate maintenance exceptions were accepted by the owner on 2026-11-08; the font
+  shaping/parser implementation is unchanged ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
+
 **Fixed**
 
 - Merge resolves each later input's modeled `BinRef::ItemRef` picture references in that
@@ -193,44 +263,6 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   written back without a `type` (gap GE-13,
   [#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 
-**Changed**
-
-- CI publishes a stable `ci-ok` gate for every PR, including lightweight docs/formula changes.
-  Bundled skill and corpus Markdown always run full gates. The aggregate rejects failed,
-  cancelled or unexpectedly skipped jobs; releases require it,
-  and formula PR auto-merge waits for its successful exact-head CI. GitHub's clean-status
-  auto-merge refusal uses a checked head-matched merge only after a fresh clean/mergeable proof
-  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
-- CI no longer depends on package and font hosts for a pull request to go green. The Poppler and
-  `fonts-nanum` installs go through `scripts/ci-apt-install.sh`, which installs from `.deb` files
-  cached per runner image with downloads forbidden and falls back to the bounded mirror install;
-  the structured-corpus and PDF-parity fonts are cached and re-verified against their manifest
-  SHA-256 before use, and their downloads retry within a stated time budget (a retry window plus
-  one last attempt per file) that the step limits are checked to cover. The pinned Poppler version
-  is still asserted after installation, and fonts stay glyf TTFs (`fonts-nanum`). The long
-  `slot_fill_agreement` test directory names that hit Windows `os error 206` are replaced by short
-  unique ones ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
-- Release binaries are built with the toolchain CI tests on (new `rust-toolchain.toml`, 1.93.0)
-  and `--locked`, with `cargo-zigbuild` 0.23.4 and zig 0.16.0 pinned. The release `verify-ci`
-  gate now waits (up to 45 minutes) for a tag commit's still-running CI instead of failing, and
-  every release archive and checksum file carries a build provenance attestation
-  (`gh attestation verify <asset> -R STAIxBWLB/hwp-cli`)
-  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
-- Added a `cargo-deny` dependency policy (`deny.toml`: advisories, bans, licenses, sources) in
-  `.github/workflows/deny.yml`. It runs weekly, when `Cargo.lock` or `deny.toml` changes on
-  main, and as a required prerequisite of the release workflow; it is not a pull request check.
-  Dependabot now opens weekly grouped cargo update PRs
-  ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
-
-- Update the archive/Markdown/crypto dependency chain to fixed versions: zip 9.1.2,
-  pulldown-cmark 0.13.6, ctutils 0.4.8 and the patched zstd stack. The YAML dependency now
-  uses the maintained serde_norway fork under the existing serde_yaml crate alias.
-  ZIP entry-name failures propagate through the existing archive error path. Two advisory-specific
-  font-crate maintenance exceptions were accepted by the owner on 2026-11-08; the font
-  shaping/parser implementation is unchanged ([#412](https://github.com/STAIxBWLB/hwp-cli/issues/412)).
-
-**Fixed**
-
 - HWPX edit verification compares stated character versus paragraph style kinds instead of
   erasing that distinction, so a CHAR-to-PARA substitution fails semantic verification
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
@@ -250,24 +282,26 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   including native width/height sentinel interpretation and multiline body bounds. Hancom Office
   verification remains pending ([#410](https://github.com/STAIxBWLB/hwp-cli/issues/410)).
 
-**Added**
+<!-- verification:begin -->
+**Verification**
 
-- A reproducible owner-authored original-form fixture set and layered test contract cover
-  repeated labels, merged/signature cells, four profile tables and retained/outside images.
-  Shared helpers compare expected cells, grid/width/style/resource projections, relative anchors
-  and observed font identities; corruption self-checks exercise their failure boundaries.
-  Semantic control atoms distinguish character/inline controls and preserve extended-control
-  codes, IDs and anchor indices. Invalid tab references, including index 0, and incomplete font
-  resolution collections are rejected rather than accepted as equal observations.
-  Named-style references are validated and compared by resolved names; formatting runs after
-  interior paragraph-break controls remain in the WCHAR-bounded style projection. Table styles
-  include semantic page-break policy. Anchor collection requires document-derived table IDs to
-  match observed table rows, with at least one row per expected table; relative geometry remains
-  font-environment evidence. Retained-image checks resolve the authored table identity and cell,
-  rejecting an identical image moved to the same coordinates in another table. These bounded
-  checks do not prove complete table-fragment rendering or Hancom pagination.
-  This adds regression evidence and a bilingual design contract, not production extraction,
-  binding or native-open certification ([#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)).
+- Release-readiness run: https://github.com/STAIxBWLB/hwp-cli/actions/runs/42548622674
+- The private PDF-parity profile excludes four gates. The public one-page gate declares none
+  (docs/design/21-pdf-parity.md section 4.3), so these exclusions describe the private profile
+  only.
+- `fonts`: the document declares its dominant body face through a `substFont`, and the oracle
+  host did not have that face either, so our substitutions resolve to the same faces the oracle
+  embedded. The gate's `substitution_free` criterion is unreachable for this case by
+  construction (section 4.5).
+- `text`: 1/13 pages byte-equal; the differences are pagination, not characters. Page 4's only
+  diff is one line that crosses a page boundary (section 4.6).
+- `raster`: `bad_pixel_pct` 0.1418-0.2332, MAE 18.5-27.9, ink ratio 0.854-1.435, max abs dx/dy
+  40px (section 4.6).
+- `roi`: 3 of 4 pass; only the page-2 diagram region fails (precision 0.848, recall 0.892)
+  (section 4.6).
+- Provenance: these distances were measured by the private composite run of 2026-08-16, not by
+  the public one-page gate.
+<!-- verification:end -->
 
 ## [1.3.1]
 
