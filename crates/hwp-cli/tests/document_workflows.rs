@@ -29,7 +29,7 @@ fn scratch_dir(label: &str) -> PathBuf {
     dir
 }
 
-/// Builds a genuine `.hwp` file from markdown through the public CLI import
+/// Builds an owner-authored synthetic `.hwp` file through the public CLI import
 /// path (`hwp new --from`) — no direct `hwp_convert`/writer calls, so this
 /// exercises the same input-construction path a real user would use.
 fn write_input_hwp(dir: &Path, stem: &str, markdown: &str) -> PathBuf {
@@ -275,6 +275,144 @@ fn merge_into_hwp_writes_a_record_for_every_list_definition() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Raw PARA_SHAPE payloads in their ID order, independent of semantic level decoding.
+fn raw_para_shape_payloads(path: &Path) -> Vec<Vec<u8>> {
+    let mut container = hwp5::Hwp5Container::open(path).unwrap();
+    let bytes = container.read_record_stream("/DocInfo").unwrap();
+    let mut reader = hwp5::codec::ByteReader::new(&bytes);
+    let mut shapes = Vec::new();
+    while !reader.is_empty() {
+        let header = hwp5::record::RecordHeader::decode(&mut reader).unwrap();
+        let data = reader.read_bytes(header.size as usize).unwrap();
+        if header.tag == hwp5::record::tag::PARA_SHAPE {
+            shapes.push(data.to_vec());
+        }
+    }
+    shapes
+}
+
+/// #476: an HWP5-first merge retains HWP5 provenance while grafting HWPX's one-based
+/// numbered shapes. Emit-time normalization must encode the grafts, not rewrite the base.
+#[test]
+fn hwp5_first_merge_encodes_hwpx_numbered_grafts_without_changing_base_shapes() {
+    let dir = scratch_dir("merge-numbered-grafts-476");
+    let first = write_input_hwp(&dir, "base", "1. BASE_476\n");
+    let mut base = hwp5::read_document(&first).unwrap().document;
+    // Force the general header graft instead of a compatible-palette shortcut.
+    base.header.styles[0].name = "native-476".into();
+    hwp5::write_document_with_report(
+        &base,
+        &first,
+        &hwp5::WriteOptions {
+            preserve_linesegs: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let base = hwp5::read_document(&first).unwrap().document;
+    let base_shapes = raw_para_shape_payloads(&first);
+    let base_bytes = std::fs::read(&first).unwrap();
+    let spec = dir.join("graft.json");
+    std::fs::write(&spec, r#"{"version":"1.0","styles":{"graft476":{"font_size_pt":10}},
+"lists":{"ordered":{"kind":"ordered","levels":[{"marker":"{n}."},{"marker":"{n}."},{"marker":"{n})"}]}},
+"sections":[{"blocks":[
+{"type":"paragraph","style":"graft476","list":{"name":"ordered","level":0},"runs":[{"type":"text","text":"GRAFT_TOP_476"}]},
+{"type":"paragraph","style":"graft476","list":{"name":"ordered","level":2},"runs":[{"type":"text","text":"GRAFT_DEEP_476"}]}]}]}"#).unwrap();
+    let second = dir.join("graft.hwpx");
+    let created = hwp()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&second)
+        .output()
+        .unwrap();
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let part = hwpx::read_document(&second).unwrap().document;
+    for (text, level) in [("GRAFT_TOP_476", 1), ("GRAFT_DEEP_476", 3)] {
+        let paragraph = part.sections[0]
+            .paragraphs
+            .iter()
+            .find(|p| p.plain_text() == text)
+            .unwrap();
+        let shape = &part.header.para_shapes[paragraph.para_shape.0 as usize];
+        assert_eq!(
+            (shape.attr1 >> 25) & 7,
+            level,
+            "the HWPX input really carries one-based bits"
+        );
+    }
+    let merged = dir.join("merged.hwp");
+    let run = hwp()
+        .arg("merge")
+        .arg(&first)
+        .arg(&second)
+        .arg("-o")
+        .arg(&merged)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let document = hwp5::read_document(&merged).unwrap().document;
+    assert_eq!(document.meta.source_format, "hwp5");
+    assert_eq!(document.sections.len(), 2);
+    let raw_shapes = raw_para_shape_payloads(&merged);
+    assert_eq!(
+        &raw_shapes[..base_shapes.len()],
+        base_shapes.as_slice(),
+        "every base PARA_SHAPE stays byte-identical"
+    );
+    assert_eq!(
+        std::fs::read(&first).unwrap(),
+        base_bytes,
+        "merge never edits the input"
+    );
+    for (text, level, template) in [("GRAFT_TOP_476", 0, "^1."), ("GRAFT_DEEP_476", 2, "^3)")] {
+        let paragraph = document.sections[1]
+            .paragraphs
+            .iter()
+            .find(|p| p.plain_text() == text)
+            .unwrap();
+        let id = paragraph.para_shape.0 as usize;
+        assert!(
+            id >= base_shapes.len(),
+            "the incoming numbered shape must be grafted"
+        );
+        let shape = &document.header.para_shapes[id];
+        let bytes = &raw_shapes[id];
+        let raw = (u32::from_le_bytes(bytes[..4].try_into().unwrap()) >> 25) & 7;
+        assert_eq!(
+            raw, level,
+            "{text}: grafted level bits must be zero-based in HWP output"
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[54..58].try_into().unwrap()),
+            level,
+            "{text}: tail level"
+        );
+        assert!(
+            usize::from(shape.numbering_id) >= base.header.numberings.len(),
+            "graft uses its own shifted numbering definition"
+        );
+        assert_eq!(
+            u16::from_le_bytes(bytes[30..32].try_into().unwrap()),
+            shape.numbering_id + 1
+        );
+        assert_eq!(
+            document.header.numbering_levels[shape.numbering_id as usize][raw as usize].template,
+            template
+        );
+        assert_eq!(shape.head_level(), level as u8 + 1);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// An `.hwp` first input merged with an `.hwpx` input writes the HWP5 paragraph invariants on
