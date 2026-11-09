@@ -25,7 +25,8 @@ const TABLE_BLOCK_PADDING: i32 = 566;
 
 /// Synthesize line layout for the whole authored document, including body and table-cell paragraphs.
 /// Native HWP5 sources keep the base cursor path, so native edits do not mix
-/// cacheless fragment anchors/page-start flags with restored genuine caches.
+/// cacheless fragment anchors/page-start flags with restored genuine caches. The base path
+/// still restarts its cursor at an explicit page break, as genuine caches do.
 /// To match Hangul's line breaks, store must have HCR Batang loaded.
 pub fn synthesize_linesegs(
     doc: &mut Document,
@@ -100,15 +101,18 @@ pub fn synthesize_linesegs(
             // together and loses heading space-before, causing vertical displacement.
             // Paragraph gaps add the preceding space-after and current space-before. Omit
             // space-before at a section's first paragraph (genuine v_pos=0).
-            // Cacheless-origin conversion resets an explicit-break cursor. Native HWP5
-            // edits retain the base cursor behavior, including existing space-before.
+            // An explicit page break restarts the page-relative cursor on every path. Genuine
+            // Hangul-saved files agree for HWP5 as well as HWPX (#420, 07-hangul-compat-rules
+            // J1): a body paragraph with the break bit starts at v_pos 0, or at its own
+            // space-before, with no page-start flag. Space-before keeps the raw-vs-half-unit
+            // discrepancy tracked by #415.
             let (sp_top, sp_bottom) = snap
                 .header
                 .para_shapes
                 .get(snap.sections[si].paragraphs[pi].para_shape.0 as usize)
                 .map_or((0, 0), |ps| (ps.spacing_top, ps.spacing_bottom));
             let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
-            if use_fragment_flow && explicit_break {
+            if explicit_break {
                 v_pos = 0;
             }
             if pi > 0 {

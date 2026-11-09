@@ -3515,13 +3515,30 @@ fn apply_typed_operation(
             if address.is_some() {
                 let target = resolved_target
                     .expect("preflight_addressed_ops resolved every addressed set_format op");
-                let hwp_convert::address::TargetKind::Run { w_start, w_end, .. } = target.kind
+                let hwp_convert::address::TargetKind::Run {
+                    w_start,
+                    w_end,
+                    paragraph_wchar_len,
+                    ..
+                } = target.kind
                 else {
                     anyhow::bail!("set_format 주소는 run 단위여야 합니다");
                 };
                 // Structural drift (planner decision 3): the paragraph's own list position may
                 // have shifted; w_start/w_end stay valid, they are content offsets WITHIN it.
                 let current_path = offsets.current_path(&target.path)?;
+                // Content drift (#420): an earlier op of this batch (set_indent_level stripping
+                // blanks, replace changing a length) may have moved the text under the range.
+                // The offsets were resolved against the pre-batch paragraph, so a changed
+                // length means they no longer name the characters the caller addressed.
+                let current_len = hwp_convert::address::paragraph_at_mut(doc, &current_path)
+                    .map(|paragraph| paragraph.wchar_len());
+                if current_len != Some(paragraph_wchar_len) {
+                    anyhow::bail!(
+                        "set_format 주소 [{w_start}, {w_end})의 문단은 앞선 연산(set_indent_level, replace 등)으로 글자 수가 {paragraph_wchar_len}에서 {}(으)로 바뀌어 범위가 다른 글자를 가리킵니다. 아무것도 쓰지 않았습니다. 연산 순서를 바꿔 set_format을 앞에 두거나 별도 편집으로 나누어 실행하세요",
+                        current_len.map_or_else(|| "알 수 없음".to_string(), |n| n.to_string())
+                    );
+                }
                 hwp_convert::restyle_range_at(doc, &current_path, w_start, w_end, format)
                     .map_err(|error| anyhow::anyhow!(error))?;
                 eprintln!("글자 서식(주소): {current_path} [{w_start}, {w_end})");

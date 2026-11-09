@@ -791,3 +791,219 @@ fn indent_level_refuses_to_strip_blanks_under_a_range_tag_in_a_native_file() {
         "the tag is carried through"
     );
 }
+
+// ---- batch ordering: run addresses after a text-moving op (T12-F5) --------------------------
+
+const INDENTED: &str = "    Four-space indented item.";
+
+/// `set_format` bold on the run-addressed characters `[from, to)` of paragraph `paragraph`.
+fn bold_range(paragraph: usize, from: u32, to: u32) -> Value {
+    json!({"op":"set_format",
+           "address":{"at":{"section":0,"paragraph":paragraph,"run":0},"chars":[from, to]},
+           "bold":"on"})
+}
+
+#[test]
+fn run_address_after_a_stripping_indent_in_one_batch_is_refused_and_writes_nothing() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("batch-order", extension);
+        let before = read(&fixture.base);
+        let item = index(&before, INDENTED);
+        // "Four" sits at [4, 8) while the four blanks are still there. The strip moves it to
+        // [0, 4), so the second op would restyle "-spa" if it ran on the stale range.
+        let message = fixture.refuse(
+            &fixture.base.clone(),
+            "stale-range",
+            json!([
+                indent_op(at(&before, INDENTED), 1, 5.0, 0.0),
+                bold_range(item, 4, 8)
+            ]),
+        );
+        assert!(
+            message.contains("set_format")
+                && message.contains("set_indent_level")
+                && message.contains("순서"),
+            "{extension}: the refusal names the ops and the ordering remedy: {message}"
+        );
+    }
+}
+
+#[test]
+fn run_address_before_the_stripping_indent_in_one_batch_restyles_the_right_word() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("batch-order-ok", extension);
+        let before = read(&fixture.base);
+        let item = index(&before, INDENTED);
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "ordered",
+            json!([
+                bold_range(item, 4, 8),
+                indent_op(at(&before, INDENTED), 1, 5.0, 0.0)
+            ]),
+        );
+        success(run, "set_format first, then the strip");
+        let after = read(&output);
+        let para = paragraph(&after, "Four-space indented item.");
+        let last = para.wchar_len() - 1;
+        assert_ne!(
+            shape_at(para, 0),
+            shape_at(para, last),
+            "{extension}: the first word carries the bold shape and the tail does not"
+        );
+        assert_eq!(
+            shape_at(para, 3),
+            shape_at(para, 0),
+            "{extension}: all of \"Four\" is bold"
+        );
+        assert_eq!(
+            shape_at(para, 4),
+            shape_at(para, last),
+            "{extension}: the character after \"Four\" is not"
+        );
+    }
+}
+
+#[test]
+fn run_address_after_a_length_preserving_op_in_one_batch_still_applies() {
+    let fixture = Fixture::new("batch-same-length", "hwpx");
+    let before = read(&fixture.base);
+    let item = index(&before, INDENTED);
+    // A repeat of an in-effect indent changes no text, so the range stays valid.
+    let (_, run) = fixture.edit(
+        &fixture.base,
+        "same-length",
+        json!([
+            {"op":"set_para","address":at(&before, INDENTED),"left_mm":"5mm"},
+            bold_range(item, 4, 8)
+        ]),
+    );
+    success(
+        run,
+        "a paragraph-shape op does not move text, so the run range holds",
+    );
+}
+
+// ---- set_break_before: line-cache geometry on native sources (T12-F6) -----------------------
+
+/// Writes `fixture.base` as a native HWP whose every body paragraph carries a line cache that
+/// sits far down a page, like a Hangul-saved file. Returns the file and the seeded caches.
+fn seed_native_caches(fixture: &Fixture) -> (PathBuf, Document) {
+    let mut doc = read(&fixture.base);
+    for (index, para) in doc.sections[0].paragraphs.iter_mut().enumerate() {
+        para.line_segs = vec![hwp_model::LineSeg {
+            text_start: 0,
+            v_pos: 20_000 + 1_600 * index as i32,
+            line_height: 1000,
+            text_height: 1000,
+            baseline_gap: 850,
+            line_spacing: 600,
+            col_start: 0,
+            seg_width: 40000,
+            flags: 0x0006_0000,
+        }];
+    }
+    let native = fixture.dir.join("seeded.hwp");
+    let options = hwp5::WriteOptions {
+        preserve_linesegs: true,
+        ..hwp5::WriteOptions::default()
+    };
+    hwp5::write_document(&doc, &native, &options).unwrap();
+    let seeded = read(&native);
+    (native, seeded)
+}
+
+fn first_v_pos(para: &Paragraph) -> i32 {
+    para.line_segs.first().expect("a line cache").v_pos
+}
+
+#[test]
+fn break_before_on_a_native_source_restarts_the_cache_at_the_page_top() {
+    let fixture = Fixture::new("break-cache", "hwp");
+    let (native, before) = seed_native_caches(&fixture);
+    let target = index(&before, TARGET);
+    let target_para = &before.sections[0].paragraphs[target];
+    assert_eq!(
+        shape(&before, target_para).spacing_top,
+        0,
+        "the target has no space-before, so its first line sits at the page top"
+    );
+    assert!(
+        first_v_pos(target_para) >= 20_000,
+        "the seeded cache is far down the old page"
+    );
+    let (output, run) = fixture.edit(
+        &native,
+        "cache",
+        json!([break_op(at(&before, TARGET), "on")]),
+    );
+    success(
+        run,
+        "set_break_before on a native source that carries line caches",
+    );
+    let after = read(&output);
+    let paragraphs = &after.sections[0].paragraphs;
+    // Genuine Hangul-saved files: the first line of a paragraph with the break bit has v_pos
+    // 0 (its space-before when above 0) and no page-start flag (#420, J1).
+    assert_eq!(
+        first_v_pos(&paragraphs[target]),
+        0,
+        "the target's first line is at the page top"
+    );
+    assert_eq!(
+        paragraphs[target].line_segs[0].flags & 1,
+        0,
+        "genuine files set no page-start bit"
+    );
+    // Everything after it was measured on the old page; none of that offset may remain.
+    for (offset, para) in paragraphs.iter().enumerate().skip(target + 1) {
+        let seeded = first_v_pos(&before.sections[0].paragraphs[offset]);
+        assert!(
+            para.line_segs
+                .first()
+                .is_none_or(|seg| seg.v_pos < seeded - 10_000),
+            "paragraph {offset} still carries its pre-break offset: {:?}",
+            para.line_segs.first().map(|seg| seg.v_pos)
+        );
+    }
+    let next = &paragraphs[target + 1];
+    assert!(
+        !next.line_segs.is_empty(),
+        "the following paragraph is re-measured, not dropped"
+    );
+    assert!(
+        first_v_pos(next) > 0 && first_v_pos(next) < 10_000,
+        "the following paragraph continues from the new page top: {}",
+        first_v_pos(next)
+    );
+    // Paragraphs before the break keep their genuine caches untouched.
+    for offset in 0..target {
+        assert_eq!(
+            paragraphs[offset].line_segs, before.sections[0].paragraphs[offset].line_segs,
+            "paragraph {offset} before the break keeps its cache"
+        );
+    }
+}
+
+#[test]
+fn break_before_off_on_a_native_source_also_remeasures_what_follows() {
+    let fixture = Fixture::new("break-cache-off", "hwp");
+    let (native, before) = seed_native_caches(&fixture);
+    let target = index(&before, TARGET);
+    let (on, run) = fixture.edit(&native, "on", json!([break_op(at(&before, TARGET), "on")]));
+    success(run, "on");
+    let broken = read(&on);
+    let (off, run) = fixture.edit(&on, "off", json!([break_op(at(&broken, TARGET), "off")]));
+    success(run, "off");
+    let after = read(&off);
+    assert_eq!(
+        after.sections[0].paragraphs[target].header.break_type & 0x04,
+        0
+    );
+    // Without the break the target no longer starts a page: it continues the cursor of the
+    // paragraph above it instead of sitting at 0.
+    assert!(
+        first_v_pos(&after.sections[0].paragraphs[target]) > 0,
+        "the cleared break lets the paragraph continue the page"
+    );
+}

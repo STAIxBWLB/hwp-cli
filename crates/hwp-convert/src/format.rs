@@ -310,7 +310,9 @@ pub const KEEP_TOGETHER_REFUSAL: &str = "keep_together는 아직 지원하지 �
 ///   `break_type` 0x03 on HWP5 output, set by the writer).
 ///
 /// Returns whether the document changed: `Ok(false)` when the bit already has the requested
-/// value. A change clears the paragraph's layout cache so no stale line positions survive.
+/// value (nothing is touched then, caches included). A change clears the line caches of the
+/// paragraph and of the body paragraphs that follow it up to the next explicit break, because
+/// their page-relative positions were measured against the old boundary.
 pub fn set_break_before_at(
     doc: &mut Document,
     path: &SegmentPath,
@@ -343,7 +345,18 @@ pub fn set_break_before_at(
     } else {
         para.header.break_type &= !0x04;
     }
-    para.line_segs.clear();
+    // The line caches are page-relative: this paragraph and every body paragraph after it up
+    // to the next explicit break were measured with the old page boundary, so their `v_pos`
+    // values (and, for a new break, the target's own accumulated offset) are stale. Dropping
+    // them lets the writer re-measure from the new boundary: genuine Hangul-saved files start
+    // a break paragraph at `v_pos` 0 and continue the next paragraph from it (J1). Paragraphs
+    // before the target, the next break paragraph and everything after it keep their caches.
+    for (offset, later) in section.paragraphs.iter_mut().enumerate().skip(index) {
+        if offset > index && later.header.break_type & 0x04 != 0 {
+            break;
+        }
+        later.line_segs.clear();
+    }
     crate::address::invalidate_ancestors(doc, path);
     Ok(true)
 }
@@ -1264,6 +1277,61 @@ mod tests {
         };
         apply_blank_plan(para, &plan);
         true
+    }
+
+    #[test]
+    fn set_break_before_clears_only_the_caches_the_break_moves() {
+        // Five body paragraphs with caches; paragraph 3 already starts a page.
+        let mut doc = from_markdown::from_markdown("a\n\nb\n\nc\n\nd\n\ne\n");
+        let count = doc.sections[0].paragraphs.len();
+        assert!(count >= 5, "fixture has five paragraphs");
+        for para in &mut doc.sections[0].paragraphs {
+            para.line_segs = vec![dummy_lineseg()];
+        }
+        doc.sections[0].paragraphs[3].header.break_type |= 0x04;
+        assert_eq!(set_break_before_at(&mut doc, &body_path(1), true), Ok(true));
+        let kept: Vec<bool> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| !p.line_segs.is_empty())
+            .collect();
+        assert_eq!(
+            &kept[..5],
+            [true, false, false, true, true],
+            "the target and the paragraphs up to the next break are re-measured, the rest keep \
+             their caches"
+        );
+        // Turning a break off re-measures the same span: the paragraph now continues the page.
+        for para in &mut doc.sections[0].paragraphs {
+            para.line_segs = vec![dummy_lineseg()];
+        }
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), false),
+            Ok(true)
+        );
+        let kept: Vec<bool> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| !p.line_segs.is_empty())
+            .collect();
+        assert_eq!(&kept[..5], [true, false, false, true, true]);
+        // A request already in effect touches no cache at all.
+        for para in &mut doc.sections[0].paragraphs {
+            para.line_segs = vec![dummy_lineseg()];
+        }
+        let before = doc.clone();
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), false),
+            Ok(false)
+        );
+        assert_eq!(doc, before);
+        // The last paragraph has no successor to clear.
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(count - 1), true),
+            Ok(true)
+        );
+        assert!(doc.sections[0].paragraphs[count - 1].line_segs.is_empty());
+        assert!(!doc.sections[0].paragraphs[count - 2].line_segs.is_empty());
     }
 
     fn range_tag() -> hwp_model::OpaqueRecord {
