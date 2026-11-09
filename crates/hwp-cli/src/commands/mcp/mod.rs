@@ -5786,10 +5786,8 @@ mod tests {
         assert!(error.contains("invalid_asset_path"), "{error}");
         assert!(!out.exists());
 
-        // The roots bind the asset read itself, independently of the base_dir check. The root
-        // here is the sub-directory `inside`; `base_dir` is `inside` too (so it passes the
-        // read-path check), and the asset path reaches a SIBLING directory through a symlink
-        // that stays below `inside` by name. Only the opened-handle roots check catches it.
+        // A symlinked asset is refused by the asset snapshot's own containment rule (symlinks
+        // are forbidden below `base_dir`) before the roots are consulted.
         #[cfg(unix)]
         {
             let inside = directory.join("inside");
@@ -5810,13 +5808,51 @@ mod tests {
             )
             .unwrap_err();
             assert!(
-                error.contains("asset_snapshot_"),
-                "a symlinked asset must be refused by the asset snapshot, not read: {error}"
+                error.contains("asset_snapshot_containment_violation"),
+                "{error}"
             );
             assert!(!out.exists());
         }
         let _ = std::fs::remove_dir_all(&directory);
         let _ = std::fs::remove_dir_all(&other);
+    }
+
+    /// `AssetPlan::for_mcp` hands the sandbox roots to the compiler's asset read. This is the
+    /// roots binding on its own: the base directory is a plain contained directory, so only
+    /// the opened-handle roots check can refuse an asset that is not below an allowed root.
+    #[test]
+    fn mcp_asset_plan_binds_the_sandbox_roots_to_the_asset_read() {
+        let directory =
+            std::env::temp_dir().join(format!("hwp-mcp-asset-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("assets")).unwrap();
+        std::fs::write(directory.join("assets/logo.png"), INSERT_BLOCKS_PNG).unwrap();
+        let canonical = std::fs::canonicalize(&directory).unwrap();
+        let request: hwp_cli::insert_blocks::InsertBlocks =
+            serde_json::from_value(json!({"position": "after",
+                "blocks": [{"type": "image", "path": "assets/logo.png", "width_mm": 10}]}))
+            .unwrap();
+        let at = hwp_convert::SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let apply_with = |roots: &[PathBuf]| {
+            let plan = crate::commands::edit::AssetPlan::for_mcp(roots, Some(canonical.clone()));
+            let mut doc = hwp_convert::from_markdown("anchor\n");
+            plan.apply_insert_blocks_for_test(&mut doc, &at, &request)
+        };
+        assert!(
+            apply_with(&[canonical.clone()]).is_ok(),
+            "an allowed root admits the asset"
+        );
+        let elsewhere =
+            std::env::temp_dir().join(format!("hwp-mcp-asset-plan-other-{}", std::process::id()));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let error = apply_with(&[std::fs::canonicalize(&elsewhere).unwrap()])
+            .expect_err("an asset outside every root is refused by the roots binding");
+        assert!(error.contains("outside_roots"), "{error}");
+        let _ = std::fs::remove_dir_all(&directory);
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 
     /// `base_dir` has no meaning without an image to resolve and is not accepted silently.

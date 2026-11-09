@@ -407,6 +407,18 @@ impl AssetPlan {
         }
     }
 
+    /// Test seam: run `insert_blocks::apply` with this plan's asset context, exactly as the
+    /// edit loop does, so a test can observe the roots and base directory the plan carries.
+    #[cfg(test)]
+    pub(crate) fn apply_insert_blocks_for_test(
+        &self,
+        doc: &mut hwp_model::Document,
+        at: &hwp_convert::SegmentPath,
+        request: &hwp_cli::insert_blocks::InsertBlocks,
+    ) -> Result<usize, String> {
+        hwp_cli::insert_blocks::apply(doc, at, request, false, &self.context())
+    }
+
     fn context(&self) -> hwp_cli::insert_blocks::AssetContext<'_> {
         hwp_cli::insert_blocks::AssetContext {
             base_dir: self.base_dir.as_deref(),
