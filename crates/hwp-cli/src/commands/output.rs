@@ -14,6 +14,8 @@ use sha2::{Digest as _, Sha256};
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+const ALIAS_PROBE_CONTEXT: &str = "output_alias_probe 실패: 출력 별칭 검사에 필요한 파일 상태를 읽지 못했습니다. 출력을 게시하지 않았습니다. 출력 디렉터리의 읽기·쓰기 권한과 디스크 여유 공간을 확인한 뒤 다시 실행하세요";
+
 /// Writes a temporary file beside `destination`, retaining its extension, verifies it, then publishes.
 ///
 /// `input` is used only to check safe in-place input/output use and aliases.
@@ -139,9 +141,14 @@ pub(crate) fn write_snapshot_output_set<T>(
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        let parent_identity = FileIdentity::from_metadata(&fs::metadata(parent)?, parent)?;
-        let stage_identity =
-            FileIdentity::from_metadata(&fs::metadata(output.path())?, output.path())?;
+        let parent_identity = FileIdentity::from_metadata(
+            &fs::metadata(parent).context(ALIAS_PROBE_CONTEXT)?,
+            parent,
+        )?;
+        let stage_identity = FileIdentity::from_metadata(
+            &fs::metadata(output.path()).context(ALIAS_PROBE_CONTEXT)?,
+            output.path(),
+        )?;
         for later in &staged[index + 1..] {
             let later_parent = later
                 .destination
@@ -149,7 +156,7 @@ pub(crate) fn write_snapshot_output_set<T>(
                 .filter(|path| !path.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
             if !parent_identity.same_file(&FileIdentity::from_metadata(
-                &fs::metadata(later_parent)?,
+                &fs::metadata(later_parent).context(ALIAS_PROBE_CONTEXT)?,
                 later_parent,
             )?) {
                 continue;
@@ -172,9 +179,7 @@ pub(crate) fn write_snapshot_output_set<T>(
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
-                    return Err(error).context(
-                        "출력 별칭을 확인할 수 없습니다. 대상 디렉터리 권한을 확인하세요",
-                    );
+                    return Err(error).context(ALIAS_PROBE_CONTEXT);
                 }
             }
         }

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use hwp_convert::form::binding::contract::{BindingPlan, Values};
 use hwp_convert::form::binding::{BindingPreview, digest, prepare_binding_plan};
 use serde::{Deserialize, Serialize};
@@ -106,7 +107,9 @@ pub(super) fn execute(
             );
             crate::commands::reject_preservation_loss("apply_form_bindings", &report.preservation)?;
             verify_bound_output(stage, prepared.document())?;
-            let bytes = std::fs::read(stage)?;
+            let bytes = std::fs::read(stage).context(
+                "staged_native_readback 실패: 게시 전 native 후보를 읽지 못했습니다. 출력을 게시하지 않았습니다. 출력 디렉터리의 읽기·쓰기 권한과 디스크 여유 공간을 확인한 뒤 다시 실행하세요",
+            )?;
             let mut preview = prepared.preview;
             // write_output includes preview-render/font diagnostics. Keep original messages
             // only in the explicitly requested local preview, never default logs or receipts.
@@ -114,7 +117,9 @@ pub(super) fn execute(
             let receipt = receipt(&preview, &bytes, !edit.dry_run);
             stage_receipt(&stages[1], &receipt)?;
             if request.preview.is_some() {
-                std::fs::write(&stages[2], serde_json::to_vec_pretty(&preview)?)?;
+                std::fs::write(&stages[2], serde_json::to_vec_pretty(&preview)?).context(
+                    "preview_staging_write 실패: 로컬 preview를 준비하지 못했습니다. 출력을 게시하지 않았습니다. 출력 디렉터리의 쓰기 권한과 디스크 여유 공간을 확인한 뒤 다시 실행하세요",
+                )?;
             }
             Ok((preview, report.preservation))
         },
@@ -147,7 +152,9 @@ pub(super) fn execute(
 }
 
 fn stage_receipt(stage: &Path, receipt: &Receipt) -> anyhow::Result<()> {
-    std::fs::write(stage, serde_json::to_vec_pretty(receipt)?)?;
+    std::fs::write(stage, serde_json::to_vec_pretty(receipt)?).context(
+        "receipt_staging_write 실패: receipt를 준비하지 못했습니다. 출력을 게시하지 않았습니다. 출력 디렉터리의 쓰기 권한과 디스크 여유 공간을 확인한 뒤 다시 실행하세요",
+    )?;
     Ok(())
 }
 
