@@ -322,6 +322,14 @@ measured, so that half is inference and is marked as such in
 
 ---
 
+## K. Numbered-paragraph level in HWP5
+
+| # | Symptom | Cause | Fix | Ground truth |
+|---|---|---|---|---|
+| L1 | An ordered list `insert_blocks` added to an HWP 5.0 target drew Hangul syllables ("가.") at level 0 in Hancom, while HWPX drew "1." (#472) | HWP5 stores a numbered paragraph's level zero-based in PARA_SHAPE attr1 bits 25..=27 and repeats it in the final u32 of the 16-byte tail; Hancom draws NUMBERING slot level+1. `list_para_shape` wrote the one-based semantic level into those bits, which is the IR convention for HWPX- and spec-built documents, but an HWP5-read IR keeps the on-disk bits as they are, so level 0 landed on slot 2 | For an HWP5-read target, `list_para_shape` writes an ordered list's level zero-based into attr1 bits 25..=27 and the tail's final u32, and keeps the semantic level in `list_level`. HWPX and spec-built documents keep the one-based IR convention. Bullets are unchanged (not measured here) | A local read-only probe (aggregates only, files not committed) over 2,703 parseable HWP5 files not written by hwp-cli, 409 of them with numbered paragraphs: of 5,336 numbered paragraphs with text, 5,300 carry a 16-byte tail; in 5,205 of those its final u32 equals attr1 bits 25..=27, in 75 the bits are 6 and the u32 is 7 (the eighth level clamped to three bits), and 20 differ otherwise (unexplained). The template at the raw-bit index is the level's own wherever one is recorded (`^1.` at raw 0 in 1,466 paragraphs, `^2.` at 1 in 109, `^3)` at 2 in 36, `^4)` at 3, `(^5)` at 4, `(^6)` at 5, `^7` at 6), and no paragraph at raw 0 has a `^2` template there. Hancom display of the fixed output still needs a person-run open check |
+
+---
+
 ## Overall lessons: why this project stakes everything on Hancom testing and ground truth
 
 1. **Lenient tools give false passes.** pyhwp and our own renderer can pass 100% while Hancom refuses

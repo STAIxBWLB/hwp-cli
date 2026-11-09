@@ -1400,7 +1400,13 @@ fn ordered_used_level_case(level: usize) {
             let item = paragraph(&after, "Ordered ladder item.");
             let shape = &after.header.para_shapes[item.para_shape.0 as usize];
             assert_eq!(shape.head_type(), 2);
-            assert_eq!(usize::from(shape.head_level()), level + 1);
+            if extension == "hwp" {
+                // HWP5 stores the level zero-based (#472, 07-hangul-compat-rules L1); the
+                // HWP5 reader exposes those raw bits, so check them, not `head_level()`.
+                assert_eq!(((shape.attr1 >> 25) & 0x7) as usize, level);
+            } else {
+                assert_eq!(usize::from(shape.head_level()), level + 1);
+            }
             let actual = &after.header.numbering_levels[usize::from(shape.numbering_id)][level];
             assert_eq!(actual.template, if level == 2 { "^3)" } else { "^2." });
             assert_eq!(actual.start, 1);
@@ -1417,6 +1423,58 @@ fn ordered_component_used_level_two_matching_default_ladder_succeeds() {
 #[test]
 fn ordered_component_used_level_one_digit_format_requires_hwpx() {
     ordered_used_level_case(1);
+}
+
+/// #472: HWP5 stores the paragraph-head level zero-based in attr1 bits 25..=27 and repeats it
+/// in the PARA_SHAPE tail's final u32 (07-hangul-compat-rules, L1). Read the written HWP back
+/// and check the RAW bits, which select the NUMBERING slot Hancom draws. The semantic
+/// `head_level()` hides the defect because `list_level` wins over the bits.
+#[test]
+fn ordered_component_hwp_level_bits_are_zero_based() {
+    for level in [0usize, 2] {
+        let fixture = Fixture::new(&format!("ordered-raw-level-{level}"), "hwp");
+        let before = read(&fixture.base);
+        let mut operation = insert(
+            at(&before, ANCHOR),
+            "after",
+            "refuse",
+            json!({}),
+            json!([
+                {"type":"paragraph","style":"body","list":{"name":"raw-ordered","level":level},"runs":[{"type":"text","text":"Raw level item."}]}
+            ]),
+        );
+        let definitions = json!([{"marker":"{n}.","start":1},{"marker":"{n}.","start":1},{"marker":"{n})","start":1}]);
+        operation["lists"] = json!({"raw-ordered":{"kind":"ordered","levels":definitions}});
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "ordered-raw-level",
+            json!([operation]),
+            false,
+        );
+        success(run, "ordered list into HWP");
+        let after = read(&output);
+        let item = paragraph(&after, "Raw level item.");
+        let shape = &after.header.para_shapes[item.para_shape.0 as usize];
+        assert_eq!(shape.head_type(), 2);
+        let raw = ((shape.attr1 >> 25) & 0x7) as usize;
+        assert_eq!(
+            raw, level,
+            "level {level} must be stored zero-based in attr1 bits 25..=27"
+        );
+        if shape.tail.len() >= 16 {
+            assert_eq!(
+                u32::from_le_bytes(shape.tail[12..16].try_into().unwrap()) as usize,
+                level,
+                "the PARA_SHAPE tail repeats the zero-based level"
+            );
+        }
+        let drawn = &after.header.numbering_levels[usize::from(shape.numbering_id)][raw];
+        assert_eq!(
+            drawn.template,
+            if level == 2 { "^3)" } else { "^1." },
+            "the slot the raw bits select is the requested level's template"
+        );
+    }
 }
 
 fn official_source(fixture: &Fixture) -> (PathBuf, Document) {

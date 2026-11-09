@@ -485,8 +485,11 @@ pub fn apply(
     if styles.first().and_then(|style| style.kind) != Some(StyleKind::Paragraph) {
         return Err("기본 스타일 0의 종류가 paragraph가 아닙니다. 문단 기본 스타일이 있는 원본 문서를 선택하세요".into());
     }
+    // The shell carries the target's source format: the compiler encodes list levels in
+    // the convention of the IR it extends (zero-based raw bits for an HWP5-read target, #472).
     let mut shell = Document {
         header: doc.header.clone(),
+        meta: doc.meta.clone(),
         ..Document::default()
     };
     let border_fill = if found.tables {

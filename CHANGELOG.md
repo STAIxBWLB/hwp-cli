@@ -49,6 +49,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   change in the same batch (a stripping `set_indent_level`, a `replace`) is refused with nothing
   written, naming the ordering remedy. Bilingual manual and bundled-skill recipes are included.
 
+**Fixed**
+
+- An ordered list that `insert_blocks` adds to an HWP 5.0 document now stores its level
+  zero-based in the paragraph shape, as genuine Hangul-saved files do, so level 0 draws
+  "1." instead of the Hangul-syllable "가." of the next level. HWPX output and bullets are
+  unchanged; Hancom display still needs a person-run open check
+  ([#472](https://github.com/STAIxBWLB/hwp-cli/issues/472)).
+
 ## [1.4.0]
 
 **Compatibility**
