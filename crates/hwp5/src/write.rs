@@ -1360,7 +1360,13 @@ pub fn normalize_numbered_level_encoding(para_shape: &mut ParaShape) {
     }
     let level = para_shape.head_level();
     let zero_based = u32::from(level.saturating_sub(1));
-    if para_shape.list_level.is_some() && (para_shape.attr1 >> 25) & 0x7 == zero_based.min(6) {
+    // Preserve the prior canonical-bit guard for the reader's official-numbering override,
+    // and the local decoder's agreeing encodings (raw bits 7 also decode to level 8).
+    // Neither case may rewrite an untouched record's unexplained tail.
+    if para_shape.list_level.is_some()
+        && ((para_shape.attr1 >> 25) & 0x7 == zero_based.min(6)
+            || crate::doc_info::semantic_numbered_level(para_shape) == level)
+    {
         return;
     }
     para_shape.list_level = Some(level);
@@ -3969,6 +3975,95 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Raw bits 7 are representable and decode as semantic level 8, though K1 observed no
+    /// genuine sample. Preserve their original record bytes rather than invent an encoding.
+    #[test]
+    fn read_raw_7_numbered_shape_emits_byte_identical() {
+        for tail_level in [0_u32, 5, 7] {
+            let mut data = vec![0; 58];
+            data[..4].copy_from_slice(&((2_u32 << 23) | (7 << 25)).to_le_bytes());
+            data[30..32].copy_from_slice(&1_u16.to_le_bytes());
+            data[50..54].copy_from_slice(&160_i32.to_le_bytes());
+            data[54..58].copy_from_slice(&tail_level.to_le_bytes());
+            let roots = [RecordNode {
+                tag: tag::ID_MAPPINGS,
+                data: Vec::new(),
+                children: vec![RecordNode {
+                    tag: tag::PARA_SHAPE,
+                    data: data.clone(),
+                    children: Vec::new(),
+                }],
+            }];
+            let (header, warnings) = crate::doc_info::parse_doc_info(&roots);
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(header.para_shapes.len(), 1);
+            let shape = &header.para_shapes[0];
+            assert_eq!(shape.list_level, Some(8));
+            assert_eq!(
+                emit_para_shape(shape).data,
+                data,
+                "a read raw-7 record must retain both its level bits and tail (tail={tail_level})"
+            );
+        }
+    }
+
+    #[test]
+    fn read_official_level_override_emits_byte_identical() {
+        let mut data = vec![0; 58];
+        data[..4].copy_from_slice(&((2_u32 << 23) | (6 << 25)).to_le_bytes());
+        data[30..32].copy_from_slice(&8_u16.to_le_bytes());
+        data[50..54].copy_from_slice(&160_i32.to_le_bytes());
+        data[54..58].copy_from_slice(&5_u32.to_le_bytes());
+        let mut children: Vec<_> = (0..8)
+            .map(|_| RecordNode {
+                tag: tag::NUMBERING,
+                data: crate::numbering::official_eight_level_data(),
+                children: Vec::new(),
+            })
+            .collect();
+        children.push(RecordNode {
+            tag: tag::PARA_SHAPE,
+            data: data.clone(),
+            children: Vec::new(),
+        });
+        let (header, warnings) = crate::doc_info::parse_doc_info(&[RecordNode {
+            tag: tag::ID_MAPPINGS,
+            data: Vec::new(),
+            children,
+        }]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let shape = &header.para_shapes[0];
+        assert_eq!(shape.numbering_id, 7);
+        assert_eq!(shape.list_level, Some(8), "the official override applies");
+        assert_eq!(crate::doc_info::semantic_numbered_level(shape), 7);
+        assert_eq!(
+            emit_para_shape(shape).data,
+            data,
+            "the official reader override must not cause an untouched tail to be rewritten"
+        );
+    }
+
+    #[test]
+    fn edited_and_grafted_numbered_shapes_still_emit_zero_based_levels() {
+        let mut edited = ParaShape {
+            attr1: (2 << 23) | (6 << 25),
+            list_level: Some(7),
+            ..ParaShape::default()
+        };
+        edited.set_head_level(3);
+        let grafted = ParaShape {
+            attr1: (2 << 23) | (3 << 25),
+            list_level: None,
+            ..ParaShape::default()
+        };
+        for shape in [edited, grafted] {
+            let emitted = emit_para_shape(&shape).data;
+            let attr = u32::from_le_bytes(emitted[..4].try_into().unwrap());
+            assert_eq!((attr >> 25) & 7, 2);
+            assert_eq!(u32::from_le_bytes(emitted[54..58].try_into().unwrap()), 2);
+        }
+    }
 
     fn paragraph_id_record(id: u32) -> RecordNode {
         let mut data = vec![0x5a; 24];
