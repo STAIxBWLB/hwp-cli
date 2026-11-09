@@ -3153,3 +3153,179 @@ fn insert_blocks_report_ids_follow_an_earlier_insertion_in_the_same_batch() {
     );
     assert!(!is_bold_para(&after, "First batch."));
 }
+
+// ---- #428 T4 review: the report must stay inside edit-report-v1's `changed` cap (T22-F1) ----
+
+fn report_validator() -> jsonschema::Validator {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .unwrap()
+}
+
+fn many_paragraphs(count: usize) -> Value {
+    Value::Array(
+        (0..count)
+            .map(|i| block("body", &format!("Bulk {i}.")))
+            .collect(),
+    )
+}
+
+/// The schema's own cap on `changed`, read from the published schema rather than copied.
+fn changed_cap() -> usize {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    schema["$defs"]["opOutcome"]["properties"]["changed"]["maxItems"]
+        .as_u64()
+        .unwrap() as usize
+}
+
+#[test]
+fn a_report_exactly_at_the_changed_cap_is_complete_and_unflagged() {
+    assert_eq!(
+        changed_cap(),
+        10_000,
+        "this test is written for the published cap"
+    );
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-at-cap", extension);
+        let before = read(&fixture.base);
+        // One paragraph and one run per block: 5,000 blocks publish exactly 10,000 segments.
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "at-cap",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                many_paragraphs(5_000)
+            )]),
+            false,
+        );
+        success(run, "5,000 one-run paragraphs");
+        let report = report_of(&fixture, "at-cap");
+        let op = &report["ops"][0];
+        assert_eq!(
+            op["changed"].as_array().unwrap().len(),
+            10_000,
+            "{extension}"
+        );
+        assert!(
+            op.get("changed_total").is_none(),
+            "{extension}: nothing was cut, so no truncation signal: {}",
+            op["changed_total"]
+        );
+        assert!(
+            report_validator().is_valid(&report),
+            "{extension}: at the cap the report is valid"
+        );
+        assert_eq!(op["pieces_touched"], 5_000);
+        let _ = output;
+    }
+}
+
+#[test]
+fn a_report_over_the_changed_cap_is_a_valid_prefix_with_an_explicit_total() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-over-cap", extension);
+        let before = read(&fixture.base);
+        // 5,001 blocks publish 10,002 segments: two over the cap.
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "over-cap",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                many_paragraphs(5_001)
+            )]),
+            false,
+        );
+        success(
+            run,
+            "5,001 one-run paragraphs is a valid request and must succeed",
+        );
+        let report = report_of(&fixture, "over-cap");
+        let op = &report["ops"][0];
+        assert!(
+            report_validator().is_valid(&report),
+            "{extension}: a successful edit must produce a schema-valid report"
+        );
+        let changed = op["changed"].as_array().unwrap();
+        assert_eq!(
+            changed.len(),
+            10_000,
+            "{extension}: the prefix is cut at the cap"
+        );
+        assert_eq!(
+            op["changed_total"], 10_002,
+            "{extension}: the signal carries the real count"
+        );
+        assert_eq!(
+            op["pieces_touched"], 5_001,
+            "{extension}: pieces_touched still counts paragraphs"
+        );
+        // The prefix is deterministic document order and every id in it is published.
+        let published: Vec<String> = segments_of(&output).into_iter().map(|(_, id)| id).collect();
+        let first = published
+            .iter()
+            .position(|id| Some(id.as_str()) == changed[0]["after"].as_str())
+            .expect("the first reported id is published");
+        for (offset, pair) in changed.iter().enumerate() {
+            assert!(pair["before"].is_null());
+            assert_eq!(
+                published[first + offset],
+                pair["after"].as_str().unwrap(),
+                "{extension}: reported id {offset} is the next published segment"
+            );
+        }
+        // The cut ids are still reachable: the tail is in the output, just not in the report.
+        assert!(
+            published.len() > first + 10_000,
+            "{extension}: the rest is published"
+        );
+    }
+}
+
+#[test]
+fn a_large_inserted_table_keeps_the_report_valid() {
+    let fixture = Fixture::new("report-big-table", "hwpx");
+    let before = read(&fixture.base);
+    // 100 x 50 cells, one paragraph and run each: far over the cap in one block.
+    let rows: Vec<Value> = (0..100)
+        .map(|_| {
+            json!({"cells": (0..50).map(|_| json!({"blocks":[block("body", "c")]})).collect::<Vec<_>>()})
+        })
+        .collect();
+    let table = json!([{"type":"table","columns":(0..50).map(|_| json!({"width_mm":3})).collect::<Vec<_>>(),"rows":rows}]);
+    let (_, run) = fixture.edit(
+        &fixture.base,
+        "big-table",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table
+        )]),
+        false,
+    );
+    success(run, "a 100 x 50 table");
+    let report = report_of(&fixture, "big-table");
+    assert!(
+        report_validator().is_valid(&report),
+        "the report of a valid request is valid"
+    );
+    let op = &report["ops"][0];
+    assert_eq!(op["changed"].as_array().unwrap().len(), 10_000);
+    assert!(
+        op["changed_total"].as_u64().unwrap() > 10_000,
+        "{}",
+        op["changed_total"]
+    );
+    assert_eq!(op["pieces_touched"], 1);
+}
