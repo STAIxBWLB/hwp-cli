@@ -5610,6 +5610,174 @@ mod tests {
         let _ = std::fs::remove_file(&source);
     }
 
+    const INSERT_BLOCKS_PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R', 0,
+        0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, b'I', b'D',
+        b'A', b'T', 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff,
+        0x56, 0xc7, 0x2f, 0x0d, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn insert_blocks_item(blocks: Value) -> Value {
+        json!({
+            "address": {"at": {"section": 0, "paragraph": 1}},
+            "position": "after",
+            "blocks": blocks
+        })
+    }
+
+    /// #428 T4: `insert_blocks` is reachable through `hwp_edit`, takes the same object the
+    /// `--ops` channel takes (minus the `op` tag) and lands byte-identical output.
+    #[test]
+    fn mcp_typed_insert_blocks_matches_the_cli_ops_channel() {
+        let source = temp_file("typed-insert-blocks-source.hwpx");
+        let mcp_out = temp_file("typed-insert-blocks-mcp.hwpx");
+        let cli_out = temp_file("typed-insert-blocks-cli.hwpx");
+        create_hwpx(&source, "첫째 문단\n\n둘째 문단\n\n셋째 문단\n");
+        let blocks = json!([
+            {"type": "paragraph", "runs": [{"type": "text", "text": "삽입 하나"}]},
+            {"type": "table", "columns": [{"width_mm": 40}],
+             "rows": [{"cells": [{"blocks": [{"type": "paragraph", "runs": [{"type": "text", "text": "셀"}]}]}]}]},
+            {"type": "paragraph", "runs": [{"type": "text", "text": "삽입 둘"}]}
+        ]);
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "insert_blocks": [insert_blocks_item(blocks.clone())]
+            }),
+            &ctx(),
+        )
+        .expect("MCP insert_blocks 편집");
+        let mut op = insert_blocks_item(blocks);
+        op["op"] = json!("insert_blocks");
+        run_cli_ops_channel(
+            &source,
+            &Value::Array(vec![op]).to_string(),
+            &cli_out,
+            "typed-insert-blocks",
+        );
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 insert_blocks 출력 바이트가 다르다"
+        );
+        let doc = load_document(&mcp_out).unwrap();
+        let texts: Vec<String> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert!(
+            texts.contains(&"삽입 하나".to_string()) && texts.contains(&"삽입 둘".to_string()),
+            "{texts:?}"
+        );
+
+        // A malformed item is refused with the ops channel's own text and nothing is written.
+        let bad_out = temp_file("typed-insert-blocks-bad.hwpx");
+        let error = tool_edit(
+            &json!({"input": source, "output": bad_out,
+                "insert_blocks": [{"address": {"at": {"section": 0, "paragraph": 1}}, "position": "sideways", "blocks": []}]}),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(error.contains("insert_blocks"), "{error}");
+        assert!(!bad_out.exists());
+    }
+
+    /// Image blocks through MCP: `base_dir` names the directory the paths resolve against and
+    /// is itself a sandbox-checked read path; the sandbox roots bind every asset. Without a
+    /// `base_dir` there is no directory to read from, so image blocks are refused rather than
+    /// resolved against the server's working directory.
+    #[test]
+    fn mcp_insert_blocks_images_resolve_against_base_dir_inside_the_sandbox_roots() {
+        let directory =
+            std::env::temp_dir().join(format!("hwp-mcp-insert-blocks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("assets")).unwrap();
+        std::fs::write(directory.join("assets/logo.png"), INSERT_BLOCKS_PNG).unwrap();
+        let other = std::env::temp_dir().join(format!(
+            "hwp-mcp-insert-blocks-other-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(&other).unwrap();
+        let source = directory.join("source.hwpx");
+        create_hwpx(&source, "첫째 문단\n\n둘째 문단\n");
+        let image = json!([{"type": "image", "path": "assets/logo.png", "width_mm": 10}]);
+        let sandbox = ctx_with_roots(vec![std::fs::canonicalize(&directory).unwrap()]);
+
+        // Inside the root with a base_dir: the image is inserted and embedded.
+        let out = directory.join("with-base.hwpx");
+        tool_edit(
+            &json!({"input": source, "output": out, "base_dir": directory,
+                "insert_blocks": [insert_blocks_item(image.clone())]}),
+            &sandbox,
+        )
+        .expect("an image under the sandbox root inserts");
+        let doc = load_document(&out).unwrap();
+        assert!(!doc.bin_streams.is_empty(), "the image stream is embedded");
+
+        // No base_dir: refused, and the output is not written.
+        let out = directory.join("no-base.hwpx");
+        let error = tool_edit(
+            &json!({"input": source, "output": out, "insert_blocks": [insert_blocks_item(image.clone())]}),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(error.contains("이미지"), "{error}");
+        assert!(!out.exists());
+
+        // A base_dir outside the sandbox is refused by the same read-path check as every path.
+        let out = directory.join("outside-base.hwpx");
+        std::fs::create_dir_all(other.join("assets")).unwrap();
+        std::fs::write(other.join("assets/logo.png"), INSERT_BLOCKS_PNG).unwrap();
+        let error = tool_edit(
+            &json!({"input": source, "output": out, "base_dir": other,
+                "insert_blocks": [insert_blocks_item(image.clone())]}),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(!error.is_empty());
+        assert!(!out.exists());
+
+        // An asset that escapes base_dir is refused by the containment rule.
+        let out = directory.join("escape.hwpx");
+        let error = tool_edit(
+            &json!({"input": source, "output": out, "base_dir": directory,
+                "insert_blocks": [insert_blocks_item(json!([
+                    {"type": "image", "path": "../hwp-mcp-insert-blocks-other/assets/logo.png", "width_mm": 10}]))]}),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(!error.is_empty());
+        assert!(!out.exists());
+        let _ = std::fs::remove_dir_all(&directory);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    /// `base_dir` has no meaning without an image to resolve and is not accepted silently.
+    #[test]
+    fn mcp_edit_schema_advertises_insert_blocks_and_base_dir() {
+        let tools = tool_defs();
+        let edit = tools
+            .iter()
+            .find(|tool| tool["name"] == "hwp_edit")
+            .expect("hwp_edit is listed");
+        let properties = &edit["inputSchema"]["properties"];
+        assert!(
+            properties["insert_blocks"]["type"] == "array",
+            "{properties}"
+        );
+        assert!(properties["base_dir"]["type"] == "string", "{properties}");
+        assert!(
+            edit["description"]
+                .as_str()
+                .unwrap()
+                .contains("insert_blocks"),
+            "the tool description must mention insert_blocks"
+        );
+    }
+
     /// D-12: a `move_para` through MCP lands byte-identical output to the same request run
     /// through the CLI `--ops` channel — the two surfaces share one engine, not two parsers.
     #[test]
