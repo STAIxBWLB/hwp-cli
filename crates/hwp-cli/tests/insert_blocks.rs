@@ -2957,6 +2957,57 @@ fn insert_blocks_report_ids_hold_for_before_cell_and_object_blocks() {
     }
 }
 
+/// A cell insertion's paragraphs sit under `[paragraph, control, cell, index]`. A body
+/// paragraph with the same final index, and the cell's other paragraphs, are NOT inserted and
+/// must not be reported.
+#[test]
+fn insert_blocks_in_a_cell_reports_only_the_cell_paragraphs_it_inserted() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-ids-cell-only", extension);
+        let source = fixture.base.clone();
+        let id = para_id(&source, CELL);
+        let (output, run) = fixture.edit(
+            &source,
+            "cell-only",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "Cell one."), block("body", "Cell two.")])
+            )]),
+            false,
+        );
+        success(run, "two paragraphs into a cell");
+        let report = report_of(&fixture, "cell-only");
+        let reported = created_ids(&report, 0);
+        let published = segments_of(&output);
+        // The cell's anchor paragraph and the body around the table must stay out of the report.
+        for (kind, other) in &published {
+            let inserted_here = reported.contains(other);
+            let is_anchor_or_body = *other == id
+                || (kind == "para" && depth(other) == 1)
+                || (kind == "run" && depth(other) == 2);
+            if is_anchor_or_body {
+                assert!(
+                    !inserted_here,
+                    "{extension}: {kind} {other} was not inserted but is reported"
+                );
+            }
+        }
+        let groups = grouped(&report, 0, &output);
+        assert_eq!(
+            groups.len(),
+            2,
+            "{extension}: the two cell paragraphs: {reported:?}"
+        );
+        assert!(
+            groups.iter().all(|(para, _)| depth(para) == 4),
+            "{extension}: cell depth"
+        );
+    }
+}
+
 #[test]
 fn insert_blocks_report_ids_follow_an_earlier_insertion_in_the_same_batch() {
     let fixture = Fixture::new("report-ids-batch", "hwpx");
