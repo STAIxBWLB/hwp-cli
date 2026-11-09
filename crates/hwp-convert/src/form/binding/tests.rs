@@ -544,9 +544,9 @@ fn adjacent_slot_claims_are_disjoint_and_both_apply() {
     assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "XX");
 }
 
-fn empty_inline_placeholder_overlap_case(inline_first: bool) {
+fn same_key_inline_placeholder_overlap_case(inline_first: bool) {
     let mut doc = document();
-    doc.sections[0].paragraphs[1] = paragraph("Name: {{x}}");
+    doc.sections[0].paragraphs[1] = paragraph("Name: {{Name}}");
     let catalogue = scan_form_occurrences(&doc, &source_hash()).unwrap();
     let inline = catalogue
         .occurrences
@@ -556,12 +556,12 @@ fn empty_inline_placeholder_overlap_case(inline_first: bool) {
     let slot = catalogue
         .occurrences
         .iter()
-        .find(|item| item.kind == "placeholder" && item.label == "x")
+        .find(|item| item.kind == "placeholder" && item.label == "Name")
         .expect("fixture must expose the placeholder claim");
     assert!(inline.bindable && slot.bindable);
     assert_eq!(
-        inline.start, inline.end,
-        "inline fixture must claim an insertion point"
+        inline.end, slot.end,
+        "same-key inline fixture owns the complete placeholder value"
     );
     assert_eq!(inline.start, slot.start, "claims must share their start");
     let (mut plan, _) = plan(&doc, inline, "B", true);
@@ -585,19 +585,19 @@ fn empty_inline_placeholder_overlap_case(inline_first: bool) {
     let before = doc.clone();
     let error = prepare_binding_plan(&doc, &source_hash(), &plan, &values)
         .err()
-        .expect("empty and non-empty claims sharing a start must refuse before preparation");
+        .expect("offered overlapping claims must refuse before preparation");
     assert!(error.contains("겹침") || error.contains("중복"));
     assert_eq!(doc, before);
 }
 
 #[test]
-fn empty_inline_then_placeholder_refuses_atomically() {
-    empty_inline_placeholder_overlap_case(true);
+fn same_key_inline_then_placeholder_refuses_atomically() {
+    same_key_inline_placeholder_overlap_case(true);
 }
 
 #[test]
-fn placeholder_then_empty_inline_refuses_atomically() {
-    empty_inline_placeholder_overlap_case(false);
+fn placeholder_then_same_key_inline_refuses_atomically() {
+    same_key_inline_placeholder_overlap_case(false);
 }
 #[test]
 fn nonreflow_budget_counts_wchars_and_explicit_growth_needs_permission() {
@@ -874,4 +874,50 @@ fn later_repeat_group_insertion_updates_previously_recorded_copy_routes() {
         doc.sections[0].paragraphs.last(),
         before.sections[0].paragraphs.last()
     );
+}
+
+#[test]
+fn different_key_placeholder_does_not_offer_an_empty_inline_claim() {
+    let mut doc = document();
+    doc.sections[0].paragraphs[1] = paragraph("Name: {{x}}");
+    let catalogue = scan_form_occurrences(&doc, &source_hash()).unwrap();
+    assert!(
+        catalogue
+            .occurrences
+            .iter()
+            .any(|item| item.kind == "placeholder" && item.label == "x")
+    );
+    assert!(
+        !catalogue
+            .occurrences
+            .iter()
+            .any(|item| item.kind == "inline_value" && item.label == "Name")
+    );
+}
+
+fn empty_point_at_slot_start_case(empty_first: bool) {
+    let mut doc = document();
+    doc.sections[0].paragraphs[1] = paragraph("Name: {{x}}");
+    let slot = occurrence(&doc, "placeholder", "x");
+    // The current catalogue correctly delegates this label to x. Independently test the
+    // range primitive with a valid source insertion point at the placeholder's start.
+    let point = (slot.start, slot.start);
+    let replacement = (slot.start, slot.end);
+    let (first, second) = if empty_first {
+        (point, replacement)
+    } else {
+        (replacement, point)
+    };
+    assert!(
+        super::apply::claims_overlap(first, second),
+        "a point at the replacement start must conflict in both plan orders"
+    );
+}
+#[test]
+fn empty_point_then_placeholder_start_conflicts() {
+    empty_point_at_slot_start_case(true);
+}
+#[test]
+fn placeholder_start_then_empty_point_conflicts() {
+    empty_point_at_slot_start_case(false);
 }

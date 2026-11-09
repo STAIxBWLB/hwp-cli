@@ -736,10 +736,10 @@ fn binding_values_are_literal_text_in_both_native_formats() {
     }
 }
 
-fn empty_inline_placeholder_cli_case(extension: &str, inline_first: bool) {
-    let workspace = Workspace::new(&format!("empty-overlap-{extension}-{inline_first}"));
+fn same_key_inline_placeholder_cli_case(extension: &str, inline_first: bool) {
+    let workspace = Workspace::new(&format!("same-key-overlap-{extension}-{inline_first}"));
     let markdown = workspace.0.join("fixture.md");
-    std::fs::write(&markdown, "# Fixture\n\nName: {{x}}\n").unwrap();
+    std::fs::write(&markdown, "# Fixture\n\nName: {{Name}}\n").unwrap();
     let source = workspace.0.join(format!("source.{extension}"));
     success(
         &hwp()
@@ -760,10 +760,10 @@ fn empty_inline_placeholder_cli_case(extension: &str, inline_first: bool) {
         .expect("inline fixture claim");
     let slot = items
         .iter()
-        .find(|item| item["kind"] == "placeholder" && item["label"] == "x")
+        .find(|item| item["kind"] == "placeholder" && item["label"] == "Name")
         .expect("slot fixture claim");
     assert!(inline["bindable"] == true && slot["bindable"] == true);
-    assert_eq!(inline["start"], inline["end"]);
+    assert_eq!(inline["end"], slot["end"]);
     assert_eq!(inline["start"], slot["start"]);
     let mut bindings = vec![
         json!({"key":"inline","targets":[{"occurrence_id":inline["id"],"copies":[0],"max_chars":100,"allow_reflow":true}]}),
@@ -782,7 +782,7 @@ fn empty_inline_placeholder_cli_case(extension: &str, inline_first: bool) {
     let result = edit(&workspace, &source, &output, operation, false);
     assert!(
         !result.status.success(),
-        "an empty inline and placeholder claim must refuse in either plan order"
+        "overlapping inline and placeholder claims must refuse in either plan order"
     );
     assert_eq!(std::fs::read(source).unwrap(), original);
     assert_eq!(std::fs::read(output).unwrap(), b"original output");
@@ -797,20 +797,20 @@ fn empty_inline_placeholder_cli_case(extension: &str, inline_first: bool) {
 }
 
 #[test]
-fn empty_overlap_inline_first_hwp_refuses() {
-    empty_inline_placeholder_cli_case("hwp", true);
+fn same_key_overlap_inline_first_hwp_refuses() {
+    same_key_inline_placeholder_cli_case("hwp", true);
 }
 #[test]
-fn empty_overlap_slot_first_hwp_refuses() {
-    empty_inline_placeholder_cli_case("hwp", false);
+fn same_key_overlap_slot_first_hwp_refuses() {
+    same_key_inline_placeholder_cli_case("hwp", false);
 }
 #[test]
-fn empty_overlap_inline_first_hwpx_refuses() {
-    empty_inline_placeholder_cli_case("hwpx", true);
+fn same_key_overlap_inline_first_hwpx_refuses() {
+    same_key_inline_placeholder_cli_case("hwpx", true);
 }
 #[test]
-fn empty_overlap_slot_first_hwpx_refuses() {
-    empty_inline_placeholder_cli_case("hwpx", false);
+fn same_key_overlap_slot_first_hwpx_refuses() {
+    same_key_inline_placeholder_cli_case("hwpx", false);
 }
 
 fn mcp_tool(name: &str, arguments: Value) -> Value {

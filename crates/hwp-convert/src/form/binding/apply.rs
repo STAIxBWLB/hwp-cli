@@ -86,6 +86,10 @@ fn live_document_fingerprint(doc: &Document) -> Result<String, String> {
     Ok(digest(&bytes))
 }
 
+pub(super) fn claims_overlap(a: (usize, usize), b: (usize, usize)) -> bool {
+    (a.0 < b.1 && b.0 < a.1) || (a.0 == a.1 && b.0 == b.1 && a.0 == b.0)
+}
+
 fn mapped(path: &SegmentPath, insertions: &[(usize, usize)]) -> SegmentPath {
     let mut path = path.clone();
     for &(section, at) in insertions {
@@ -169,12 +173,10 @@ pub fn prepare_binding_plan(
                 let ranges = claims
                     .entry((occurrence.section, occurrence.indices.clone(), copy))
                     .or_default();
-                if ranges.iter().any(|&(start, end)| {
-                    (start < occurrence.end && occurrence.start < end)
-                        || (start == end
-                            && occurrence.start == occurrence.end
-                            && start == occurrence.start)
-                }) {
+                if ranges
+                    .iter()
+                    .any(|&existing| claims_overlap(existing, (occurrence.start, occurrence.end)))
+                {
                     return Err(target_refuse("선택한 occurrence의 텍스트 범위가 중복/겹침"));
                 }
                 ranges.push((occurrence.start, occurrence.end));
