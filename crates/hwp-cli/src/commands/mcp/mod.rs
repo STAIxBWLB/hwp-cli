@@ -1838,6 +1838,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         arg_bool(args, "allow_partial", false)?,
         dry_run,
         report_path,
+        crate::commands::edit::AssetPlan::for_mcp(ctx.roots()),
     );
     let report = crate::commands::edit::execute(&input, &output, &plan).map_err(|error| {
         // D-12 abort-path parity (Task 2 decision, Option A, 2026-09-24): an aborted batch
@@ -5235,6 +5236,7 @@ mod tests {
             false,
             dry_run,
             report_path.map(Path::to_path_buf),
+            crate::commands::edit::AssetPlan::default(),
         );
         let report =
             crate::commands::edit::execute(source, cli_out, &plan).expect("CLI --ops 편집");

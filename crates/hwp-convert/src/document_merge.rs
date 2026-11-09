@@ -1125,6 +1125,219 @@ fn renumber_table_object_id(
     Ok(())
 }
 
+/// Gives freshly compiled paragraphs the object identities they need before they are spliced
+/// into `doc`, the remapping `merge` applies to a grafted input, narrowed to what a block
+/// compiler produces:
+///
+/// - every placement-only table gets a z-order whose synthesized HWP instance id
+///   (`0x5000_0000 | z_order & 0xffff`) no table, picture or gso container of `doc` and no
+///   earlier inserted table uses;
+/// - every field gets a non-zero instance id (spec table 152, "unique in the document") that no
+///   field of `doc` or of an earlier inserted paragraph carries. The compiler writes id 0 for
+///   all of them.
+///
+/// Both walks reach every place `merge` does: cells, `Generic` paragraph lists and the captions
+/// of tables, pictures and `Generic` shapes.
+///
+/// Pictures keep their identity: the HWP writer draws each synthesized picture id from a
+/// counter seeded past the ids the document already holds, and the HWPX writer numbers objects
+/// per write. Returns the number of tables and fields renumbered.
+pub fn renumber_inserted_objects(
+    doc: &Document,
+    paragraphs: &mut [Paragraph],
+) -> Result<usize, String> {
+    let mut allocators = Allocators::new(doc);
+    let mut count = 0usize;
+    for para in paragraphs {
+        renumber_inserted_in_para(para, &mut allocators, &mut count)?;
+    }
+    Ok(count)
+}
+
+/// The three counters an insert may draw from, each computed on first use. A text-only insert
+/// asks for none, so a target whose field ids or table z-orders are at their ceiling still
+/// accepts it, as it did before objects were supported.
+struct Allocators<'a> {
+    doc: &'a Document,
+    used: Option<std::collections::BTreeSet<u32>>,
+    next_z: Option<i32>,
+    next_field: Option<u32>,
+}
+
+impl<'a> Allocators<'a> {
+    fn new(doc: &'a Document) -> Self {
+        Self {
+            doc,
+            used: None,
+            next_z: None,
+            next_field: None,
+        }
+    }
+
+    /// A z-order whose synthesized HWP table id no table, picture or container of the target,
+    /// and no earlier inserted table, uses.
+    fn table_z_order(&mut self) -> Result<i32, String> {
+        let doc = self.doc;
+        let used = self
+            .used
+            .get_or_insert_with(|| crate::edit::doc_object_ids(doc));
+        if self.next_z.is_none() {
+            self.next_z = Some(
+                crate::edit::doc_max_table_z_order(doc)
+                    .checked_add(1)
+                    .ok_or_else(|| "개체 z-order 오버플로: 대상 문서의 표 z-order가 최댓값이라 새 표에 줄 값이 없습니다. 표를 삽입하지 않거나 대상 문서의 표 배치를 정리하세요".to_string())?,
+            );
+        }
+        let next_z = self.next_z.as_mut().expect("set above");
+        // `synthesized_table_object_id` keeps 16 bits of the z-order, so only 65,536 ids
+        // exist. One full cycle of z-orders visits all of them; if none is free the target has
+        // none left, and walking further cannot find one.
+        let mut tried = 0u32;
+        loop {
+            if tried > 0xffff {
+                return Err("표 개체 id 공간(65536개)을 모두 사용 중이라 새 표에 줄 id가 없습니다. 대상 문서에서 표를 줄이거나 삽입할 표 개수를 줄인 뒤 다시 시도하세요".to_string());
+            }
+            tried += 1;
+            let z = *next_z;
+            *next_z = z
+                .checked_add(1)
+                .ok_or_else(|| "개체 z-order 오버플로: 새 표에 줄 값이 최댓값을 넘었습니다. 삽입할 표 개수를 줄이거나 대상 문서의 표 배치를 정리하세요".to_string())?;
+            if used.insert(crate::edit::synthesized_table_object_id(z)) {
+                return Ok(z);
+            }
+        }
+    }
+
+    /// A field instance id above every field id of the target and of earlier inserts.
+    fn field_id(&mut self) -> Result<u32, String> {
+        let doc = self.doc;
+        if self.next_field.is_none() {
+            let mut max = 0u32;
+            for section in &doc.sections {
+                for para in &section.paragraphs {
+                    max_field_id_in_para(para, &mut max);
+                }
+            }
+            self.next_field = Some(max.checked_add(1).ok_or_else(|| {
+                "필드 id 오버플로: 대상 문서의 필드 id가 최댓값이라 새 필드에 줄 값이 없습니다. 필드를 삽입하지 않거나 대상 문서의 필드를 정리하세요".to_string()
+            })?);
+        }
+        let next = self.next_field.as_mut().expect("set above");
+        let id = *next;
+        *next = id.checked_add(1).ok_or_else(|| {
+            "필드 id 오버플로: 새 필드에 줄 값이 최댓값을 넘었습니다. 삽입할 필드 개수를 줄이세요"
+                .to_string()
+        })?;
+        Ok(id)
+    }
+}
+
+/// `attr(4) etc(1) len(2) WCHAR[len] id(4)` (spec table 152): the byte range of the id.
+fn field_id_range(data: &[u8]) -> Option<std::ops::Range<usize>> {
+    let len = usize::from(u16::from_le_bytes([*data.get(5)?, *data.get(6)?]));
+    let start = 7usize.checked_add(len.checked_mul(2)?)?;
+    let end = start.checked_add(4)?;
+    (data.len() >= end).then_some(start..end)
+}
+
+fn max_field_id_in_para(para: &Paragraph, max: &mut u32) {
+    for control in &para.controls {
+        match control {
+            Control::Generic(g) => {
+                if crate::field::is_field_ctrl_id(&g.ctrl_id)
+                    && let Some(range) = field_id_range(&g.data)
+                {
+                    *max = (*max).max(u32::from_le_bytes(
+                        g.data[range].try_into().expect("range is four bytes"),
+                    ));
+                }
+                for list in &g.paragraph_lists {
+                    list.paragraphs
+                        .iter()
+                        .for_each(|p| max_field_id_in_para(p, max));
+                }
+                g.caption
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .for_each(|p| max_field_id_in_para(p, max));
+            }
+            Control::Table(t) => {
+                t.caption
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .for_each(|p| max_field_id_in_para(p, max));
+                t.cells
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .for_each(|p| max_field_id_in_para(p, max));
+            }
+            Control::Picture(pic) => pic
+                .caption
+                .iter()
+                .flat_map(|c| &c.paragraphs)
+                .for_each(|p| max_field_id_in_para(p, max)),
+            Control::SectionDef(_) => {}
+        }
+    }
+}
+
+fn renumber_inserted_in_para(
+    para: &mut Paragraph,
+    allocators: &mut Allocators,
+    count: &mut usize,
+) -> Result<(), String> {
+    for control in &mut para.controls {
+        match control {
+            Control::Table(t) => {
+                if t.common_data.is_empty()
+                    && let Some(placement) = &mut t.placement
+                {
+                    placement.z_order = allocators.table_z_order()?;
+                    *count += 1;
+                }
+                if let Some(caption) = &mut t.caption {
+                    for p in &mut caption.paragraphs {
+                        renumber_inserted_in_para(p, allocators, count)?;
+                    }
+                }
+                for cell in &mut t.cells {
+                    for p in &mut cell.paragraphs {
+                        renumber_inserted_in_para(p, allocators, count)?;
+                    }
+                }
+            }
+            Control::Picture(pic) => {
+                if let Some(caption) = &mut pic.caption {
+                    for p in &mut caption.paragraphs {
+                        renumber_inserted_in_para(p, allocators, count)?;
+                    }
+                }
+            }
+            Control::Generic(g) => {
+                if crate::field::is_field_ctrl_id(&g.ctrl_id)
+                    && let Some(range) = field_id_range(&g.data)
+                {
+                    let id = allocators.field_id()?;
+                    g.data[range].copy_from_slice(&id.to_le_bytes());
+                    *count += 1;
+                }
+                for list in &mut g.paragraph_lists {
+                    for p in &mut list.paragraphs {
+                        renumber_inserted_in_para(p, allocators, count)?;
+                    }
+                }
+                if let Some(caption) = &mut g.caption {
+                    for p in &mut caption.paragraphs {
+                        renumber_inserted_in_para(p, allocators, count)?;
+                    }
+                }
+            }
+            Control::SectionDef(_) => {}
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2481,5 +2694,382 @@ mod tests {
         let mut c = from_markdown("문서 C\n");
         c.sections[0].paragraphs[0].para_shape = hwp_model::ParaShapeId(u16::MAX);
         assert!(merge_documents(&[a, b, c]).is_err());
+    }
+
+    // ── #428 T3: renumber_inserted_objects ──────────────────────────────────
+
+    fn placement_table(z_order: i32) -> Control {
+        let mut table = match table_with_common_id(0) {
+            Control::Table(t) => t,
+            _ => unreachable!(),
+        };
+        table.common_data.clear();
+        table.placement = Some(hwp_model::GsoPlacement {
+            z_order,
+            ..Default::default()
+        });
+        Control::Table(table)
+    }
+
+    fn field_control(id: u32, name: &str) -> Control {
+        let mut data = crate::field::make_field_command_data(b"%clk", name);
+        let range = field_id_range(&data).expect("field id range");
+        data[range].copy_from_slice(&id.to_le_bytes());
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"%clk",
+            data,
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    fn stored_field_id(control: &Control) -> u32 {
+        let Control::Generic(g) = control else {
+            panic!("field control expected")
+        };
+        let range = field_id_range(&g.data).expect("field id range");
+        u32::from_le_bytes(g.data[range].try_into().unwrap())
+    }
+
+    fn placement_z(control: &Control) -> i32 {
+        let Control::Table(t) = control else {
+            panic!("table expected")
+        };
+        t.placement.as_ref().expect("placement").z_order
+    }
+
+    #[test]
+    fn inserted_placement_tables_get_synthesized_ids_unused_by_target_or_each_other() {
+        let mut target = from_markdown("target\n");
+        // A placement table at z-order 2 makes the allocator start at 3. Raw-id tables sit on
+        // 0x5000_0003 and 0x5000_0004, exactly the synthesized ids z-orders 3 and 4 would take.
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![
+                    placement_table(2),
+                    table_with_common_id(0x5000_0003),
+                    table_with_common_id(0x5000_0004),
+                ],
+                ..Default::default()
+            },
+        );
+        // Compose gives every compiled table z-order 0; three of them must not share an id.
+        let mut inserted: Vec<Paragraph> = (0..3)
+            .map(|_| Paragraph {
+                controls: vec![placement_table(0)],
+                ..Default::default()
+            })
+            .collect();
+        let renumbered = renumber_inserted_objects(&target, &mut inserted).unwrap();
+        assert_eq!(renumbered, 3);
+        let ids: Vec<u32> = inserted
+            .iter()
+            .map(|p| crate::edit::synthesized_table_object_id(placement_z(&p.controls[0])))
+            .collect();
+        let existing = crate::edit::doc_object_ids(&target);
+        for id in &ids {
+            assert!(!existing.contains(id), "{id:x} collides with the target");
+        }
+        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), 3, "inserted tables share an id: {ids:x?}");
+    }
+
+    #[test]
+    fn inserted_fields_get_nonzero_ids_distinct_from_target_and_each_other() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![field_control(41, "existing")],
+                ..Default::default()
+            },
+        );
+        let mut inserted = vec![
+            Paragraph {
+                controls: vec![field_control(0, "a")],
+                ..Default::default()
+            },
+            Paragraph {
+                controls: vec![placement_table(0)],
+                ..Default::default()
+            },
+        ];
+        // A field nested in a cell of an inserted table is renumbered too.
+        let Control::Table(table) = &mut inserted[1].controls[0] else {
+            unreachable!()
+        };
+        table.cells[0].paragraphs[0]
+            .controls
+            .push(field_control(0, "b"));
+        renumber_inserted_objects(&target, &mut inserted).unwrap();
+        let first = stored_field_id(&inserted[0].controls[0]);
+        let Control::Table(table) = &inserted[1].controls[0] else {
+            unreachable!()
+        };
+        let nested = stored_field_id(&table.cells[0].paragraphs[0].controls[0]);
+        assert!(first > 41 && nested > 41, "ids must clear the target's 41");
+        assert_ne!(first, nested);
+    }
+
+    #[test]
+    fn renumbering_nothing_changes_nothing() {
+        let target = from_markdown("target\n");
+        let mut inserted = vec![Paragraph::default()];
+        assert_eq!(
+            renumber_inserted_objects(&target, &mut inserted).unwrap(),
+            0
+        );
+        assert_eq!(inserted, vec![Paragraph::default()]);
+    }
+
+    fn caption_with(controls: Vec<Control>) -> hwp_model::Caption {
+        hwp_model::Caption {
+            side: hwp_model::CaptionSide::Bottom,
+            direction: hwp_model::CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![Paragraph {
+                controls,
+                ..Default::default()
+            }],
+        }
+    }
+
+    /// Objects hosted in a table or picture caption are inserted content too: their tables and
+    /// fields need the same fresh identities as the ones in cells.
+    #[test]
+    fn inserted_objects_in_table_and_picture_captions_are_renumbered() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![placement_table(0), field_control(9, "existing")],
+                ..Default::default()
+            },
+        );
+        let Control::Table(mut outer) = placement_table(0) else {
+            unreachable!()
+        };
+        outer.caption = Some(caption_with(vec![
+            placement_table(0),
+            field_control(0, "in-table-caption"),
+        ]));
+        let picture = hwp_model::Picture {
+            common_data: Vec::new(),
+            width: hwp_model::HwpUnit(100),
+            height: hwp_model::HwpUnit(100),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
+            caption: Some(caption_with(vec![field_control(0, "in-picture-caption")])),
+            bin_ref: BinRef::ItemRef("x".into()),
+            extras: Vec::new(),
+        };
+        let mut inserted = vec![Paragraph {
+            controls: vec![Control::Table(outer), Control::Picture(picture)],
+            ..Default::default()
+        }];
+        let renumbered = renumber_inserted_objects(&target, &mut inserted).unwrap();
+        assert_eq!(
+            renumbered, 4,
+            "outer table, caption table, two caption fields"
+        );
+        let Control::Table(outer) = &inserted[0].controls[0] else {
+            unreachable!()
+        };
+        let caption = outer.caption.as_ref().unwrap();
+        let nested_table_z = placement_z(&caption.paragraphs[0].controls[0]);
+        let outer_z = outer.placement.as_ref().unwrap().z_order;
+        assert_ne!(
+            nested_table_z, outer_z,
+            "caption table shares the outer table's id"
+        );
+        assert_ne!(
+            nested_table_z, 0,
+            "caption table kept the compiler's z-order 0"
+        );
+        let table_field = stored_field_id(&caption.paragraphs[0].controls[1]);
+        let Control::Picture(picture) = &inserted[0].controls[1] else {
+            unreachable!()
+        };
+        let picture_field =
+            stored_field_id(&picture.caption.as_ref().unwrap().paragraphs[0].controls[0]);
+        assert!(table_field > 9 && picture_field > 9);
+        assert_ne!(table_field, picture_field);
+    }
+
+    fn shape_with_caption(controls: Vec<Control>) -> Control {
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: Some(caption_with(controls)),
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    /// #446 made merge walk `GenericControl::caption`. Identities held there by the target are
+    /// taken ids, and objects inserted there need fresh ones, exactly like those in cells.
+    #[test]
+    fn identities_in_shape_captions_are_counted_in_the_target_and_renumbered_when_inserted() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![shape_with_caption(vec![
+                    table_with_common_id(0x5000_0001),
+                    field_control(77, "in-shape-caption"),
+                    placement_table(5),
+                ])],
+                ..Default::default()
+            },
+        );
+        let mut inserted = vec![
+            Paragraph {
+                controls: vec![placement_table(0)],
+                ..Default::default()
+            },
+            Paragraph {
+                controls: vec![shape_with_caption(vec![
+                    placement_table(0),
+                    field_control(0, "inserted-in-shape-caption"),
+                ])],
+                ..Default::default()
+            },
+        ];
+        let renumbered = renumber_inserted_objects(&target, &mut inserted).unwrap();
+        assert_eq!(
+            renumbered, 3,
+            "two tables and a field, one table inside a shape caption"
+        );
+        let existing = crate::edit::doc_object_ids(&target);
+        assert!(existing.contains(&0x5000_0001) && existing.contains(&0x5000_0005));
+        let top = crate::edit::synthesized_table_object_id(placement_z(&inserted[0].controls[0]));
+        let Control::Generic(shape) = &inserted[1].controls[0] else {
+            unreachable!()
+        };
+        let caption = shape.caption.as_ref().unwrap();
+        let nested = crate::edit::synthesized_table_object_id(placement_z(
+            &caption.paragraphs[0].controls[0],
+        ));
+        for id in [top, nested] {
+            assert!(
+                !existing.contains(&id),
+                "{id:x} collides with a target caption table"
+            );
+        }
+        assert_ne!(top, nested);
+        assert!(
+            stored_field_id(&caption.paragraphs[0].controls[1]) > 77,
+            "the inserted caption field must clear the target caption's field id 77"
+        );
+    }
+
+    /// Placement tables draw their synthesized HWP id from 65,536 values
+    /// (`0x5000_0000 | z & 0xffff`). When the target holds every one of them there is nothing
+    /// to hand out, and the search must stop with a named error rather than walk z-orders up to
+    /// the i32 limit (about 2^31 attempts).
+    #[test]
+    fn a_target_holding_every_synthesized_table_id_fails_fast_with_a_named_error() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: (0..=0xffff_u32)
+                    .map(|low| table_with_common_id(0x5000_0000 | low))
+                    .collect(),
+                ..Default::default()
+            },
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut inserted = vec![Paragraph {
+                controls: vec![placement_table(0)],
+                ..Default::default()
+            }];
+            let _ = sender.send(renumber_inserted_objects(&target, &mut inserted));
+        });
+        let outcome = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("renumbering did not finish within 10 s: the id search is unbounded");
+        let error = outcome.expect_err("no table id is left to hand out");
+        assert!(
+            error.contains("65536") && error.contains("표"),
+            "the error must name the exhausted id space and the object: {error}"
+        );
+    }
+
+    fn text_paragraph() -> Paragraph {
+        Paragraph::default()
+    }
+
+    /// Inserting only text needs no object id, so a target whose field ids or table z-orders
+    /// are already at their ceiling must still accept it (it did before the remapper existed).
+    #[test]
+    fn a_text_only_insert_is_not_refused_by_exhausted_id_floors() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![field_control(u32::MAX, "last"), placement_table(i32::MAX)],
+                ..Default::default()
+            },
+        );
+        let mut inserted = vec![text_paragraph()];
+        assert_eq!(
+            renumber_inserted_objects(&target, &mut inserted).expect("text needs no id"),
+            0
+        );
+        assert_eq!(inserted, vec![text_paragraph()]);
+    }
+
+    /// The same target still refuses an insert that does need the exhausted allocator, with a
+    /// named error rather than a wrapped or duplicated id.
+    #[test]
+    fn an_insert_that_needs_an_exhausted_id_floor_is_still_refused_by_name() {
+        let mut target = from_markdown("target\n");
+        target.sections[0].paragraphs.insert(
+            0,
+            Paragraph {
+                controls: vec![field_control(u32::MAX, "last"), placement_table(i32::MAX)],
+                ..Default::default()
+            },
+        );
+        let mut field = vec![Paragraph {
+            controls: vec![field_control(0, "new")],
+            ..Default::default()
+        }];
+        let error = renumber_inserted_objects(&target, &mut field).expect_err("no field id left");
+        assert!(error.contains("필드"), "{error}");
+        let mut table = vec![Paragraph {
+            controls: vec![placement_table(0)],
+            ..Default::default()
+        }];
+        let error = renumber_inserted_objects(&target, &mut table).expect_err("no z-order left");
+        assert!(error.contains("z-order"), "{error}");
     }
 }

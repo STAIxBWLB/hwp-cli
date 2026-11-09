@@ -13,8 +13,10 @@ Consumers compiling `schemas/edit-ops-v1.schema.json` must also load
 `https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json`. EditOps references its block,
 style and list definitions; validators may resolve them when compiling any batch, even one
 without `insert_blocks`. Load both schemas from the same bundle. The CLI embeds and registers
-both resources, so validation needs no network fetch. Insertion currently stages a whole-document
-clone per operation, including binary streams; T3 resource staging must revisit that cost.
+both resources, so validation needs no network fetch. Insertion compiles blocks against a
+header-only copy of the target, so it no longer clones sections or binary streams per operation.
+New image streams are grafted by name afterwards: an identical stream is shared and a same-named
+stream with different bytes is refused.
 
 The contract is deliberately closed:
 

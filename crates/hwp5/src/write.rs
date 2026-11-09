@@ -1896,7 +1896,9 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     // (bin_stream 인덱스, 새 이름)
     let mut renames: Vec<(usize, String)> = Vec::new();
     // gso 개체마다 유니크 instance_id (같은 값이면 한글이 같은 개체로 보고 무시 가능).
-    let mut inst: u32 = 0x3000_0000;
+    // A document that already carries synthesized pictures (a re-read output of this writer)
+    // holds ids from this same range, so start past the highest one instead of reusing it.
+    let mut inst = InstanceIds::new(doc);
 
     // 머리말/꼬리말 LIST_HEADER를 구역 PageDef 치수로 채운다(hwpx 출신, 빈 것만).
     // textWidth=본문 폭(용지−좌우 여백), textHeight=머리말/꼬리말 여백. 과거에는
@@ -1937,6 +1939,99 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     }
     for (idx, new_name) in renames {
         doc.bin_streams[idx].name = new_name;
+    }
+}
+
+/// Allocator for the gso instance ids this writer synthesizes for pictures.
+///
+/// Ids come from `0x3000_0000..0x3010_0000`. An id is handed out only when neither it nor the
+/// id derived from it for the picture record (`id ^ 0x0010_0000`, which lands in
+/// `0x3010_0000..0x3020_0000`) is already held by a picture, table or gso container of the
+/// document, wherever that id sits. A re-read output of this writer holds ids from this same
+/// range, so a plain counter would repeat them. The counter only moves forward and every
+/// candidate has bit 20 clear, so an id handed out is never a later candidate and never the
+/// derived value of one: only ids the document already holds need avoiding. When the range is
+/// used up the allocator returns `None` instead of stepping past the range edge into another
+/// object's id; the caller leaves that picture unsynthesized and the existing strip step
+/// reports it as removed.
+struct InstanceIds {
+    used: BTreeSet<u32>,
+    next: u32,
+    end: u32,
+}
+
+impl InstanceIds {
+    const BASE: u32 = 0x3000_0000;
+    const END: u32 = 0x3010_0000;
+    const PICTURE_RECORD_BIT: u32 = 0x0010_0000;
+
+    fn new(doc: &Document) -> Self {
+        Self::with_range(doc, Self::BASE, Self::END)
+    }
+
+    fn with_range(doc: &Document, base: u32, end: u32) -> Self {
+        fn common_id(common: &[u8]) -> Option<u32> {
+            common
+                .get(32..36)
+                .map(|b| u32::from_le_bytes(b.try_into().expect("slice len checked")))
+        }
+        fn walk(para: &Paragraph, used: &mut BTreeSet<u32>) {
+            for control in &para.controls {
+                match control {
+                    Control::Picture(p) => {
+                        used.extend(common_id(&p.common_data));
+                        if let Some(caption) = &p.caption {
+                            caption.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                    }
+                    Control::Table(t) => {
+                        used.extend(common_id(&t.common_data));
+                        if let Some(caption) = &t.caption {
+                            caption.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                        for cell in &t.cells {
+                            cell.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                    }
+                    Control::Generic(g) => {
+                        if g.ctrl_id == *b"gso " {
+                            used.extend(common_id(&g.data));
+                        }
+                        for list in &g.paragraph_lists {
+                            list.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                        // The reader keeps a shape's caption apart from its paragraph lists.
+                        if let Some(caption) = &g.caption {
+                            caption.paragraphs.iter().for_each(|q| walk(q, used));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut used = BTreeSet::new();
+        for section in &doc.sections {
+            section.paragraphs.iter().for_each(|p| walk(p, &mut used));
+        }
+        Self {
+            used,
+            next: base,
+            end,
+        }
+    }
+
+    /// The next unused id, or `None` once the range holds no more.
+    fn next(&mut self) -> Option<u32> {
+        while self.next < self.end {
+            let candidate = self.next;
+            self.next += 1;
+            let derived = candidate ^ Self::PICTURE_RECORD_BIT;
+            if self.used.contains(&candidate) || self.used.contains(&derived) {
+                continue;
+            }
+            return Some(candidate);
+        }
+        None
     }
 }
 
@@ -1990,7 +2085,7 @@ fn synth_pictures_para(
     bin_index: &dyn Fn(&hwp_model::BinRef) -> Option<usize>,
     assigned: &mut [Option<u16>],
     next_id: &mut u16,
-    inst: &mut u32,
+    inst: &mut InstanceIds,
     new_items: &mut Vec<hwp_model::BinDataItem>,
     renames: &mut Vec<(usize, String)>,
     warnings: &mut WriteReport,
@@ -2011,6 +2106,12 @@ fn synth_pictures_para(
                         PreservationDisposition::Removed,
                         1,
                     );
+                    continue;
+                };
+                // Take the instance id before minting a storage id: when the synthesized range is
+                // used up the picture is left as is (the strip step below reports it removed), and
+                // no BinData item or renamed stream may be left behind for it.
+                let Some(inst_id) = inst.next() else {
                     continue;
                 };
                 // 같은 스트림에 이미 storage_id가 있으면 재사용(공유 이미지).
@@ -2063,8 +2164,6 @@ fn synth_pictures_para(
                 // 이동해 본문과 겹친다.
                 let voff: i32 = p.vert_offset;
                 let hoff: i32 = p.horz_offset;
-                let inst_id = *inst;
-                *inst += 1;
                 let mut common = Vec::with_capacity(40);
                 common.extend_from_slice(&attr.to_le_bytes());
                 common.extend_from_slice(&voff.to_le_bytes());
@@ -5000,6 +5099,191 @@ mod tests {
         let mut container = crate::Hwp5Container::open(path).unwrap();
         let raw = container.read_stream_raw("/BinData/BIN0003.png").ok()?;
         Some(decompress(&raw, "/BinData/BIN0003.png").unwrap())
+    }
+
+    fn picture_with_instance_id(id: u32) -> Control {
+        let mut common_data = vec![0u8; 44];
+        common_data[32..36].copy_from_slice(&id.to_le_bytes());
+        Control::Picture(hwp_model::Picture {
+            common_data,
+            width: hwp_model::HwpUnit(100),
+            height: hwp_model::HwpUnit(100),
+            treat_as_char: true,
+            z_order: 0,
+            vert_offset: 0,
+            horz_offset: 0,
+            description: None,
+            crop: None,
+            flip: 0,
+            rotation: None,
+            brightness: 0,
+            contrast: 0,
+            effect_flags: 0,
+            effects_raw: Vec::new(),
+            caption: None,
+            bin_ref: hwp_model::BinRef::ItemRef("x".to_string()),
+            extras: Vec::new(),
+        })
+    }
+
+    fn shape_caption_holding(controls: Vec<Control>) -> Control {
+        Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: Vec::new(),
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 0,
+                width: None,
+                last_width: 0,
+                paragraphs: vec![Paragraph {
+                    controls,
+                    ..Paragraph::default()
+                }],
+            }),
+            hwpx_raw_xml: None,
+            container_box: None,
+        })
+    }
+
+    /// The HWP5 reader keeps a shape's caption apart from its paragraph lists, so a picture
+    /// whose only home is a shape caption still holds an instance id from the synthesized
+    /// range. The allocator must start past it, or the next synthesized picture repeats it and
+    /// the raw-preserved caption leaves two objects with one id.
+    #[test]
+    fn synthesized_picture_ids_start_past_ids_held_in_shape_captions() {
+        let mut doc = Document::default();
+        doc.sections.push(Section {
+            paragraphs: vec![Paragraph {
+                controls: vec![shape_caption_holding(vec![picture_with_instance_id(
+                    0x3000_0004,
+                )])],
+                ..Paragraph::default()
+            }],
+            extras: Vec::new(),
+        });
+        let mut ids = InstanceIds::new(&doc);
+        for _ in 0..16 {
+            let id = ids.next().expect("the range has room");
+            assert!(
+                id != 0x3000_0004 && id != 0x3000_0004 ^ 0x0010_0000,
+                "{id:#x} repeats (or derives) the id held in the shape caption"
+            );
+        }
+    }
+
+    fn doc_with_picture_ids(ids: &[u32]) -> Document {
+        let mut doc = Document::default();
+        doc.sections.push(Section {
+            paragraphs: vec![Paragraph {
+                controls: ids.iter().map(|id| picture_with_instance_id(*id)).collect(),
+                ..Paragraph::default()
+            }],
+            extras: Vec::new(),
+        });
+        doc
+    }
+
+    /// An id handed out must be inside the synthesized range and not already used by any
+    /// picture, table or container. `max + 1` of the in-range ids steps over the range edge:
+    /// with `0x300fffff` present it returns `0x30100000`, which another object already holds.
+    #[test]
+    fn a_synthesized_picture_id_stays_in_range_and_avoids_every_used_id() {
+        let doc = doc_with_picture_ids(&[0x300f_ffff, 0x3010_0000]);
+        let mut ids = InstanceIds::new(&doc);
+        let first = ids.next().expect("the range has room");
+        assert!(
+            (0x3000_0000..0x3010_0000).contains(&first),
+            "{first:#x} is outside the synthesized range"
+        );
+        assert!(
+            first != 0x300f_ffff && first != 0x3010_0000,
+            "{first:#x} is already used"
+        );
+        // Successive ids never repeat.
+        let second = ids.next().unwrap();
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_synthesized_picture_id_does_not_derive_a_used_effect_id() {
+        let doc = doc_with_picture_ids(&[0x3010_0000]);
+        let mut ids = InstanceIds::new(&doc);
+        let first = ids.next().unwrap();
+        assert_ne!(
+            first ^ 0x0010_0000,
+            0x3010_0000,
+            "{first:#x} derives a used id"
+        );
+    }
+
+    /// With the synthesized range used up a picture must be left exactly as it was: no
+    /// BinData item, no renamed stream and no records, so the strip step that follows removes
+    /// it and reports the loss instead of the writer inventing an id another object holds.
+    #[test]
+    fn an_exhausted_range_leaves_the_picture_and_the_bin_tables_untouched() {
+        let mut doc = Document::default();
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: "image.png".to_string(),
+            data: vec![1, 2, 3],
+        });
+        let mut picture = match picture_with_instance_id(0) {
+            Control::Picture(p) => p,
+            _ => unreachable!(),
+        };
+        picture.common_data.clear();
+        picture.bin_ref = hwp_model::BinRef::ItemRef("image.png".to_string());
+        let mut paragraph = Paragraph {
+            controls: vec![Control::Picture(picture)],
+            ..Paragraph::default()
+        };
+        let bin_names = vec!["image.png".to_string()];
+        let bin_dims = vec![None];
+        let bin_index = |_: &hwp_model::BinRef| Some(0usize);
+        let mut assigned: Vec<Option<u16>> = vec![None];
+        let mut next_id = 1u16;
+        let mut new_items = Vec::new();
+        let mut renames = Vec::new();
+        let mut report = WriteReport::new();
+        let mut inst = InstanceIds::with_range(&doc, 0x3000_0000, 0x3000_0000);
+        synth_pictures_para(
+            &mut paragraph,
+            &bin_names,
+            &bin_dims,
+            &bin_index,
+            &mut assigned,
+            &mut next_id,
+            &mut inst,
+            &mut new_items,
+            &mut renames,
+            &mut report,
+        );
+        let Control::Picture(picture) = &paragraph.controls[0] else {
+            unreachable!()
+        };
+        assert!(picture.extras.is_empty() && picture.common_data.is_empty());
+        assert!(
+            new_items.is_empty(),
+            "a BinData item was minted for a picture that stays unwritten"
+        );
+        assert!(renames.is_empty() && assigned == vec![None] && next_id == 1);
+    }
+
+    #[test]
+    fn an_exhausted_synthesized_range_is_reported_not_wrapped() {
+        let doc = doc_with_picture_ids(&[0x3000_0002]);
+        // A range of three ids with one already used leaves two, then none.
+        let mut ids = InstanceIds::with_range(&doc, 0x3000_0000, 0x3000_0003);
+        assert!(ids.next().is_some());
+        assert!(ids.next().is_some());
+        assert!(ids.next().is_none(), "the third request has nothing left");
+        assert!(ids.next().is_none(), "and it stays exhausted");
     }
 
     #[test]

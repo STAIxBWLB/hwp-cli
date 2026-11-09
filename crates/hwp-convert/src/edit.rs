@@ -2159,45 +2159,66 @@ fn table_object_id(t: &hwp_model::Table) -> u32 {
     gso_common_instance_id(&t.common_data).unwrap_or_else(|| {
         t.placement
             .as_ref()
-            .map(|pl| 0x5000_0000 | (pl.z_order as u32 & 0xffff))
+            .map(|pl| synthesized_table_object_id(pl.z_order))
             .unwrap_or(0)
     })
+}
+
+/// The instance id the HWP writer synthesizes for a placement-only table (no raw gso common
+/// bytes): `0x5000_0000` plus the low 16 bits of its z-order (`hwp5::write`, table common
+/// properties). Two such tables with equal low z-order bits share one id.
+pub(crate) fn synthesized_table_object_id(z_order: i32) -> u32 {
+    0x5000_0000 | (z_order as u32 & 0xffff)
 }
 
 /// Maximum gso object id across all tables and pictures in the document.
 pub(crate) fn doc_max_object_id(doc: &Document) -> u32 {
     let mut max = 0u32;
-    for section in &doc.sections {
-        for para in &section.paragraphs {
-            max_object_id_in_para(para, &mut max);
-        }
-    }
+    for_each_object_id(doc, &mut |id| max = max.max(id));
     max
 }
 
-fn max_object_id_in_para(para: &Paragraph, max: &mut u32) {
+/// Every gso object id the writers would emit for the document's tables, pictures and gso
+/// containers, as [`doc_max_object_id`] sees them.
+pub(crate) fn doc_object_ids(doc: &Document) -> std::collections::BTreeSet<u32> {
+    let mut ids = std::collections::BTreeSet::new();
+    for_each_object_id(doc, &mut |id| {
+        ids.insert(id);
+    });
+    ids
+}
+
+fn for_each_object_id(doc: &Document, visit: &mut dyn FnMut(u32)) {
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            object_ids_in_para(para, visit);
+        }
+    }
+}
+
+fn object_ids_in_para(para: &Paragraph, visit: &mut dyn FnMut(u32)) {
     for ctrl in &para.controls {
         match ctrl {
             Control::Table(t) => {
-                *max = (*max).max(table_object_id(t));
+                visit(table_object_id(t));
                 if let Some(cap) = &t.caption {
                     for p in &cap.paragraphs {
-                        max_object_id_in_para(p, max);
+                        object_ids_in_para(p, visit);
                     }
                 }
                 for cell in &t.cells {
                     for p in &cell.paragraphs {
-                        max_object_id_in_para(p, max);
+                        object_ids_in_para(p, visit);
                     }
                 }
             }
             Control::Picture(pic) => {
                 if let Some(id) = gso_common_instance_id(&pic.common_data) {
-                    *max = (*max).max(id);
+                    visit(id);
                 }
                 if let Some(cap) = &pic.caption {
                     for p in &cap.paragraphs {
-                        max_object_id_in_para(p, max);
+                        object_ids_in_para(p, visit);
                     }
                 }
             }
@@ -2207,11 +2228,16 @@ fn max_object_id_in_para(para: &Paragraph, max: &mut u32) {
                 if g.ctrl_id == *b"gso "
                     && let Some(id) = gso_common_instance_id(&g.data)
                 {
-                    *max = (*max).max(id);
+                    visit(id);
                 }
                 for list in &g.paragraph_lists {
                     for p in &list.paragraphs {
-                        max_object_id_in_para(p, max);
+                        object_ids_in_para(p, visit);
+                    }
+                }
+                if let Some(cap) = &g.caption {
+                    for p in &cap.paragraphs {
+                        object_ids_in_para(p, visit);
                     }
                 }
             }

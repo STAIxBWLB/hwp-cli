@@ -324,6 +324,52 @@ impl Table {
     }
 }
 
+/// Inner cell margins (HWPUNIT: left, right, top, bottom) Hangul applies when neither the cell
+/// nor its table states one.
+pub const DEFAULT_CELL_MARGINS: [u16; 4] = [510, 510, 141, 141];
+
+impl Table {
+    /// The inner margins a cell of this table inherits: the table's own side values, with the
+    /// `0xffff` sentinel and an all-zero array (the older IR convention for "omitted") both
+    /// falling back to [`DEFAULT_CELL_MARGINS`].
+    pub fn default_cell_margins(&self) -> [u16; 4] {
+        if self.inner_margins.iter().any(|&v| v > 0 && v != u16::MAX) {
+            std::array::from_fn(|i| {
+                if self.inner_margins[i] == u16::MAX {
+                    DEFAULT_CELL_MARGINS[i]
+                } else {
+                    self.inner_margins[i]
+                }
+            })
+        } else {
+            DEFAULT_CELL_MARGINS
+        }
+    }
+
+    /// The margins `cell` actually has inside this table (HWPUNIT: left, right, top, bottom).
+    ///
+    /// HWP5 stores `0xffff` in a cell's LIST_HEADER to mean "use the table default", and an
+    /// all-zero array is the older IR convention for an omitted cell margin. The sentinel stays
+    /// in the IR so an hwp5 -> hwp5 round trip is lossless; it is resolved only where a width
+    /// or position is computed, and this is the one place that rule lives (the renderer and
+    /// `insert_blocks` both call it).
+    pub fn cell_margins(&self, cell: &Cell) -> [u16; 4] {
+        let table_default = self.default_cell_margins();
+        let raw = if cell.margins.iter().all(|&v| v == 0) {
+            table_default
+        } else {
+            cell.margins
+        };
+        std::array::from_fn(|i| {
+            if raw[i] == u16::MAX {
+                table_default[i]
+            } else {
+                raw[i]
+            }
+        })
+    }
+}
+
 impl Cell {
     /// Returns whether this is a header cell (`list_attr` bit 18).
     pub fn is_header(&self) -> bool {
@@ -766,5 +812,76 @@ mod tests {
             ..inline
         };
         assert_eq!(toc.synth_attr(), 0x082a_2310);
+    }
+
+    fn margin_table(inner: [u16; 4]) -> Table {
+        Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: inner,
+            row_cell_counts: vec![1],
+            border_fill: crate::ids::BorderFillId(0),
+            table_tail: Vec::new(),
+            cells: Vec::new(),
+            caption: None,
+            extras: Vec::new(),
+        }
+    }
+
+    fn margin_cell(margins: [u16; 4]) -> Cell {
+        Cell {
+            list_attr: 0,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: HwpUnit(10000),
+            height: HwpUnit(1000),
+            margins,
+            border_fill: crate::ids::BorderFillId(0),
+            header_tail: Vec::new(),
+            paragraphs: Vec::new(),
+        }
+    }
+
+    /// A cell states its own margin, inherits the table's for `0xffff`, and an all-zero array
+    /// means "omitted": the table's, or the Hangul default when the table states none.
+    #[test]
+    fn cell_margins_resolve_cell_then_table_then_default() {
+        let max = u16::MAX;
+        let table = margin_table([700, 800, 900, 1000]);
+        assert_eq!(table.cell_margins(&margin_cell([1, 2, 3, 4])), [1, 2, 3, 4]);
+        assert_eq!(
+            table.cell_margins(&margin_cell([max, 0, max, max])),
+            [700, 0, 900, 1000]
+        );
+        assert_eq!(
+            table.cell_margins(&margin_cell([0; 4])),
+            [700, 800, 900, 1000]
+        );
+        // A table with no stated margins, or only the sentinel, falls back per side.
+        for inner in [[0; 4], [max; 4]] {
+            let bare = margin_table(inner);
+            assert_eq!(
+                bare.cell_margins(&margin_cell([0; 4])),
+                super::DEFAULT_CELL_MARGINS
+            );
+            assert_eq!(
+                bare.cell_margins(&margin_cell([max, 0, max, max])),
+                [510, 0, 141, 141]
+            );
+        }
+        // A table margin of the sentinel on one side only inherits the default on that side.
+        let mixed = margin_table([max, 800, max, 1000]);
+        assert_eq!(
+            mixed.cell_margins(&margin_cell([max; 4])),
+            [510, 800, 141, 1000]
+        );
+        // The resolved value is never the sentinel.
+        assert!(!mixed.cell_margins(&margin_cell([max; 4])).contains(&max));
     }
 }

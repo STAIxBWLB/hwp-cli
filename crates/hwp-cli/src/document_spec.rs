@@ -20,6 +20,11 @@ pub const MAX_TABLE_CELLS: usize = 100_000;
 pub const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_TOTAL_ASSET_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_NESTING: usize = 16;
+
+/// Left and right inner margin of a compiled table cell, in HWPUNIT (`Cell::margins[0..2]`).
+/// Content inside a cell has the cell width minus both, so the insertion validator reads it
+/// from here instead of repeating the number.
+pub(crate) const CELL_SIDE_MARGIN_HWP: i32 = hwp_model::control::DEFAULT_CELL_MARGINS[0] as i32;
 const MAX_TEXT_CHARS: usize = 2_000_000;
 const MAX_NAME_CHARS: usize = 128;
 const MAX_SHORT_TEXT_CHARS: usize = 4096;
@@ -560,7 +565,19 @@ pub fn infer_input_format(path: &Path) -> Result<SpecInputFormat, ComposeError> 
     }
 }
 
-pub fn validate_spec(spec: &DocumentSpec, _base_dir: &Path) -> Result<(), ComposeError> {
+pub fn validate_spec(spec: &DocumentSpec, base_dir: &Path) -> Result<(), ComposeError> {
+    validate_spec_in_width(spec, base_dir, None)
+}
+
+/// [`validate_spec`] for blocks that will be spliced into an existing document: when
+/// `body_width_mm` is set it replaces every section's writable page width, so a table or image
+/// is measured against the text column (or table cell) it will land in rather than the page the
+/// spec itself declares.
+pub(crate) fn validate_spec_in_width(
+    spec: &DocumentSpec,
+    _base_dir: &Path,
+    body_width_mm: Option<f32>,
+) -> Result<(), ComposeError> {
     let mut validator = Validator {
         spec,
         issues: Vec::new(),
@@ -568,6 +585,7 @@ pub fn validate_spec(spec: &DocumentSpec, _base_dir: &Path) -> Result<(), Compos
         runs: 0,
         cells: 0,
         text_chars: 0,
+        body_width_override: body_width_mm,
     };
     validator.validate();
     if validator.issues.is_empty() {
@@ -586,6 +604,7 @@ struct Validator<'a> {
     runs: usize,
     cells: usize,
     text_chars: usize,
+    body_width_override: Option<f32>,
 }
 
 impl Validator<'_> {
@@ -767,7 +786,9 @@ impl Validator<'_> {
                 );
             }
             let page = section.page.as_ref().unwrap_or(&self.spec.page);
-            let body_width_mm = writable_page_width(*page);
+            let body_width_mm = self
+                .body_width_override
+                .unwrap_or_else(|| writable_page_width(*page));
             if let Some(header) = &section.header {
                 self.validate_header_footer(header, &format!("{path}.header"), 0, body_width_mm);
             }
@@ -1541,12 +1562,21 @@ impl Validator<'_> {
                 for row in &mut occupied[row_index..row_end] {
                     row[cursor..col_end].fill(true);
                 }
+                // Insertion into an existing document measures cell content against the cell
+                // (its columns' widths minus both side margins). `compose` keeps measuring it
+                // against the body width, so existing specs validate exactly as before.
+                let content_width_mm = if self.body_width_override.is_some() {
+                    let span_mm: f32 = columns[cursor..col_end].iter().map(|c| c.width_mm).sum();
+                    (span_mm - 2.0 * hwpunit_to_mm_f32(CELL_SIDE_MARGIN_HWP)).max(0.0)
+                } else {
+                    body_width_mm
+                };
                 self.validate_blocks(
                     &cell.blocks,
                     &format!("{cell_path}.blocks"),
                     depth + 1,
                     false,
-                    body_width_mm,
+                    content_width_mm,
                 );
                 cursor = col_end;
             }
@@ -2434,7 +2464,12 @@ impl<'a> BlockCompiler<'a> {
                     row_span: cell.row_span,
                     width: hwp_model::HwpUnit(width),
                     height: hwp_model::HwpUnit(1700_i32.saturating_mul(paragraph_count.max(1))),
-                    margins: [510, 510, 141, 141],
+                    margins: [
+                        CELL_SIDE_MARGIN_HWP as u16,
+                        CELL_SIDE_MARGIN_HWP as u16,
+                        141,
+                        141,
+                    ],
                     border_fill: self.defaults.border_fill,
                     header_tail: Vec::new(),
                     paragraphs,
@@ -3071,6 +3106,10 @@ fn page_number_position_code(position: PageNumberPosition) -> u8 {
         PageNumberPosition::Outside => 8,
         PageNumberPosition::Inside => 10,
     }
+}
+
+fn hwpunit_to_mm_f32(value: i32) -> f32 {
+    (f64::from(value) * 25.4 / f64::from(hwp_model::HwpUnit::PER_INCH)) as f32
 }
 
 fn mm_to_hwp(value: f32) -> i32 {

@@ -21,17 +21,45 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   ([#427](https://github.com/STAIxBWLB/hwp-cli/issues/427)).
 
 - `hwp edit --ops` accepts `insert_blocks` for DocumentSpec v1 paragraphs, text/line-break
-  runs, named lists and page/column breaks in body or table-cell lists. Existing target
+  runs, named lists, page/column breaks, tables, images, fields and equations in body or
+  table-cell lists. Existing target
   paragraph styles take precedence; missing styles use component definitions under the
   default `create` policy or refuse under `refuse`. Applied outcomes report the selected
   policy in `missing_style`, keeping the failure-only `reason` null.
-  Missing styles/lists, stale addresses and unsupported resource blocks refuse before
-  publication. Both addressed paragraph insertion operations refuse insertion before a section
+  Missing styles/lists, stale addresses, section breaks and unreadable or out-of-root image
+  assets refuse before publication. Both addressed paragraph insertion operations refuse insertion before a section
   setup paragraph; insert after it instead. HWP list insertion refuses markers/starts outside
   the existing writer's default record and used decimal levels that its format selectors cannot
   retain. HWP output also refuses ordered-definition additions when non-HWP5 inputs have the
   official eight-level contract but no raw numbering records, preserving their existing
-  numbering. Text and bullet insertion keep that contract. HWPX preserves authored numbering. Tables, images, fields, equations and inserted-id reporting remain follow-ups
+  numbering. Text and bullet insertion keep that contract. HWPX preserves authored numbering.
+  Inserted tables, images and fields get object identities that collide with nothing in the
+  target: placement-table z-orders, field instance ids and, in the HWP writer, picture
+  instance ids, which now start past the ids a re-read document already holds. Ids held in
+  table, picture and shape captions count too. Geometry read from the document (page, margins,
+  gutter, column gaps, cell width) is widened before it is combined, and an impossible layout
+  is refused as an unknown width instead of panicking or wrapping. A target that already uses
+  all 65,536 table object ids is refused with a named error instead of searching forever, and
+  ids are
+  looked up only when an inserted object needs one, so a text-only insert is accepted even by
+  a target whose field ids or table z-orders are at their ceiling. The HWP writer's picture ids
+  stay inside their range and skip ids the document holds; with the range used up it leaves
+  the picture unwritten and reports it removed.
+  Blocks are measured against the text column or table cell they land in: the rotated paper of
+  a landscape page, one column of a multi-column section under the column definition in effect
+  at the target paragraph (for `position: before`, the one preceding it, since the blocks land
+  ahead of that paragraph's own column control), and, inside an existing table cell, the cell's width less its resolved side margins (a `0xffff`
+  or all-zero cell margin takes the table's, then Hangul's default, through
+  `hwp_model::Table::cell_margins`, which the renderer now calls too), and, inside an inserted
+  table, the cell's column span less the default side margins. A table draws its borders from a bordered fill the target header supplies or gains.
+  Image paths resolve beside the `--ops` file and are bound to the MCP sandbox roots; reading
+  `--ops` from stdin has no directory, so image blocks are refused there. An image the target
+  already stores byte for byte is shared instead of stored twice, and one whose name the
+  target's resolver would send to other bytes (a manifest entry for another file, or a
+  same-named file under a folder, compared the way the most permissive writer does, ignoring
+  ASCII case) is renamed so it still resolves to its own. Equations insert
+  into HWPX only because the HWP writer drops them. Compilation no longer clones the whole
+  target per operation. Inserted-id reporting and MCP reachability remain follow-ups
   ([#428](https://github.com/STAIxBWLB/hwp-cli/issues/428)).
 
 - `hwp edit --ops` accepts `update_style` for named paragraph styles. Changed character and

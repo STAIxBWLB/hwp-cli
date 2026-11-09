@@ -637,60 +637,27 @@ fn cell_component_insertion_preserves_other_cell_and_body_paragraphs() {
 }
 
 #[test]
-fn unsupported_resource_blocks_and_runs_refuse_atomically() {
-    let unsupported = vec![
-        (
-            "table",
-            json!({"type":"table","columns":[{"width_mm":20}],"rows":[{"cells":[{"blocks":[block("body","Nested table text.")]}]}]}),
-        ),
-        (
-            "image",
-            json!({"type":"image","path":"must-not-read.png","width_mm":20}),
-        ),
-        (
-            "field",
-            json!({"type":"field","name":"component-field","value":"value"}),
-        ),
-        ("equation", json!({"type":"equation","script":"x^2"})),
-        (
-            "run-image",
-            json!({"type":"paragraph","style":"body","runs":[{"type":"image","path":"must-not-read.png","width_mm":20}]}),
-        ),
-        (
-            "run-field",
-            json!({"type":"paragraph","style":"body","runs":[{"type":"field","name":"component-field","value":"value"}]}),
-        ),
-        (
-            "run-equation",
-            json!({"type":"paragraph","style":"body","runs":[{"type":"equation","script":"x^2"}]}),
-        ),
-    ];
+fn section_break_stays_unsupported_and_refuses_atomically() {
     for extension in ["hwp", "hwpx"] {
-        let fixture = Fixture::new("unsupported", extension);
+        let fixture = Fixture::new("section-break", extension);
         let source = fixture.base.clone();
         let before = read(&source);
-        for (label, unsupported) in &unsupported {
-            let diagnostic = fixture.refuse(
-                &source,
-                label,
-                json!([insert(
-                    at(&before, ANCHOR),
-                    "after",
-                    "create",
-                    json!({}),
-                    json!([block("body", "Not partially published."), unsupported])
-                )]),
-                false,
-            );
-            let kind = label.strip_prefix("run-").unwrap_or(label);
-            assert!(
-                diagnostic.contains("insert_blocks는 현재")
-                    && diagnostic.contains("지원")
-                    && diagnostic.contains(kind)
-                    && diagnostic.contains("#428 T3"),
-                "unsupported {kind} must identify its supported-scope remedy, not merely fail schema validation: {diagnostic}"
-            );
-        }
+        let diagnostic = fixture.refuse(
+            &source,
+            "section-break",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "Not partially published."), {"type":"break","kind":"section"}])
+            )]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("section"),
+            "section break must name itself in the refusal: {diagnostic}"
+        );
     }
 }
 
@@ -1664,4 +1631,1026 @@ fn official_hwpx_bullet_insertion_to_hwp_grows_only_bullets_and_retains_official
         '•'
     );
     assert!(std::fs::read(&source).unwrap() == source_bytes);
+}
+
+// ---- #428 T3: tables, images, fields and equations through the id remapper ----
+
+const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+fn write_png(dir: &Path, name: &str) {
+    use base64::Engine as _;
+    std::fs::write(
+        dir.join(name),
+        base64::engine::general_purpose::STANDARD
+            .decode(PNG_B64)
+            .unwrap(),
+    )
+    .unwrap();
+}
+
+fn all_paragraphs<'a>(paragraphs: &'a [Paragraph], out: &mut Vec<&'a Paragraph>) {
+    for paragraph in paragraphs {
+        out.push(paragraph);
+        for control in &paragraph.controls {
+            match control {
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        all_paragraphs(&cell.paragraphs, out);
+                    }
+                }
+                Control::Generic(generic) => {
+                    for list in &generic.paragraph_lists {
+                        all_paragraphs(&list.paragraphs, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn doc_paragraphs(doc: &Document) -> Vec<&Paragraph> {
+    let mut out = Vec::new();
+    for section in &doc.sections {
+        all_paragraphs(&section.paragraphs, &mut out);
+    }
+    out
+}
+
+fn tables_of(doc: &Document) -> Vec<&Table> {
+    doc_paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| {
+            if let Control::Table(t) = c {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn pictures_of(doc: &Document) -> Vec<&hwp_model::Picture> {
+    doc_paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| {
+            if let Control::Picture(p) = c {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn common_id(common: &[u8]) -> u32 {
+    u32::from_le_bytes(common[32..36].try_into().expect("gso common id"))
+}
+
+/// Field instance id: attr(4) etc(1) len(2) WCHAR[len] id(4) (spec table 152).
+fn field_ids(doc: &Document) -> Vec<u32> {
+    doc_paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| match c {
+            Control::Generic(g) if hwp_convert::field::is_field_ctrl_id(&g.ctrl_id) => {
+                let len = u16::from_le_bytes([g.data[5], g.data[6]]) as usize;
+                let at = 7 + 2 * len;
+                Some(u32::from_le_bytes(g.data[at..at + 4].try_into().unwrap()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_distinct(ids: &[u32], what: &str) {
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(
+        unique.len(),
+        ids.len(),
+        "{what} ids must be distinct: {ids:x?}"
+    );
+}
+
+fn validates(path: &Path) {
+    success(
+        hwp().arg("validate").arg(path).output().unwrap(),
+        "validate of the edited output",
+    );
+}
+
+fn component_blocks() -> Value {
+    json!([
+        block("body", "Component lead."),
+        {"type":"table","columns":[{"width_mm":30},{"width_mm":30}],"rows":[
+            {"cells":[{"blocks":[block("body","Approval cell A.")]},{"blocks":[block("note","Approval cell B.")]}]},
+            {"cells":[{"blocks":[{"type":"image","path":"logo.png","width_mm":10}]},
+                      {"blocks":[{"type":"field","name":"cell-field","value":"cell value"}]}]}
+        ]},
+        {"type":"image","path":"logo.png","width_mm":12},
+        {"type":"field","name":"body-field","value":"body value"},
+        {"type":"paragraph","style":"body","runs":[
+            {"type":"text","text":"Inline run "},
+            {"type":"field","name":"run-field","value":"run value"}]},
+        block("body", "Component tail.")
+    ])
+}
+
+#[test]
+fn table_image_field_components_insert_in_order_with_distinct_ids_in_both_formats() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("objects", extension);
+        write_png(&fixture.dir, "logo.png");
+        let before = read(&fixture.base);
+        let existing_tables = tables_of(&before).len();
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "objects",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                component_blocks()
+            )]),
+            false,
+        );
+        success(run, "insert_blocks with table, image and field blocks");
+        validates(&output);
+        let after = read(&output);
+        let body: Vec<_> = after.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        let lead = body.iter().position(|t| t == "Component lead.").unwrap();
+        assert_eq!(
+            body[lead - 1],
+            ANCHOR,
+            "{extension}: inserted after the anchor"
+        );
+        let tail = body.iter().position(|t| t == "Component tail.").unwrap();
+        assert_eq!(
+            body[tail + 1],
+            "Body tail.",
+            "{extension}: original order resumes"
+        );
+        assert!(
+            after.sections[0].paragraphs[lead + 1]
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::Table(_))),
+            "{extension}: the table follows the lead paragraph"
+        );
+        let tables = tables_of(&after);
+        assert_eq!(tables.len(), existing_tables + 1, "{extension}");
+        let inserted = tables
+            .iter()
+            .find(|t| {
+                t.cells
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .any(|p| p.plain_text() == "Approval cell A.")
+            })
+            .unwrap();
+        let fill = after.header.border_fills[usize::from(inserted.border_fill.0) - 1].clone();
+        assert!(
+            fill.sides.iter().all(|side| side.line_type == 1),
+            "{extension}: the inserted table must draw its borders, got {fill:?}"
+        );
+        let pictures = pictures_of(&after);
+        assert_eq!(pictures.len(), 2, "{extension}: both image blocks survive");
+        {
+            use base64::Engine as _;
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(PNG_B64)
+                .unwrap();
+            for picture in &pictures {
+                assert_eq!(
+                    after.resolve_bin(&picture.bin_ref),
+                    Some(png.as_slice()),
+                    "{extension}: an inserted picture must resolve to its own bytes through the \
+                     target's manifest-first resolver"
+                );
+            }
+        }
+        assert_eq!(
+            after.bin_streams.len(),
+            before.bin_streams.len() + 1,
+            "{extension}: one shared asset stream for the repeated image"
+        );
+        if extension == "hwp" {
+            let table_ids: Vec<u32> = tables.iter().map(|t| common_id(&t.common_data)).collect();
+            assert_distinct(&table_ids, "table");
+            let picture_ids: Vec<u32> =
+                pictures.iter().map(|p| common_id(&p.common_data)).collect();
+            assert_distinct(&picture_ids, "picture");
+            let fields = field_ids(&after);
+            assert_eq!(fields.len(), 3, "three field blocks/runs");
+            assert_distinct(&fields, "field");
+            assert!(
+                fields.iter().all(|id| *id != 0),
+                "field ids are non-zero: {fields:x?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn successive_hwp_image_insertions_do_not_reuse_a_picture_instance_id() {
+    let fixture = Fixture::new("two-images", "hwp");
+    write_png(&fixture.dir, "logo.png");
+    let image = json!([{"type":"image","path":"logo.png","width_mm":10}]);
+    let before = read(&fixture.base);
+    let (first, run) = fixture.edit(
+        &fixture.base,
+        "first-image",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            image.clone()
+        )]),
+        false,
+    );
+    success(run, "first image insertion");
+    let middle = read(&first);
+    let (second, run) = fixture.edit(
+        &first,
+        "second-image",
+        json!([insert(
+            at(&middle, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            image
+        )]),
+        false,
+    );
+    success(
+        run,
+        "second image insertion into an output that already holds a picture",
+    );
+    validates(&second);
+    let after = read(&second);
+    let ids: Vec<u32> = pictures_of(&after)
+        .iter()
+        .map(|p| common_id(&p.common_data))
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_distinct(&ids, "picture");
+}
+
+#[test]
+fn equation_blocks_insert_into_hwpx_and_refuse_for_hwp_output() {
+    let blocks = json!([{"type":"equation","script":"x^2+y^2"},
+        {"type":"paragraph","style":"body","runs":[{"type":"equation","script":"a over b"}]}]);
+    let fixture = Fixture::new("equation", "hwpx");
+    let before = read(&fixture.base);
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "equation",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            blocks.clone()
+        )]),
+        false,
+    );
+    success(run, "equation blocks into HWPX");
+    validates(&output);
+    let scripts: Vec<String> = doc_paragraphs(&read(&output))
+        .into_iter()
+        .flat_map(|p| &p.controls)
+        .filter_map(|c| match c {
+            Control::Generic(g) => g.equation.as_ref().map(|e| e.script.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(scripts, ["x^2+y^2", "a over b"]);
+
+    let fixture = Fixture::new("equation", "hwp");
+    let before = read(&fixture.base);
+    let diagnostic = fixture.refuse(
+        &fixture.base.clone(),
+        "equation-hwp",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            blocks
+        )]),
+        false,
+    );
+    assert!(
+        diagnostic.contains("수식") && diagnostic.contains("HWPX"),
+        "the HWP refusal must name the equation and the HWPX remedy: {diagnostic}"
+    );
+}
+
+#[test]
+fn image_assets_stay_inside_the_ops_directory_and_leave_the_file_untouched_on_refusal() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("asset-refusals", extension);
+        let source = fixture.base.clone();
+        let before = read(&source);
+        for (label, path) in [
+            ("parent", "../logo.png"),
+            ("absolute", "/etc/hosts"),
+            ("missing", "absent.png"),
+        ] {
+            let diagnostic = fixture.refuse(
+                &source,
+                label,
+                json!([insert(
+                    at(&before, ANCHOR),
+                    "after",
+                    "create",
+                    json!({}),
+                    json!([block("body", "Not partially published."),
+                           {"type":"image","path":path,"width_mm":10}])
+                )]),
+                false,
+            );
+            assert!(
+                !diagnostic.contains("insert_blocks는 현재"),
+                "{label}: images are supported now, only this asset is refused: {diagnostic}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_table_inside_cell_target_and_oversize_table_follow_the_cell_width() {
+    let fixture = Fixture::new("cell-width", "hwpx");
+    let before = read(&fixture.base);
+    let id = para_id(&fixture.base, CELL);
+    let wide = json!([{"type":"table","columns":[{"width_mm":90}],
+        "rows":[{"cells":[{"blocks":[block("body","Too wide for a 40 mm cell.")]}]}]}]);
+    let diagnostic = fixture.refuse(
+        &fixture.base.clone(),
+        "wide",
+        json!([insert(json!({"id":id}), "after", "create", json!({}), wide)]),
+        false,
+    );
+    assert!(diagnostic.contains("mm"), "{diagnostic}");
+    let narrow = json!([{"type":"table","columns":[{"width_mm":20}],
+        "rows":[{"cells":[{"blocks":[block("body","Fits the cell.")]}]}]}]);
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "narrow",
+        json!([insert(
+            json!({"id":id}),
+            "after",
+            "create",
+            json!({}),
+            narrow
+        )]),
+        false,
+    );
+    success(run, "narrow table inside the cell");
+    validates(&output);
+    assert_eq!(
+        tables_of(&read(&output)).len(),
+        tables_of(&before).len() + 1
+    );
+}
+
+#[test]
+fn inserted_table_borders_come_from_the_target_header_not_compose_fill_three() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("border-fill", extension);
+        // Move the bordered fill away from compose's id 3 so a hardcoded id draws no borders,
+        // and drop every other bordered fill so the target has none to reuse.
+        let mut doc = read(&fixture.base);
+        let bordered = |fill: &hwp_model::BorderFill| fill.sides.iter().all(|s| s.line_type == 1);
+        doc.header.border_fills.retain(|fill| !bordered(fill));
+        assert!(doc.header.border_fills.len() >= 3);
+        for table in doc
+            .sections
+            .iter_mut()
+            .flat_map(|s| &mut s.paragraphs)
+            .flat_map(|p| &mut p.controls)
+            .filter_map(|c| {
+                if let Control::Table(t) = c {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+        {
+            table.border_fill = hwp_model::BorderFillId(1);
+            table
+                .cells
+                .iter_mut()
+                .for_each(|c| c.border_fill = hwp_model::BorderFillId(1));
+        }
+        let source = fixture.path("no-borders");
+        if extension == "hwp" {
+            hwp5::write_document(&doc, &source, &hwp5::write::WriteOptions::default()).unwrap();
+        } else {
+            hwpx::write_document(&doc, &source).unwrap();
+        }
+        let before = read(&source);
+        assert!(before.header.border_fills.iter().all(|f| !bordered(f)));
+        let (output, run) = fixture.edit(
+            &source,
+            "bordered",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                json!([{"type":"table","columns":[{"width_mm":30}],"rows":[{"cells":[{"blocks":[block("body","Bordered.")]}]}]}])
+            )]),
+            false,
+        );
+        success(run, "table insertion into a target without a bordered fill");
+        validates(&output);
+        let after = read(&output);
+        let inserted = tables_of(&after)
+            .into_iter()
+            .find(|t| {
+                t.cells
+                    .iter()
+                    .flat_map(|c| &c.paragraphs)
+                    .any(|p| p.plain_text() == "Bordered.")
+            })
+            .unwrap();
+        let fill = &after.header.border_fills[usize::from(inserted.border_fill.0) - 1];
+        assert!(bordered(fill), "{extension}: inserted table fill {fill:?}");
+        assert_eq!(
+            after.header.border_fills.len(),
+            before.header.border_fills.len() + 1,
+            "{extension}: exactly one bordered fill is appended, none rewritten"
+        );
+    }
+}
+
+// ---- #428 T3 review round 1 (T21-F1, T21-F3) ----
+
+#[test]
+fn content_inside_an_inserted_table_cell_is_measured_against_that_cell() {
+    // The cell is 30 mm wide minus 510+510 HWPUNIT of margins (about 3.6 mm): 26.4 mm usable.
+    let cases = [
+        (
+            "image",
+            json!({"type":"image","path":"logo.png","width_mm":100}),
+        ),
+        (
+            "nested-table",
+            json!({"type":"table","columns":[{"width_mm":100}],
+                "rows":[{"cells":[{"blocks":[block("body","Too wide.")]}]}]}),
+        ),
+    ];
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("cell-content", extension);
+        write_png(&fixture.dir, "logo.png");
+        let source = fixture.base.clone();
+        let before = read(&source);
+        for (label, content) in &cases {
+            let blocks = json!([{"type":"table","columns":[{"width_mm":30}],
+                "rows":[{"cells":[{"blocks":[content]}]}]}]);
+            let diagnostic = fixture.refuse(
+                &source,
+                &format!("wide-{label}"),
+                json!([insert(
+                    at(&before, ANCHOR),
+                    "after",
+                    "create",
+                    json!({}),
+                    blocks
+                )]),
+                false,
+            );
+            assert!(
+                diagnostic.contains("mm") && diagnostic.contains("layout_overflow"),
+                "{extension} {label}: an oversized block in a 30 mm cell must name the overflow: {diagnostic}"
+            );
+        }
+        // A block that fits the cell still inserts.
+        let fits = json!([{"type":"table","columns":[{"width_mm":30}],
+            "rows":[{"cells":[{"blocks":[{"type":"image","path":"logo.png","width_mm":20}]}]}]}]);
+        let (output, run) = fixture.edit(
+            &source,
+            "fits",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                fits
+            )]),
+            false,
+        );
+        success(run, "an image narrower than its cell");
+        validates(&output);
+    }
+}
+
+/// A cell's content width is its width minus the left and right inner margin (510 HWPUNIT
+/// each, about 3.6 mm together), not the cell width: 28 mm sits between 26.4 mm and 30 mm.
+#[test]
+fn a_cell_loses_its_side_margins_before_content_is_measured() {
+    let fixture = Fixture::new("cell-margin", "hwpx");
+    write_png(&fixture.dir, "logo.png");
+    let before = read(&fixture.base);
+    let table = |image_mm: u32| {
+        json!([{"type":"table","columns":[{"width_mm":30}],
+            "rows":[{"cells":[{"blocks":[{"type":"image","path":"logo.png","width_mm":image_mm}]}]}]}])
+    };
+    let diagnostic = fixture.refuse(
+        &fixture.base.clone(),
+        "margin-over",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table(28)
+        )]),
+        false,
+    );
+    assert!(diagnostic.contains("layout_overflow"), "{diagnostic}");
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "margin-under",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table(26)
+        )]),
+        false,
+    );
+    success(run, "an image inside the cell's usable width");
+    validates(&output);
+}
+
+#[test]
+fn spanned_cells_are_measured_by_their_column_span() {
+    let fixture = Fixture::new("cell-span", "hwpx");
+    write_png(&fixture.dir, "logo.png");
+    let before = read(&fixture.base);
+    // Two 30 mm columns: a spanning cell is 60 mm minus margins, so 50 mm fits and 70 mm does not.
+    let table = |image_mm: u32| {
+        json!([{"type":"table","columns":[{"width_mm":30},{"width_mm":30}],
+            "rows":[{"cells":[{"col_span":2,"blocks":[{"type":"image","path":"logo.png","width_mm":image_mm}]}]}]}])
+    };
+    let diagnostic = fixture.refuse(
+        &fixture.base.clone(),
+        "span-wide",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table(70)
+        )]),
+        false,
+    );
+    assert!(diagnostic.contains("layout_overflow"), "{diagnostic}");
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "span-fits",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table(50)
+        )]),
+        false,
+    );
+    success(run, "an image inside the span width");
+    validates(&output);
+}
+
+#[test]
+fn hwp_list_format_guard_sees_list_levels_used_only_inside_table_cells() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("list-in-cell", extension);
+        let before = read(&fixture.base);
+        let mut operation = insert(
+            at(&before, ANCHOR),
+            "after",
+            "refuse",
+            json!({}),
+            json!([{"type":"table","columns":[{"width_mm":60}],"rows":[{"cells":[{"blocks":[
+                {"type":"paragraph","style":"body","list":{"name":"ladder-ordered","level":1},
+                 "runs":[{"type":"text","text":"Ordered cell item."}]}
+            ]}]}]}]),
+        );
+        operation["lists"] = json!({"ladder-ordered":{"kind":"ordered","levels":[
+            {"marker":"{n}.","start":1},{"marker":"{n}.","start":1}]}});
+        if extension == "hwp" {
+            let diagnostic = fixture.refuse(
+                &fixture.base,
+                "cell-ordered-refused",
+                json!([operation]),
+                false,
+            );
+            assert!(
+                diagnostic.contains("ladder-ordered")
+                    && diagnostic.contains("HWPX")
+                    && diagnostic.contains("번호 형식"),
+                "a level-1 decimal list used only in a cell must be refused for HWP like a body one: {diagnostic}"
+            );
+        } else {
+            let (output, run) = fixture.edit(
+                &fixture.base,
+                "cell-ordered-inserted",
+                json!([operation]),
+                false,
+            );
+            success(run, "HWPX authors the numbering as written");
+            validates(&output);
+        }
+    }
+}
+
+fn column_def_of(doc: &Document) -> Option<hwp_model::ColumnDef> {
+    doc.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| &p.controls)
+        .find_map(|c| match c {
+            Control::Generic(g) => g.column_def.clone(),
+            _ => None,
+        })
+}
+
+/// The fixture with its section set to `count` equal columns separated by a 10 mm gap, written
+/// back in its own format. The 170 mm text column becomes (170 - 10 * (count - 1)) / count.
+fn columned(fixture: &Fixture, count: u16) -> PathBuf {
+    let mut doc = read(&fixture.base);
+    for control in doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|p| &mut p.controls)
+    {
+        if let Control::Generic(g) = control
+            && let Some(def) = &mut g.column_def
+        {
+            def.count = count;
+            def.same_width = true;
+            def.gap = 2835;
+            def.widths.clear();
+            // The HWP5 writer emits the raw payload, not the model: attr (count in bits 2..10,
+            // same-width in bit 12) then the gap (spec table 138 layout, read back by
+            // `parse_coldef`), padded to the 12 bytes the writer's own default uses.
+            let attr: u16 = (count << 2) | (1 << 12);
+            g.data = [
+                attr.to_le_bytes().as_slice(),
+                &2835i16.to_le_bytes(),
+                &[0u8; 8],
+            ]
+            .concat();
+        }
+    }
+    let path = fixture.path("columned");
+    if fixture.extension == "hwp" {
+        hwp5::write_document(&doc, &path, &hwp5::write::WriteOptions::default()).unwrap();
+    } else {
+        hwpx::write_document(&doc, &path).unwrap();
+    }
+    let def = column_def_of(&read(&path)).expect("the column definition survives a rewrite");
+    assert_eq!(def.count, count, "{}: fixture columns", fixture.extension);
+    path
+}
+
+#[test]
+fn blocks_are_measured_against_the_target_column_of_a_multi_column_section() {
+    let wide_table = json!([{"type":"table","columns":[{"width_mm":120}],
+        "rows":[{"cells":[{"blocks":[block("body","Too wide for 80 mm.")]}]}]}]);
+    let fits = json!([{"type":"table","columns":[{"width_mm":70}],
+        "rows":[{"cells":[{"blocks":[block("body","Fits 80 mm.")]}]}]}]);
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("two-columns", extension);
+        write_png(&fixture.dir, "logo.png");
+        let source = columned(&fixture, 2);
+        let before = read(&source);
+        let wide_image = json!([{"type":"image","path":"logo.png","width_mm":120}]);
+        for (label, blocks) in [("table", &wide_table), ("image", &wide_image)] {
+            let diagnostic = fixture.refuse(
+                &source,
+                &format!("column-wide-{label}"),
+                json!([insert(
+                    at(&before, ANCHOR),
+                    "after",
+                    "create",
+                    json!({}),
+                    blocks.clone()
+                )]),
+                false,
+            );
+            assert!(
+                diagnostic.contains("layout_overflow") && diagnostic.contains("80."),
+                "{extension} {label}: a 120 mm block in an 80 mm column must name the column width: {diagnostic}"
+            );
+        }
+        let (output, run) = fixture.edit(
+            &source,
+            "column-fits",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                fits.clone()
+            )]),
+            false,
+        );
+        success(run, "a table narrower than the column");
+        validates(&output);
+        // The same 120 mm table is fine in the one-column original.
+        let single = read(&fixture.base);
+        let (_, run) = fixture.edit(
+            &fixture.base,
+            "single-wide",
+            json!([insert(
+                at(&single, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                wide_table.clone()
+            )]),
+            false,
+        );
+        success(run, "a 120 mm table in a single 170 mm column");
+    }
+}
+
+/// The fixture with its page rotated the way genuine landscape forms store it: portrait
+/// dimensions and PAGE_DEF attr bit 0 set, which `hwp-render` reads as a 297 mm wide paper.
+fn landscape(fixture: &Fixture) -> PathBuf {
+    let mut doc = read(&fixture.base);
+    for control in doc.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|p| &mut p.controls)
+    {
+        if let Control::SectionDef(def) = control
+            && let Some(page) = &mut def.page
+        {
+            let (w, h) = (
+                page.width.0.min(page.height.0),
+                page.width.0.max(page.height.0),
+            );
+            page.width = hwp_model::HwpUnit(w);
+            page.height = hwp_model::HwpUnit(h);
+            page.attr |= 1;
+        }
+    }
+    let path = fixture.path("landscape");
+    if fixture.extension == "hwp" {
+        hwp5::write_document(&doc, &path, &hwp5::write::WriteOptions::default()).unwrap();
+    } else {
+        hwpx::write_document(&doc, &path).unwrap();
+    }
+    let page = read(&path).sections[0].section_def().unwrap().page.unwrap();
+    assert_eq!(
+        page.attr & 1,
+        1,
+        "{}: the landscape bit survives",
+        fixture.extension
+    );
+    path
+}
+
+#[test]
+fn landscape_pages_measure_against_the_rotated_paper() {
+    // Body widths: portrait 170 mm, landscape 297 - 40 = 257 mm.
+    let table = |mm: u32| {
+        json!([{"type":"table","columns":[{"width_mm":mm}],
+            "rows":[{"cells":[{"blocks":[block("body","Wide form table.")]}]}]}])
+    };
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("landscape", extension);
+        let source = landscape(&fixture);
+        let before = read(&source);
+        let (output, run) = fixture.edit(
+            &source,
+            "landscape-fits",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                table(240)
+            )]),
+            false,
+        );
+        success(run, "a 240 mm table on a landscape page");
+        validates(&output);
+        let diagnostic = fixture.refuse(
+            &source,
+            "landscape-wide",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                table(270)
+            )]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("layout_overflow") && diagnostic.contains("257"),
+            "{extension}: a 270 mm table must name the 257 mm landscape body: {diagnostic}"
+        );
+        // The same 240 mm table is too wide for the portrait original.
+        let portrait = read(&fixture.base);
+        fixture.refuse(
+            &fixture.base.clone(),
+            "portrait-wide",
+            json!([insert(
+                at(&portrait, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                table(240)
+            )]),
+            false,
+        );
+    }
+}
+
+// ---- #428 T3 review round 4 (T21-F8) ----
+
+/// The fixture with its table's inner margins and its first cell's margins rewritten, written
+/// back in its own format. Returns the path and the cell's width in HWPUNIT.
+fn with_cell_margins(
+    fixture: &Fixture,
+    stem: &str,
+    cell: [u16; 4],
+    table_inner: [u16; 4],
+) -> (PathBuf, i32) {
+    let mut doc = read(&fixture.base);
+    let mut width = 0;
+    for control in doc
+        .sections
+        .iter_mut()
+        .flat_map(|s| &mut s.paragraphs)
+        .flat_map(|p| &mut p.controls)
+    {
+        if let Control::Table(table) = control {
+            table.inner_margins = table_inner;
+            for (i, c) in table.cells.iter_mut().enumerate() {
+                c.margins = cell;
+                if i == 0 {
+                    width = c.width.0;
+                }
+            }
+        }
+    }
+    let path = fixture.path(stem);
+    if fixture.extension == "hwp" {
+        hwp5::write_document(&doc, &path, &hwp5::write::WriteOptions::default()).unwrap();
+    } else {
+        hwpx::write_document(&doc, &path).unwrap();
+    }
+    let reread = read(&path);
+    let Control::Table(table) = reread
+        .sections
+        .iter()
+        .flat_map(|s| &s.paragraphs)
+        .flat_map(|p| &p.controls)
+        .find(|c| matches!(c, Control::Table(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        table.cells[0].margins, cell,
+        "{}: the cell margins survive the rewrite as written",
+        fixture.extension
+    );
+    (path, width)
+}
+
+fn mm_of(units: i32) -> f32 {
+    (f64::from(units) * 25.4 / 7200.0) as f32
+}
+
+#[test]
+fn a_cell_that_inherits_its_margins_accepts_text_and_measures_blocks_against_the_inherited_width() {
+    let max = u16::MAX;
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("inherit-margins", extension);
+        let (source, cell_width) =
+            with_cell_margins(&fixture, "inherit", [max; 4], [700, 800, 900, 1000]);
+        let usable = mm_of(cell_width - 700 - 800);
+        let before = read(&source);
+        let id = para_id(&source, CELL);
+        // Plain text: refused on 714bd1b (width of about -422 mm), accepted here.
+        let (output, run) = fixture.edit(
+            &source,
+            "inherit-text",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "Text in an inheriting cell.")])
+            )]),
+            false,
+        );
+        success(run, "text into a cell whose margins are inherited");
+        validates(&output);
+        // A table just under the inherited width fits, just over is refused naming the width.
+        let table = |mm: f32| {
+            json!([{"type":"table","columns":[{"width_mm":mm}],
+                "rows":[{"cells":[{"blocks":[block("body","Nested.")]}]}]}])
+        };
+        let (output, run) = fixture.edit(
+            &source,
+            "inherit-fits",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                table(usable - 0.5)
+            )]),
+            false,
+        );
+        success(run, "a table narrower than the inherited-margin width");
+        validates(&output);
+        let diagnostic = fixture.refuse(
+            &source,
+            "inherit-over",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                table(usable + 0.5)
+            )]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("layout_overflow"),
+            "{extension}: a table wider than the inherited width must be refused: {diagnostic}"
+        );
+        let _ = before;
+    }
+}
+
+#[test]
+fn a_cell_with_omitted_margins_uses_the_default_margins() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("omitted-margins", extension);
+        let (source, cell_width) = with_cell_margins(&fixture, "omitted", [0; 4], [0; 4]);
+        let usable = mm_of(cell_width - 510 - 510);
+        let id = para_id(&source, CELL);
+        let table = |mm: f32| {
+            json!([{"type":"table","columns":[{"width_mm":mm}],
+                "rows":[{"cells":[{"blocks":[block("body","Nested.")]}]}]}])
+        };
+        // Between the default-margin width and the bare cell width: only the margin-aware check
+        // refuses it.
+        let in_between = usable + 1.0;
+        assert!(
+            in_between < mm_of(cell_width),
+            "the probe stays inside the cell itself"
+        );
+        let diagnostic = fixture.refuse(
+            &source,
+            "omitted-over",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                table(in_between)
+            )]),
+            false,
+        );
+        assert!(
+            diagnostic.contains("layout_overflow"),
+            "{extension}: {diagnostic}"
+        );
+        let (output, run) = fixture.edit(
+            &source,
+            "omitted-fits",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                table(usable - 0.5)
+            )]),
+            false,
+        );
+        success(run, "a table inside the default-margin width");
+        validates(&output);
+    }
 }
