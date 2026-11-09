@@ -876,6 +876,106 @@ fn same_key_overlap_slot_first_hwpx_refuses() {
     same_key_inline_placeholder_cli_case("hwpx", false);
 }
 
+fn repeated_plan_report_case(extension: &str, bind: bool) {
+    let workspace = Workspace::new(&format!("repeat-report-{extension}-{bind}"));
+    let markdown = workspace.0.join("profile.md");
+    std::fs::write(
+        &markdown,
+        "# Profile\n\n| Label | Value |\n| --- | --- |\n| Name | {{name}} |\n\nAfter\n",
+    )
+    .unwrap();
+    let source = workspace.0.join(format!("source.{extension}"));
+    success(
+        &hwp()
+            .args(["new", "--from"])
+            .arg(markdown)
+            .arg("-o")
+            .arg(&source)
+            .output()
+            .unwrap(),
+        "repeat report source",
+    );
+    let catalogue = discovery(&source);
+    let target = catalogue["occurrences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "placeholder" && item["label"] == "name")
+        .unwrap();
+    let doc = if extension == "hwp" {
+        hwp5::read_document(&source).unwrap().document
+    } else {
+        hwpx::read_document(&source).unwrap().document
+    };
+    let index = doc.sections[0]
+        .paragraphs
+        .iter()
+        .position(|paragraph| paragraph.own_text().trim() == "After")
+        .unwrap();
+    let route = hwp_convert::SegmentPath {
+        section: 0,
+        indices: vec![index],
+    };
+    let anchor = hwp_convert::paragraph_id(&route, &doc.sections[0].paragraphs[index]);
+    let bindings = if bind {
+        json!([{"key":"name","targets":[{"occurrence_id":target["id"],"copies":[0,1,2],"max_chars":100,"allow_reflow":true}]}])
+    } else {
+        json!([])
+    };
+    let values = if bind {
+        json!({"name":"updated"})
+    } else {
+        json!({})
+    };
+    let output = workspace.0.join(format!("bound.{extension}"));
+    let request = json!({"input":source,"output":output,"apply_form_bindings":{
+        "plan":{"version":1,"source_sha256":catalogue["source_sha256"],"structural_sha256":catalogue["structural_sha256"],
+            "bindings":bindings,"repeats":[{"table_id":target["table_id"],"after_paragraph_id":anchor,
+                "copies":3,"profile_ids":["original","copy1","copy2"]}],"constraints":[]},
+        "values":values,"receipt":workspace.0.join("receipt.json"),"preview":workspace.0.join("preview.json")}});
+    let result = mcp_tool("hwp_edit", request);
+    assert_ne!(result["result"]["isError"], true, "{result}");
+    let report: Value =
+        serde_json::from_str(result["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let expected = if bind { 5 } else { 2 };
+    assert_eq!(
+        report["ops"][0]["pieces_touched"], expected,
+        "clones and replacements must both count"
+    );
+    assert_eq!(report["applied"], expected);
+    let envelope = json!({"schema_version":"1.0","contract":"hwp-edit-report-v1",
+        "output":report["output"],"dry_run":report["dry_run"],"ops":report["ops"],
+        "applied_count":1,"failed_count":0});
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .unwrap();
+    assert!(validator.is_valid(&envelope), "{envelope}");
+    let receipt: Value =
+        serde_json::from_slice(&std::fs::read(workspace.0.join("receipt.json")).unwrap()).unwrap();
+    assert_eq!(receipt["cloned_profiles"], 2);
+    assert_eq!(receipt["targets"], if bind { 3 } else { 0 });
+}
+
+#[test]
+fn clone_only_report_counts_hwp_pieces() {
+    repeated_plan_report_case("hwp", false);
+}
+#[test]
+fn clone_only_report_counts_hwpx_pieces() {
+    repeated_plan_report_case("hwpx", false);
+}
+#[test]
+fn mixed_clone_report_counts_hwp_pieces() {
+    repeated_plan_report_case("hwp", true);
+}
+#[test]
+fn mixed_clone_report_counts_hwpx_pieces() {
+    repeated_plan_report_case("hwpx", true);
+}
+
 fn mcp_tool(name: &str, arguments: Value) -> Value {
     let mut child = hwp()
         .arg("mcp")
