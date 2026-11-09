@@ -190,7 +190,7 @@
     "name": "hwp_render"
   },
   {
-    "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 이름 있는 스타일 배열은 다른 편집 배열보다 먼저 create_style/update_style/apply_style 순서로 실행한다. 다른 순서가 필요하면 CLI --ops 배열을 사용한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
+    "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 이름 있는 스타일 배열은 다른 편집 배열보다 먼저 create_style/update_style/apply_style 순서로 실행한다. 다른 순서가 필요하면 CLI --ops 배열을 사용한다. insert_blocks는 DocumentSpec 블록을 문단 주소 앞/뒤에 삽입하고(이미지는 base_dir 기준 상대 경로), 삽입된 문단·런 id를 report의 changed로 돌려준다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -406,6 +406,10 @@
           },
           "maxItems": 10000,
           "type": "array"
+        },
+        "base_dir": {
+          "description": "insert_blocks 이미지 블록의 상대 경로를 해석할 디렉터리(샌드박스 읽기 경로). 생략하면 이미지 블록은 거부된다",
+          "type": "string"
         },
         "clone_table": {
           "description": "N번째 표를 깊은 복제해 앵커 문단 뒤에 삽입(구조·병합·테두리·채우기·서식 보존)",
@@ -869,6 +873,80 @@
         },
         "input": {
           "type": "string"
+        },
+        "insert_blocks": {
+          "items": {
+            "additionalProperties": false,
+            "description": "DocumentSpec v1 블록(문단·목록·표·이미지·필드·수식·쪽/단 나누기)을 기존 문서의 문단 주소 앞/뒤에 삽입한다. 항목은 edit-ops-v1의 insert_blocks에서 op를 뺀 객체이며 blocks의 상세 형태는 schemas/document-spec-v1.schema.json의 block이다(표 셀 안에 블록이 재귀하므로 여기서는 펼치지 않는다). 삽입 결과의 문단·런 id는 report의 해당 op changed에 돌려준다",
+            "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "삽입 기준 문단 — id(체크섬 segment id, 드리프트 검사)와 at({section,paragraph}) 중 정확히 하나. 본문 또는 표 셀 문단이어야 한다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "blocks": {
+                "items": {
+                  "type": "object"
+                },
+                "maxItems": 20000,
+                "minItems": 1,
+                "type": "array"
+              },
+              "lists": {
+                "description": "DocumentSpec v1 lists 정의(블록의 list 이름마다 필요)",
+                "type": "object"
+              },
+              "missing_style": {
+                "default": "create",
+                "description": "대상 문서에 없는 스타일 이름: create는 styles 정의로 만들고, refuse는 문서를 바꾸지 않고 거부한다",
+                "enum": [
+                  "create",
+                  "refuse"
+                ],
+                "type": "string"
+              },
+              "position": {
+                "enum": [
+                  "before",
+                  "after"
+                ],
+                "type": "string"
+              },
+              "styles": {
+                "description": "DocumentSpec v1 styles 정의(대상 문서에 없는 이름에만 쓰인다)",
+                "type": "object"
+              }
+            },
+            "required": [
+              "address",
+              "position",
+              "blocks"
+            ],
+            "type": "object"
+          },
+          "type": "array"
         },
         "insert_image": {
           "description": "앵커 텍스트 뒤에 이미지(png/jpg/bmp/gif) 삽입(width_mm/height_mm 생략 시 원본 크기)",

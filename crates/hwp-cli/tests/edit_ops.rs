@@ -2494,7 +2494,7 @@ fn edit_report_schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "5352dedcffc86074bb97d254d7116e5fa59cf405336c95f52496a6561da9225a",
+        actual, "581763122648e559e6cb676c04c015fbdd355696bfa0e0fe6f4bc46ff6241e1a",
         "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
