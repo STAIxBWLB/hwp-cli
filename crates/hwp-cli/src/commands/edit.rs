@@ -531,10 +531,21 @@ pub struct OpOutcome {
     status: OpStatus,
     pieces_touched: usize,
     changed: Vec<IdPair>,
+    /// How many pairs the op produced, present only when `changed` was cut to
+    /// [`CHANGED_CAP`]. Absent means `changed` is complete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_total: Option<usize>,
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_style: Option<hwp_cli::insert_blocks::MissingStylePolicy>,
 }
+
+/// `edit-report-v1` caps `ops[].changed` at this many items (`maxItems`). A valid
+/// `insert_blocks` request can publish more segments than that (one 100 x 50 table publishes
+/// 15,002), so the report keeps the first `CHANGED_CAP` pairs in document order and states
+/// the real count in `changed_total`, instead of emitting a report its own schema rejects. A
+/// coarser report cannot be bounded either: one request may carry 20,000 blocks.
+pub(crate) const CHANGED_CAP: usize = 10_000;
 
 /// `edit-report-v1`'s wire shape (schema_version/contract first, D-15's house convention) — a
 /// thin serialization view over [`EditReport`], which also carries fields (`warnings`,
@@ -1813,6 +1824,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Failed,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                changed_total: None,
                 missing_style: None,
                 reason: Some(failure_reason(operation)),
             });
@@ -1835,6 +1847,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Applied,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                changed_total: None,
                 missing_style: None,
                 reason: None,
             });
@@ -1854,6 +1867,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Failed,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                changed_total: None,
                 missing_style: None,
                 reason: Some("적용되지 않음 (사전 검증 단계에서 이미 확인됨)".to_string()),
             });
@@ -1871,12 +1885,16 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             TypedEditOperation::InsertBlocks { request, .. } => request.blocks.len(),
             _ => changed.len().max(1),
         };
+        let mut changed = changed;
+        let changed_total = (changed.len() > CHANGED_CAP).then_some(changed.len());
+        changed.truncate(CHANGED_CAP);
         ops_outcomes.push(OpOutcome {
             index,
             op,
             status: OpStatus::Applied,
             pieces_touched,
             changed,
+            changed_total,
             reason: None,
             missing_style: match operation {
                 TypedEditOperation::InsertBlocks { request, .. } => Some(request.missing_style),
@@ -2513,7 +2531,8 @@ fn default_shape_at(
 /// Structural ops (`insert_para`/`delete_para`/`move_para`) use the same private helpers
 /// (`move_to_index`, `moved_paragraph_path`) as their `apply_typed_operation` arms, so
 /// the ids describe the state immediately after this op, `insert_blocks` included (one creation
-/// pair per inserted paragraph). Every
+/// pair per segment `hwp cat --segments v2` publishes inside the inserted paragraphs; the caller
+/// cuts the list to the schema's cap and records the real count). Every
 /// non-structural addressed kind uses
 /// `target_current_path` directly (already correct for any EARLIER structural op in the batch,
 /// since none of these kinds change list length themselves).
@@ -3025,6 +3044,7 @@ fn fast_path_outcomes(plan: &EditPlan, matched: &[bool]) -> Vec<OpOutcome> {
             },
             pieces_touched: usize::from(matched),
             changed: Vec::new(),
+            changed_total: None,
             missing_style: None,
             reason: (!matched).then(|| failure_reason(operation)),
         })

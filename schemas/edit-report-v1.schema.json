@@ -70,6 +70,11 @@
           "enum": ["create", "refuse"],
           "description": "Selected missing-style policy for applied insert_blocks only; omitted for every other outcome. The request defaults to create. This is policy metadata, not a failure reason."
         },
+        "changed_total": {
+          "type": "integer",
+          "minimum": 10001,
+          "description": "Present only when this op produced more id pairs than the 10000 that `changed` may carry: the real number of pairs. `changed` then holds the first 10000 in document order and the rest are not listed; they are still addressable, because every id is the one `hwp cat --segments v2` publishes for the output. Absent means `changed` is complete. A valid insert_blocks request can exceed the cap (for example one 100 x 50 table publishes 15002 segments: the paragraph, the table, and a cell, a cell paragraph and a run for each of its 5000 cells), and this field keeps the report valid instead of dropping the edit's id list silently."
+        },
         "reason": {
           "type": ["string", "null"],
           "description": "Populated only when status is \"failed\"; null when applied. A fixed, content-free label: usually `<op>: <cause>`, naming the op kind and the failure class (for example `replace: no match`, `create_field: anchor not found`), and a fixed notice for an op whose miss preflight already reported (an unresolved `set_cell_by_label` label). It never repeats the request's patterns, replacement strings, anchors, names or urls, nor any document text (#348). Its wording may change between releases; match on `op` and `status`, not on this text."
