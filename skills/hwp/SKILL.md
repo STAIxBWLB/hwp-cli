@@ -208,6 +208,42 @@ validate-plus-render guard sequence.
 The analyze, edit-one-section and guard workflows below were run verbatim against `fixtures/samples/report-tables.hwpx`
 (hwp 0.12.1, 2026-08-29) before being written down.
 
+### Original-form workflow
+
+When a native HWP/HWPX form is supplied, edit that form; use Markdown when reauthoring is
+intended. Before starting, check `hwp --version` against the
+[versioned capability evidence](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/original-form-capabilities-v1.json).
+Treat the complete #417-#420 workflow as main/unreleased; do not assume released v1.4.0 supports
+`document.original_form` certification.
+
+Follow the [canonical original-form workflow](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/editing-recipes.md#original-form-workflow):
+
+1. Discover the source identity and exact occurrences; extract the native range with its resource
+   and address report, then discover the extracted source again.
+2. Review explicit bindings, copies, numeric constraints and growth budgets; dry-run, inspect the
+   local preview, then fill/repeat against the same reviewed source bytes.
+3. Refresh addresses, apply style and pagination, and repeat indentation to check idempotence.
+4. Validate and certify the delivered artifact with pinned fonts and reviewed expectations;
+   inspect rendering, then obtain separate person-run Hancom reopen/export evidence before any
+   native-compatibility claim.
+
+Use JSON files with `--ops OPS.json` (or `--ops -`) for literal values containing delimiters or
+leading hyphens. Keep discovery text, plans and exact previews local; retain extraction, binding
+and certification receipts. An empty loss ledger or `render-report.complete` does not establish
+visual correctness. Read the canonical recipe before manipulating IR character arrays or
+exporting resources; self-contained JSON requires `convert --to json --embed-bin`.
+
+For MCP, `hwp_read` has legacy markdown `with_segments` only, not CLI segments v2. Use advertised
+addresses; send one `apply_form_bindings` object, not an array, and no `verify` property.
+MCP `insert_para` has no inline `style`/`char`: refresh the inserted heading's address, then use
+an advertised `apply_style` request. MCP `hwp_render` has no `report`/`layout_json` arguments;
+export typed layout/report artifacts through the CLI. MCP `hwp_certify` still publishes its own
+policy/render evidence.
+
+If this installation contains only `SKILL.md` (Quick/web), use the absolute recipe link above,
+or run `hwp skill export -o ./hwp-guide` to materialize the bundled references and capability JSON.
+Full exports also provide the [local recipe](references/editing-recipes.md#original-form-workflow).
+
 ### Analyze a document
 
 One "what is in this document" pass: package inventory, then text with source coordinates,

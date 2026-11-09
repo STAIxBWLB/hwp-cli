@@ -1,0 +1,1926 @@
+{
+  "contract": "hwp-original-form-capabilities-v1",
+  "version": 1,
+  "availability": {
+    "status": "main_unreleased",
+    "checked_stable_release": "v1.4.0",
+    "complete_workflow_in_checked_stable": false,
+    "implementation_commit": "a2397e05c4e4f3848e18a868b5cf75501c7e8097"
+  },
+  "scope": {
+    "fixture_contract": "hwp-original-form-fixture-v1",
+    "generator": {
+      "path": "tools/generate_original_form_fixture.py",
+      "version": 1
+    },
+    "original_spec_sha256": "172b580a81528845f63fe3674115902cb47de09c89a457627780e28f502a7bdb",
+    "variant": {
+      "body_font_family": "NanumGothic",
+      "change_stage": "authoring spec before native source composition"
+    },
+    "native_binding_supported_inputs": [
+      "hwp",
+      "hwpx"
+    ],
+    "reference_binding_input": "hwpx",
+    "reference_conversion": "hwpx_to_hwp",
+    "native_open_evidence": "not_run"
+  },
+  "interfaces": {
+    "extraction": {
+      "cli": "hwp split --from --to --source-sha256 --range-report",
+      "mcp": "hwp_split"
+    },
+    "discovery": {
+      "cli": "hwp slots --forms --occurrences --json",
+      "mcp": "hwp_slots"
+    },
+    "binding": {
+      "cli": "hwp edit --ops",
+      "mcp": "hwp_edit.apply_form_bindings",
+      "mcp_shape": "exclusive object, not array; no verify property",
+      "requires_reviewed_json": true
+    },
+    "pagination": {
+      "cli": "set_break_before and set_indent_level in --ops",
+      "mcp": "hwp_edit.set_break_before / set_indent_level"
+    },
+    "certification": {
+      "cli": "hwp certify --policy --report",
+      "mcp": "hwp_certify"
+    }
+  },
+  "transport_limits": [
+    "MCP hwp_read provides legacy markdown with_segments, not CLI segments v2 or JSON with segments.",
+    "MCP insert_para does not expose inline style/char; use a separate apply_style call after refreshing the inserted address.",
+    "MCP hwp_render does not expose report/layout_json; export those artifacts with CLI. MCP certify still publishes policy/render evidence.",
+    "A binding request is exclusive and cannot be combined with style edits, report or allow_partial.",
+    "Same-format binding only; convert first and rediscover if changing native input format."
+  ],
+  "evidence_limits": [
+    "Owner-authored synthetic P0 variant only; no private or genuine raw-Hancom corpus is a reference input.",
+    "source_sha256 in an original_form plan is declared/echoed, not checked against a separately loaded source. Retain extraction and binding receipts.",
+    "Original-form certification checks expected values and table row/column dimensions, not a full source-to-output width/border/style/merge projection.",
+    "No person-run Hancom open/export, universal native-table PDF, portable golden pages, or pixel-parity evidence.",
+    "HWP retains one table_cell_content_overflow warning despite complete expected-text coverage and a passing selected policy; visual/native review remains separate.",
+    "This reference build has package version 1.4.0 but is unreleased main; version text alone does not establish feature availability.",
+    "Self-contained JSON re-entry was compared semantically on this fixture, not asserted byte-identical to the original native file or universal opaque-record preservation."
+  ],
+  "reference_run": {
+    "product": {
+      "version": "1.4.0",
+      "source_commit": "a2397e05c4e4f3848e18a868b5cf75501c7e8097",
+      "binary_sha256": "3be7a371f38607e2acdd45a5e12c42b49f3a94a97f0641c2c040d4aff5bd2d22",
+      "build_role": "unreleased_source_verification",
+      "toolchain": "Rust 1.93.0",
+      "platform": {
+        "os": "Linux",
+        "machine": "x86_64"
+      }
+    },
+    "source_sha256": "9b1e76bcc1194719da7079282ab45cf6cc62e62e1d68ef4f1996d6b5b26be7bd",
+    "extracted_sha256": "b866ea0ad662f7687546e89581147bca891a6bd8807eb6ef471086cd44c91a3e",
+    "prepared_sha256": "e8269dd18088f51cf7c08bcce7054c42a1c100f5e149fa7283d71c0dd3bf469c",
+    "extraction": {
+      "dropped_by_format": [],
+      "excluded": [
+        "BinData/image1.png"
+      ],
+      "kept": [
+        "BinData/image2.png"
+      ],
+      "kept_unverified": [],
+      "unverified_sites": []
+    },
+    "bindings": 20,
+    "constraints": 6,
+    "binding_targets": 41,
+    "cloned_profiles": 3,
+    "profile_copies_including_original": 4,
+    "binding_receipt": {
+      "source_sha256": "e8269dd18088f51cf7c08bcce7054c42a1c100f5e149fa7283d71c0dd3bf469c",
+      "plan_sha256": "44887bad551f4d3408b4bc2dbac5fb2452e7f03bff36532810e470b787f4b064",
+      "values_sha256": "c069b37ba269760c7a7537a2501e9af29094c9fb6511e984d836aa3ff5870e4a",
+      "output_sha256": "30ee2a54fe253d6961c63883b7057896e3491a675bcee3cf25df23259d455b94",
+      "published": true,
+      "semantic_budget": "selected_text_and_declared_clones_only",
+      "native_warning_count": 0
+    },
+    "dry_run_published": false,
+    "indent_repeat": {
+      "pieces_touched": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "native_bytes_identical": true,
+      "semantic_identical": true
+    },
+    "outputs": [
+      {
+        "format": "hwpx",
+        "native_sha256": "4dbbcd39703724d5e2e4daee4dbbca97165befd9b67a05581637d3d28e386733",
+        "pdf_sha256": "806f88a12fa3c80881c6f00a78ae2a2b7e6c9855f3f360ef9fe8cb6191e0694e",
+        "certificate_sha256": "22a6d38491df75d1b0a2e01e64088b118d799e7dcd50899063a9a0e967558bea",
+        "certificate_overall": "passed",
+        "original_form_status": "passed",
+        "limited": false,
+        "expected_cells": 134,
+        "form_starts": 6,
+        "form_start_pages": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "page_count": 6,
+        "plan_sha256": "80da6cabaffff4190ea79143c93fd4b5900cb3d780a9a8073978580e2557b715",
+        "policy_sha256": "c79568ce7482863d948d8effc029898bd8956e15eaf79493750b06db694f943e",
+        "pinned_fonts": [
+          {
+            "sha256": "454eb3f503f377782a99eb84fc4bb7dde22a0f075d41b47427737f2985053bc9",
+            "face_index": 0,
+            "outcome": "matched"
+          },
+          {
+            "sha256": "48a28e97b34fc8e5b157657633670cd1b7de126cfc414da65ce9c3d5bc8be733",
+            "face_index": 0,
+            "outcome": "matched"
+          }
+        ],
+        "render_issues": [],
+        "mcp_certificate_overall": "passed",
+        "outside_page_bounds_detected_count": 0,
+        "possible_collision_detected_count": 0
+      },
+      {
+        "format": "hwp",
+        "native_sha256": "2f94068771a348909f2dd431f6ca7423e43c0dd05929cf819a53ad128415f39a",
+        "pdf_sha256": "f4522f1caa0e2df372ffc2118d2051643b610e52ae8d9a806159de799a9e3dcf",
+        "certificate_sha256": "7cc713639fd433289c0c838e0a11256e84c742928ac304537aebd469599bf554",
+        "certificate_overall": "passed",
+        "original_form_status": "passed",
+        "limited": false,
+        "expected_cells": 134,
+        "form_starts": 6,
+        "form_start_pages": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "page_count": 6,
+        "plan_sha256": "5653e966d879b36967d417d3ddd1379c67ed8985f0425006bb8a43f6cbf43465",
+        "policy_sha256": "17ecdd8aaa4ebbb028270eaf85b9a3642d2922bf750706d1fa1ad359c106d55c",
+        "pinned_fonts": [
+          {
+            "sha256": "454eb3f503f377782a99eb84fc4bb7dde22a0f075d41b47427737f2985053bc9",
+            "face_index": 0,
+            "outcome": "matched"
+          },
+          {
+            "sha256": "48a28e97b34fc8e5b157657633670cd1b7de126cfc414da65ce9c3d5bc8be733",
+            "face_index": 0,
+            "outcome": "matched"
+          }
+        ],
+        "render_issues": [
+          {
+            "code": "table_cell_content_overflow",
+            "severity": "warning",
+            "count": 1
+          }
+        ],
+        "mcp_certificate_overall": "passed",
+        "outside_page_bounds_detected_count": 0,
+        "possible_collision_detected_count": 0
+      }
+    ],
+    "mcp": {
+      "tool_calls": 22,
+      "all_passed": true,
+      "native_bytes_identical_to_cli": {
+        "hwpx": true,
+        "hwp": true
+      },
+      "tool_sequence": [
+        "hwp_slots",
+        "hwp_read",
+        "hwp_split",
+        "hwp_edit",
+        "hwp_edit",
+        "hwp_slots",
+        "hwp_edit",
+        "hwp_edit",
+        "hwp_read",
+        "hwp_edit",
+        "hwp_edit",
+        "hwp_slots",
+        "hwp_edit",
+        "hwp_slots",
+        "hwp_edit",
+        "hwp_compare",
+        "hwp_validate",
+        "hwp_convert",
+        "hwp_render",
+        "hwp_certify",
+        "hwp_render",
+        "hwp_certify"
+      ]
+    },
+    "hancom_open_export": "not_run",
+    "auxiliary_checks": {
+      "self_contained_json": {
+        "cli_semantic_identical": true,
+        "native_tables": 6,
+        "retained_image_controls": 1,
+        "mcp_calls_passed": 4,
+        "mcp_native_bytes_identical_to_cli": true,
+        "reentry_cli": "hwp new --from",
+        "reentry_mcp": "hwp_new.json"
+      }
+    }
+  },
+  "reference_inputs": {
+    "prepare-headings.json": [
+      {
+        "op": "insert_para",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 8
+          }
+        },
+        "text": "FORM_START_PROFILE_2",
+        "before": false
+      }
+    ],
+    "prepare-style.json": [
+      {
+        "op": "apply_style",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 9
+          }
+        },
+        "style": "heading",
+        "clear_direct": true
+      }
+    ],
+    "binding.ops.json": [
+      {
+        "op": "apply_form_bindings",
+        "plan": {
+          "version": 1,
+          "source_sha256": "e8269dd18088f51cf7c08bcce7054c42a1c100f5e149fa7283d71c0dd3bf469c",
+          "structural_sha256": "7820dad01c6d233520cc0451765558daa1d408bb36ff2550813d4e71816d480f",
+          "bindings": [
+            {
+              "key": "course.name",
+              "targets": [
+                {
+                  "occurrence_id": "occ-d9fda2eefb9f7142424e2bf5bb301e94727ba85cec8e8357e60727d08c2e292d",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                },
+                {
+                  "occurrence_id": "occ-127e40fd4324013db023e388da4ee469c38397ba6f01672b43f2bd52b72710ae",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                },
+                {
+                  "occurrence_id": "occ-e241dd9e189e84e01a2ea44ac5925993c4eaf8b30e84ac6175b85bca5fc54800",
+                  "copies": [
+                    0,
+                    1,
+                    2,
+                    3
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "course.year",
+              "targets": [
+                {
+                  "occurrence_id": "occ-c3f710f785da98fcc2d269a6901024b722bb5577fabf43ff332c522625f88ec7",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                },
+                {
+                  "occurrence_id": "occ-791e672beb557904a53b8339da4ec7cba3d2d6c16515e47bc3270f93b7c7df73",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                },
+                {
+                  "occurrence_id": "occ-579947ab6519c5bfe0942462b0dc9bf3c4f97365137a3c45420547823af2afd2",
+                  "copies": [
+                    0,
+                    1,
+                    2,
+                    3
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "total.hours",
+              "targets": [
+                {
+                  "occurrence_id": "occ-4baadb5efb4219cd81cd4004e6edb91b828542fe7757cfa1c6c89f9929a90b70",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                },
+                {
+                  "occurrence_id": "occ-ee3e76e11dad6c17573c52598b1162b2831a54f6c50190ef95d897ea3fd24a94",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                },
+                {
+                  "occurrence_id": "occ-cda753c6b95fd00ba5ffb5ef642e34510424c35135b18630d503ac607766775f",
+                  "copies": [
+                    0,
+                    1,
+                    2,
+                    3
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "profile.name.1",
+              "targets": [
+                {
+                  "occurrence_id": "occ-8c70c7952ece884644091c6248d2e24a8f302ce3d990c11e96acdf8d38882bd3",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "profile.name.2",
+              "targets": [
+                {
+                  "occurrence_id": "occ-8c70c7952ece884644091c6248d2e24a8f302ce3d990c11e96acdf8d38882bd3",
+                  "copies": [
+                    1
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "profile.name.3",
+              "targets": [
+                {
+                  "occurrence_id": "occ-8c70c7952ece884644091c6248d2e24a8f302ce3d990c11e96acdf8d38882bd3",
+                  "copies": [
+                    2
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "profile.name.4",
+              "targets": [
+                {
+                  "occurrence_id": "occ-8c70c7952ece884644091c6248d2e24a8f302ce3d990c11e96acdf8d38882bd3",
+                  "copies": [
+                    3
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "profile.objective",
+              "targets": [
+                {
+                  "occurrence_id": "occ-74db4aa917d9f67d1c9966cb03535c87a6e7d0782703337d622c36ae9eae7868",
+                  "copies": [
+                    0,
+                    1,
+                    2,
+                    3
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "profile.continuation",
+              "targets": [
+                {
+                  "occurrence_id": "occ-7b988fa5807ae624c558a49cb3fbad65a02e2a340228ac6bcd2ea103e2abfd28",
+                  "copies": [
+                    0,
+                    1,
+                    2,
+                    3
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.a.lecture",
+              "targets": [
+                {
+                  "occurrence_id": "occ-435c987a48f35095df3c04f0da798ab1a17fd76fce973fb0515c171e4717aaed",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.a.practice",
+              "targets": [
+                {
+                  "occurrence_id": "occ-ef5b286c9437580d432b3a00f59fbb487978ca10cb1c8b9fca87da7ce4ab7665",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.a.subtotal",
+              "targets": [
+                {
+                  "occurrence_id": "occ-81f6c3901b1ecbbe18b4188ef139a76e2e655d0de34825a3065591ed3804ac77",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.b.lecture",
+              "targets": [
+                {
+                  "occurrence_id": "occ-b3d53d509615ef77e911eb980e174dfbd1ae90af365b773f56f12498ac8d216d",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.b.practice",
+              "targets": [
+                {
+                  "occurrence_id": "occ-51994a72acd3ea86081cdcf33996da8228dbc676a67195658d271ab99acd7760",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.b.subtotal",
+              "targets": [
+                {
+                  "occurrence_id": "occ-0d862d77b06c7af20d923d26c37fb74a7191e2dd7b5626b273c485a20ce0d01a",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.c.lecture",
+              "targets": [
+                {
+                  "occurrence_id": "occ-8e0df84cc9dfac2cd64af1def33d9236e939ee9529870d89189ec8fb7b0dfeca",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.c.practice",
+              "targets": [
+                {
+                  "occurrence_id": "occ-4069e2d48b82950bae9e2b52aed1c6811a025e0c23f22047b8ed6f9d0e4857ed",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "module.c.subtotal",
+              "targets": [
+                {
+                  "occurrence_id": "occ-ba0a4fd301f55f91a4667a1502d38366f9fba36cc727dfdab885ca47456e0fd3",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "lecture.total",
+              "targets": [
+                {
+                  "occurrence_id": "occ-863167e4a1c1e116fee95d026dc5d72e23d2b02907a64c14189b542620655d7a",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            },
+            {
+              "key": "practice.total",
+              "targets": [
+                {
+                  "occurrence_id": "occ-d6014cbf04dc349444686245ac8271d9b1bb97e383e34be6f9b0ea3953eff788",
+                  "copies": [
+                    0
+                  ],
+                  "max_chars": 100,
+                  "allow_reflow": true
+                }
+              ]
+            }
+          ],
+          "repeats": [
+            {
+              "table_id": "63465554750b7b5e.0.8.0",
+              "after_paragraph_id": "e39757bec6a40280.0.9",
+              "copies": 4,
+              "profile_ids": [
+                "profile-1",
+                "profile-2",
+                "profile-3",
+                "profile-4"
+              ]
+            }
+          ],
+          "constraints": [
+            {
+              "kind": "sum",
+              "keys": [
+                "module.a.lecture",
+                "module.a.practice"
+              ],
+              "total": "module.a.subtotal"
+            },
+            {
+              "kind": "sum",
+              "keys": [
+                "module.b.lecture",
+                "module.b.practice"
+              ],
+              "total": "module.b.subtotal"
+            },
+            {
+              "kind": "sum",
+              "keys": [
+                "module.c.lecture",
+                "module.c.practice"
+              ],
+              "total": "module.c.subtotal"
+            },
+            {
+              "kind": "sum",
+              "keys": [
+                "module.a.lecture",
+                "module.b.lecture",
+                "module.c.lecture"
+              ],
+              "total": "lecture.total"
+            },
+            {
+              "kind": "sum",
+              "keys": [
+                "module.a.practice",
+                "module.b.practice",
+                "module.c.practice"
+              ],
+              "total": "practice.total"
+            },
+            {
+              "kind": "sum",
+              "keys": [
+                "lecture.total",
+                "practice.total"
+              ],
+              "total": "total.hours"
+            }
+          ]
+        },
+        "values": {
+          "course.name": "Reviewed Methods",
+          "course.year": "2031",
+          "total.hours": "90",
+          "profile.name.1": "Profile Alpha",
+          "profile.name.2": "Profile Beta",
+          "profile.name.3": "Profile Gamma",
+          "profile.name.4": "Profile Delta",
+          "profile.objective": "Reviewed objective.",
+          "profile.continuation": "   Nested item: original wording remains unchanged.",
+          "module.a.lecture": "20",
+          "module.a.practice": "10",
+          "module.a.subtotal": "30",
+          "module.b.lecture": "22",
+          "module.b.practice": "8",
+          "module.b.subtotal": "30",
+          "module.c.lecture": "18",
+          "module.c.practice": "12",
+          "module.c.subtotal": "30",
+          "lecture.total": "60",
+          "practice.total": "30"
+        },
+        "receipt": "binding-receipt.json",
+        "preview": "binding-preview.json"
+      }
+    ],
+    "remaining-headings.json": [
+      {
+        "op": "insert_para",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 11
+          }
+        },
+        "text": "FORM_START_PROFILE_3",
+        "before": true
+      },
+      {
+        "op": "insert_para",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 12
+          }
+        },
+        "text": "FORM_START_PROFILE_4",
+        "before": true
+      }
+    ],
+    "remaining-style.json": [
+      {
+        "op": "apply_style",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 11
+          }
+        },
+        "style": "heading",
+        "clear_direct": true
+      },
+      {
+        "op": "apply_style",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 13
+          }
+        },
+        "style": "heading",
+        "clear_direct": true
+      }
+    ],
+    "pagination.ops.json": [
+      {
+        "op": "set_break_before",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 9
+          }
+        },
+        "value": "on"
+      },
+      {
+        "op": "set_break_before",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 11
+          }
+        },
+        "value": "on"
+      },
+      {
+        "op": "set_break_before",
+        "address": {
+          "at": {
+            "section": 0,
+            "paragraph": 13
+          }
+        },
+        "value": "on"
+      },
+      {
+        "op": "set_indent_level",
+        "address": {
+          "id": "53ac44c7a93c0bd2.0.8.0.10.1"
+        },
+        "level": 2,
+        "step": "5mm",
+        "hanging": "2mm"
+      },
+      {
+        "op": "set_indent_level",
+        "address": {
+          "id": "53ac44c7a93c0bd2.0.10.0.10.1"
+        },
+        "level": 2,
+        "step": "5mm",
+        "hanging": "2mm"
+      },
+      {
+        "op": "set_indent_level",
+        "address": {
+          "id": "53ac44c7a93c0bd2.0.12.0.10.1"
+        },
+        "level": 2,
+        "step": "5mm",
+        "hanging": "2mm"
+      },
+      {
+        "op": "set_indent_level",
+        "address": {
+          "id": "53ac44c7a93c0bd2.0.14.0.10.1"
+        },
+        "level": 2,
+        "step": "5mm",
+        "hanging": "2mm"
+      }
+    ],
+    "indent-repeat.ops.json": [
+      {
+        "op": "set_indent_level",
+        "address": {
+          "id": "92bd11c7fbea96ff.0.8.0.10.1"
+        },
+        "level": 2,
+        "step": "5mm",
+        "hanging": "2mm"
+      },
+      {
+        "op": "set_indent_level",
+        "address": {
+          "id": "92bd11c7fbea96ff.0.10.0.10.1"
+        },
+        "level": 2,
+        "step": "5mm",
+        "hanging": "2mm"
+      },
+      {
+        "op": "set_indent_level",
+        "address": {
+          "id": "92bd11c7fbea96ff.0.12.0.10.1"
+        },
+        "level": 2,
+        "step": "5mm",
+        "hanging": "2mm"
+      },
+      {
+        "op": "set_indent_level",
+        "address": {
+          "id": "92bd11c7fbea96ff.0.14.0.10.1"
+        },
+        "level": 2,
+        "step": "5mm",
+        "hanging": "2mm"
+      }
+    ],
+    "expect-hwpx.json": {
+      "contract": "hwp-original-form-certification-plan-v1",
+      "version": 1,
+      "source_sha256": "e8269dd18088f51cf7c08bcce7054c42a1c100f5e149fa7283d71c0dd3bf469c",
+      "output_sha256": "4dbbcd39703724d5e2e4daee4dbbca97165befd9b67a05581637d3d28e386733",
+      "table_count": 3,
+      "allowances": {
+        "repeated_tables": [
+          {
+            "id": "profiles.repeat",
+            "table": 2,
+            "extra_copies": 3
+          }
+        ]
+      },
+      "tables": [
+        {
+          "id": "table0.grid",
+          "table": 0,
+          "rows": 7,
+          "cols": 4
+        },
+        {
+          "id": "table1.grid",
+          "table": 1,
+          "rows": 10,
+          "cols": 4
+        },
+        {
+          "id": "table2.grid",
+          "table": 2,
+          "rows": 7,
+          "cols": 4
+        },
+        {
+          "id": "table3.grid",
+          "table": 3,
+          "rows": 7,
+          "cols": 4
+        },
+        {
+          "id": "table4.grid",
+          "table": 4,
+          "rows": 7,
+          "cols": 4
+        },
+        {
+          "id": "table5.grid",
+          "table": 5,
+          "rows": 7,
+          "cols": 4
+        }
+      ],
+      "form_starts": [
+        {
+          "id": "application",
+          "text": "FORM_START_APPLICATION",
+          "page_start": true,
+          "page": 1
+        },
+        {
+          "id": "development",
+          "text": "FORM_START_DEVELOPMENT",
+          "page_start": true,
+          "page": 2
+        },
+        {
+          "id": "profile.1",
+          "text": "FORM_START_PROFILE_1",
+          "page_start": true,
+          "page": 3
+        },
+        {
+          "id": "profile.2",
+          "text": "FORM_START_PROFILE_2",
+          "page_start": true,
+          "page": 4
+        },
+        {
+          "id": "profile.3",
+          "text": "FORM_START_PROFILE_3",
+          "page_start": true,
+          "page": 5
+        },
+        {
+          "id": "profile.4",
+          "text": "FORM_START_PROFILE_4",
+          "page_start": true,
+          "page": 6
+        }
+      ],
+      "expected_cells": [
+        {
+          "id": "table0.r0.c0",
+          "table": 0,
+          "row": 0,
+          "col": 0,
+          "text": "APPLICATION_FORM"
+        },
+        {
+          "id": "table0.r1.c0",
+          "table": 0,
+          "row": 1,
+          "col": 0,
+          "text": "Course"
+        },
+        {
+          "id": "table0.r1.c1",
+          "table": 0,
+          "row": 1,
+          "col": 1,
+          "text": "Reviewed Methods"
+        },
+        {
+          "id": "table0.r1.c2",
+          "table": 0,
+          "row": 1,
+          "col": 2,
+          "text": "Year"
+        },
+        {
+          "id": "table0.r1.c3",
+          "table": 0,
+          "row": 1,
+          "col": 3,
+          "text": "2031"
+        },
+        {
+          "id": "table0.r2.c0",
+          "table": 0,
+          "row": 2,
+          "col": 0,
+          "text": "Applicant"
+        },
+        {
+          "id": "table0.r2.c1",
+          "table": 0,
+          "row": 2,
+          "col": 1,
+          "text": "Sample Author"
+        },
+        {
+          "id": "table0.r2.c2",
+          "table": 0,
+          "row": 2,
+          "col": 2,
+          "text": "Hours"
+        },
+        {
+          "id": "table0.r2.c3",
+          "table": 0,
+          "row": 2,
+          "col": 3,
+          "text": "90"
+        },
+        {
+          "id": "table0.r3.c0",
+          "table": 0,
+          "row": 3,
+          "col": 0,
+          "text": "Emblem"
+        },
+        {
+          "id": "table0.r3.c1",
+          "table": 0,
+          "row": 3,
+          "col": 1,
+          "text": "Retained image cell marker"
+        },
+        {
+          "id": "table0.r4.c0",
+          "table": 0,
+          "row": 4,
+          "col": 0,
+          "text": "Signature"
+        },
+        {
+          "id": "table0.r4.c1",
+          "table": 0,
+          "row": 4,
+          "col": 1,
+          "text": "Signature area (leave unchanged)"
+        },
+        {
+          "id": "table0.r5.c0",
+          "table": 0,
+          "row": 5,
+          "col": 0,
+          "text": "Approval"
+        },
+        {
+          "id": "table0.r5.c1",
+          "table": 0,
+          "row": 5,
+          "col": 1,
+          "text": "Prepared by"
+        },
+        {
+          "id": "table0.r5.c2",
+          "table": 0,
+          "row": 5,
+          "col": 2,
+          "text": "Reviewed by"
+        },
+        {
+          "id": "table0.r5.c3",
+          "table": 0,
+          "row": 5,
+          "col": 3,
+          "text": "Approved by"
+        },
+        {
+          "id": "table0.r6.c1",
+          "table": 0,
+          "row": 6,
+          "col": 1,
+          "text": " "
+        },
+        {
+          "id": "table0.r6.c2",
+          "table": 0,
+          "row": 6,
+          "col": 2,
+          "text": " "
+        },
+        {
+          "id": "table0.r6.c3",
+          "table": 0,
+          "row": 6,
+          "col": 3,
+          "text": " "
+        },
+        {
+          "id": "table1.r0.c0",
+          "table": 1,
+          "row": 0,
+          "col": 0,
+          "text": "DEVELOPMENT_REPORT"
+        },
+        {
+          "id": "table1.r1.c0",
+          "table": 1,
+          "row": 1,
+          "col": 0,
+          "text": "Course"
+        },
+        {
+          "id": "table1.r1.c1",
+          "table": 1,
+          "row": 1,
+          "col": 1,
+          "text": "Reviewed Methods"
+        },
+        {
+          "id": "table1.r1.c2",
+          "table": 1,
+          "row": 1,
+          "col": 2,
+          "text": "Year"
+        },
+        {
+          "id": "table1.r1.c3",
+          "table": 1,
+          "row": 1,
+          "col": 3,
+          "text": "2031"
+        },
+        {
+          "id": "table1.r2.c0",
+          "table": 1,
+          "row": 2,
+          "col": 0,
+          "text": "Module"
+        },
+        {
+          "id": "table1.r2.c1",
+          "table": 1,
+          "row": 2,
+          "col": 1,
+          "text": "Lecture"
+        },
+        {
+          "id": "table1.r2.c2",
+          "table": 1,
+          "row": 2,
+          "col": 2,
+          "text": "Practice"
+        },
+        {
+          "id": "table1.r2.c3",
+          "table": 1,
+          "row": 2,
+          "col": 3,
+          "text": "Subtotal"
+        },
+        {
+          "id": "table1.r3.c0",
+          "table": 1,
+          "row": 3,
+          "col": 0,
+          "text": "Module A"
+        },
+        {
+          "id": "table1.r3.c1",
+          "table": 1,
+          "row": 3,
+          "col": 1,
+          "text": "20"
+        },
+        {
+          "id": "table1.r3.c2",
+          "table": 1,
+          "row": 3,
+          "col": 2,
+          "text": "10"
+        },
+        {
+          "id": "table1.r3.c3",
+          "table": 1,
+          "row": 3,
+          "col": 3,
+          "text": "30"
+        },
+        {
+          "id": "table1.r4.c0",
+          "table": 1,
+          "row": 4,
+          "col": 0,
+          "text": "Module B"
+        },
+        {
+          "id": "table1.r4.c1",
+          "table": 1,
+          "row": 4,
+          "col": 1,
+          "text": "22"
+        },
+        {
+          "id": "table1.r4.c2",
+          "table": 1,
+          "row": 4,
+          "col": 2,
+          "text": "8"
+        },
+        {
+          "id": "table1.r4.c3",
+          "table": 1,
+          "row": 4,
+          "col": 3,
+          "text": "30"
+        },
+        {
+          "id": "table1.r5.c0",
+          "table": 1,
+          "row": 5,
+          "col": 0,
+          "text": "Module C"
+        },
+        {
+          "id": "table1.r5.c1",
+          "table": 1,
+          "row": 5,
+          "col": 1,
+          "text": "18"
+        },
+        {
+          "id": "table1.r5.c2",
+          "table": 1,
+          "row": 5,
+          "col": 2,
+          "text": "12"
+        },
+        {
+          "id": "table1.r5.c3",
+          "table": 1,
+          "row": 5,
+          "col": 3,
+          "text": "30"
+        },
+        {
+          "id": "table1.r6.c0",
+          "table": 1,
+          "row": 6,
+          "col": 0,
+          "text": "Total"
+        },
+        {
+          "id": "table1.r6.c1",
+          "table": 1,
+          "row": 6,
+          "col": 1,
+          "text": "60"
+        },
+        {
+          "id": "table1.r6.c2",
+          "table": 1,
+          "row": 6,
+          "col": 2,
+          "text": "30"
+        },
+        {
+          "id": "table1.r6.c3",
+          "table": 1,
+          "row": 6,
+          "col": 3,
+          "text": "90"
+        },
+        {
+          "id": "table1.r7.c0",
+          "table": 1,
+          "row": 7,
+          "col": 0,
+          "text": "Signature"
+        },
+        {
+          "id": "table1.r7.c1",
+          "table": 1,
+          "row": 7,
+          "col": 1,
+          "text": "Signature area (leave unchanged)"
+        },
+        {
+          "id": "table1.r8.c0",
+          "table": 1,
+          "row": 8,
+          "col": 0,
+          "text": "Approval"
+        },
+        {
+          "id": "table1.r8.c1",
+          "table": 1,
+          "row": 8,
+          "col": 1,
+          "text": "Prepared by"
+        },
+        {
+          "id": "table1.r8.c2",
+          "table": 1,
+          "row": 8,
+          "col": 2,
+          "text": "Reviewed by"
+        },
+        {
+          "id": "table1.r8.c3",
+          "table": 1,
+          "row": 8,
+          "col": 3,
+          "text": "Approved by"
+        },
+        {
+          "id": "table1.r9.c1",
+          "table": 1,
+          "row": 9,
+          "col": 1,
+          "text": " "
+        },
+        {
+          "id": "table1.r9.c2",
+          "table": 1,
+          "row": 9,
+          "col": 2,
+          "text": " "
+        },
+        {
+          "id": "table1.r9.c3",
+          "table": 1,
+          "row": 9,
+          "col": 3,
+          "text": " "
+        },
+        {
+          "id": "table2.r0.c0",
+          "table": 2,
+          "row": 0,
+          "col": 0,
+          "text": "PROFILE_1"
+        },
+        {
+          "id": "table2.r1.c0",
+          "table": 2,
+          "row": 1,
+          "col": 0,
+          "text": "Course"
+        },
+        {
+          "id": "table2.r1.c1",
+          "table": 2,
+          "row": 1,
+          "col": 1,
+          "text": "Reviewed Methods"
+        },
+        {
+          "id": "table2.r1.c2",
+          "table": 2,
+          "row": 1,
+          "col": 2,
+          "text": "Year"
+        },
+        {
+          "id": "table2.r1.c3",
+          "table": 2,
+          "row": 1,
+          "col": 3,
+          "text": "2031"
+        },
+        {
+          "id": "table2.r2.c0",
+          "table": 2,
+          "row": 2,
+          "col": 0,
+          "text": "Profile"
+        },
+        {
+          "id": "table2.r2.c1",
+          "table": 2,
+          "row": 2,
+          "col": 1,
+          "text": "Profile Alpha"
+        },
+        {
+          "id": "table2.r2.c2",
+          "table": 2,
+          "row": 2,
+          "col": 2,
+          "text": "Hours"
+        },
+        {
+          "id": "table2.r2.c3",
+          "table": 2,
+          "row": 2,
+          "col": 3,
+          "text": "90"
+        },
+        {
+          "id": "table2.r3.c0",
+          "table": 2,
+          "row": 3,
+          "col": 0,
+          "text": "Objective"
+        },
+        {
+          "id": "table2.r3.c1",
+          "table": 2,
+          "row": 3,
+          "col": 1,
+          "text": "Reviewed objective.\nNested item: original wording remains unchanged."
+        },
+        {
+          "id": "table2.r4.c0",
+          "table": 2,
+          "row": 4,
+          "col": 0,
+          "text": "Signature"
+        },
+        {
+          "id": "table2.r4.c1",
+          "table": 2,
+          "row": 4,
+          "col": 1,
+          "text": "Signature area (leave unchanged)"
+        },
+        {
+          "id": "table2.r5.c0",
+          "table": 2,
+          "row": 5,
+          "col": 0,
+          "text": "Approval"
+        },
+        {
+          "id": "table2.r5.c1",
+          "table": 2,
+          "row": 5,
+          "col": 1,
+          "text": "Prepared by"
+        },
+        {
+          "id": "table2.r5.c2",
+          "table": 2,
+          "row": 5,
+          "col": 2,
+          "text": "Reviewed by"
+        },
+        {
+          "id": "table2.r5.c3",
+          "table": 2,
+          "row": 5,
+          "col": 3,
+          "text": "Approved by"
+        },
+        {
+          "id": "table2.r6.c1",
+          "table": 2,
+          "row": 6,
+          "col": 1,
+          "text": " "
+        },
+        {
+          "id": "table2.r6.c2",
+          "table": 2,
+          "row": 6,
+          "col": 2,
+          "text": " "
+        },
+        {
+          "id": "table2.r6.c3",
+          "table": 2,
+          "row": 6,
+          "col": 3,
+          "text": " "
+        },
+        {
+          "id": "table3.r0.c0",
+          "table": 3,
+          "row": 0,
+          "col": 0,
+          "text": "PROFILE_1"
+        },
+        {
+          "id": "table3.r1.c0",
+          "table": 3,
+          "row": 1,
+          "col": 0,
+          "text": "Course"
+        },
+        {
+          "id": "table3.r1.c1",
+          "table": 3,
+          "row": 1,
+          "col": 1,
+          "text": "Reviewed Methods"
+        },
+        {
+          "id": "table3.r1.c2",
+          "table": 3,
+          "row": 1,
+          "col": 2,
+          "text": "Year"
+        },
+        {
+          "id": "table3.r1.c3",
+          "table": 3,
+          "row": 1,
+          "col": 3,
+          "text": "2031"
+        },
+        {
+          "id": "table3.r2.c0",
+          "table": 3,
+          "row": 2,
+          "col": 0,
+          "text": "Profile"
+        },
+        {
+          "id": "table3.r2.c1",
+          "table": 3,
+          "row": 2,
+          "col": 1,
+          "text": "Profile Beta"
+        },
+        {
+          "id": "table3.r2.c2",
+          "table": 3,
+          "row": 2,
+          "col": 2,
+          "text": "Hours"
+        },
+        {
+          "id": "table3.r2.c3",
+          "table": 3,
+          "row": 2,
+          "col": 3,
+          "text": "90"
+        },
+        {
+          "id": "table3.r3.c0",
+          "table": 3,
+          "row": 3,
+          "col": 0,
+          "text": "Objective"
+        },
+        {
+          "id": "table3.r3.c1",
+          "table": 3,
+          "row": 3,
+          "col": 1,
+          "text": "Reviewed objective.\nNested item: original wording remains unchanged."
+        },
+        {
+          "id": "table3.r4.c0",
+          "table": 3,
+          "row": 4,
+          "col": 0,
+          "text": "Signature"
+        },
+        {
+          "id": "table3.r4.c1",
+          "table": 3,
+          "row": 4,
+          "col": 1,
+          "text": "Signature area (leave unchanged)"
+        },
+        {
+          "id": "table3.r5.c0",
+          "table": 3,
+          "row": 5,
+          "col": 0,
+          "text": "Approval"
+        },
+        {
+          "id": "table3.r5.c1",
+          "table": 3,
+          "row": 5,
+          "col": 1,
+          "text": "Prepared by"
+        },
+        {
+          "id": "table3.r5.c2",
+          "table": 3,
+          "row": 5,
+          "col": 2,
+          "text": "Reviewed by"
+        },
+        {
+          "id": "table3.r5.c3",
+          "table": 3,
+          "row": 5,
+          "col": 3,
+          "text": "Approved by"
+        },
+        {
+          "id": "table3.r6.c1",
+          "table": 3,
+          "row": 6,
+          "col": 1,
+          "text": " "
+        },
+        {
+          "id": "table3.r6.c2",
+          "table": 3,
+          "row": 6,
+          "col": 2,
+          "text": " "
+        },
+        {
+          "id": "table3.r6.c3",
+          "table": 3,
+          "row": 6,
+          "col": 3,
+          "text": " "
+        },
+        {
+          "id": "table4.r0.c0",
+          "table": 4,
+          "row": 0,
+          "col": 0,
+          "text": "PROFILE_1"
+        },
+        {
+          "id": "table4.r1.c0",
+          "table": 4,
+          "row": 1,
+          "col": 0,
+          "text": "Course"
+        },
+        {
+          "id": "table4.r1.c1",
+          "table": 4,
+          "row": 1,
+          "col": 1,
+          "text": "Reviewed Methods"
+        },
+        {
+          "id": "table4.r1.c2",
+          "table": 4,
+          "row": 1,
+          "col": 2,
+          "text": "Year"
+        },
+        {
+          "id": "table4.r1.c3",
+          "table": 4,
+          "row": 1,
+          "col": 3,
+          "text": "2031"
+        },
+        {
+          "id": "table4.r2.c0",
+          "table": 4,
+          "row": 2,
+          "col": 0,
+          "text": "Profile"
+        },
+        {
+          "id": "table4.r2.c1",
+          "table": 4,
+          "row": 2,
+          "col": 1,
+          "text": "Profile Gamma"
+        },
+        {
+          "id": "table4.r2.c2",
+          "table": 4,
+          "row": 2,
+          "col": 2,
+          "text": "Hours"
+        },
+        {
+          "id": "table4.r2.c3",
+          "table": 4,
+          "row": 2,
+          "col": 3,
+          "text": "90"
+        },
+        {
+          "id": "table4.r3.c0",
+          "table": 4,
+          "row": 3,
+          "col": 0,
+          "text": "Objective"
+        },
+        {
+          "id": "table4.r3.c1",
+          "table": 4,
+          "row": 3,
+          "col": 1,
+          "text": "Reviewed objective.\nNested item: original wording remains unchanged."
+        },
+        {
+          "id": "table4.r4.c0",
+          "table": 4,
+          "row": 4,
+          "col": 0,
+          "text": "Signature"
+        },
+        {
+          "id": "table4.r4.c1",
+          "table": 4,
+          "row": 4,
+          "col": 1,
+          "text": "Signature area (leave unchanged)"
+        },
+        {
+          "id": "table4.r5.c0",
+          "table": 4,
+          "row": 5,
+          "col": 0,
+          "text": "Approval"
+        },
+        {
+          "id": "table4.r5.c1",
+          "table": 4,
+          "row": 5,
+          "col": 1,
+          "text": "Prepared by"
+        },
+        {
+          "id": "table4.r5.c2",
+          "table": 4,
+          "row": 5,
+          "col": 2,
+          "text": "Reviewed by"
+        },
+        {
+          "id": "table4.r5.c3",
+          "table": 4,
+          "row": 5,
+          "col": 3,
+          "text": "Approved by"
+        },
+        {
+          "id": "table4.r6.c1",
+          "table": 4,
+          "row": 6,
+          "col": 1,
+          "text": " "
+        },
+        {
+          "id": "table4.r6.c2",
+          "table": 4,
+          "row": 6,
+          "col": 2,
+          "text": " "
+        },
+        {
+          "id": "table4.r6.c3",
+          "table": 4,
+          "row": 6,
+          "col": 3,
+          "text": " "
+        },
+        {
+          "id": "table5.r0.c0",
+          "table": 5,
+          "row": 0,
+          "col": 0,
+          "text": "PROFILE_1"
+        },
+        {
+          "id": "table5.r1.c0",
+          "table": 5,
+          "row": 1,
+          "col": 0,
+          "text": "Course"
+        },
+        {
+          "id": "table5.r1.c1",
+          "table": 5,
+          "row": 1,
+          "col": 1,
+          "text": "Reviewed Methods"
+        },
+        {
+          "id": "table5.r1.c2",
+          "table": 5,
+          "row": 1,
+          "col": 2,
+          "text": "Year"
+        },
+        {
+          "id": "table5.r1.c3",
+          "table": 5,
+          "row": 1,
+          "col": 3,
+          "text": "2031"
+        },
+        {
+          "id": "table5.r2.c0",
+          "table": 5,
+          "row": 2,
+          "col": 0,
+          "text": "Profile"
+        },
+        {
+          "id": "table5.r2.c1",
+          "table": 5,
+          "row": 2,
+          "col": 1,
+          "text": "Profile Delta"
+        },
+        {
+          "id": "table5.r2.c2",
+          "table": 5,
+          "row": 2,
+          "col": 2,
+          "text": "Hours"
+        },
+        {
+          "id": "table5.r2.c3",
+          "table": 5,
+          "row": 2,
+          "col": 3,
+          "text": "90"
+        },
+        {
+          "id": "table5.r3.c0",
+          "table": 5,
+          "row": 3,
+          "col": 0,
+          "text": "Objective"
+        },
+        {
+          "id": "table5.r3.c1",
+          "table": 5,
+          "row": 3,
+          "col": 1,
+          "text": "Reviewed objective.\nNested item: original wording remains unchanged."
+        },
+        {
+          "id": "table5.r4.c0",
+          "table": 5,
+          "row": 4,
+          "col": 0,
+          "text": "Signature"
+        },
+        {
+          "id": "table5.r4.c1",
+          "table": 5,
+          "row": 4,
+          "col": 1,
+          "text": "Signature area (leave unchanged)"
+        },
+        {
+          "id": "table5.r5.c0",
+          "table": 5,
+          "row": 5,
+          "col": 0,
+          "text": "Approval"
+        },
+        {
+          "id": "table5.r5.c1",
+          "table": 5,
+          "row": 5,
+          "col": 1,
+          "text": "Prepared by"
+        },
+        {
+          "id": "table5.r5.c2",
+          "table": 5,
+          "row": 5,
+          "col": 2,
+          "text": "Reviewed by"
+        },
+        {
+          "id": "table5.r5.c3",
+          "table": 5,
+          "row": 5,
+          "col": 3,
+          "text": "Approved by"
+        },
+        {
+          "id": "table5.r6.c1",
+          "table": 5,
+          "row": 6,
+          "col": 1,
+          "text": " "
+        },
+        {
+          "id": "table5.r6.c2",
+          "table": 5,
+          "row": 6,
+          "col": 2,
+          "text": " "
+        },
+        {
+          "id": "table5.r6.c3",
+          "table": 5,
+          "row": 6,
+          "col": 3,
+          "text": " "
+        }
+      ]
+    },
+    "certify-hwpx.json": {
+      "schema_version": "1.0",
+      "document": {
+        "fonts": {
+          "manifest": [
+            {
+              "path": "fonts/NanumGothic.ttf",
+              "sha256": "48a28e97b34fc8e5b157657633670cd1b7de126cfc414da65ce9c3d5bc8be733"
+            },
+            {
+              "path": "fonts/NanumGothicBold.ttf",
+              "sha256": "454eb3f503f377782a99eb84fc4bb7dde22a0f075d41b47427737f2985053bc9"
+            }
+          ],
+          "forbid_substitution": true
+        },
+        "original_form": {
+          "plan": "expect-hwpx.json",
+          "address_map": true
+        }
+      },
+      "render": {
+        "pages": "all",
+        "fail_on_outside_page_bounds": true,
+        "fail_on_potential_collision": true
+      }
+    }
+  },
+  "reference_input_variants": {
+    "dry_run": {
+      "receipt": "dry-receipt.json",
+      "preview": "dry-preview.json"
+    },
+    "hwp_certificate": {
+      "plan_filename": "expect-hwp.json",
+      "policy_filename": "certify-hwp.json",
+      "output_sha256": "2f94068771a348909f2dd431f6ca7423e43c0dd05929cf819a53ad128415f39a"
+    }
+  },
+  "reference_input_use": "These are complete source-bound inputs for the recorded synthetic build only. Compare fresh identities, review every occurrence/copy, and author a new plan for any different source. Copy the selected JSON values into named local files; do not edit native IR to imitate this workflow."
+}

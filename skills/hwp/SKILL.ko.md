@@ -201,6 +201,42 @@ retired `hwpx` 워크플로우의 정직한 한계를 포함한 이중 언어 �
 `fixtures/samples/report-tables.hwpx`를 대상으로
 그대로 실행해 검증했습니다 (hwp 0.12.1, 2026-08-29).
 
+### 원본 양식 워크플로
+
+네이티브 HWP/HWPX 양식이 제공되면 그 양식을 편집한다. Markdown은 재작성하려는 경우에
+사용한다. 시작 전에 `hwp --version`을
+[버전별 기능 증거](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/original-form-capabilities-v1.json)와
+대조한다. #417-#420 전체 워크플로는 main의 미출시 기능으로 취급한다. 출시된 v1.4.0이
+`document.original_form` 인증을 지원한다고 가정하지 않는다.
+
+[정본 원본 양식 절차](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/editing-recipes.ko.md#원본-양식-워크플로)를 따른다.
+
+1. 원본 식별자와 정확한 개별 위치를 발견하고, 리소스·주소 리포트와 함께 네이티브 범위를
+   추출한다. 추출한 원본에서 discovery를 다시 한다.
+2. 명시적인 바인딩·복제·숫자 제약·증가 허용 범위를 검토한다. dry-run의 로컬 preview를
+   확인한 뒤 같은 검토 원본 바이트에 채우기·복제를 적용한다.
+3. 주소를 새로 얻고 스타일·쪽 나눔을 적용한다. 들여쓰기를 반복 적용해 멱등성을 확인한다.
+4. 전달할 파일을 고정된 글꼴과 검토된 기대값으로 검증·인증하고 렌더링을 확인한다.
+   네이티브 호환성을 주장하기 전에 사람이 한컴에서 다시 열고 내보낸 별도 증거를 확보한다.
+
+구분자나 선행 하이픈이 든 값을 그대로 전달하려면 `--ops OPS.json` 또는 `--ops -`로
+JSON을 사용한다. 원문이 든 discovery·계획·정확한 preview는 로컬에 두고 추출·바인딩·인증
+영수증을 유지한다. 빈 손실 원장이나 `render-report.complete`는 시각적 정확성을 입증하지
+않는다. IR 문자 배열을 다루거나 리소스를 내보내기 전에 정본 절차를 읽는다. 자체 완결
+JSON에는 `convert --to json --embed-bin`이 필요하다.
+
+MCP의 `hwp_read`는 기존 markdown `with_segments`만 제공하며 CLI segments v2는 제공하지
+않는다. 공개된 주소를 사용하고 `apply_form_bindings`는 배열이 아닌 객체 하나로 전달한다.
+`verify` 속성은 보내지 않는다.
+MCP `insert_para`에는 인라인 `style`/`char`가 없다. 삽입한 제목 문단의 주소를 새로 얻은 뒤
+공개된 `apply_style` 요청으로 스타일을 적용한다. MCP `hwp_render`에는 `report`/`layout_json`
+인자가 없다. 타입이 있는 layout/report 산출물은 CLI로 내보낸다. MCP `hwp_certify`는 자체
+정책·렌더 증거를 계속 발행한다.
+
+Quick/web처럼 `SKILL.md`만 설치된 경우 위 절대 URL을 읽거나
+`hwp skill export -o ./hwp-guide`로 번들 참고 문서와 기능 JSON을 풀어낸다. 전체 export에는
+[로컬 절차](references/editing-recipes.ko.md#원본-양식-워크플로)도 포함된다.
+
 ### 문서 분석 (analyze)
 
 "이 문서에 무엇이 들어 있는가"를 한 번에 보는 패스: 패키지 인벤토리, 원본 좌표가 붙은 텍스트,
