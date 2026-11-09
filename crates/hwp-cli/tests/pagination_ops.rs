@@ -14,6 +14,10 @@ const FIRST: &str = "First line.";
 const TARGET: &str = "Start a new page here.";
 const LAST: &str = "Last line.";
 const CELL: &str = "Cell text.";
+/// Leading ASCII blanks, then words separated by double spaces and a trailing blank.
+const SPACED: &str = "  Item  with  inner  spaces ";
+/// A leading ideographic space (U+3000) before a Korean label.
+const IDEOGRAPHIC: &str = "\u{3000}가. 항목";
 
 fn hwp() -> Command {
     Command::new(env!("CARGO_BIN_EXE_hwp"))
@@ -67,6 +71,8 @@ impl Fixture {
         let spec = json!({"version":"1.0","sections":[{"blocks":[
             text(FIRST),
             text("    Four-space indented item."),
+            text(SPACED),
+            text(IDEOGRAPHIC),
             text(TARGET),
             {"type":"table","columns":[{"width_mm":60}],"rows":[{"cells":[{"blocks":[text(CELL)]}]}]},
             text(LAST)
@@ -155,7 +161,7 @@ fn break_op(address: Value, value: &str) -> Value {
     json!({"op":"set_break_before","address":address,"value":value})
 }
 fn indent_op(address: Value, level: u8, step: f64, hanging: f64) -> Value {
-    json!({"op":"set_indent_level","address":address,"level":level,"step_mm":step,"hanging_mm":hanging})
+    json!({"op":"set_indent_level","address":address,"level":level,"step":format!("{step}mm"),"hanging":format!("{hanging}mm")})
 }
 
 // ---- set_break_before ----------------------------------------------------------------------
@@ -318,8 +324,12 @@ fn break_before_rejects_a_value_other_than_on_or_off() {
         json!([break_op(at(&before, TARGET), "maybe")]),
     );
     assert!(
-        message.contains("set_break_before") && message.contains("on") && message.contains("off"),
-        "the refusal must name the op and the two accepted values, not just fail the schema: {message}"
+        message.contains("set_break_before") && message.contains("on 또는 off"),
+        "the refusal must name the op and the two accepted values: {message}"
+    );
+    assert!(
+        !message.contains("스키마"),
+        "a bad value is a parser refusal with a remedy, not a bare schema failure: {message}"
     );
 }
 
@@ -349,11 +359,15 @@ fn indent_level_replaces_leading_spaces_with_shape_indentation_and_keeps_every_w
             "{extension}: leading spaces are gone, words are not"
         );
         let ps = shape(&after, item);
-        // Level 2 at 5 mm: left margin 10 mm; hanging 3 mm: negative indent. IR units are twice
-        // HWPUNIT (7200 per inch).
-        let mm = |v: f64| (v / 25.4 * 7200.0).round() as i32 * 2;
-        assert_eq!(ps.margin_left, mm(10.0), "{extension}: left margin");
-        assert_eq!(ps.indent, -mm(3.0), "{extension}: hanging indent");
+        // The step is quantized to HWPUNIT first and then multiplied by the level, so level 2 is
+        // exactly twice level 1. IR units are twice HWPUNIT (7200 per inch).
+        let hwpunit = |v: f64| (v / 25.4 * 7200.0).round() as i32;
+        assert_eq!(
+            ps.margin_left,
+            2 * hwpunit(5.0) * 2,
+            "{extension}: left margin"
+        );
+        assert_eq!(ps.indent, -hwpunit(3.0) * 2, "{extension}: hanging indent");
         // Untouched paragraphs keep their shape.
         assert_eq!(
             shape(&after, paragraph(&after, FIRST)),
@@ -410,15 +424,38 @@ fn indent_level_never_touches_inner_spaces_labels_or_a_paragraph_without_leading
     for extension in ["hwp", "hwpx"] {
         let fixture = Fixture::new("indent-inner", extension);
         let before = read(&fixture.base);
-        // A paragraph with no leading spaces keeps its words (including inner double spaces).
+        // A paragraph with no leading blanks keeps its text exactly.
         let (output, run) = fixture.edit(
             &fixture.base,
             "plain",
-            json!([indent_op(at(&before, FIRST), 1, 5.0, 0.0)]),
+            json!([
+                indent_op(at(&before, FIRST), 1, 5.0, 0.0),
+                indent_op(at(&before, SPACED), 1, 5.0, 0.0),
+                indent_op(at(&before, IDEOGRAPHIC), 1, 5.0, 0.0),
+            ]),
         );
-        success(run, "indent a paragraph without leading spaces");
+        success(run, "indent paragraphs");
         let after = read(&output);
         assert_eq!(paragraph(&after, FIRST).plain_text(), FIRST);
+        // Only the LEADING blanks go: inner double spaces and the trailing blank stay.
+        assert_eq!(
+            after.sections[0]
+                .paragraphs
+                .iter()
+                .map(Paragraph::plain_text)
+                .filter(|t| t.contains("with"))
+                .collect::<Vec<_>>(),
+            ["Item  with  inner  spaces "],
+            "{extension}: only the leading blanks are removed"
+        );
+        // An ideographic-space lead goes too, and the Korean label survives untouched.
+        assert!(
+            after.sections[0]
+                .paragraphs
+                .iter()
+                .any(|p| p.plain_text() == "가. 항목"),
+            "{extension}: the label stays, the ideographic space goes"
+        );
         // A level above the supported range is refused with the range in the message.
         let message = fixture.refuse(
             &fixture.base.clone(),
@@ -428,6 +465,10 @@ fn indent_level_never_touches_inner_spaces_labels_or_a_paragraph_without_leading
         assert!(
             message.contains("set_indent_level") && message.contains("0..=7"),
             "the refusal must name the op and the supported level range: {message}"
+        );
+        assert!(
+            !message.contains("스키마"),
+            "an out-of-range level is a parser refusal with a remedy: {message}"
         );
     }
 }

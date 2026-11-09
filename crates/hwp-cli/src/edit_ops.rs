@@ -657,6 +657,22 @@ pub(crate) enum OpsEntry {
     OutdentPara {
         address: AddressSpec,
     },
+    SetBreakBefore {
+        address: AddressSpec,
+        value: String,
+    },
+    SetIndentLevel {
+        address: AddressSpec,
+        level: u64,
+        step: String,
+        hanging: Option<String>,
+    },
+    KeepTogether {
+        address: AddressSpec,
+        keep_with_next: Option<bool>,
+        keep_lines: Option<bool>,
+        break_before_shape: Option<bool>,
+    },
     AddRow {
         table: usize,
         at: Option<u16>,
@@ -1056,6 +1072,78 @@ impl OpsEntry {
             OpsEntry::OutdentPara { address } => {
                 let address = address.into_address()?;
                 Ok(TypedEditOperation::OutdentPara { address })
+            }
+            OpsEntry::SetBreakBefore { address, value } => {
+                let address = address.into_address()?;
+                let on = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(format!(
+                            "set_break_before.value는 on 또는 off여야 합니다: {other:?}. on은 문단 앞에서 새 쪽을 시작하고 off는 해제합니다"
+                        ));
+                    }
+                };
+                Ok(TypedEditOperation::SetBreakBefore { address, on })
+            }
+            OpsEntry::SetIndentLevel {
+                address,
+                level,
+                step,
+                hanging,
+            } => {
+                let address = address.into_address()?;
+                let level = u8::try_from(level)
+                    .ok()
+                    .filter(|level| *level <= 7)
+                    .ok_or_else(|| {
+                        format!(
+                            "set_indent_level.level은 0..=7이어야 합니다: {level}. 수준을 줄여 다시 시도하세요"
+                        )
+                    })?;
+                let step = string_error(parse_mm(&step))?;
+                let hanging = mm_opt(hanging)?.unwrap_or(0);
+                if step < 0 || hanging < 0 {
+                    return Err(
+                        "set_indent_level.step과 hanging은 0 이상이어야 합니다. 내어쓰기는 hanging으로, 들여쓰기는 level로 표현하세요"
+                            .to_string(),
+                    );
+                }
+                Ok(TypedEditOperation::SetIndentLevel {
+                    address,
+                    level,
+                    step,
+                    hanging,
+                })
+            }
+            OpsEntry::KeepTogether {
+                address,
+                keep_with_next,
+                keep_lines,
+                break_before_shape,
+            } => {
+                // Refused at parse time so nothing is ever written: the paragraph-shape keep
+                // bits have no genuine Hangul-saved evidence (docs/design/07, rule K).
+                address.into_address()?;
+                let requested: Vec<&str> = [
+                    ("keep_with_next", keep_with_next),
+                    ("keep_lines", keep_lines),
+                    ("break_before_shape", break_before_shape),
+                ]
+                .into_iter()
+                .filter_map(|(name, value)| value.map(|_| name))
+                .collect();
+                if requested.is_empty() {
+                    return Err(format!(
+                        "keep_together에 keep_with_next, keep_lines, break_before_shape 중 하나가 필요합니다. {}",
+                        hwp_convert::KEEP_TOGETHER_REFUSAL
+                    ));
+                }
+                Err(format!(
+                    "{} (요청한 항목: {})",
+                    hwp_convert::KEEP_TOGETHER_REFUSAL,
+                    requested.join(", ")
+                ))
             }
             OpsEntry::AddRow {
                 table,

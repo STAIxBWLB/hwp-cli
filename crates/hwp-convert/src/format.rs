@@ -6,8 +6,8 @@
 //! their lengths. Clear edited paragraph caches so the writer resynthesizes them.
 
 use hwp_model::{
-    CharShape, CharShapeId, Control, Document, FaceName, LANG_COUNT, ParaShape, ParaShapeId,
-    Paragraph,
+    CharShape, CharShapeId, Control, Document, FaceName, HwpChar, LANG_COUNT, ParaShape,
+    ParaShapeId, Paragraph,
 };
 
 use crate::edit::{find_match, utf16_len};
@@ -285,6 +285,122 @@ pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> b
         crate::address::invalidate_ancestors(doc, path);
     }
     applied
+}
+
+/// Why `keep_together` is not implemented. The paragraph-shape bits it would write (attr1 bit 17
+/// keep-with-next, bit 18 keep-lines, bit 19 break-before) are **unverified**: none of the
+/// genuine Hangul-saved files available (902 parsed, about 13,000 paragraph shapes) sets any of
+/// them, so there is no saved byte to copy the encoding from (`docs/design/07-hangul-compat-rules.md`,
+/// rule K). The op refuses before writing and names the supported alternative.
+pub const KEEP_TOGETHER_REFUSAL: &str = "keep_together는 아직 지원하지 않습니다: 문단 모양의 '다음 문단과 함께'·'문단 보호'·'문단 앞 쪽 나눔' 비트는 한글이 저장한 정품 파일에서 한 번도 관찰되지 않아 저장 형식을 추측할 수 없습니다(Hangul-saved sample required). 한글에서 해당 옵션을 켜 저장한 파일을 제공하면 근거를 맞추어 구현합니다. 새 쪽에서 시작하려면 set_break_before를 사용하세요";
+
+/// Address-driven page-break-before for ONE body paragraph: sets or clears the page bit (0x04)
+/// of the paragraph header's `break_type`, the encoding both genuine formats show (HWP5
+/// `break_type`; HWPX `pageBreak="1"` on `hp:p`, which the reader maps to the same bit).
+///
+/// Refused, each with a cause and a remedy, because no genuine saved file shows them:
+/// - a paragraph inside a table cell or any nested list (`path.indices.len() != 1`);
+/// - the first paragraph of a section, which owns the section setup (`SectionDef` /
+///   `break_type` 0x03 on HWP5 output, set by the writer).
+///
+/// Returns whether the document changed: `Ok(false)` when the bit already has the requested
+/// value. A change clears the paragraph's layout cache so no stale line positions survive.
+pub fn set_break_before_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    on: bool,
+) -> Result<bool, String> {
+    if path.indices.len() != 1 {
+        return Err("set_break_before는 표 셀 등 중첩 문단에 쓸 수 없습니다: 한글이 저장한 정품 파일에서 쪽 나눔이 표시된 문단은 모두 본문 문단이었습니다. 본문 문단 주소를 선택하세요".to_string());
+    }
+    let section = doc.sections.get_mut(path.section).ok_or_else(|| {
+        "set_break_before: 주소가 가리키는 구역을 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 선택하세요".to_string()
+    })?;
+    let index = path.indices[0];
+    let para = section.paragraphs.get_mut(index).ok_or_else(|| {
+        "set_break_before: 주소가 가리키는 문단을 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 선택하세요".to_string()
+    })?;
+    if index == 0
+        || para
+            .controls
+            .iter()
+            .any(|control| matches!(control, Control::SectionDef(_)))
+    {
+        return Err("set_break_before는 구역의 첫 문단에 쓸 수 없습니다: 그 문단이 구역 설정을 가지고 있고 정품 파일에서도 이에 쪽 나눔이 표시된 적이 없습니다. 다음 문단에 설정하거나 새 구역이 필요하면 새 문서를 만드세요".to_string());
+    }
+    let current = para.header.break_type & 0x04 != 0;
+    if current == on {
+        return Ok(false);
+    }
+    if on {
+        para.header.break_type |= 0x04;
+    } else {
+        para.header.break_type &= !0x04;
+    }
+    para.line_segs.clear();
+    crate::address::invalidate_ancestors(doc, path);
+    Ok(true)
+}
+
+/// The leading blank characters of a paragraph: ASCII space, ideographic space (U+3000) and
+/// no-break space (U+00A0) that precede the first non-blank character, counted over `chars`.
+fn leading_blank_count(chars: &[HwpChar]) -> usize {
+    chars
+        .iter()
+        .take_while(|c| matches!(c, HwpChar::Text(' ' | '\u{3000}' | '\u{00a0}')))
+        .count()
+}
+
+/// Address-driven, idempotent nested-indentation recipe for ONE paragraph: replaces its
+/// leading blank characters with shape indentation. The paragraph's `margin_left` becomes
+/// `level * step` and its `indent` becomes `-hanging` (a hanging first line), both given in
+/// HWPUNIT and stored in IR units like every [`ParaProps`] field; the leading blanks, and ONLY
+/// those, are removed from the text. Words, inner spacing and labels are never touched.
+///
+/// Idempotent: a second application finds no leading blanks and an identical shape, so it
+/// returns `Ok(false)` and appends no shape. Refuses a `level` outside 0..=7.
+pub fn set_indent_level_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    level: u8,
+    step: i32,
+    hanging: i32,
+) -> Result<bool, String> {
+    if level > 7 {
+        return Err(format!(
+            "set_indent_level의 level은 0..=7이어야 합니다: {level}. 수준을 줄여 다시 시도하세요"
+        ));
+    }
+    let left = i32::from(level).checked_mul(step).ok_or_else(|| {
+        "set_indent_level: level과 step_mm의 곱이 범위를 벗어났습니다. 더 작은 step_mm을 쓰세요"
+            .to_string()
+    })?;
+    let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
+        return Err("set_indent_level: 주소가 가리키는 문단을 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 선택하세요".to_string());
+    };
+    let blanks = leading_blank_count(&para.chars);
+    let stripped = blanks > 0;
+    if stripped {
+        crate::edit::splice_edits(para, vec![(0..blanks, String::new())]);
+    }
+    let before_shape = para.para_shape;
+    let props = ParaProps {
+        margin_left: Some(left),
+        indent: Some(-hanging),
+        ..ParaProps::default()
+    };
+    let props = to_ir_units(&props);
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    if let Some(para) = crate::address::paragraph_at_mut(doc, path) {
+        apply_para_props(para, &props, &mut pshapes);
+    }
+    doc.header.para_shapes = pshapes;
+    let shape_changed = crate::address::paragraph_at_mut(doc, path)
+        .is_some_and(|para| para.para_shape != before_shape);
+    if stripped || shape_changed {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    Ok(stripped || shape_changed)
 }
 
 /// Address-driven entry point for list indent/outdent (EDT-05, 07-04): resolves the target

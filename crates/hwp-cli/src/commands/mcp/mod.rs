@@ -1821,6 +1821,17 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     for item in arg_array(args, "outdent_para")? {
         operations.push(ops_entry_item(item, "outdent_para")?);
     }
+    // #420: page-break-before, the idempotent indentation recipe and the keep_together refusal
+    // also ride the ops channel's own deserialization, so the refusals are the CLI's words.
+    for item in arg_array(args, "set_break_before")? {
+        operations.push(ops_entry_item(item, "set_break_before")?);
+    }
+    for item in arg_array(args, "set_indent_level")? {
+        operations.push(ops_entry_item(item, "set_indent_level")?);
+    }
+    for item in arg_array(args, "keep_together")? {
+        operations.push(ops_entry_item(item, "keep_together")?);
+    }
     // #428 T4: `insert_blocks` rides the ops channel's own OpsEntry deserialization too (the
     // item is the edit-ops object without its `op` tag), so the address rules, the schema
     // bounds and the DocumentSpec block validation are the CLI's, not a second copy. Image
@@ -2796,6 +2807,44 @@ fn tool_defs() -> Vec<Value> {
                         }}},
                     "required": ["address"]},
                     "description": "목록 문단 수준 한 단계 올리기(내어쓰기, head level 1..=7, 비목록 문단은 오류)"},
+                "set_break_before": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
+                                "required": ["section", "paragraph"]}
+                        }},
+                    "value": {"type": "string", "enum": ["on", "off"], "description": "on: 문단 앞에서 새 쪽 시작, off: 해제"}},
+                    "required": ["address", "value"]},
+                    "description": "본문 문단 한 개의 '문단 앞 쪽 나눔' 켜기/끄기(한글이 저장한 정품 파일에 나타나는 위치만 허용: 표 셀 문단과 구역의 첫 문단은 거부). 이미 적용된 요청은 변경 없이 성공"},
+                "set_indent_level": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
+                                "required": ["section", "paragraph"]}
+                        }},
+                    "level": {"type": "integer", "minimum": 0, "maximum": 7, "description": "들여쓰기 수준 0..=7"},
+                    "step": {"type": "string", "description": "수준당 들여쓰기 길이(예: 5mm)"},
+                    "hanging": {"type": "string", "description": "내어쓰기(첫 줄 돌출) 길이(예: 3mm), 기본 0mm"}},
+                    "required": ["address", "level", "step"]},
+                    "description": "문단 한 개의 앞쪽 공백만 제거하고 왼쪽 여백=level*step, 내어쓰기=hanging으로 문단 모양에 반영(멱등: 두 번째 실행은 변경 없음)"},
+                "keep_together": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
+                    "address": {"type": "object", "additionalProperties": false,
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
+                        "properties": {
+                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "at": {"type": "object", "additionalProperties": false,
+                                "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
+                                "required": ["section", "paragraph"]}
+                        }},
+                    "keep_with_next": {"type": "boolean"}, "keep_lines": {"type": "boolean"}, "break_before_shape": {"type": "boolean"}},
+                    "required": ["address"]},
+                    "description": "항상 거부됨: 문단 모양의 다음 문단과 함께·문단 보호·쪽 나눔 비트는 한글이 저장한 정품 파일에서 관찰된 적이 없어 쓰지 않는다. 새 쪽에서 시작하려면 set_break_before를 사용"},
                 "set_page": {"type": "object", "properties": {
                     "width_mm": {"type": "number"}, "height_mm": {"type": "number"},
                     "margin_left_mm": {"type": "number"}, "margin_right_mm": {"type": "number"},
@@ -6141,6 +6190,111 @@ mod tests {
             &indent_out,
             &non_list_out,
         ] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// #420: `set_break_before`/`set_indent_level`/`keep_together` over MCP reach the same
+    /// engine the CLI `--ops` channel drives: byte-identical output on success, the same
+    /// refusals (cell-less here: first paragraph, a bad level, keep_together) with no output.
+    #[test]
+    fn mcp_typed_pagination_ops_match_the_cli_ops_channel() {
+        // Markdown import trims leading blanks, so the leading-blank strip itself is pinned by
+        // tests/pagination_ops.rs; this test pins MCP/CLI byte parity and the refusals.
+        const MD: &str = "# T\n\n본문 하나\n\n본문 둘\n\n본문 셋\n";
+        let source = temp_file("typed-pagination-source.hwpx");
+        let mcp_out = temp_file("typed-pagination-mcp.hwpx");
+        let cli_out = temp_file("typed-pagination-cli.hwpx");
+        create_hwpx(&source, MD);
+        let before = load_document(&source).unwrap();
+        let indented = before.sections[0]
+            .paragraphs
+            .iter()
+            .position(|p| p.plain_text() == "본문 둘")
+            .expect("the second body paragraph survives import");
+        let plain = indented + 1;
+
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "set_break_before": [
+                    {"address": {"at": {"section": 0, "paragraph": plain}}, "value": "on"}
+                ],
+                "set_indent_level": [
+                    {"address": {"at": {"section": 0, "paragraph": indented}},
+                     "level": 2, "step": "5mm", "hanging": "3mm"}
+                ]
+            }),
+            &ctx(),
+        )
+        .expect("MCP pagination 편집");
+        // The CLI channel is a flat array in caller order; MCP groups by kind, so list the
+        // break first to match the arm order here.
+        run_cli_ops_channel(
+            &source,
+            &json!([
+                {"op": "set_break_before",
+                 "address": {"at": {"section": 0, "paragraph": plain}}, "value": "on"},
+                {"op": "set_indent_level",
+                 "address": {"at": {"section": 0, "paragraph": indented}},
+                 "level": 2, "step": "5mm", "hanging": "3mm"}
+            ])
+            .to_string(),
+            &cli_out,
+            "typed-pagination",
+        );
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 pagination 출력 바이트가 다르다"
+        );
+        let after = load_document(&mcp_out).unwrap();
+        assert!(after.sections[0].paragraphs[plain].header.break_type & 0x04 != 0);
+        assert_eq!(
+            after.sections[0].paragraphs[indented].plain_text(),
+            "본문 둘"
+        );
+        let shape =
+            &after.header.para_shapes[after.sections[0].paragraphs[indented].para_shape.0 as usize];
+        assert!(
+            shape.margin_left > 0 && shape.indent < 0,
+            "shape carries the indentation"
+        );
+
+        // Refusals write nothing and carry the cause: first paragraph, bad level, keep_together.
+        for (label, args) in [
+            (
+                "first",
+                json!({"set_break_before": [
+                    {"address": {"at": {"section": 0, "paragraph": 0}}, "value": "on"}]}),
+            ),
+            (
+                "level",
+                json!({"set_indent_level": [
+                    {"address": {"at": {"section": 0, "paragraph": plain}},
+                     "level": 9, "step": "5mm"}]}),
+            ),
+            (
+                "keep",
+                json!({"keep_together": [
+                    {"address": {"at": {"section": 0, "paragraph": plain}},
+                     "keep_with_next": true}]}),
+            ),
+        ] {
+            let refused = temp_file(&format!("typed-pagination-refused-{label}.hwpx"));
+            let mut args = args;
+            args["input"] = json!(source);
+            args["output"] = json!(refused);
+            let error = tool_edit(&args, &ctx()).unwrap_err();
+            assert!(
+                !refused.exists(),
+                "{label}: 거부는 출력을 쓰면 안 된다: {error}"
+            );
+            assert!(!error.is_empty(), "{label}: 거부는 이유를 말해야 한다");
+            let _ = std::fs::remove_file(&refused);
+        }
+        for path in [&source, &mcp_out, &cli_out] {
             let _ = std::fs::remove_file(path);
         }
     }
