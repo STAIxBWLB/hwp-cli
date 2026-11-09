@@ -5786,16 +5786,18 @@ mod tests {
         assert!(error.contains("invalid_asset_path"), "{error}");
         assert!(!out.exists());
 
-        // The roots bind the asset read itself, independently of the base_dir check: a sandbox
-        // that allows the asset directory's PARENT only through a narrower root must refuse an
-        // asset the opened handle puts outside every root. Here the root is a sub-directory and
-        // `base_dir` is the (sandboxed) root, but the asset path climbs out through a symlink.
+        // The roots bind the asset read itself, independently of the base_dir check. The root
+        // here is the sub-directory `inside`; `base_dir` is `inside` too (so it passes the
+        // read-path check), and the asset path reaches a SIBLING directory through a symlink
+        // that stays below `inside` by name. Only the opened-handle roots check catches it.
         #[cfg(unix)]
         {
             let inside = directory.join("inside");
+            let sibling = directory.join("sibling");
             std::fs::create_dir_all(&inside).unwrap();
-            let outside_target = other.join("assets");
-            std::os::unix::fs::symlink(&outside_target, inside.join("link")).unwrap();
+            std::fs::create_dir_all(&sibling).unwrap();
+            std::fs::write(sibling.join("logo.png"), INSERT_BLOCKS_PNG).unwrap();
+            std::os::unix::fs::symlink(&sibling, inside.join("link")).unwrap();
             let narrow = ctx_with_roots(vec![std::fs::canonicalize(&inside).unwrap()]);
             let out = inside.join("symlink.hwpx");
             let source_inside = inside.join("source.hwpx");
