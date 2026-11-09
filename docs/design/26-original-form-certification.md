@@ -43,7 +43,7 @@ IDs; the report never echoes the text they stand for.
 | Output identity | SHA-256 of the certified input | `output_identity_mismatch` |
 | Table count and grid | Parsed document | `table_count_changed`, `table_missing`, `repeated_table_missing`, `table_grid_changed` |
 | Expected cell value | Parsed document | `expected_cell_missing`, `expected_cell_value_missing`, `expected_cell_value_mismatch` |
-| Expected cell drawn | Segment rows of the certification layout | `expected_cell_not_rendered` |
+| Expected cell drawn | Segment rows of the certification layout | `expected_cell_not_rendered`, `expected_cell_clipped` |
 | Form start present and unique | Parsed document | `form_start_missing`, `form_start_ambiguous` |
 | Form start placement | Segment rows of the certification layout | `form_start_not_rendered`, `form_start_on_wrong_page`, `form_start_not_at_page_start` |
 | Clipped row, incomplete fragmentation | Typed render issues of the same layout | `table_row_clipped`, `cell_fragmentation_incomplete` |
@@ -111,3 +111,5 @@ a missing cell value, a moved form start and a substituted font, each with its o
 unpinned run, and a substitution the policy allows, are limited and name the missing evidence. The pinned cases need one single-face
 TrueType font on the host (fonts-nanum on Linux CI, AppleGothic on macOS) and are counted as a
 missing resource elsewhere. These are local renderer results, not Hancom output.
+
+A drawn cell border does not prove its text was rendered. Each expected cell paragraph must have drawn WCHAR ranges covering every non-whitespace text character; partial or complete clipping fails with `expected_cell_clipped`. Any earlier top-level body paragraph with a bounding box on the same page, including one containing only a table or object, prevents a page-start anchor. Empty rows without a bounding box do not.

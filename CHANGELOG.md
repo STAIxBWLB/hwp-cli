@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- Original-form certification rejects partially or fully clipped expected-cell text even when
+  its cell border is drawn, and counts table-bearing body paragraphs before a page-start
+  anchor as preceding content (#419). These checks use the layout's own paragraph ranges
+  and bounding boxes and retain the pinned-font evidence requirement.
+
 **Added**
 
 - `hwp slots --forms --json --occurrences` and MCP `hwp_slots` expose individual,

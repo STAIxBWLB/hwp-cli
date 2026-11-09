@@ -42,7 +42,7 @@ ID가 가리키는 텍스트를 반영하지 않는다.
 | 출력 식별자 | 인증 입력의 SHA-256 | `output_identity_mismatch` |
 | 표 개수와 격자 | 파싱한 문서 | `table_count_changed`, `table_missing`, `repeated_table_missing`, `table_grid_changed` |
 | 기대 셀 값 | 파싱한 문서 | `expected_cell_missing`, `expected_cell_value_missing`, `expected_cell_value_mismatch` |
-| 기대 셀 그려짐 | 인증 레이아웃의 세그먼트 행 | `expected_cell_not_rendered` |
+| 기대 셀 그려짐 | 인증 레이아웃의 세그먼트 행 | `expected_cell_not_rendered`, `expected_cell_clipped` |
 | 양식 시작의 존재와 유일성 | 파싱한 문서 | `form_start_missing`, `form_start_ambiguous` |
 | 양식 시작 배치 | 인증 레이아웃의 세그먼트 행 | `form_start_not_rendered`, `form_start_on_wrong_page`, `form_start_not_at_page_start` |
 | 잘린 행, 불완전한 셀 분할 | 같은 레이아웃의 typed 렌더 이슈 | `table_row_clipped`, `cell_fragmentation_incomplete` |
@@ -104,3 +104,5 @@ ID가 가리키는 텍스트를 반영하지 않는다.
 정책이 허용한 대체는 제한된 결과로 누락 증거를 밝힌다. 글꼴 고정 사례에는 호스트의 단일 face TrueType 글꼴 하나가
 필요하며(Linux CI는 fonts-nanum, macOS는 AppleGothic), 그 밖의 환경에서는 누락 자원으로 집계된다.
 이는 로컬 렌더러 결과이며 한컴 출력이 아니다.
+
+셀 테두리만 그려진 경우는 텍스트 렌더 증거가 아니다. 예상 셀의 각 문단에서 실제로 그린 WCHAR 범위가 모든 비공백 텍스트를 덮어야 한다. 일부 또는 전체가 잘리면 `expected_cell_clipped`로 실패한다. 양식 시작 앞 같은 쪽에 bbox가 있는 본문 문단은 표·개체만 담더라도 선행 콘텐츠로 센다. bbox가 없는 빈 행은 세지 않는다.

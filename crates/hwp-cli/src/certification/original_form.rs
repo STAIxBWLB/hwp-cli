@@ -480,6 +480,38 @@ fn cell_text(cell: &hwp_model::Cell) -> String {
         .join("\n")
 }
 
+/// Verify visible source text against the paragraph's own drawn WCHAR ranges. Cell borders
+/// and sibling paragraphs cannot prove that this paragraph's text reached the display list.
+fn paragraph_text_is_drawn(
+    paragraph: &hwp_model::Paragraph,
+    rows: &[&hwp_render::segment_map::SegmentRow],
+) -> bool {
+    let mut ranges: Vec<_> = rows
+        .iter()
+        .filter(|row| row.bbox.is_some())
+        .filter_map(|row| row.chars)
+        .collect();
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut index = 0;
+    let mut offset = 0;
+    for ch in &paragraph.chars {
+        let end = offset + ch.wchar_width();
+        if matches!(ch, hwp_model::HwpChar::Text(c) if !c.is_whitespace()) {
+            while ranges.get(index).is_some_and(|range| range.end <= offset) {
+                index += 1;
+            }
+            if !ranges
+                .get(index)
+                .is_some_and(|range| range.start <= offset && range.end >= end)
+            {
+                return false;
+            }
+        }
+        offset = end;
+    }
+    true
+}
+
 /// Results of evaluating one plan against one delivered document.
 pub struct Evaluation {
     pub report: OriginalFormCheckReport,
@@ -670,6 +702,35 @@ pub fn evaluate(
                             "expected_cell_not_rendered",
                             "check_pagination_and_cell_fragmentation",
                         );
+                    } else if found
+                        .paragraphs
+                        .iter()
+                        .enumerate()
+                        .any(|(index, paragraph)| {
+                            let paragraph_path = child(&child(path, cell_index), index);
+                            let id =
+                                hwp_render::segment_id::paragraph_id(&paragraph_path, paragraph);
+                            !paragraph_text_is_drawn(
+                                paragraph,
+                                drawn
+                                    .get(id.as_str())
+                                    .map(Vec::as_slice)
+                                    .unwrap_or_default(),
+                            )
+                        })
+                    {
+                        out.push(
+                            &cell.id,
+                            "expected_cell_clipped",
+                            "check_pagination_and_cell_fragmentation",
+                        );
+                        out.locate(MapEntry {
+                            table: Some(cell.table),
+                            row: Some(cell.row),
+                            col: Some(cell.col),
+                            page: located_page,
+                            ..empty_entry(&cell.id)
+                        });
                     }
                 }
                 None => {
@@ -763,7 +824,6 @@ pub fn evaluate(
                 row.page == first.page
                     && row.kind == hwp_render::segment_map::kind::PARA
                     && row.bbox.is_some()
-                    && row.chars.is_some_and(|chars| chars.end > chars.start)
                     && top_level_paragraph(&row.id)
                         .is_some_and(|(s, p)| (s, p) < (section, paragraph))
             });
