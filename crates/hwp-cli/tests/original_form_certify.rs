@@ -143,6 +143,17 @@ impl Forms {
         font: Option<&Path>,
         address_map: bool,
     ) -> (bool, Value, String) {
+        self.certify_with(input, font, address_map, true)
+    }
+
+    /// [`Self::certify`] with the policy's `forbid_substitution` set explicitly.
+    fn certify_with(
+        &self,
+        input: &str,
+        font: Option<&Path>,
+        address_map: bool,
+        forbid_substitution: bool,
+    ) -> (bool, Value, String) {
         let plan = json!({
             "contract": "hwp-original-form-certification-plan-v1",
             "version": 1,
@@ -170,7 +181,10 @@ impl Forms {
                 std::fs::write(self.path("font.ttf"), std::fs::read(font).unwrap()).unwrap();
             }
             let hash = sha256(&self.path("font.ttf"));
-            document["fonts"] = json!({"manifest": [{"path": "font.ttf", "sha256": hash}]});
+            document["fonts"] = json!({
+                "manifest": [{"path": "font.ttf", "sha256": hash}],
+                "forbid_substitution": forbid_substitution
+            });
         }
         let policy = json!({
             "schema_version": "1.0",
@@ -254,7 +268,8 @@ fn assert_content_free(forms: &Forms, input: &str, log: &str) {
     }
 }
 
-fn pinned() -> Option<(Forms, PathBuf)> {
+/// `name` keeps each test's directory its own: tests run in parallel.
+fn pinned(name: &str) -> Option<(Forms, PathBuf)> {
     let Some((font, family)) = host_font() else {
         fixture_skip::resource_unavailable(
             "single-face TrueType font (NanumGothic or AppleGothic)",
@@ -262,7 +277,7 @@ fn pinned() -> Option<(Forms, PathBuf)> {
         );
         return None;
     };
-    let forms = Forms::new("pinned", family)?;
+    let forms = Forms::new(name, family)?;
     std::fs::write(forms.path("family.txt"), family).unwrap();
     Some((forms, font))
 }
@@ -271,7 +286,7 @@ fn pinned() -> Option<(Forms, PathBuf)> {
 /// substituted font each fail with their own cause. Refusals and reports stay content-free.
 #[test]
 fn p0_correct_fill_certifies_and_each_defect_fails_with_its_own_cause() {
-    let Some((forms, font)) = pinned() else {
+    let Some((forms, font)) = pinned("pinned") else {
         return;
     };
 
@@ -284,6 +299,15 @@ fn p0_correct_fill_certifies_and_each_defect_fails_with_its_own_cause() {
     assert_eq!(report["overall"], "passed");
     assert_eq!(report["checks"]["original_form"]["status"], "passed");
     assert_eq!(report["checks"]["original_form"]["limited"], false);
+    assert_eq!(
+        report["checks"]["original_form"]["address_map_published"],
+        true
+    );
+    assert!(
+        forms
+            .path("good.hwpx.report/original-form/address-map.json")
+            .is_file()
+    );
     assert_content_free(&forms, "good.hwpx", &log);
 
     forms.set_cell("missing.hwpx", "");
@@ -394,42 +418,104 @@ fn without_pinned_fonts_the_result_is_limited_and_names_the_missing_evidence() {
         !forms.path("good.hwpx.report/original-form").exists(),
         "no map without opt-in"
     );
+    assert_eq!(check["address_map"], false);
+    assert_eq!(check["address_map_published"], false);
     assert_content_free(&forms, "good.hwpx", &log);
 }
 
 /// A plan that does not validate is refused content-free, in the report rather than as text.
 #[test]
-fn an_invalid_plan_is_a_content_free_refusal() {
+fn an_invalid_plan_is_a_content_free_refusal_with_its_cause_class() {
     let Some(forms) = Forms::new("invalid", "Noto Sans CJK KR") else {
         return;
     };
     let (_, _, _) = forms.certify("good.hwpx", None, false);
-    std::fs::write(
-        forms.path("plan.json"),
-        json!({"contract": "hwp-original-form-certification-plan-v1", "version": 1,
-               "expected_cells": [{"id": "has space", "table": 0, "row": 0, "col": 0, "text": "Sample Author"}]})
-            .to_string(),
-    )
-    .unwrap();
     let policy = forms.path("good.hwpx.policy.json");
-    let report = forms.path("invalid.report");
-    let out = hwp()
-        .arg("certify")
-        .arg(forms.path("good.hwpx"))
-        .arg("--policy")
-        .arg(&policy)
-        .arg("--report")
-        .arg(&report)
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    let value: Value =
-        serde_json::from_slice(&std::fs::read(report.join("report.json")).unwrap()).unwrap();
-    assert_eq!(
-        value["checks"]["original_form"]["reason_codes"],
-        json!(["original_form_plan_invalid"])
+    // T11-N1: each family of plan failure gets its own content-free cause and next step.
+    let ids_plan = json!({"contract": "hwp-original-form-certification-plan-v1", "version": 1,
+        "expected_cells": [{"id": "has space", "table": 0, "row": 0, "col": 0, "text": "Sample Author"}]});
+    let contract_plan = json!({"contract": "something-else", "version": 1,
+        "expected_cells": [{"id": "a", "table": 0, "row": 0, "col": 0, "text": "Sample Author"}]});
+    let empty_plan = json!({"contract": "hwp-original-form-certification-plan-v1", "version": 1});
+    let cases = [
+        (
+            "ids",
+            ids_plan.to_string(),
+            "original_form_plan_ids",
+            "make_plan_ids_and_cells_unique",
+        ),
+        (
+            "not-json",
+            "Sample Author {".to_string(),
+            "original_form_plan_not_json",
+            "fix_the_plan_against_its_schema",
+        ),
+        (
+            "contract",
+            contract_plan.to_string(),
+            "original_form_plan_contract",
+            "set_the_plan_contract_and_version",
+        ),
+        (
+            "bounds",
+            empty_plan.to_string(),
+            "original_form_plan_bounds",
+            "bring_the_plan_within_its_bounds",
+        ),
+    ];
+    for (label, plan, code, next_step) in cases {
+        std::fs::write(forms.path("plan.json"), plan).unwrap();
+        let report = forms.path(&format!("invalid-{label}.report"));
+        let out = hwp()
+            .arg("certify")
+            .arg(forms.path("good.hwpx"))
+            .arg("--policy")
+            .arg(&policy)
+            .arg("--report")
+            .arg(&report)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{label}");
+        let value: Value =
+            serde_json::from_slice(&std::fs::read(report.join("report.json")).unwrap()).unwrap();
+        let check = &value["checks"]["original_form"];
+        assert_eq!(check["reason_codes"], json!([code]), "{label}");
+        assert_eq!(check["findings"][0]["next_step"], next_step, "{label}");
+        let text = String::from_utf8_lossy(&out.stderr).into_owned()
+            + &String::from_utf8_lossy(&std::fs::read(report.join("report.json")).unwrap());
+        assert!(
+            !text.contains("Sample Author") && !text.contains("has space"),
+            "{label}: plan text leaked"
+        );
+    }
+}
+
+/// T11-F1: a substitution the policy allows (`forbid_substitution: false`) is not a
+/// `disallowed_font_substitution` finding, even with a manifest. The environment is then not
+/// pinned, so the check is limited and names `pinned_font_environment`.
+#[test]
+fn an_allowed_substitution_is_limited_evidence_not_a_disallowed_finding() {
+    let Some((forms, font)) = pinned("allowed") else {
+        return;
+    };
+    let mut substituted = forms.spec();
+    substituted["document"]["styles"]["body"]["font_family"] = json!("No Such Family 419");
+    forms.compose(&substituted, "allowed.hwpx");
+    let (ok, report, log) = forms.certify_with("allowed.hwpx", Some(&font), false, false);
+    assert!(!ok, "a limited result never certifies");
+    let check = &report["checks"]["original_form"];
+    assert!(
+        !has(&report, "fonts", "disallowed_font_substitution"),
+        "the policy allows substitution: {:?}",
+        codes(&report)
     );
-    let text = String::from_utf8_lossy(&out.stderr).into_owned()
-        + &String::from_utf8_lossy(&std::fs::read(report.join("report.json")).unwrap());
-    assert!(!text.contains("Sample Author") && !text.contains("has space"));
+    assert_eq!(check["limited"], true, "{check}");
+    assert!(
+        check["missing_evidence"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("pinned_font_environment")),
+        "{check}"
+    );
+    assert_content_free(&forms, "allowed.hwpx", &log);
 }

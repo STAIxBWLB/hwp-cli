@@ -46,7 +46,7 @@ ID가 가리키는 텍스트를 반영하지 않는다.
 | 양식 시작의 존재와 유일성 | 파싱한 문서 | `form_start_missing`, `form_start_ambiguous` |
 | 양식 시작 배치 | 인증 레이아웃의 세그먼트 행 | `form_start_not_rendered`, `form_start_on_wrong_page`, `form_start_not_at_page_start` |
 | 잘린 행, 불완전한 셀 분할 | 같은 레이아웃의 typed 렌더 이슈 | `table_row_clipped`, `cell_fragmentation_incomplete` |
-| 허용되지 않은 글꼴 대체 | 글꼴 manifest가 있을 때 렌더의 글꼴 해석 | `disallowed_font_substitution` |
+| 허용되지 않은 글꼴 대체 | 정책이 `fonts.forbid_substitution`을 켤 때 렌더의 글꼴 해석 | `disallowed_font_substitution` |
 
 배치와 맞춤은 레이아웃 자신의 typed 이슈와 세그먼트 행에서 읽는다
 (`hwp_render::layout_segments_isolated_bounded`: 인증 렌더와 같은 격리 글꼴 집합과 레이아웃 예산).
@@ -63,7 +63,13 @@ ID가 가리키는 텍스트를 반영하지 않는다.
 그렇지 않으면 검사는 `limited: true`와 `missing_evidence`의 `pinned_font_environment`를 보고하고
 인증은 `passed`가 되지 않는다. 통과했지만 제한된 검사는 전체 결과를 `partial`로 만든다. 그 밖의
 누락 증거 코드는 `render_layout_unavailable`, `segment_map_truncated`,
-`cell_render_location_unavailable`(글상자 안의 표), `parsed_document`이다.
+`cell_render_location_unavailable`(글상자 안의 표), `parsed_document`이다. 정책이 허용한 대체
+(`forbid_substitution: false`)는 발견 사항이 아니다. 환경이 고정되지 않았을 뿐이므로 결과는 제한된다.
+
+쓸 수 없는 계획은 내용 없는 원인 분류 하나로 거부한다. `original_form_plan_unreadable`(경로·파일 없음·
+크기), `original_form_plan_not_json`(계획의 닫힌 JSON 형태가 아님), `original_form_plan_contract`(계약·
+버전), `original_form_plan_bounds`(개수·번호·쪽·텍스트 길이·해시, 또는 검사 항목 없음),
+`original_form_plan_ids`(잘못되거나 중복된 ID, 같은 주소의 셀 둘)이다.
 
 ## 분리해 두는 것
 
@@ -79,7 +85,8 @@ ID가 가리키는 텍스트를 반영하지 않는다.
 (`original-form-address-map-v1`)도 생긴다. 발견 사항 ID마다 구역/문단, 표/행/열, 쪽을 적는다.
 텍스트는 없지만 내용의 위치를 알려 주므로 계획과 함께 로컬에 둔다. `manifest.json`에는 나열되지만
 `report.artifacts`에는 속하지 않는다. 게시 manifest의 258개 상한을 함께 쓰므로, 이미 상한에 이른
-리포트(256쪽과 오라클 PDF)에서는 생략된다. MCP의 `hwp_certify`도 같은 디렉터리를 쓰며 맵을
+리포트(256쪽과 오라클 PDF)에서는 생략된다. `address_map`은 요청 여부, `address_map_published`는 파일이
+실제로 있는지를 나타낸다. MCP의 `hwp_certify`도 같은 디렉터리를 쓰며 맵을
 응답에 직접 싣지 않는다.
 
 ## 스키마
@@ -93,7 +100,7 @@ ID가 가리키는 텍스트를 반영하지 않는다.
 
 검증 범위는 직접 작성한 P0 양식 집합이다(`tools/generate_original_form_fixture.py`, #416).
 `crates/hwp-cli/tests/original_form_certify.rs`는 올바르게 채운 양식을 인증하고, 잘린 행·빠진 셀
-값·옮겨진 양식 시작·대체된 글꼴을 각각 고유 원인으로 실패시킨다. 글꼴을 고정하지 않은 실행은
-제한된 결과로 누락 증거를 밝힌다. 글꼴 고정 사례에는 호스트의 단일 face TrueType 글꼴 하나가
+값·옮겨진 양식 시작·대체된 글꼴을 각각 고유 원인으로 실패시킨다. 글꼴을 고정하지 않은 실행과
+정책이 허용한 대체는 제한된 결과로 누락 증거를 밝힌다. 글꼴 고정 사례에는 호스트의 단일 face TrueType 글꼴 하나가
 필요하며(Linux CI는 fonts-nanum, macOS는 AppleGothic), 그 밖의 환경에서는 누락 자원으로 집계된다.
 이는 로컬 렌더러 결과이며 한컴 출력이 아니다.

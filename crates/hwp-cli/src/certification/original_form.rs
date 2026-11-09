@@ -162,9 +162,11 @@ pub struct OriginalFormCheckReport {
     pub form_start_count: usize,
     pub findings: Vec<OriginalFormFinding>,
     pub findings_complete: bool,
-    /// The policy requested the local address map. The map file itself is published only
-    /// when the 258-file manifest cap leaves room for it (see `certification::execute`).
+    /// The policy requested the local address map.
     pub address_map: bool,
+    /// The map file was published. False when not requested, or when the 258-file manifest cap
+    /// left no room for it (T11-N2), so a caller never looks for a file that is not there.
+    pub address_map_published: bool,
 }
 
 /// A located address for the opt-in local map.
@@ -187,17 +189,22 @@ pub struct RenderEvidence<'a> {
     pub fonts_pinned: bool,
     /// Any requested font was substituted or missing.
     pub font_substituted: bool,
-    /// The policy supplied a font manifest, so a substitution is a policy violation rather
-    /// than an unpinned environment.
-    pub manifest_supplied: bool,
+    /// The policy forbids substitution (`document.fonts.forbid_substitution`). Only then is a
+    /// substitution disallowed; the existing font policy decides, this check does not widen it.
+    pub forbid_substitution: bool,
 }
 
 /// Loads and validates the plan named by the policy. Any failure is reported as one
 /// content-free refusal by the caller.
-pub fn prepare(policy: &OriginalFormPolicy, policy_base: &Path) -> Result<PreparedPlan> {
-    validate_relative_asset_path(&policy.plan)?;
-    let bytes = read_bounded(&policy_base.join(&policy.plan), MAX_PLAN_BYTES)?;
-    let plan: OriginalFormPlan = serde_json::from_slice(&bytes)?;
+pub fn prepare(
+    policy: &OriginalFormPolicy,
+    policy_base: &Path,
+) -> std::result::Result<PreparedPlan, PlanRefusal> {
+    validate_relative_asset_path(&policy.plan).map_err(|_| PlanRefusal::Unreadable)?;
+    let bytes = read_bounded(&policy_base.join(&policy.plan), MAX_PLAN_BYTES)
+        .map_err(|_| PlanRefusal::Unreadable)?;
+    let plan: OriginalFormPlan =
+        serde_json::from_slice(&bytes).map_err(|_| PlanRefusal::NotJson)?;
     validate_plan(&plan)?;
     Ok(PreparedPlan {
         plan,
@@ -206,50 +213,87 @@ pub fn prepare(policy: &OriginalFormPolicy, policy_base: &Path) -> Result<Prepar
     })
 }
 
-fn validate_id(id: &str) -> Result<()> {
+/// Content-free cause class of a plan refusal (T11-N1): what to check, never the plan's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanRefusal {
+    /// The path is invalid, the file is missing or unreadable, or it exceeds the size bound.
+    Unreadable,
+    /// The bytes are not JSON of the plan's closed shape (unknown or mistyped fields included).
+    NotJson,
+    /// `contract` or `version` is not `hwp-original-form-certification-plan-v1` version 1.
+    Contract,
+    /// An entry count, index, page, text length or hash is out of its bound, or nothing is planned.
+    Bounds,
+    /// An ID is malformed or repeated, or two expected cells address the same cell.
+    Ids,
+}
+
+impl PlanRefusal {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Unreadable => "original_form_plan_unreadable",
+            Self::NotJson => "original_form_plan_not_json",
+            Self::Contract => "original_form_plan_contract",
+            Self::Bounds => "original_form_plan_bounds",
+            Self::Ids => "original_form_plan_ids",
+        }
+    }
+
+    pub fn next_step(self) -> &'static str {
+        match self {
+            Self::Unreadable => "check_the_plan_path_and_size",
+            Self::NotJson => "fix_the_plan_against_its_schema",
+            Self::Contract => "set_the_plan_contract_and_version",
+            Self::Bounds => "bring_the_plan_within_its_bounds",
+            Self::Ids => "make_plan_ids_and_cells_unique",
+        }
+    }
+}
+
+fn validate_id(id: &str) -> std::result::Result<(), PlanRefusal> {
     if id.is_empty()
         || id.len() > MAX_ID_BYTES
         || !id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
     {
-        anyhow::bail!("original-form plan IDs must be 1-64 ASCII [A-Za-z0-9._-] characters");
+        return Err(PlanRefusal::Ids);
     }
     Ok(())
 }
 
-fn validate_text(text: &str) -> Result<()> {
+fn validate_text(text: &str) -> std::result::Result<(), PlanRefusal> {
     if text.chars().count() > MAX_EXPECTED_TEXT_CHARS || text.contains('\0') {
-        anyhow::bail!("original-form plan text exceeds {MAX_EXPECTED_TEXT_CHARS} characters");
+        return Err(PlanRefusal::Bounds);
     }
     Ok(())
 }
 
-fn validate_plan(plan: &OriginalFormPlan) -> Result<()> {
+fn validate_plan(plan: &OriginalFormPlan) -> std::result::Result<(), PlanRefusal> {
     if plan.contract != PLAN_CONTRACT || plan.version != 1 {
-        anyhow::bail!("original-form plan contract/version is not {PLAN_CONTRACT} version 1");
+        return Err(PlanRefusal::Contract);
     }
     if let Some(hash) = &plan.source_sha256 {
-        validate_sha256(hash, "original_form source_sha256")?;
+        validate_sha256(hash, "original_form source_sha256").map_err(|_| PlanRefusal::Bounds)?;
     }
     if let Some(hash) = &plan.output_sha256 {
-        validate_sha256(hash, "original_form output_sha256")?;
+        validate_sha256(hash, "original_form output_sha256").map_err(|_| PlanRefusal::Bounds)?;
     }
     if plan.form_starts.len() > MAX_FORM_STARTS
         || plan.expected_cells.len() > MAX_EXPECTED_CELLS
         || plan.tables.len() > MAX_TABLE_EXPECTATIONS
         || plan.allowances.repeated_tables.len() > MAX_TABLE_EXPECTATIONS
     {
-        anyhow::bail!("original-form plan exceeds its entry bounds");
+        return Err(PlanRefusal::Bounds);
     }
     if plan.form_starts.is_empty() && plan.expected_cells.is_empty() && plan.tables.is_empty() {
-        anyhow::bail!("original-form plan has nothing to check");
+        return Err(PlanRefusal::Bounds);
     }
     let mut ids = BTreeSet::new();
-    let mut unique = |id: &str| -> Result<()> {
+    let mut unique = |id: &str| -> std::result::Result<(), PlanRefusal> {
         validate_id(id)?;
         if !ids.insert(id.to_string()) {
-            anyhow::bail!("original-form plan IDs must be unique");
+            return Err(PlanRefusal::Ids);
         }
         Ok(())
     };
@@ -257,19 +301,19 @@ fn validate_plan(plan: &OriginalFormPlan) -> Result<()> {
         unique(&start.id)?;
         validate_text(&start.text)?;
         if normalize(&start.text).is_empty() {
-            anyhow::bail!("an original-form start needs non-blank text");
+            return Err(PlanRefusal::Bounds);
         }
         if start
             .page
             .is_some_and(|page| page == 0 || page > super::MAX_PAGE_NUMBER)
         {
-            anyhow::bail!("original-form start page is out of range");
+            return Err(PlanRefusal::Bounds);
         }
     }
     for table in &plan.tables {
         unique(&table.id)?;
         if table.table > MAX_TABLE_INDEX || table.rows == 0 || table.cols == 0 {
-            anyhow::bail!("original-form table expectation is out of range");
+            return Err(PlanRefusal::Bounds);
         }
     }
     let mut cells = BTreeSet::new();
@@ -277,10 +321,10 @@ fn validate_plan(plan: &OriginalFormPlan) -> Result<()> {
         unique(&cell.id)?;
         validate_text(&cell.text)?;
         if cell.table > MAX_TABLE_INDEX {
-            anyhow::bail!("original-form expected cell table index is out of range");
+            return Err(PlanRefusal::Bounds);
         }
         if !cells.insert((cell.table, cell.row, cell.col)) {
-            anyhow::bail!("original-form expected cells must address distinct cells");
+            return Err(PlanRefusal::Ids);
         }
     }
     let mut repeated = BTreeSet::new();
@@ -291,14 +335,14 @@ fn validate_plan(plan: &OriginalFormPlan) -> Result<()> {
             || allowance.extra_copies > MAX_TABLE_EXPECTATIONS
             || !repeated.insert(allowance.table)
         {
-            anyhow::bail!("original-form repeated-table allowance is out of range");
+            return Err(PlanRefusal::Bounds);
         }
     }
     if plan
         .table_count
         .is_some_and(|count| count > MAX_TABLE_INDEX)
     {
-        anyhow::bail!("original-form table_count is out of range");
+        return Err(PlanRefusal::Bounds);
     }
     Ok(())
 }
@@ -746,7 +790,7 @@ pub fn evaluate(
         }
     }
     if let Some(render) = render
-        && render.manifest_supplied
+        && render.forbid_substitution
         && render.font_substituted
     {
         out.push(
@@ -796,6 +840,7 @@ pub fn evaluate(
             findings,
             findings_complete: out.complete,
             address_map: prepared.address_map,
+            address_map_published: false,
         },
         map,
     }
@@ -813,10 +858,10 @@ fn top_level_paragraph(id: &str) -> Option<(usize, usize)> {
 
 /// The report section for a plan that could not be loaded or validated: a content-free
 /// refusal with no plan identity.
-pub fn invalid_plan_report(output_sha256: &str) -> OriginalFormCheckReport {
+pub fn invalid_plan_report(refusal: PlanRefusal, output_sha256: &str) -> OriginalFormCheckReport {
     OriginalFormCheckReport {
         status: CheckStatus::Failed,
-        reason_codes: vec!["original_form_plan_invalid".to_string()],
+        reason_codes: vec![refusal.code().to_string()],
         limited: false,
         missing_evidence: Vec::new(),
         plan_sha256: None,
@@ -826,11 +871,12 @@ pub fn invalid_plan_report(output_sha256: &str) -> OriginalFormCheckReport {
         form_start_count: 0,
         findings: vec![OriginalFormFinding {
             id: "plan".to_string(),
-            code: "original_form_plan_invalid",
-            next_step: "fix_the_plan_against_its_schema",
+            code: refusal.code(),
+            next_step: refusal.next_step(),
         }],
         findings_complete: true,
         address_map: false,
+        address_map_published: false,
     }
 }
 
@@ -854,6 +900,7 @@ pub fn unparsed_report(prepared: &PreparedPlan, output_sha256: &str) -> Original
         }],
         findings_complete: true,
         address_map: prepared.address_map,
+        address_map_published: false,
     }
 }
 

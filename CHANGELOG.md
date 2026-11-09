@@ -58,7 +58,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   environment the check is limited and names `pinned_font_environment`, and the overall
   result is at most `partial`. `checks.original_form` carries plan IDs, cause codes and
   next-step codes only; an opt-in `original-form/address-map.json` locates findings by address,
-  never by text. Policy and report schemas gain the optional sections; reports without them
+  never by text, and `address_map_published` says whether it was written. A font substitution
+  is a finding only when the policy forbids substitution; an unusable plan is refused with one
+  content-free cause class (unreadable, not JSON, contract, bounds, IDs). Policy and report
+  schemas gain the optional sections; reports without them
   keep their shape. Results are local renderer evidence, not Hancom parity.
 
 ## [1.4.0]

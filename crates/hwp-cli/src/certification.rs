@@ -654,7 +654,7 @@ pub fn execute(
         .document
         .original_form
         .as_ref()
-        .map(|section| original_form::prepare(section, policy_base).ok());
+        .map(|section| original_form::prepare(section, policy_base));
 
     let (preflight, parse_budget_failed) = match preflight_parse_budget(&input_snapshot) {
         Ok(preflight) => (Some(preflight), false),
@@ -790,11 +790,12 @@ pub fn execute(
     let mut original_form_map = None;
     let original_form_check = original_form_plan.as_ref().map(|prepared| {
         let output_sha256 = input_snapshot_report.sha256.as_str();
-        let (Some(prepared), Some(doc)) = (prepared.as_ref(), document.as_ref()) else {
-            return match prepared {
-                Some(prepared) => original_form::unparsed_report(prepared, output_sha256),
-                None => original_form::invalid_plan_report(output_sha256),
-            };
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(refusal) => return original_form::invalid_plan_report(*refusal, output_sha256),
+        };
+        let Some(doc) = document.as_ref() else {
+            return original_form::unparsed_report(prepared, output_sha256);
         };
         // Segment geometry from the same isolated font set and layout budget as the render.
         // A render that failed leaves no layout evidence; the check then reports it missing.
@@ -831,7 +832,7 @@ pub fn execute(
                 issues,
                 fonts_pinned,
                 font_substituted,
-                manifest_supplied: !policy.document.fonts.manifest.is_empty(),
+                forbid_substitution: policy.document.fonts.forbid_substitution,
             });
         let evaluation = original_form::evaluate(prepared, doc, output_sha256, evidence.as_ref());
         if prepared.address_map {
@@ -898,6 +899,15 @@ pub fn execute(
     } else {
         "native_only"
     };
+    // The manifest holds the local artifacts plus report.json; the opted-in address map is one
+    // more file within the published 258 cap. Decide before the report is written so
+    // `address_map_published` says whether the file exists (T11-N2).
+    let publish_address_map =
+        original_form_map.is_some() && local_artifacts.len() + 1 < MAX_MANIFEST_FILES;
+    let mut original_form_check = original_form_check;
+    if let Some(check) = original_form_check.as_mut() {
+        check.address_map_published = publish_address_map;
+    }
     let report = CertificationReport {
         schema_version: REPORT_SCHEMA_VERSION,
         contract: "hwp-certification-report-v1",
@@ -938,12 +948,12 @@ pub fn execute(
     let mut manifest_files = local_artifacts;
     manifest_files.push(report_artifact);
     if let (Some(map), Some(check)) = (&original_form_map, &report.checks.original_form)
-        && manifest_files.len() < MAX_MANIFEST_FILES
+        && publish_address_map
     {
         // Local opt-in address map: addresses only, never document text. Listed in the
         // manifest, not among the report's artifact set (whose paths are a fixed schema set).
-        // It shares the published 258-file manifest cap: a report already at that cap (256
-        // pages plus the oracle PDF) leaves the map out rather than exceed the contract.
+        // A report already at the 258-file cap (256 pages plus the oracle PDF) leaves it out,
+        // and says so through `address_map_published: false`.
         fs::create_dir(stage.root.join("original-form"))?;
         set_private_permissions(&stage.root.join("original-form"))?;
         let bytes = original_form::address_map_bytes(check, map)?;
@@ -2409,6 +2419,9 @@ fn validate_evidence_check_invariants(report: &CertificationReport) -> Result<()
         }
         if check.findings.len() > original_form::MAX_FINDINGS {
             anyhow::bail!("original_form findings exceed their bound");
+        }
+        if check.address_map_published && !check.address_map {
+            anyhow::bail!("original_form address map published without being requested");
         }
         if check.status != CheckStatus::Passed {
             evidence_failed = true;

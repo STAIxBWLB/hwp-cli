@@ -374,15 +374,15 @@
         { "properties": { "status": { "enum": ["failed", "skipped"] }, "reason_codes": { "minItems": 1 } } }
       ]
     },
-    "originalFormCode": { "enum": ["output_identity_mismatch", "table_count_changed", "table_missing", "repeated_table_missing", "table_grid_changed", "expected_cell_missing", "expected_cell_value_missing", "expected_cell_value_mismatch", "expected_cell_not_rendered", "form_start_missing", "form_start_ambiguous", "form_start_not_rendered", "form_start_on_wrong_page", "form_start_not_at_page_start", "table_row_clipped", "cell_fragmentation_incomplete", "disallowed_font_substitution", "original_form_plan_invalid", "original_form_document_unavailable"] },
+    "originalFormCode": { "enum": ["output_identity_mismatch", "table_count_changed", "table_missing", "repeated_table_missing", "table_grid_changed", "expected_cell_missing", "expected_cell_value_missing", "expected_cell_value_mismatch", "expected_cell_not_rendered", "form_start_missing", "form_start_ambiguous", "form_start_not_rendered", "form_start_on_wrong_page", "form_start_not_at_page_start", "table_row_clipped", "cell_fragmentation_incomplete", "disallowed_font_substitution", "original_form_document_unavailable", "original_form_plan_unreadable", "original_form_plan_not_json", "original_form_plan_contract", "original_form_plan_bounds", "original_form_plan_ids"] },
     "originalFormCheck": {
       "type": "object",
       "additionalProperties": false,
       "description": "Original-form certification (#419). Content-free: finding IDs are the plan's own stable IDs; no document or plan text appears here.",
-      "required": ["status", "reason_codes", "limited", "missing_evidence", "plan_sha256", "source_sha256", "output_sha256", "expected_cell_count", "form_start_count", "findings", "findings_complete", "address_map"],
+      "required": ["status", "reason_codes", "limited", "missing_evidence", "plan_sha256", "source_sha256", "output_sha256", "expected_cell_count", "form_start_count", "findings", "findings_complete", "address_map", "address_map_published"],
       "properties": {
         "status": { "$ref": "#/$defs/checkStatus" },
-        "reason_codes": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "enum": ["output_identity_mismatch", "table_count_changed", "table_missing", "repeated_table_missing", "table_grid_changed", "expected_cell_missing", "expected_cell_value_missing", "expected_cell_value_mismatch", "expected_cell_not_rendered", "form_start_missing", "form_start_ambiguous", "form_start_not_rendered", "form_start_on_wrong_page", "form_start_not_at_page_start", "table_row_clipped", "cell_fragmentation_incomplete", "disallowed_font_substitution", "original_form_plan_invalid", "original_form_document_unavailable", "original_form_findings_truncated"] } },
+        "reason_codes": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "enum": ["output_identity_mismatch", "table_count_changed", "table_missing", "repeated_table_missing", "table_grid_changed", "expected_cell_missing", "expected_cell_value_missing", "expected_cell_value_mismatch", "expected_cell_not_rendered", "form_start_missing", "form_start_ambiguous", "form_start_not_rendered", "form_start_on_wrong_page", "form_start_not_at_page_start", "table_row_clipped", "cell_fragmentation_incomplete", "disallowed_font_substitution", "original_form_document_unavailable", "original_form_plan_unreadable", "original_form_plan_not_json", "original_form_plan_contract", "original_form_plan_bounds", "original_form_plan_ids", "original_form_findings_truncated"] } },
         "limited": { "type": "boolean", "description": "True when evidence named in missing_evidence was unavailable; a limited result never makes overall passed." },
         "missing_evidence": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "enum": ["render_layout_unavailable", "segment_map_truncated", "cell_render_location_unavailable", "pinned_font_environment", "parsed_document"] } },
         "plan_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
@@ -397,12 +397,13 @@
             "properties": {
               "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" },
               "code": { "$ref": "#/$defs/originalFormCode" },
-              "next_step": { "enum": ["certify_the_reviewed_output", "restore_the_form_tables_or_declare_repeats", "restore_the_original_grid", "fill_the_expected_cell", "check_pagination_and_cell_fragmentation", "restore_the_form_start", "make_the_form_start_text_unique", "restore_the_page_break_before_the_form", "shorten_the_value_or_allow_row_growth", "pin_the_requested_fonts_and_rerender", "fix_the_plan_against_its_schema", "fix_the_package_then_recertify"] }
+              "next_step": { "enum": ["certify_the_reviewed_output", "restore_the_form_tables_or_declare_repeats", "restore_the_original_grid", "fill_the_expected_cell", "check_pagination_and_cell_fragmentation", "restore_the_form_start", "make_the_form_start_text_unique", "restore_the_page_break_before_the_form", "shorten_the_value_or_allow_row_growth", "pin_the_requested_fonts_and_rerender", "fix_the_plan_against_its_schema", "fix_the_package_then_recertify", "check_the_plan_path_and_size", "set_the_plan_contract_and_version", "bring_the_plan_within_its_bounds", "make_plan_ids_and_cells_unique"] }
             }
           }
         },
         "findings_complete": { "type": "boolean" },
-        "address_map": { "type": "boolean" }
+        "address_map": { "type": "boolean", "description": "The policy requested the local address map." },
+        "address_map_published": { "type": "boolean", "description": "original-form/address-map.json was published; false when not requested or when the 258-file manifest cap left no room." }
       },
       "allOf": [
         { "oneOf": [

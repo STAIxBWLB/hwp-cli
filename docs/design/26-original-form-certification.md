@@ -47,7 +47,7 @@ IDs; the report never echoes the text they stand for.
 | Form start present and unique | Parsed document | `form_start_missing`, `form_start_ambiguous` |
 | Form start placement | Segment rows of the certification layout | `form_start_not_rendered`, `form_start_on_wrong_page`, `form_start_not_at_page_start` |
 | Clipped row, incomplete fragmentation | Typed render issues of the same layout | `table_row_clipped`, `cell_fragmentation_incomplete` |
-| Disallowed font substitution | Font resolution of the render, with a font manifest supplied | `disallowed_font_substitution` |
+| Disallowed font substitution | Font resolution of the render, when the policy sets `fonts.forbid_substitution` | `disallowed_font_substitution` |
 
 Placement and fit are read from the layout's own typed issues and segment rows
 (`hwp_render::layout_segments_isolated_bounded`: the same isolated font set and layout budget as
@@ -66,7 +66,15 @@ supplied, substitution is forbidden, and every requested font matched. Otherwise
 `limited: true` with `pinned_font_environment` in `missing_evidence`, and certification is never
 `passed`: a passing but limited check makes the overall result `partial`. Other missing-evidence
 codes are `render_layout_unavailable`, `segment_map_truncated`,
-`cell_render_location_unavailable` (a table inside a text box) and `parsed_document`.
+`cell_render_location_unavailable` (a table inside a text box) and `parsed_document`. A
+substitution the policy allows (`forbid_substitution: false`) is not a finding: the environment
+is simply not pinned, so the result is limited.
+
+A plan that cannot be used is refused with one content-free cause class:
+`original_form_plan_unreadable` (path, missing file or size), `original_form_plan_not_json`
+(not the plan's closed JSON shape), `original_form_plan_contract` (contract or version),
+`original_form_plan_bounds` (counts, indices, pages, text length, hashes, or nothing planned)
+and `original_form_plan_ids` (malformed or repeated IDs, two cells at one address).
 
 ## What stays separate
 
@@ -84,7 +92,8 @@ With `address_map: true` the report directory also gets `original-form/address-m
 table/row/column and page. It carries no text either, but it locates content, so keep it local
 with the plan. It is listed in `manifest.json` and is not one of `report.artifacts`. It shares the
 published 258-file manifest cap: a report already at that cap (256 pages plus the oracle PDF)
-leaves it out. Over MCP, `hwp_certify` writes the same directory and never returns the map
+leaves it out. `address_map` says it was requested and `address_map_published` whether the file
+exists. Over MCP, `hwp_certify` writes the same directory and never returns the map
 inline.
 
 ## Schemas
@@ -99,6 +108,6 @@ inline.
 Coverage is the owner-authored P0 form set (`tools/generate_original_form_fixture.py`, #416):
 `crates/hwp-cli/tests/original_form_certify.rs` certifies a correct fill and fails a clipped row,
 a missing cell value, a moved form start and a substituted font, each with its own cause; an
-unpinned run is limited and names the missing evidence. The pinned cases need one single-face
+unpinned run, and a substitution the policy allows, are limited and name the missing evidence. The pinned cases need one single-face
 TrueType font on the host (fonts-nanum on Linux CI, AppleGothic on macOS) and are counted as a
 missing resource elsewhere. These are local renderer results, not Hancom output.
