@@ -306,7 +306,10 @@ array of `hwp_edit` of the same name.
   paragraph: the paragraph-header break type in HWP and `pageBreak` in HWPX. That header bit is
   the only placement that genuine Hangul-saved files show, so a paragraph inside a table cell
   and the first paragraph of a section are refused with the cause and the remedy. Column breaks
-  are not offered. Repeating a request that is already in effect succeeds and changes nothing.
+  are not offered. Line caches are page-relative, so a change also drops the stored line layout of
+  that paragraph and of the paragraphs after it up to the next page break, and Hangul or the
+  writer re-measures them from the new page top (an unchanged repeat touches nothing).
+  Repeating a request that is already in effect succeeds and changes nothing.
 - `set_indent_level` removes only the blank characters at the start of one paragraph (ASCII,
   ideographic and no-break spaces) and puts the indentation on the paragraph shape instead:
   `margin_left` is `level` times `step` and the first line hangs by `hanging` (default `0mm`).
@@ -328,6 +331,9 @@ array of `hwp_edit` of the same name.
   start a new page.
 
 Both ops address one paragraph at a time, so a stale `id` is refused as with any addressed op.
+A `set_format` run address resolves against the document before the batch, so a batch that
+strips blanks (`set_indent_level`) or replaces text in the same paragraph before it is refused
+with nothing written, naming the cause: put `set_format` first, or run the edits separately.
 Results are structural; this manual makes no claim about the page count Hangul will show.
 Evidence and limits are recorded in `docs/design/07-hangul-compat-rules.md` (J1 to J3).
 

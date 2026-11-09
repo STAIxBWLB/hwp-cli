@@ -389,7 +389,10 @@ leading spaces with real indentation. Both take a paragraph `address` from
 ```
 
 - A paragraph in a table cell and a section's first paragraph are refused for the page break,
-  with the cause. Repeating either op is a successful no-op.
+  with the cause. Repeating either op is a successful no-op. A real change drops the line
+  layout of that paragraph and the ones after it up to the next break so they are re-measured.
+- Put `set_format` run edits BEFORE `set_indent_level` or `replace` on the same paragraph in a
+  batch: a run address that follows a length change is refused with nothing written.
 - `set_indent_level` strips only the leading blanks (also those after a section, field or
   bookmark control, which stays), never inner spacing or a numbering label. The first remaining
   character keeps its bold or other character shape. A blank-only paragraph is left as is. A paragraph with highlight or proofreading marks is

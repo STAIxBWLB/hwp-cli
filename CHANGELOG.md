@@ -41,8 +41,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `keep_together` (keep with next, keep lines, shape break-before) is always refused before
   anything is written: none of about 13,000 paragraph shapes in 902 genuine files sets those
   bits, so their encoding is unverified (`docs/design/07-hangul-compat-rules.md`, J1 to J3).
-  Repeated requests succeed with `pieces_touched` 0. Bilingual manual and bundled-skill recipes
-  are included.
+  Repeated requests succeed with `pieces_touched` 0. Because line caches are page-relative, a
+  page-break change also drops the stored line layout of the paragraph and of those after it
+  up to the next break, and the native HWP5 cache synthesis now restarts its cursor at an
+  explicit page break as genuine Hangul-saved caches do (`v_pos` 0 plus the paragraph's own
+  space-before, no page-start flag). A `set_format` run address that follows a text-length
+  change in the same batch (a stripping `set_indent_level`, a `replace`) is refused with nothing
+  written, naming the ordering remedy. Bilingual manual and bundled-skill recipes are included.
 
 ## [1.4.0]
 

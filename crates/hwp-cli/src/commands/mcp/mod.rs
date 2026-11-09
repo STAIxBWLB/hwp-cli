@@ -2818,7 +2818,7 @@ fn tool_defs() -> Vec<Value> {
                         }},
                     "value": {"type": "string", "enum": ["on", "off"], "description": "on: 문단 앞에서 새 쪽 시작, off: 해제"}},
                     "required": ["address", "value"]},
-                    "description": "본문 문단 한 개의 '문단 앞 쪽 나눔' 켜기/끄기(한글이 저장한 정품 파일에 나타나는 위치만 허용: 표 셀 문단과 구역의 첫 문단은 거부). 이미 적용된 요청은 변경 없이 성공"},
+                    "description": "본문 문단 한 개의 '문단 앞 쪽 나눔' 켜기/끄기(한글이 저장한 정품 파일에 나타나는 위치만 허용: 표 셀 문단과 구역의 첫 문단은 거부). 변경하면 그 문단과 다음 쪽 나눔 앞까지의 후속 문단 줄 배치를 버려 다시 계산한다. 이미 적용된 요청은 변경 없이 성공"},
                 "set_indent_level": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",

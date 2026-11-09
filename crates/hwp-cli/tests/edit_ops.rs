@@ -2471,7 +2471,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "4af7e58efca25241e336ac1f9cd4d14d3a61c846438336b816bf8299007b5947",
+        actual, "fa38a3056a060bd97e15fa86fe9b3c07d5d9996036abe7bc8de4bf8351425185",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

@@ -955,7 +955,7 @@
           "type": "object",
           "unevaluatedProperties": false,
           "required": ["op"],
-          "description": "Exactly one of pattern (anchor-text selector) or address (id/at selector, D-12) is required (parser-enforced). Char-format props are flat on the entry via the shared charPropsFields definition (D-08).",
+          "description": "Exactly one of pattern (anchor-text selector) or address (id/at selector, D-12) is required (parser-enforced). Char-format props are flat on the entry via the shared charPropsFields definition (D-08). An address resolves against the document before the batch, so a set_format address that follows an op that changed the same paragraph's text length (set_indent_level stripping blanks, replace) in one batch is refused with nothing written; put set_format first or run the edits separately.",
           "allOf": [
             { "$ref": "#/$defs/charPropsFields" },
             {
@@ -1057,7 +1057,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["op", "address", "value"],
-          "description": "Sets (on) or clears (off) the page-break-before bit of ONE body paragraph: the HWP5 paragraph-header break_type page bit and HWPX pageBreak on hp:p, the only placement the genuine Hangul-saved files show. A paragraph inside a table cell or text box, and the first paragraph of a section (it owns the section setup), are refused with the cause and the remedy. A value other than on or off is refused by the parser with both accepted values named. Idempotent: an already-applied request touches nothing.",
+          "description": "Sets (on) or clears (off) the page-break-before bit of ONE body paragraph: the HWP5 paragraph-header break_type page bit and HWPX pageBreak on hp:p, the only placement the genuine Hangul-saved files show. A paragraph inside a table cell or text box, and the first paragraph of a section (it owns the section setup), are refused with the cause and the remedy. A value other than on or off is refused by the parser with both accepted values named. Idempotent: an already-applied request touches nothing. A change also drops the stored line layout of that paragraph and of the paragraphs after it up to the next page break, so they are re-measured from the new page top.",
           "properties": {
             "op": { "const": "set_break_before" },
             "address": { "$ref": "#/$defs/paragraphAddress" },
