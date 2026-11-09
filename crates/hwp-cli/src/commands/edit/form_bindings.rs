@@ -133,6 +133,7 @@ pub(super) fn execute(
             status: OpStatus::Applied,
             pieces_touched: count,
             changed: Vec::new(),
+            changed_total: None,
             reason: None,
             missing_style: None,
         }],
