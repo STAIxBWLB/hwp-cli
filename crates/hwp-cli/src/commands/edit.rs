@@ -2547,12 +2547,12 @@ fn report_changed_ids(
                     && path.indices[..parent.len()] == *parent
                     && (first..first + request.blocks.len()).contains(&path.indices[parent.len()])
             };
-            let mut seen = std::collections::BTreeSet::new();
+            // A run an inline block control interrupts is published in pieces that share one
+            // id; the blocks `insert_blocks` compiles keep their controls in separate
+            // paragraphs, so each id appears once here.
             segments
                 .into_iter()
                 .filter(|segment| inside_inserted(&segment.path))
-                // A run an inline control interrupts is published in pieces that share one id.
-                .filter(|segment| seen.insert(segment.id.clone()))
                 .map(|segment| IdPair {
                     before: None,
                     after: Some(segment.id),
