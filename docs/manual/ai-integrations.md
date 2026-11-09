@@ -163,7 +163,9 @@ The report's entry for the op lists the ids of what was inserted, so the next ca
 to guess indices. `pieces_touched` is the number of inserted paragraphs; `changed` holds one
 creation pair (`before` is null) for every segment `hwp cat` would publish inside them: each
 paragraph id, then its run ids, and for a table or image block the table, cell and image ids.
-A run id is what `set_format` takes:
+If a very large component publishes more than the report's 10,000-pair cap, `changed` holds
+the first 10,000 in document order and `changed_total` gives the real count; the omitted ids are
+the ones `hwp cat` shows. A run id is what `set_format` takes:
 
 ```json
 [{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]

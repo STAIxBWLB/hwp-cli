@@ -21,7 +21,11 @@ stream with different bytes is refused.
 Reporting and transport. The edit report lists the inserted segments: one creation pair
 (`before` null) for each segment `hwp cat --segments v2` publishes inside the inserted top-level
 paragraphs, read from the document right after the op, so the ids equal what a fresh `cat` shows
-and a run id is directly addressable by `set_format`. `hwp_edit` accepts the op as an
+and a run id is directly addressable by `set_format`. `edit-report-v1` caps `changed` at 10,000
+items, and a valid request can publish more (one 100 x 50 table is 15,002 segments), so the
+report keeps the first 10,000 pairs in document order and states the real count in the optional
+`changed_total`; its absence means the list is complete. A coarser report cannot be bounded
+either, since one request may carry 20,000 blocks. `hwp_edit` accepts the op as an
 `insert_blocks` array (the item is the edit-ops object without its `op` tag, deserialized by the
 ops channel's own entry type, so CLI and MCP share one parser). Its image paths resolve against
 the `base_dir` argument, itself a sandbox-checked read path; the `--root` roots bind every asset

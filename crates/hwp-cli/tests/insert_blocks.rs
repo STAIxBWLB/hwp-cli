@@ -3283,6 +3283,29 @@ fn a_report_over_the_changed_cap_is_a_valid_prefix_with_an_explicit_total() {
                 "{extension}: reported id {offset} is the next published segment"
             );
         }
+        // It is a PREFIX: the first reported id is the first inserted paragraph, directly after
+        // the anchor, and the segment after the last reported one is still inside the insertion.
+        let after = read(&output);
+        // A body paragraph id ends in its index: <hash>.<section>.<index>.
+        let first_inserted = format!(".0.{}", index(&after, ANCHOR) + 1);
+        assert!(
+            changed[0]["after"]
+                .as_str()
+                .unwrap()
+                .ends_with(&first_inserted),
+            "{extension}: the report starts at the first inserted paragraph ({first_inserted}): {}",
+            changed[0]["after"]
+        );
+        assert_eq!(
+            after.sections[0].paragraphs[index(&after, ANCHOR) + 1].plain_text(),
+            "Bulk 0.",
+            "{extension}: and that paragraph is the first one the request inserted"
+        );
+        let next = published[first + 10_000].as_str();
+        assert!(
+            next.starts_with(|c: char| c.is_ascii_hexdigit()) && depth(next) >= 1,
+            "{extension}: the first segment left out is a real published segment: {next}"
+        );
         // The cut ids are still reachable: the tail is in the output, just not in the report.
         assert!(
             published.len() > first + 10_000,

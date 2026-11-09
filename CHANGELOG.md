@@ -62,7 +62,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   target per operation.
   The edit report lists what was inserted: one creation pair for every segment `hwp cat
   --segments v2` publishes inside the inserted paragraphs (paragraph, run, and for tables and
-  images the table, cell and image ids), so a run id feeds `set_format` in the next call.
+  images the table, cell and image ids), so a run id feeds `set_format` in the next call. A
+  report is cut to the schema's 10,000-pair cap in document order, and an op that produced more
+  carries `changed_total` with the real count (one 100 x 50 table publishes 15,002 segments);
+  the omitted ids are still the ones `hwp cat` shows.
   `hwp_edit` takes the same operation as an `insert_blocks` array plus a `base_dir` directory,
   checked against the `--root` sandbox, that image paths resolve against; without it image
   blocks are refused

@@ -158,7 +158,9 @@ hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.js
 보고서의 해당 연산 항목은 삽입된 대상의 id를 알려 주므로 다음 호출에서 인덱스를 추측할 필요가
 없다. `pieces_touched`는 삽입된 문단 수이고, `changed`에는 `hwp cat`이 그 문단 안에서 발행할
 세그먼트마다 생성 쌍(`before`는 null)이 하나씩 있다. 문단 id 다음에 그 런 id가 오고, 표나
-이미지 블록이면 표·셀·이미지 id도 있다. `set_format`에는 런 id를 넘긴다.
+이미지 블록이면 표·셀·이미지 id도 있다. 보고서 상한(10,000쌍)을 넘는 아주 큰 구성 요소는 `changed`에 문서 순서로 앞 10,000쌍만 담고
+`changed_total`에 실제 개수를 적는다. 빠진 id는 `hwp cat`이 보여 주는 값과 같다.
+`set_format`에는 런 id를 넘긴다.
 
 ```json
 [{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]
