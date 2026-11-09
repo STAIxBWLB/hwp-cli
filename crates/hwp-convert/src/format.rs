@@ -374,14 +374,15 @@ fn is_invisible_leading_control(ch: &HwpChar) -> bool {
 /// keeps the shape it had. Runs whose whole span was removed collapse onto the next run.
 fn strip_leading_blanks(para: &mut Paragraph) -> bool {
     let mut doomed: Vec<usize> = Vec::new();
-    let mut removed: Vec<(u32, u32)> = Vec::new();
+    // WCHAR offsets of the removed blanks. Every accepted blank is in the BMP: one WCHAR each.
+    let mut removed: Vec<u32> = Vec::new();
     let mut wpos = 0u32;
     let mut reached_text = false;
     for (index, ch) in para.chars.iter().enumerate() {
         match ch {
             HwpChar::Text(c) if is_indent_blank(*c) => {
                 doomed.push(index);
-                removed.push((wpos, ch.wchar_width()));
+                removed.push(wpos);
             }
             ch if is_invisible_leading_control(ch) => {}
             HwpChar::CharCtrl(code) if *code == hwp_model::ctrl_char::PARA_BREAK => break,
@@ -410,18 +411,13 @@ fn strip_leading_blanks(para: &mut Paragraph) -> bool {
     let mut rebased: Vec<(u32, hwp_model::CharShapeId)> =
         Vec::with_capacity(para.char_shape_runs.len());
     for &(start, id) in &para.char_shape_runs {
-        let before: u32 = removed
-            .iter()
-            .filter(|(at, _)| *at < start)
-            .map(|(_, width)| *width)
-            .sum();
+        let before = removed.iter().filter(|at| **at < start).count() as u32;
         let start = start - before;
         match rebased.last_mut() {
             Some(last) if last.0 == start => *last = (start, id),
             _ => rebased.push((start, id)),
         }
     }
-    rebased.dedup_by_key(|run| run.1);
     para.char_shape_runs = rebased;
     para.line_segs.clear();
     true
@@ -1132,7 +1128,9 @@ mod tests {
         let mut parts = text("  Bold tail");
         parts.push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
         let mut p = para_of(parts, &[(0, 0), (2, 1), (6, 2)]);
+        p.line_segs.push(dummy_lineseg());
         assert!(strip_leading_blanks(&mut p));
+        assert!(p.line_segs.is_empty(), "the stale line layout is dropped");
         assert_eq!(p.plain_text(), "Bold tail");
         assert_eq!(
             run_pairs(&p),
