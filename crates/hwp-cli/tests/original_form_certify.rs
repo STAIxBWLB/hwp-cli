@@ -165,7 +165,9 @@ impl Forms {
             json!({"original_form": {"plan": "plan.json", "address_map": address_map}});
         if let Some(font) = font {
             if !self.path("font.ttf").exists() {
-                std::fs::copy(font, self.path("font.ttf")).unwrap();
+                // Copy the bytes: macOS `fs::copy` clones a system font with its compression
+                // attributes, and reading such a clone can fail with ENOATTR.
+                std::fs::write(self.path("font.ttf"), std::fs::read(font).unwrap()).unwrap();
             }
             let hash = sha256(&self.path("font.ttf"));
             document["fonts"] = json!({"manifest": [{"path": "font.ttf", "sha256": hash}]});
