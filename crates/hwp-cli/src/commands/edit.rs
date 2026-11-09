@@ -393,14 +393,30 @@ impl AssetPlan {
         }
     }
 
-    /// MCP `hwp_edit`: the sandbox roots bind every asset read. `insert_blocks` is not an MCP
-    /// argument until T4 (#428), so there is no asset directory to offer yet and image blocks
-    /// stay refused on this path rather than reading from the server's working directory.
-    pub(crate) fn for_mcp(roots: &[std::path::PathBuf]) -> Self {
+    /// MCP `hwp_edit`: the sandbox roots bind every asset read, and `base_dir` is the
+    /// directory `insert_blocks` image paths resolve against (the caller has already checked it
+    /// as a sandbox read path). With no `base_dir` there is no asset directory, and image blocks
+    /// are refused rather than read from the server's working directory.
+    pub(crate) fn for_mcp(
+        roots: &[std::path::PathBuf],
+        base_dir: Option<std::path::PathBuf>,
+    ) -> Self {
         Self {
-            base_dir: None,
+            base_dir,
             roots: roots.to_vec(),
         }
+    }
+
+    /// Test seam: run `insert_blocks::apply` with this plan's asset context, exactly as the
+    /// edit loop does, so a test can observe the roots and base directory the plan carries.
+    #[cfg(test)]
+    pub(crate) fn apply_insert_blocks_for_test(
+        &self,
+        doc: &mut hwp_model::Document,
+        at: &hwp_convert::SegmentPath,
+        request: &hwp_cli::insert_blocks::InsertBlocks,
+    ) -> Result<usize, String> {
+        hwp_cli::insert_blocks::apply(doc, at, request, false, &self.context())
     }
 
     fn context(&self) -> hwp_cli::insert_blocks::AssetContext<'_> {
@@ -515,10 +531,21 @@ pub struct OpOutcome {
     status: OpStatus,
     pieces_touched: usize,
     changed: Vec<IdPair>,
+    /// How many pairs the op produced, present only when `changed` was cut to
+    /// [`CHANGED_CAP`]. Absent means `changed` is complete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_total: Option<usize>,
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_style: Option<hwp_cli::insert_blocks::MissingStylePolicy>,
 }
+
+/// `edit-report-v1` caps `ops[].changed` at this many items (`maxItems`). A valid
+/// `insert_blocks` request can publish more segments than that (one 100 x 50 table publishes
+/// 15,002), so the report keeps the first `CHANGED_CAP` pairs in document order and states
+/// the real count in `changed_total`, instead of emitting a report its own schema rejects. A
+/// coarser report cannot be bounded either: one request may carry 20,000 blocks.
+pub(crate) const CHANGED_CAP: usize = 10_000;
 
 /// `edit-report-v1`'s wire shape (schema_version/contract first, D-15's house convention) — a
 /// thin serialization view over [`EditReport`], which also carries fields (`warnings`,
@@ -1797,6 +1824,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Failed,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                changed_total: None,
                 missing_style: None,
                 reason: Some(failure_reason(operation)),
             });
@@ -1819,6 +1847,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Applied,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                changed_total: None,
                 missing_style: None,
                 reason: None,
             });
@@ -1838,6 +1867,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 status: OpStatus::Failed,
                 pieces_touched: 0,
                 changed: Vec::new(),
+                changed_total: None,
                 missing_style: None,
                 reason: Some("적용되지 않음 (사전 검증 단계에서 이미 확인됨)".to_string()),
             });
@@ -1855,12 +1885,16 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             TypedEditOperation::InsertBlocks { request, .. } => request.blocks.len(),
             _ => changed.len().max(1),
         };
+        let mut changed = changed;
+        let changed_total = (changed.len() > CHANGED_CAP).then_some(changed.len());
+        changed.truncate(CHANGED_CAP);
         ops_outcomes.push(OpOutcome {
             index,
             op,
             status: OpStatus::Applied,
             pieces_touched,
             changed,
+            changed_total,
             reason: None,
             missing_style: match operation {
                 TypedEditOperation::InsertBlocks { request, .. } => Some(request.missing_style),
@@ -2496,8 +2530,9 @@ fn default_shape_at(
 ///
 /// Structural ops (`insert_para`/`delete_para`/`move_para`) use the same private helpers
 /// (`move_to_index`, `moved_paragraph_path`) as their `apply_typed_operation` arms, so
-/// the ids describe the state immediately after this op. `insert_blocks` deliberately
-/// defers inserted-id reporting to #428 T4. Every
+/// the ids describe the state immediately after this op, `insert_blocks` included (one creation
+/// pair per segment `hwp cat --segments v2` publishes inside the inserted paragraphs; the caller
+/// cuts the list to the schema's cap and records the real count). Every
 /// non-structural addressed kind uses
 /// `target_current_path` directly (already correct for any EARLIER structural op in the batch,
 /// since none of these kinds change list length themselves).
@@ -2513,7 +2548,52 @@ fn report_changed_ids(
         return Vec::new();
     };
     match operation {
-        TypedEditOperation::InsertBlocks { .. } => Vec::new(),
+        TypedEditOperation::InsertBlocks { request, .. } => {
+            // Every segment `hwp cat --segments v2` publishes inside the inserted top-level
+            // paragraphs (a block compiles to exactly one; `pieces_touched` counts them), in
+            // document order, in the state right after this op. A caller can address any of
+            // them in the next call - a run id for `set_format`, a cell or table id for a
+            // table op - without re-guessing indices (#428 AC3). Reading the published
+            // segments, rather than deriving ids per kind, keeps the report equal to what a
+            // fresh `cat` would show, whatever the block compiled to (a table, an image, a
+            // field...). The paragraphs sit consecutively from the anchor's index, or from the
+            // one after it, exactly as `insert_para` places its single paragraph.
+            let Some(anchor_path) = target_current_path else {
+                return Vec::new();
+            };
+            let Some(&anchor_idx) = anchor_path.indices.last() else {
+                return Vec::new();
+            };
+            let first = if request.before() {
+                anchor_idx
+            } else {
+                anchor_idx + 1
+            };
+            let parent = &anchor_path.indices[..anchor_path.indices.len() - 1];
+            let Ok((_, segments)) = hwp_convert::to_markdown_with_segments_v2(
+                doc,
+                &hwp_convert::MarkdownOptions::default(),
+            ) else {
+                return Vec::new();
+            };
+            let inside_inserted = |path: &hwp_convert::SegmentPath| {
+                path.section == anchor_path.section
+                    && path.indices.len() > parent.len()
+                    && path.indices[..parent.len()] == *parent
+                    && (first..first + request.blocks.len()).contains(&path.indices[parent.len()])
+            };
+            // A run an inline block control interrupts is published in pieces that share one
+            // id; the blocks `insert_blocks` compiles keep their controls in separate
+            // paragraphs, so each id appears once here.
+            segments
+                .into_iter()
+                .filter(|segment| inside_inserted(&segment.path))
+                .map(|segment| IdPair {
+                    before: None,
+                    after: Some(segment.id),
+                })
+                .collect()
+        }
         TypedEditOperation::DeletePara {
             address: Some(_), ..
         } => {
@@ -2964,6 +3044,7 @@ fn fast_path_outcomes(plan: &EditPlan, matched: &[bool]) -> Vec<OpOutcome> {
             },
             pieces_touched: usize::from(matched),
             changed: Vec::new(),
+            changed_total: None,
             missing_style: None,
             reason: (!matched).then(|| failure_reason(operation)),
         })

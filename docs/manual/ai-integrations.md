@@ -119,6 +119,68 @@ native implementation under that policy; it does not attest that Hancom opened o
 file. Hancom-open evidence is a separate receipt. The same workflow accepts `.hwp` paths; output
 format constraints and refusal diagnostics still apply.
 
+### Insert a component into an existing document
+
+`insert_blocks` places DocumentSpec v1 blocks (paragraphs, lists, tables, images, fields,
+equations, page and column breaks) before or after an addressed paragraph, styled like the
+document. Take the paragraph address from `hwp cat doc.hwpx --format json --with-segments
+--segments v2`, then save the component as `component.json`:
+
+```json
+[
+  {"op":"insert_blocks","address":{"at":{"section":0,"paragraph":2}},"position":"after",
+   "blocks":[
+     {"type":"paragraph","runs":[{"type":"text","text":"Approval:"}]},
+     {"type":"table","columns":[{"width_mm":40},{"width_mm":40}],
+      "rows":[{"cells":[{"blocks":[{"type":"paragraph","runs":[{"type":"text","text":"Drafted"}]}]},
+                       {"blocks":[{"type":"paragraph","runs":[{"type":"text","text":"Approved"}]}]}]}]},
+     {"type":"image","path":"logo.png","width_mm":20}
+   ]}
+]
+```
+
+```bash
+hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
+```
+
+Rules that matter:
+
+- A style name in a block resolves against the document's own styles first. A name the document
+  lacks is created from the op's `styles` (`missing_style: "create"`, the default) or refused
+  (`"refuse"`); the report states the policy. A list name needs a definition in `lists`.
+- Image paths are relative to the directory of the `--ops` file and may not leave it. Reading
+  `--ops -` from stdin has no directory, so image blocks are refused there. Over MCP, pass
+  `base_dir` (a sandbox-checked directory) and the server's `--root` sandbox binds every asset.
+- Tables and images are measured against the text column or table cell they land in: the rotated
+  page of a landscape section, one column of a multi-column section, and inside a cell the cell
+  width less its margins. `position: "before"` uses the layout preceding the address. An oversized
+  block is refused before anything is written.
+- Equations insert into HWPX only. The HWP writer has no equation record, so HWP output refuses
+  them with a message naming the HWPX remedy. Section breaks are not supported.
+- The edit is atomic: any refusal leaves the output unwritten, even with `--allow-partial`.
+
+The report's entry for the op lists the ids of what was inserted, so the next call does not have
+to guess indices. `pieces_touched` is the number of inserted paragraphs; `changed` holds one
+creation pair (`before` is null) for every segment `hwp cat` would publish inside them: each
+paragraph id, then its run ids, and for a table or image block the table, cell and image ids.
+If a very large component publishes more than the report's 10,000-pair cap, `changed` holds
+the first 10,000 in document order and `changed_total` gives the real count; the omitted ids are
+the ones `hwp cat` shows. A run id is what `set_format` takes:
+
+```json
+[{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]
+```
+
+Ids describe the document right after that op. Obtain fresh ones after any later edit.
+`hwp validate` and `hwp certify` apply to the result as to any document; a field block makes
+the native render report an omitted control, which is a renderer limit, not an insertion fault.
+
+Equivalent `hwp_edit` MCP arguments (the item is the op without its `op` tag):
+
+```json
+{"input":"doc.hwpx","output":"with-component.hwpx","base_dir":"/work/assets","insert_blocks":[{"address":{"at":{"section":0,"paragraph":2}},"position":"after","blocks":[{"type":"image","path":"logo.png","width_mm":20}]}]}
+```
+
 ### The preservation ledger
 
 `convert`, `merge` and `split` record every item they could not preserve in the typed

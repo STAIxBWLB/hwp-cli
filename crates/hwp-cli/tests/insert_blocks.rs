@@ -2654,3 +2654,701 @@ fn a_cell_with_omitted_margins_uses_the_default_margins() {
         validates(&output);
     }
 }
+
+// ---- #428 T4: inserted-id report (AC3) ----
+
+fn report_of(fixture: &Fixture, stem: &str) -> Value {
+    serde_json::from_slice(&std::fs::read(fixture.dir.join(format!("{stem}-report.json"))).unwrap())
+        .unwrap()
+}
+
+/// Every segment `hwp cat --segments v2` publishes for the document: `(kind, id)` in order.
+fn segments_of(path: &Path) -> Vec<(String, String)> {
+    let run = hwp()
+        .arg("cat")
+        .arg(path)
+        .args(["--format", "json", "--with-segments", "--segments", "v2"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "cat-v2 failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&run.stdout).unwrap();
+    envelope["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["kind"].as_str().unwrap().to_owned(),
+                s["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// The `after` ids of op `op`'s creation pairs, in report order. Every pair is a creation.
+fn created_ids(report: &Value, op: usize) -> Vec<String> {
+    report["ops"][op]["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pair| {
+            assert!(
+                pair["before"].is_null(),
+                "an insertion has no before id: {pair}"
+            );
+            pair["after"]
+                .as_str()
+                .expect("an inserted segment has an id")
+                .to_owned()
+        })
+        .collect()
+}
+
+/// How many path steps a segment id carries after its hash: `<hash>.<section>.<i>...`.
+fn depth(id: &str) -> usize {
+    id.split('.').count().saturating_sub(2)
+}
+
+/// Split a report into `(paragraph id, [run ids])` groups using the kinds the output publishes.
+/// The inserted paragraphs are the report's shallowest `para` ids (the anchor's own level: 1 in
+/// the body, deeper in a cell); a group takes the runs one level below that follow it. The rest
+/// of what the report names (a table, a cell, an image, paragraphs inside a cell) must be
+/// published by the output too, and is checked to exist, but is not grouped.
+fn grouped(report: &Value, op: usize, output: &Path) -> Vec<(String, Vec<String>)> {
+    let kinds: std::collections::BTreeMap<String, String> = segments_of(output)
+        .into_iter()
+        .map(|(kind, id)| (id, kind))
+        .collect();
+    let ids = created_ids(report, op);
+    for id in &ids {
+        assert!(
+            kinds.contains_key(id),
+            "reported id {id} is not published by the output"
+        );
+    }
+    let level = ids
+        .iter()
+        .filter(|id| kinds[*id] == "para")
+        .map(|id| depth(id))
+        .min()
+        .expect("the report names at least one paragraph");
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for id in ids {
+        match (kinds[&id].as_str(), depth(&id)) {
+            ("para", d) if d == level => groups.push((id, Vec::new())),
+            ("run", d) if d == level + 1 => groups
+                .last_mut()
+                .expect("a run id follows its paragraph id")
+                .1
+                .push(id),
+            _ => {}
+        }
+    }
+    groups
+}
+
+/// The plain text of the paragraph a top-level paragraph id (depth 1) names in `doc`, found by
+/// matching the id `hwp cat` publishes for each body paragraph.
+fn text_at_id(path: &Path, doc: &Document, id: &str) -> String {
+    assert!(
+        segments_of(path)
+            .iter()
+            .any(|(kind, candidate)| kind == "para" && candidate == id),
+        "{id} is not a published paragraph"
+    );
+    // The id's own last step is the paragraph's index in the body: <hash>.<section>.<index>.
+    let index: usize = id.rsplit('.').next().unwrap().parse().unwrap();
+    doc.sections[0].paragraphs[index].plain_text()
+}
+
+fn is_bold_para(doc: &Document, text: &str) -> bool {
+    paragraph(doc, text)
+        .char_shape_runs
+        .iter()
+        .any(|(_, id)| doc.header.char_shapes[id.0 as usize].is_bold())
+}
+
+#[test]
+fn insert_blocks_reports_paragraph_and_run_ids_and_set_format_can_use_one() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-ids", extension);
+        let before = read(&fixture.base);
+        let texts = ["Report one.", "Report two.", "Report three."];
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "inserted",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                json!([
+                    block("body", texts[0]),
+                    block("body", texts[1]),
+                    block("body", texts[2])
+                ])
+            )]),
+            false,
+        );
+        success(run, "insert_blocks with three paragraphs");
+        let report = report_of(&fixture, "inserted");
+        assert_eq!(report["ops"][0]["pieces_touched"], 3);
+        let groups = grouped(&report, 0, &output);
+        assert_eq!(
+            groups.len(),
+            3,
+            "{extension}: one paragraph id per inserted paragraph"
+        );
+        assert!(
+            groups.iter().all(|(_, runs)| !runs.is_empty()),
+            "{extension}: every text paragraph reports its run ids: {groups:?}"
+        );
+        let all = created_ids(&report, 0);
+        assert_eq!(
+            all.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            all.len(),
+            "{extension}: the ids are distinct"
+        );
+        // The paragraph ids are consecutive in the output's own paragraph order.
+        let published: Vec<String> = segments_of(&output)
+            .into_iter()
+            .filter(|(kind, _)| kind == "para")
+            .map(|(_, id)| id)
+            .collect();
+        let at_of = |id: &str| published.iter().position(|p| p == id).unwrap();
+        assert_eq!(at_of(&groups[1].0), at_of(&groups[0].0) + 1, "{extension}");
+        assert_eq!(at_of(&groups[2].0), at_of(&groups[1].0) + 1, "{extension}");
+        // A paragraph id is not a run address: set_format refuses it, which is why run ids are
+        // reported. The second paragraph's first run id styles exactly that paragraph (AC3).
+        let (styled, run) = fixture.edit(
+            &output,
+            "followup",
+            json!([{"op":"set_format","address":{"id":groups[1].1[0]},"bold":"on"}]),
+            false,
+        );
+        success(
+            run,
+            "set_format addressed by a run id from the insert_blocks report",
+        );
+        let after = read(&styled);
+        assert!(
+            is_bold_para(&after, texts[1]),
+            "{extension}: the addressed paragraph is bold"
+        );
+        assert!(
+            !is_bold_para(&after, texts[0]) && !is_bold_para(&after, texts[2]),
+            "{extension}: and only that paragraph"
+        );
+    }
+}
+
+#[test]
+fn insert_blocks_report_ids_hold_for_before_cell_and_object_blocks() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-ids-variants", extension);
+        write_png(&fixture.dir, "logo.png");
+        let source = fixture.base.clone();
+        let before = read(&source);
+        // `before` position: the paragraphs land ahead of the anchor, in order.
+        let (output, run) = fixture.edit(
+            &source,
+            "before",
+            json!([insert(
+                at(&before, ANCHOR),
+                "before",
+                "create",
+                json!({}),
+                json!([block("body", "Ahead one."), block("body", "Ahead two.")])
+            )]),
+            false,
+        );
+        success(run, "insert_blocks before the anchor");
+        let groups = grouped(&report_of(&fixture, "before"), 0, &output);
+        assert_eq!(groups.len(), 2, "{extension}");
+        let published: Vec<String> = segments_of(&output)
+            .into_iter()
+            .filter(|(kind, _)| kind == "para")
+            .map(|(_, id)| id)
+            .collect();
+        let first = published.iter().position(|id| *id == groups[0].0).unwrap();
+        assert_eq!(
+            published[first + 1],
+            groups[1].0,
+            "{extension}: before: consecutive"
+        );
+        let after = read(&output);
+        assert_eq!(
+            text_at_id(&output, &after, &groups[0].0),
+            "Ahead one.",
+            "{extension}: the first reported id addresses the first inserted paragraph"
+        );
+        assert_eq!(
+            text_at_id(&output, &after, &groups[1].0),
+            "Ahead two.",
+            "{extension}: and the second the second, directly ahead of the anchor"
+        );
+        assert_eq!(
+            index(&after, "Ahead one."),
+            index(&after, ANCHOR) - 2,
+            "{extension}"
+        );
+
+        // Object blocks (table, image) are each one top-level paragraph and each reports it.
+        let (output, run) = fixture.edit(
+            &source,
+            "objects",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                json!([
+                    {"type":"table","columns":[{"width_mm":40}],"rows":[{"cells":[{"blocks":[block("body","In a table.")]}]}]},
+                    {"type":"image","path":"logo.png","width_mm":10},
+                    block("body", "After objects.")
+                ])
+            )]),
+            false,
+        );
+        success(run, "insert_blocks with a table and an image");
+        let groups = grouped(&report_of(&fixture, "objects"), 0, &output);
+        assert_eq!(
+            groups.len(),
+            3,
+            "{extension}: table, image and text paragraph"
+        );
+
+        // Inside a table cell the ids are the cell paragraphs' own.
+        let id = para_id(&source, CELL);
+        let (output, run) = fixture.edit(
+            &source,
+            "cell",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "Cell added.")])
+            )]),
+            false,
+        );
+        success(run, "insert_blocks inside a table cell");
+        let groups = grouped(&report_of(&fixture, "cell"), 0, &output);
+        assert_eq!(groups.len(), 1, "{extension}");
+        assert!(
+            !groups[0].1.is_empty(),
+            "{extension}: the cell paragraph reports a run id"
+        );
+        let (styled, run) = fixture.edit(
+            &output,
+            "cell-followup",
+            json!([{"op":"set_format","address":{"id":groups[0].1[0]},"italic":"on"}]),
+            false,
+        );
+        success(
+            run,
+            "set_format on a run id of a paragraph inserted into a cell",
+        );
+        assert!(read(&styled).sections.len() == 1, "{extension}");
+    }
+}
+
+/// A cell insertion's paragraphs sit under `[paragraph, control, cell, index]`. A body
+/// paragraph with the same final index, and the cell's other paragraphs, are NOT inserted and
+/// must not be reported.
+#[test]
+fn insert_blocks_in_a_cell_reports_only_the_cell_paragraphs_it_inserted() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-ids-cell-only", extension);
+        let source = fixture.base.clone();
+        let id = para_id(&source, CELL);
+        let (output, run) = fixture.edit(
+            &source,
+            "cell-only",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "Cell one."), block("body", "Cell two.")])
+            )]),
+            false,
+        );
+        success(run, "two paragraphs into a cell");
+        let report = report_of(&fixture, "cell-only");
+        let reported = created_ids(&report, 0);
+        let published = segments_of(&output);
+        // The cell's anchor paragraph and the body around the table must stay out of the report.
+        for (kind, other) in &published {
+            let inserted_here = reported.contains(other);
+            let is_anchor_or_body = *other == id
+                || (kind == "para" && depth(other) == 1)
+                || (kind == "run" && depth(other) == 2);
+            if is_anchor_or_body {
+                assert!(
+                    !inserted_here,
+                    "{extension}: {kind} {other} was not inserted but is reported"
+                );
+            }
+        }
+        let groups = grouped(&report, 0, &output);
+        assert_eq!(
+            groups.len(),
+            2,
+            "{extension}: the two cell paragraphs: {reported:?}"
+        );
+        assert!(
+            groups.iter().all(|(para, _)| depth(para) == 4),
+            "{extension}: cell depth"
+        );
+    }
+}
+
+/// Two tables in the same section: inserting into the first table's cell must not report the
+/// second table's cell paragraphs, which sit at the same depth and the same final index range
+/// but under a different parent.
+#[test]
+fn insert_blocks_in_one_table_does_not_report_a_sibling_tables_cell_paragraphs() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-ids-two-tables", extension);
+        let mut spec: Value =
+            serde_json::from_slice(&std::fs::read(fixture.dir.join("spec.json")).unwrap()).unwrap();
+        let second = json!({"type":"table","columns":[{"width_mm":40}],"rows":[{"cells":[
+            {"blocks":[block("body","Second cell A."), block("body","Second cell B.")]}]}]});
+        spec["sections"][0]["blocks"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        let spec_path = fixture.dir.join("two-tables.json");
+        std::fs::write(&spec_path, serde_json::to_vec(&spec).unwrap()).unwrap();
+        let hwpx = fixture.dir.join("two-tables.hwpx");
+        success(
+            hwp()
+                .arg("compose")
+                .arg(&spec_path)
+                .arg("-o")
+                .arg(&hwpx)
+                .output()
+                .unwrap(),
+            "compose two tables",
+        );
+        let source = if extension == "hwp" {
+            let native = fixture.dir.join("two-tables.hwp");
+            success(
+                hwp()
+                    .arg("convert")
+                    .arg(&hwpx)
+                    .arg("-o")
+                    .arg(&native)
+                    .output()
+                    .unwrap(),
+                "convert two tables",
+            );
+            native
+        } else {
+            hwpx
+        };
+        let id = para_id(&source, CELL);
+        let (output, run) = fixture.edit(
+            &source,
+            "two-tables",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                json!([
+                    block("body", "Into first."),
+                    block("body", "Into first too.")
+                ])
+            )]),
+            false,
+        );
+        success(run, "insert into the first table's cell");
+        let reported = created_ids(&report_of(&fixture, "two-tables"), 0);
+        let after = read(&output);
+        let second_cell_ids: Vec<String> = segments_of(&output)
+            .into_iter()
+            .map(|(_, id)| id)
+            .filter(|candidate| {
+                // every segment whose path runs through the second table
+                let steps: Vec<usize> = candidate
+                    .split('.')
+                    .skip(2)
+                    .filter_map(|n| n.parse().ok())
+                    .collect();
+                steps.len() >= 4
+                    && steps[0]
+                        == after.sections[0]
+                            .paragraphs
+                            .iter()
+                            .rposition(|p| {
+                                p.controls.iter().any(|c| matches!(c, Control::Table(_)))
+                            })
+                            .unwrap()
+            })
+            .collect();
+        assert!(
+            !second_cell_ids.is_empty(),
+            "{extension}: the second table publishes segments"
+        );
+        for other in second_cell_ids {
+            assert!(
+                !reported.contains(&other),
+                "{extension}: {other} belongs to the second table and was not inserted"
+            );
+        }
+    }
+}
+
+#[test]
+fn insert_blocks_report_ids_follow_an_earlier_insertion_in_the_same_batch() {
+    let fixture = Fixture::new("report-ids-batch", "hwpx");
+    let before = read(&fixture.base);
+    let anchor = at(&before, ANCHOR);
+    let (output, run) = fixture.edit(
+        &fixture.base,
+        "batch",
+        json!([
+            insert(
+                anchor.clone(),
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "First batch.")])
+            ),
+            insert(
+                anchor,
+                "after",
+                "create",
+                json!({}),
+                json!([block("body", "Second batch.")])
+            )
+        ]),
+        false,
+    );
+    success(run, "two insert_blocks ops at one original address");
+    let report = report_of(&fixture, "batch");
+    // Op 1 inserted at the anchor too, so it sits ahead of op 0's paragraph. The ids it reports
+    // describe the state right after op 1, and must still address ITS paragraph in the output.
+    let second = grouped(&report, 1, &output);
+    let (styled, run) = fixture.edit(
+        &output,
+        "batch-followup",
+        json!([{"op":"set_format","address":{"id":second[0].1[0]},"bold":"on"}]),
+        false,
+    );
+    success(
+        run,
+        "set_format on a run id reported by the second insert_blocks",
+    );
+    let after = read(&styled);
+    assert!(
+        is_bold_para(&after, "Second batch."),
+        "the id op 1 reports addresses op 1's paragraph"
+    );
+    assert!(!is_bold_para(&after, "First batch."));
+}
+
+// ---- #428 T4 review: the report must stay inside edit-report-v1's `changed` cap (T22-F1) ----
+
+fn report_validator() -> jsonschema::Validator {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .unwrap()
+}
+
+fn many_paragraphs(count: usize) -> Value {
+    Value::Array(
+        (0..count)
+            .map(|i| block("body", &format!("Bulk {i}.")))
+            .collect(),
+    )
+}
+
+/// The schema's own cap on `changed`, read from the published schema rather than copied.
+fn changed_cap() -> usize {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    schema["$defs"]["opOutcome"]["properties"]["changed"]["maxItems"]
+        .as_u64()
+        .unwrap() as usize
+}
+
+#[test]
+fn a_report_exactly_at_the_changed_cap_is_complete_and_unflagged() {
+    assert_eq!(
+        changed_cap(),
+        10_000,
+        "this test is written for the published cap"
+    );
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-at-cap", extension);
+        let before = read(&fixture.base);
+        // One paragraph and one run per block: 5,000 blocks publish exactly 10,000 segments.
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "at-cap",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                many_paragraphs(5_000)
+            )]),
+            false,
+        );
+        success(run, "5,000 one-run paragraphs");
+        let report = report_of(&fixture, "at-cap");
+        let op = &report["ops"][0];
+        assert_eq!(
+            op["changed"].as_array().unwrap().len(),
+            10_000,
+            "{extension}"
+        );
+        assert!(
+            op.get("changed_total").is_none(),
+            "{extension}: nothing was cut, so no truncation signal: {}",
+            op["changed_total"]
+        );
+        assert!(
+            report_validator().is_valid(&report),
+            "{extension}: at the cap the report is valid"
+        );
+        assert_eq!(op["pieces_touched"], 5_000);
+        let _ = output;
+    }
+}
+
+#[test]
+fn a_report_over_the_changed_cap_is_a_valid_prefix_with_an_explicit_total() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-over-cap", extension);
+        let before = read(&fixture.base);
+        // 5,001 blocks publish 10,002 segments: two over the cap.
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "over-cap",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "create",
+                json!({}),
+                many_paragraphs(5_001)
+            )]),
+            false,
+        );
+        success(
+            run,
+            "5,001 one-run paragraphs is a valid request and must succeed",
+        );
+        let report = report_of(&fixture, "over-cap");
+        let op = &report["ops"][0];
+        assert!(
+            report_validator().is_valid(&report),
+            "{extension}: a successful edit must produce a schema-valid report"
+        );
+        let changed = op["changed"].as_array().unwrap();
+        assert_eq!(
+            changed.len(),
+            10_000,
+            "{extension}: the prefix is cut at the cap"
+        );
+        assert_eq!(
+            op["changed_total"], 10_002,
+            "{extension}: the signal carries the real count"
+        );
+        assert_eq!(
+            op["pieces_touched"], 5_001,
+            "{extension}: pieces_touched still counts paragraphs"
+        );
+        // The prefix is deterministic document order and every id in it is published.
+        let published: Vec<String> = segments_of(&output).into_iter().map(|(_, id)| id).collect();
+        let first = published
+            .iter()
+            .position(|id| Some(id.as_str()) == changed[0]["after"].as_str())
+            .expect("the first reported id is published");
+        for (offset, pair) in changed.iter().enumerate() {
+            assert!(pair["before"].is_null());
+            assert_eq!(
+                published[first + offset],
+                pair["after"].as_str().unwrap(),
+                "{extension}: reported id {offset} is the next published segment"
+            );
+        }
+        // It is a PREFIX: the first reported id is the first inserted paragraph, directly after
+        // the anchor, and the segment after the last reported one is still inside the insertion.
+        let after = read(&output);
+        // A body paragraph id ends in its index: <hash>.<section>.<index>.
+        let first_inserted = format!(".0.{}", index(&after, ANCHOR) + 1);
+        assert!(
+            changed[0]["after"]
+                .as_str()
+                .unwrap()
+                .ends_with(&first_inserted),
+            "{extension}: the report starts at the first inserted paragraph ({first_inserted}): {}",
+            changed[0]["after"]
+        );
+        assert_eq!(
+            after.sections[0].paragraphs[index(&after, ANCHOR) + 1].plain_text(),
+            "Bulk 0.",
+            "{extension}: and that paragraph is the first one the request inserted"
+        );
+        let next = published[first + 10_000].as_str();
+        assert!(
+            next.starts_with(|c: char| c.is_ascii_hexdigit()) && depth(next) >= 1,
+            "{extension}: the first segment left out is a real published segment: {next}"
+        );
+        // The cut ids are still reachable: the tail is in the output, just not in the report.
+        assert!(
+            published.len() > first + 10_000,
+            "{extension}: the rest is published"
+        );
+    }
+}
+
+#[test]
+fn a_large_inserted_table_keeps_the_report_valid() {
+    let fixture = Fixture::new("report-big-table", "hwpx");
+    let before = read(&fixture.base);
+    // 100 x 50 cells, one paragraph and run each: far over the cap in one block.
+    let rows: Vec<Value> = (0..100)
+        .map(|_| {
+            json!({"cells": (0..50).map(|_| json!({"blocks":[block("body", "c")]})).collect::<Vec<_>>()})
+        })
+        .collect();
+    let table = json!([{"type":"table","columns":(0..50).map(|_| json!({"width_mm":3})).collect::<Vec<_>>(),"rows":rows}]);
+    let (_, run) = fixture.edit(
+        &fixture.base,
+        "big-table",
+        json!([insert(
+            at(&before, ANCHOR),
+            "after",
+            "create",
+            json!({}),
+            table
+        )]),
+        false,
+    );
+    success(run, "a 100 x 50 table");
+    let report = report_of(&fixture, "big-table");
+    assert!(
+        report_validator().is_valid(&report),
+        "the report of a valid request is valid"
+    );
+    let op = &report["ops"][0];
+    assert_eq!(op["changed"].as_array().unwrap().len(), 10_000);
+    assert!(
+        op["changed_total"].as_u64().unwrap() > 10_000,
+        "{}",
+        op["changed_total"]
+    );
+    assert_eq!(op["pieces_touched"], 1);
+}

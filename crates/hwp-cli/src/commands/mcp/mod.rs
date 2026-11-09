@@ -1763,6 +1763,16 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     for item in arg_array(args, "outdent_para")? {
         operations.push(ops_entry_item(item, "outdent_para")?);
     }
+    // #428 T4: `insert_blocks` rides the ops channel's own OpsEntry deserialization too (the
+    // item is the edit-ops object without its `op` tag), so the address rules, the schema
+    // bounds and the DocumentSpec block validation are the CLI's, not a second copy. Image
+    // paths resolve against `base_dir`, which is itself a sandbox-checked read path.
+    for item in arg_array(args, "insert_blocks")? {
+        operations.push(ops_entry_item(item, "insert_blocks")?);
+    }
+    let asset_base_dir = arg_str_opt(args, "base_dir")?
+        .map(|raw| checked_read_path(ctx, raw))
+        .transpose()?;
     // Like the CLI's cumulative --set-page flags, a single object is merged into one PageProps and applied.
     if let Some(item) = args.get("set_page") {
         if !item.is_object() {
@@ -1838,7 +1848,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         arg_bool(args, "allow_partial", false)?,
         dry_run,
         report_path,
-        crate::commands::edit::AssetPlan::for_mcp(ctx.roots()),
+        crate::commands::edit::AssetPlan::for_mcp(ctx.roots(), asset_base_dir),
     );
     let report = crate::commands::edit::execute(&input, &output, &plan).map_err(|error| {
         // D-12 abort-path parity (Task 2 decision, Option A, 2026-09-24): an aborted batch
@@ -2485,7 +2495,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_edit",
-            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 이름 있는 스타일 배열은 다른 편집 배열보다 먼저 create_style/update_style/apply_style 순서로 실행한다. 다른 순서가 필요하면 CLI --ops 배열을 사용한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
+            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 이름 있는 스타일 배열은 다른 편집 배열보다 먼저 create_style/update_style/apply_style 순서로 실행한다. 다른 순서가 필요하면 CLI --ops 배열을 사용한다. insert_blocks는 DocumentSpec 블록을 문단 주소 앞/뒤에 삽입하고(이미지는 base_dir 기준 상대 경로), 삽입된 문단·런 id를 report의 changed로 돌려준다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
@@ -2659,6 +2669,26 @@ fn tool_defs() -> Vec<Value> {
                         "description": "문단 정렬"}},
                     "required": ["table", "row", "col"]},
                     "description": "셀 문단모양(앵커 없이 그 셀의 모든 문단): 줄간격·들여쓰기·여백(mm)·정렬. 한 번의 실행에서 set_cell 뒤에 적용된다"},
+                "insert_blocks": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+                    "description": "DocumentSpec v1 블록(문단·목록·표·이미지·필드·수식·쪽/단 나누기)을 기존 문서의 문단 주소 앞/뒤에 삽입한다. 항목은 edit-ops-v1의 insert_blocks에서 op를 뺀 객체이며 blocks의 상세 형태는 schemas/document-spec-v1.schema.json의 block이다(표 셀 안에 블록이 재귀하므로 여기서는 펼치지 않는다). 삽입 결과의 문단·런 id는 report의 해당 op changed에 돌려준다",
+                    "properties": {
+                        "address": {"type": "object", "additionalProperties": false,
+                            "description": "삽입 기준 문단 — id(체크섬 segment id, 드리프트 검사)와 at({section,paragraph}) 중 정확히 하나. 본문 또는 표 셀 문단이어야 한다",
+                            "properties": {
+                                "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                                "at": {"type": "object", "additionalProperties": false,
+                                    "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
+                                    "required": ["section", "paragraph"]}
+                            }},
+                        "position": {"type": "string", "enum": ["before", "after"]},
+                        "missing_style": {"type": "string", "enum": ["create", "refuse"], "default": "create",
+                            "description": "대상 문서에 없는 스타일 이름: create는 styles 정의로 만들고, refuse는 문서를 바꾸지 않고 거부한다"},
+                        "styles": {"type": "object", "description": "DocumentSpec v1 styles 정의(대상 문서에 없는 이름에만 쓰인다)"},
+                        "lists": {"type": "object", "description": "DocumentSpec v1 lists 정의(블록의 list 이름마다 필요)"},
+                        "blocks": {"type": "array", "minItems": 1, "maxItems": 20000, "items": {"type": "object"}}
+                    },
+                    "required": ["address", "position", "blocks"]}},
+                "base_dir": {"type": "string", "description": "insert_blocks 이미지 블록의 상대 경로를 해석할 디렉터리(샌드박스 읽기 경로). 생략하면 이미지 블록은 거부된다"},
                 "move_para": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
@@ -5608,6 +5638,244 @@ mod tests {
         );
         assert!(!output.exists(), "거부 시 출력을 쓰면 안 된다");
         let _ = std::fs::remove_file(&source);
+    }
+
+    const INSERT_BLOCKS_PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, b'I', b'H', b'D', b'R', 0,
+        0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, b'I', b'D',
+        b'A', b'T', 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff,
+        0x56, 0xc7, 0x2f, 0x0d, 0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn insert_blocks_item(blocks: Value) -> Value {
+        json!({
+            "address": {"at": {"section": 0, "paragraph": 1}},
+            "position": "after",
+            "blocks": blocks
+        })
+    }
+
+    /// #428 T4: `insert_blocks` is reachable through `hwp_edit`, takes the same object the
+    /// `--ops` channel takes (minus the `op` tag) and lands byte-identical output.
+    #[test]
+    fn mcp_typed_insert_blocks_matches_the_cli_ops_channel() {
+        let source = temp_file("typed-insert-blocks-source.hwpx");
+        let mcp_out = temp_file("typed-insert-blocks-mcp.hwpx");
+        let cli_out = temp_file("typed-insert-blocks-cli.hwpx");
+        create_hwpx(&source, "첫째 문단\n\n둘째 문단\n\n셋째 문단\n");
+        let blocks = json!([
+            {"type": "paragraph", "runs": [{"type": "text", "text": "삽입 하나"}]},
+            {"type": "table", "columns": [{"width_mm": 40}],
+             "rows": [{"cells": [{"blocks": [{"type": "paragraph", "runs": [{"type": "text", "text": "셀"}]}]}]}]},
+            {"type": "paragraph", "runs": [{"type": "text", "text": "삽입 둘"}]}
+        ]);
+        tool_edit(
+            &json!({
+                "input": source,
+                "output": mcp_out,
+                "insert_blocks": [insert_blocks_item(blocks.clone())]
+            }),
+            &ctx(),
+        )
+        .expect("MCP insert_blocks 편집");
+        let mut op = insert_blocks_item(blocks);
+        op["op"] = json!("insert_blocks");
+        run_cli_ops_channel(
+            &source,
+            &Value::Array(vec![op]).to_string(),
+            &cli_out,
+            "typed-insert-blocks",
+        );
+        assert_eq!(
+            std::fs::read(&mcp_out).unwrap(),
+            std::fs::read(&cli_out).unwrap(),
+            "MCP와 CLI --ops의 insert_blocks 출력 바이트가 다르다"
+        );
+        let doc = load_document(&mcp_out).unwrap();
+        let texts: Vec<String> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert!(
+            texts.contains(&"삽입 하나".to_string()) && texts.contains(&"삽입 둘".to_string()),
+            "{texts:?}"
+        );
+
+        // A malformed item is refused with the ops channel's own text and nothing is written.
+        let bad_out = temp_file("typed-insert-blocks-bad.hwpx");
+        let error = tool_edit(
+            &json!({"input": source, "output": bad_out,
+                "insert_blocks": [{"address": {"at": {"section": 0, "paragraph": 1}}, "position": "sideways", "blocks": []}]}),
+            &ctx(),
+        )
+        .unwrap_err();
+        assert!(error.contains("insert_blocks"), "{error}");
+        assert!(!bad_out.exists());
+    }
+
+    /// Image blocks through MCP: `base_dir` names the directory the paths resolve against and
+    /// is itself a sandbox-checked read path; the sandbox roots bind every asset. Without a
+    /// `base_dir` there is no directory to read from, so image blocks are refused rather than
+    /// resolved against the server's working directory.
+    #[test]
+    fn mcp_insert_blocks_images_resolve_against_base_dir_inside_the_sandbox_roots() {
+        let directory =
+            std::env::temp_dir().join(format!("hwp-mcp-insert-blocks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("assets")).unwrap();
+        std::fs::write(directory.join("assets/logo.png"), INSERT_BLOCKS_PNG).unwrap();
+        let other = std::env::temp_dir().join(format!(
+            "hwp-mcp-insert-blocks-other-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(&other).unwrap();
+        let source = directory.join("source.hwpx");
+        create_hwpx(&source, "첫째 문단\n\n둘째 문단\n");
+        let image = json!([{"type": "image", "path": "assets/logo.png", "width_mm": 10}]);
+        let sandbox = ctx_with_roots(vec![std::fs::canonicalize(&directory).unwrap()]);
+
+        // Inside the root with a base_dir: the image is inserted and embedded.
+        let out = directory.join("with-base.hwpx");
+        tool_edit(
+            &json!({"input": source, "output": out, "base_dir": directory,
+                "insert_blocks": [insert_blocks_item(image.clone())]}),
+            &sandbox,
+        )
+        .expect("an image under the sandbox root inserts");
+        let doc = load_document(&out).unwrap();
+        assert!(!doc.bin_streams.is_empty(), "the image stream is embedded");
+
+        // No base_dir: refused, and the output is not written.
+        let out = directory.join("no-base.hwpx");
+        let error = tool_edit(
+            &json!({"input": source, "output": out, "insert_blocks": [insert_blocks_item(image.clone())]}),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(error.contains("이미지"), "{error}");
+        assert!(!out.exists());
+
+        // A base_dir outside the sandbox is refused by the same read-path check as every path.
+        let out = directory.join("outside-base.hwpx");
+        std::fs::create_dir_all(other.join("assets")).unwrap();
+        std::fs::write(other.join("assets/logo.png"), INSERT_BLOCKS_PNG).unwrap();
+        let error = tool_edit(
+            &json!({"input": source, "output": out, "base_dir": other,
+                "insert_blocks": [insert_blocks_item(image.clone())]}),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("--root"),
+            "the base_dir itself must be refused by the sandbox read-path check, not only the \
+             asset read behind it: {error}"
+        );
+        assert!(!out.exists());
+
+        // An asset that escapes base_dir is refused by the containment rule.
+        let out = directory.join("escape.hwpx");
+        let error = tool_edit(
+            &json!({"input": source, "output": out, "base_dir": directory,
+                "insert_blocks": [insert_blocks_item(json!([
+                    {"type": "image", "path": "../hwp-mcp-insert-blocks-other/assets/logo.png", "width_mm": 10}]))]}),
+            &sandbox,
+        )
+        .unwrap_err();
+        assert!(error.contains("invalid_asset_path"), "{error}");
+        assert!(!out.exists());
+
+        // A symlinked asset is refused by the asset snapshot's own containment rule (symlinks
+        // are forbidden below `base_dir`) before the roots are consulted.
+        #[cfg(unix)]
+        {
+            let inside = directory.join("inside");
+            let sibling = directory.join("sibling");
+            std::fs::create_dir_all(&inside).unwrap();
+            std::fs::create_dir_all(&sibling).unwrap();
+            std::fs::write(sibling.join("logo.png"), INSERT_BLOCKS_PNG).unwrap();
+            std::os::unix::fs::symlink(&sibling, inside.join("link")).unwrap();
+            let narrow = ctx_with_roots(vec![std::fs::canonicalize(&inside).unwrap()]);
+            let out = inside.join("symlink.hwpx");
+            let source_inside = inside.join("source.hwpx");
+            create_hwpx(&source_inside, "첫째 문단\n\n둘째 문단\n");
+            let error = tool_edit(
+                &json!({"input": source_inside, "output": out, "base_dir": inside,
+                    "insert_blocks": [insert_blocks_item(json!([
+                        {"type": "image", "path": "link/logo.png", "width_mm": 10}]))]}),
+                &narrow,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("asset_snapshot_containment_violation"),
+                "{error}"
+            );
+            assert!(!out.exists());
+        }
+        let _ = std::fs::remove_dir_all(&directory);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    /// `AssetPlan::for_mcp` hands the sandbox roots to the compiler's asset read. This is the
+    /// roots binding on its own: the base directory is a plain contained directory, so only
+    /// the opened-handle roots check can refuse an asset that is not below an allowed root.
+    #[test]
+    fn mcp_asset_plan_binds_the_sandbox_roots_to_the_asset_read() {
+        let directory =
+            std::env::temp_dir().join(format!("hwp-mcp-asset-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(directory.join("assets")).unwrap();
+        std::fs::write(directory.join("assets/logo.png"), INSERT_BLOCKS_PNG).unwrap();
+        let canonical = std::fs::canonicalize(&directory).unwrap();
+        let request: hwp_cli::insert_blocks::InsertBlocks =
+            serde_json::from_value(json!({"position": "after",
+                "blocks": [{"type": "image", "path": "assets/logo.png", "width_mm": 10}]}))
+            .unwrap();
+        let at = hwp_convert::SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let apply_with = |roots: &[PathBuf]| {
+            let plan = crate::commands::edit::AssetPlan::for_mcp(roots, Some(canonical.clone()));
+            let mut doc = hwp_convert::from_markdown("anchor\n");
+            plan.apply_insert_blocks_for_test(&mut doc, &at, &request)
+        };
+        assert!(
+            apply_with(std::slice::from_ref(&canonical)).is_ok(),
+            "an allowed root admits the asset"
+        );
+        let elsewhere =
+            std::env::temp_dir().join(format!("hwp-mcp-asset-plan-other-{}", std::process::id()));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let error = apply_with(&[std::fs::canonicalize(&elsewhere).unwrap()])
+            .expect_err("an asset outside every root is refused by the roots binding");
+        assert!(error.contains("outside_roots"), "{error}");
+        let _ = std::fs::remove_dir_all(&directory);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+    }
+
+    /// `base_dir` has no meaning without an image to resolve and is not accepted silently.
+    #[test]
+    fn mcp_edit_schema_advertises_insert_blocks_and_base_dir() {
+        let tools = tool_defs();
+        let edit = tools
+            .iter()
+            .find(|tool| tool["name"] == "hwp_edit")
+            .expect("hwp_edit is listed");
+        let properties = &edit["inputSchema"]["properties"];
+        assert!(
+            properties["insert_blocks"]["type"] == "array",
+            "{properties}"
+        );
+        assert!(properties["base_dir"]["type"] == "string", "{properties}");
+        assert!(
+            edit["description"]
+                .as_str()
+                .unwrap()
+                .contains("insert_blocks"),
+            "the tool description must mention insert_blocks"
+        );
     }
 
     /// D-12: a `move_para` through MCP lands byte-identical output to the same request run
