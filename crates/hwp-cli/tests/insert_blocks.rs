@@ -1401,7 +1401,7 @@ fn ordered_used_level_case(level: usize) {
             let shape = &after.header.para_shapes[item.para_shape.0 as usize];
             assert_eq!(shape.head_type(), 2);
             if extension == "hwp" {
-                // HWP5 stores the level zero-based (#472, 07-hangul-compat-rules L1); the
+                // HWP5 stores the level zero-based (#472, 07-hangul-compat-rules K1); the
                 // HWP5 reader exposes those raw bits, so check them, not `head_level()`.
                 assert_eq!(((shape.attr1 >> 25) & 0x7) as usize, level);
             } else {
@@ -1426,7 +1426,7 @@ fn ordered_component_used_level_one_digit_format_requires_hwpx() {
 }
 
 /// #472: HWP5 stores the paragraph-head level zero-based in attr1 bits 25..=27 and repeats it
-/// in the PARA_SHAPE tail's final u32 (07-hangul-compat-rules, L1). Read the written HWP back
+/// in the PARA_SHAPE tail's final u32 (07-hangul-compat-rules, K1). Read the written HWP back
 /// and check the RAW bits, which select the NUMBERING slot Hancom draws. The semantic
 /// `head_level()` hides the defect because `list_level` wins over the bits.
 #[test]

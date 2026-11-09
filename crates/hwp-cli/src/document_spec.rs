@@ -2227,9 +2227,11 @@ impl<'a> BlockCompiler<'a> {
         // Bullets keep the prior encoding: the probe measured numbered (head type 2) only.
         if self.document.meta.source_format == "hwp5" && list.kind == ListKind::Ordered {
             shape.attr1 |= u32::from(list_ref.level.min(6)) << 25;
-            // Genuine files repeat the zero-based level in the tail's final u32 (same probe).
+            // Genuine files repeat the zero-based level in the tail's final u32; the deepest
+            // measured form is bits 6 with tail 7 (the eighth level, 07 K1). No deeper value
+            // is measured, so the tail is bounded to 7.
             if shape.tail.len() >= 16 {
-                shape.tail[12..16].copy_from_slice(&u32::from(list_ref.level).to_le_bytes());
+                shape.tail[12..16].copy_from_slice(&u32::from(list_ref.level.min(7)).to_le_bytes());
             }
             shape.list_level = Some(list_ref.level + 1);
         } else {

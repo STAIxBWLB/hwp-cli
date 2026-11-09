@@ -663,6 +663,7 @@ fn materialize_document(
                 if d.meta.source_format != "hwp5" && !opts.para_shape_defaults_prepared {
                     ensure_para_shape_defaults(&mut d.header);
                 }
+                encode_numbered_levels_zero_based(&mut d);
                 materialize_evidenced_official_numbering(&mut d)?;
             }
             for section in &mut d.sections {
@@ -1341,6 +1342,46 @@ fn collect_evidenced_official_numbering_counts(doc: &Document) -> Result<[usize;
         }
     }
     Ok(counters)
+}
+
+/// Encodes numbered-paragraph levels the way genuine Hangul-saved HWP5 files store them, for a
+/// document that did not come from HWP5 (07-hangul-compat-rules K1, #472). Such an IR holds
+/// the one-based semantic level in attr1 bits 25..=27 (the HWPX reader adds one), while
+/// Hancom reads those bits zero-based and draws NUMBERING slot bits+1, so level 0 drew the
+/// second slot. The bits become `level - 1` (at most 6, the three-bit ceiling) and the final
+/// u32 of the 16-byte PARA_SHAPE tail repeats the level. The deepest measured form is bits 6
+/// with tail 7 (the eighth level) and no deeper value is measured, so the tail is bounded to
+/// 7: HWPX's levels 9 and 10 have no measured HWP5 encoding and land on the deepest one.
+///
+/// Skipped for HWP5 sources, whose bits are already on-disk values, and for the official
+/// eight-level contract, which [`materialize_evidenced_official_numbering`] encodes itself.
+/// Only head type 2 (numbered) is touched: bullets were not measured. Public so the
+/// semantic verifier can project an expected document the same way.
+pub fn encode_numbered_levels_zero_based(doc: &mut Document) {
+    if doc.meta.source_format == "hwp5"
+        || (doc.header.numberings.is_empty()
+            && crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels))
+    {
+        return;
+    }
+    for para_shape in &mut doc.header.para_shapes {
+        if para_shape.head_type() != 2 {
+            continue;
+        }
+        let zero_based = u32::from(para_shape.head_level().saturating_sub(1));
+        para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (zero_based.min(6) << 25);
+        if para_shape.tail.is_empty() {
+            // Same 16-byte layout emit_para_shape synthesizes for an empty tail: attr2, attr3,
+            // line spacing (the emitter rewrites tail[8..12] from `line_spacing`), list level.
+            if para_shape.line_spacing <= 0 {
+                para_shape.line_spacing = 160;
+            }
+            para_shape.tail = vec![0; 16];
+        }
+        if para_shape.tail.len() >= 16 {
+            para_shape.tail[12..16].copy_from_slice(&zero_based.min(7).to_le_bytes());
+        }
+    }
 }
 
 /// Materializes only the complete direct NUMBERING contract observed in the
