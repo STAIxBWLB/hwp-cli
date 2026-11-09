@@ -39,7 +39,9 @@ Every cell paragraph is an inventory target, not an inferred label-value assignm
 cell text in `label` is evidence only. The caller chooses explicit occurrence IDs; repeated
 labels and overlapping full-cell/placeholder claims remain individually reviewable. `bindable`
 means a supported candidate, not uniqueness, automatic ownership or permission to overlap.
-Placeholders and body inline values have exact text claims. Cell blanks, checkboxes and
+Placeholders and body inline values have exact text claims. An empty claim conflicts with a
+replacement when its position is at the start or inside that half-open range, in either plan
+order; the excluded end is adjacent and remains allowed. Cell blanks, checkboxes and
 annotations are reviewed through their explicit cell-paragraph targets; discovery does not
 silently choose a semantic key or apply the legacy form fill's normalization/first-wins policy.
 

@@ -87,7 +87,14 @@ fn live_document_fingerprint(doc: &Document) -> Result<String, String> {
 }
 
 pub(super) fn claims_overlap(a: (usize, usize), b: (usize, usize)) -> bool {
-    (a.0 < b.1 && b.0 < a.1) || (a.0 == a.1 && b.0 == b.1 && a.0 == b.0)
+    // An insertion owns its point. Replacing a half-open range must not overwrite it,
+    // including at the range's start; its excluded end remains an adjacent position.
+    match (a.0 == a.1, b.0 == b.1) {
+        (true, true) => a.0 == b.0,
+        (true, false) => (b.0..b.1).contains(&a.0),
+        (false, true) => (a.0..a.1).contains(&b.0),
+        (false, false) => a.0 < b.1 && b.0 < a.1,
+    }
 }
 
 fn mapped(path: &SegmentPath, insertions: &[(usize, usize)]) -> SegmentPath {

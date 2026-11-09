@@ -921,3 +921,21 @@ fn empty_point_then_placeholder_start_conflicts() {
 fn placeholder_start_then_empty_point_conflicts() {
     empty_point_at_slot_start_case(false);
 }
+
+#[test]
+fn claim_boundary_rules_are_symmetric() {
+    for (a, b, expected) in [
+        ((6, 6), (6, 11), true),
+        ((8, 8), (6, 11), true),
+        ((11, 11), (6, 11), false),
+        ((5, 5), (6, 11), false),
+        ((6, 6), (6, 6), true),
+        ((6, 6), (7, 7), false),
+        ((6, 11), (11, 15), false),
+        ((6, 11), (10, 15), true),
+        ((6, 11), (7, 10), true),
+    ] {
+        assert_eq!(super::apply::claims_overlap(a, b), expected, "{a:?}, {b:?}");
+        assert_eq!(super::apply::claims_overlap(b, a), expected, "{b:?}, {a:?}");
+    }
+}
