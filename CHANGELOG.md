@@ -10,12 +10,27 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
-**Fixed**
+## [1.5.0]
 
-- Original-form certification rejects partially or fully clipped expected-cell text even when
-  its cell border is drawn, and counts table-bearing body paragraphs before a page-start
-  anchor as preceding content (#419). These checks use the layout's own paragraph ranges
-  and bounding boxes and retain the pinned-font evidence requirement.
+**Compatibility**
+
+- Reading an HWP 5.0 file now takes numbered-paragraph levels zero-based, as genuine
+  Hangul-saved files store them. A numbered item at the second level or deeper in an HWP 5.0
+  input therefore reports one level deeper than in 1.4.0 (JSON, Markdown markers, HWPX
+  conversion) and draws that level's marker; the 1.4.0 value was off by one. Schema shapes are
+  unchanged ([#472](https://github.com/STAIxBWLB/hwp-cli/issues/472)).
+- One existing operation combination is narrowed: a run-addressed `set_format` that follows a
+  text-length change to the same paragraph in one `--ops`/`hwp_edit` batch (`replace`, or the
+  new `set_indent_level`) is refused with nothing written, instead of restyling shifted
+  characters ([#420](https://github.com/STAIxBWLB/hwp-cli/issues/420)).
+- Schemas: `form-discovery-v1`, `form-binding-plan-v1`, `form-binding-preview-v1`,
+  `form-binding-receipt-v1`, `original-form-certification-plan-v1` and
+  `original-form-address-map-v1` are new; `edit-ops-v1` adds `apply_form_bindings`,
+  `set_break_before`, `set_indent_level` and `keep_together` (always refused);
+  `certification-policy-v1` and `certification-report-v1` add the optional `original_form`
+  sections; `edit-report-v1` clarifies a field description. Documents valid against the
+  previous versions stay valid. `hwp slots` gains `--occurrences`; no CLI flag or MCP argument
+  was removed.
 
 **Added**
 
@@ -76,7 +91,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   is a finding only when the policy forbids substitution; an unusable plan is refused with one
   content-free cause class (unreadable, not JSON, contract, bounds, IDs). Policy and report
   schemas gain the optional sections; reports without them
-  keep their shape. Results are local renderer evidence, not Hancom parity.
+  keep their shape. Clipped expected-cell text fails even when its cell border is drawn, and a
+  table-bearing body paragraph before a page-start anchor counts as preceding content. Results
+  are local renderer evidence, not Hancom parity.
 
 **Fixed**
 
@@ -96,6 +113,27 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   the right level and draw that level's marker; `indent_para`/`outdent_para` on an HWP list
   item keep the stored encoding. HWPX output and bullets are unchanged; Hancom display still
   needs a person-run open check ([#472](https://github.com/STAIxBWLB/hwp-cli/issues/472)).
+
+<!-- verification:begin -->
+**Verification**
+
+- Release-readiness run: https://github.com/STAIxBWLB/hwp-cli/actions/runs/42712938541
+- The private PDF-parity profile excludes four gates. The public one-page gate declares none
+  (docs/design/21-pdf-parity.md section 4.3), so these exclusions describe the private profile
+  only.
+- `fonts`: the document declares its dominant body face through a `substFont`, and the oracle
+  host did not have that face either, so our substitutions resolve to the same faces the oracle
+  embedded. The gate's `substitution_free` criterion is unreachable for this case by
+  construction (section 4.5).
+- `text`: 1/13 pages byte-equal; the differences are pagination, not characters. Page 4's only
+  diff is one line that crosses a page boundary (section 4.6).
+- `raster`: `bad_pixel_pct` 0.1418-0.2332, MAE 18.5-27.9, ink ratio 0.854-1.435, max abs dx/dy
+  40px (section 4.6).
+- `roi`: 3 of 4 pass; only the page-2 diagram region fails (precision 0.848, recall 0.892)
+  (section 4.6).
+- Provenance: these distances were measured by the private composite run of 2026-08-16, not by
+  the public one-page gate.
+<!-- verification:end -->
 
 ## [1.4.0]
 
