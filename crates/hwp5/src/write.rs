@@ -4007,6 +4007,42 @@ mod tests {
     }
 
     #[test]
+    fn read_official_level_override_emits_byte_identical() {
+        let mut data = vec![0; 58];
+        data[..4].copy_from_slice(&((2_u32 << 23) | (6 << 25)).to_le_bytes());
+        data[30..32].copy_from_slice(&8_u16.to_le_bytes());
+        data[50..54].copy_from_slice(&160_i32.to_le_bytes());
+        data[54..58].copy_from_slice(&5_u32.to_le_bytes());
+        let mut children: Vec<_> = (0..8)
+            .map(|_| RecordNode {
+                tag: tag::NUMBERING,
+                data: crate::numbering::official_eight_level_data(),
+                children: Vec::new(),
+            })
+            .collect();
+        children.push(RecordNode {
+            tag: tag::PARA_SHAPE,
+            data: data.clone(),
+            children: Vec::new(),
+        });
+        let (header, warnings) = crate::doc_info::parse_doc_info(&[RecordNode {
+            tag: tag::ID_MAPPINGS,
+            data: Vec::new(),
+            children,
+        }]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let shape = &header.para_shapes[0];
+        assert_eq!(shape.numbering_id, 7);
+        assert_eq!(shape.list_level, Some(8), "the official override applies");
+        assert_eq!(crate::doc_info::semantic_numbered_level(shape), 7);
+        assert_eq!(
+            emit_para_shape(shape).data,
+            data,
+            "the official reader override must not cause an untouched tail to be rewritten"
+        );
+    }
+
+    #[test]
     fn edited_and_grafted_numbered_shapes_still_emit_zero_based_levels() {
         let mut edited = ParaShape {
             attr1: (2 << 23) | (6 << 25),
