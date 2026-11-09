@@ -2708,22 +2708,44 @@ fn created_ids(report: &Value, op: usize) -> Vec<String> {
         .collect()
 }
 
+/// How many path steps a segment id carries after its hash: `<hash>.<section>.<i>...`.
+fn depth(id: &str) -> usize {
+    id.split('.').count().saturating_sub(2)
+}
+
 /// Split a report into `(paragraph id, [run ids])` groups using the kinds the output publishes.
+/// The inserted paragraphs are the report's shallowest `para` ids (the anchor's own level: 1 in
+/// the body, deeper in a cell); a group takes the runs one level below that follow it. The rest
+/// of what the report names (a table, a cell, an image, paragraphs inside a cell) must be
+/// published by the output too, and is checked to exist, but is not grouped.
 fn grouped(report: &Value, op: usize, output: &Path) -> Vec<(String, Vec<String>)> {
     let kinds: std::collections::BTreeMap<String, String> = segments_of(output)
         .into_iter()
         .map(|(kind, id)| (id, kind))
         .collect();
+    let ids = created_ids(report, op);
+    for id in &ids {
+        assert!(
+            kinds.contains_key(id),
+            "reported id {id} is not published by the output"
+        );
+    }
+    let level = ids
+        .iter()
+        .filter(|id| kinds[*id] == "para")
+        .map(|id| depth(id))
+        .min()
+        .expect("the report names at least one paragraph");
     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
-    for id in created_ids(report, op) {
-        match kinds.get(&id).map(String::as_str) {
-            Some("para") => groups.push((id, Vec::new())),
-            Some("run") => groups
+    for id in ids {
+        match (kinds[&id].as_str(), depth(&id)) {
+            ("para", d) if d == level => groups.push((id, Vec::new())),
+            ("run", d) if d == level + 1 => groups
                 .last_mut()
                 .expect("a run id follows its paragraph id")
                 .1
                 .push(id),
-            other => panic!("reported id {id} is not published by the output ({other:?})"),
+            _ => {}
         }
     }
     groups

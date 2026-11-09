@@ -2514,12 +2514,15 @@ fn report_changed_ids(
     };
     match operation {
         TypedEditOperation::InsertBlocks { request, .. } => {
-            // The segment ids of every inserted top-level paragraph (a block compiles to
-            // exactly one; `pieces_touched` counts them), each followed by the ids of its
-            // canonical runs, in the state right after this op. A run id is what `set_format`
-            // addresses, so a caller can style an inserted paragraph without guessing indices
-            // (#428 AC3). The paragraphs sit consecutively from the anchor's index, or from
-            // the one after it, exactly as `insert_para` places its single paragraph.
+            // Every segment `hwp cat --segments v2` publishes inside the inserted top-level
+            // paragraphs (a block compiles to exactly one; `pieces_touched` counts them), in
+            // document order, in the state right after this op. A caller can address any of
+            // them in the next call - a run id for `set_format`, a cell or table id for a
+            // table op - without re-guessing indices (#428 AC3). Reading the published
+            // segments, rather than deriving ids per kind, keeps the report equal to what a
+            // fresh `cat` would show, whatever the block compiled to (a table, an image, a
+            // field...). The paragraphs sit consecutively from the anchor's index, or from the
+            // one after it, exactly as `insert_para` places its single paragraph.
             let Some(anchor_path) = target_current_path else {
                 return Vec::new();
             };
@@ -2531,29 +2534,30 @@ fn report_changed_ids(
             } else {
                 anchor_idx + 1
             };
-            let mut created = Vec::new();
-            for offset in 0..request.blocks.len() {
-                let mut indices = anchor_path.indices.clone();
-                *indices.last_mut().expect("non-empty path") = first + offset;
-                let path = hwp_convert::SegmentPath {
-                    section: anchor_path.section,
-                    indices,
-                };
-                let Some(paragraph) = hwp_convert::address::paragraph_at_mut(doc, &path) else {
-                    return Vec::new();
-                };
-                created.push(IdPair {
+            let parent = &anchor_path.indices[..anchor_path.indices.len() - 1];
+            let Ok((_, segments)) = hwp_convert::to_markdown_with_segments_v2(
+                doc,
+                &hwp_convert::MarkdownOptions::default(),
+            ) else {
+                return Vec::new();
+            };
+            let inside_inserted = |path: &hwp_convert::SegmentPath| {
+                path.section == anchor_path.section
+                    && path.indices.len() > parent.len()
+                    && path.indices[..parent.len()] == *parent
+                    && (first..first + request.blocks.len()).contains(&path.indices[parent.len()])
+            };
+            let mut seen = std::collections::BTreeSet::new();
+            segments
+                .into_iter()
+                .filter(|segment| inside_inserted(&segment.path))
+                // A run an inline control interrupts is published in pieces that share one id.
+                .filter(|segment| seen.insert(segment.id.clone()))
+                .map(|segment| IdPair {
                     before: None,
-                    after: Some(hwp_convert::paragraph_id(&path, paragraph)),
-                });
-                for run in 0..hwp_convert::canonical_char_shape_runs(paragraph).len() {
-                    created.push(IdPair {
-                        before: None,
-                        after: Some(hwp_convert::run_id(&path, paragraph, run)),
-                    });
-                }
-            }
-            created
+                    after: Some(segment.id),
+                })
+                .collect()
         }
         TypedEditOperation::DeletePara {
             address: Some(_), ..
