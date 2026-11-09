@@ -112,7 +112,7 @@ pub(super) fn execute(
             // only in the explicitly requested local preview, never default logs or receipts.
             preview.native_warnings = report.warnings;
             let receipt = receipt(&preview, &bytes, !edit.dry_run);
-            std::fs::write(&stages[1], serde_json::to_vec_pretty(&receipt)?)?;
+            stage_receipt(&stages[1], &receipt)?;
             if request.preview.is_some() {
                 std::fs::write(&stages[2], serde_json::to_vec_pretty(&preview)?)?;
             }
@@ -144,6 +144,11 @@ pub(super) fn execute(
         }],
         dry_run: edit.dry_run,
     })
+}
+
+fn stage_receipt(stage: &Path, receipt: &Receipt) -> anyhow::Result<()> {
+    std::fs::write(stage, serde_json::to_vec_pretty(receipt)?)?;
+    Ok(())
 }
 
 fn write_bound_output(
@@ -356,5 +361,34 @@ mod tests {
             assert!(!rendered.contains("PRIVATE_VALUE"));
             assert!(!rendered.contains("PRIVATE_CONTEXT"));
         }
+    }
+
+    #[test]
+    fn binding_receipt_staging_failure_names_phase_and_remedy_without_content() {
+        let workspace = Workspace::new("receipt");
+        let stage = workspace.0.join("PRIVATE_VALUE.json");
+        std::fs::create_dir(&stage).unwrap();
+        let preview = BindingPreview {
+            version: 1,
+            source_sha256: "PRIVATE_VALUE".into(),
+            plan_sha256: String::new(),
+            values_sha256: String::new(),
+            copies: Vec::new(),
+            changes: Vec::new(),
+            native_warnings: Vec::new(),
+        };
+        let error = stage_receipt(&stage, &receipt(&preview, b"native", false)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("receipt_staging_write"),
+            "receipt staging needs its phase: {message}"
+        );
+        assert!(
+            message.contains("쓰기 권한")
+                && message.contains("여유 공간")
+                && message.contains("다시 실행"),
+            "receipt staging needs a repair step: {message}"
+        );
+        assert!(!message.contains("PRIVATE_VALUE"));
     }
 }
