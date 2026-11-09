@@ -1763,6 +1763,16 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
     for item in arg_array(args, "outdent_para")? {
         operations.push(ops_entry_item(item, "outdent_para")?);
     }
+    // #428 T4: `insert_blocks` rides the ops channel's own OpsEntry deserialization too (the
+    // item is the edit-ops object without its `op` tag), so the address rules, the schema
+    // bounds and the DocumentSpec block validation are the CLI's, not a second copy. Image
+    // paths resolve against `base_dir`, which is itself a sandbox-checked read path.
+    for item in arg_array(args, "insert_blocks")? {
+        operations.push(ops_entry_item(item, "insert_blocks")?);
+    }
+    let asset_base_dir = arg_str_opt(args, "base_dir")?
+        .map(|raw| checked_read_path(ctx, raw))
+        .transpose()?;
     // Like the CLI's cumulative --set-page flags, a single object is merged into one PageProps and applied.
     if let Some(item) = args.get("set_page") {
         if !item.is_object() {
@@ -1838,7 +1848,7 @@ fn tool_edit(args: &Value, ctx: &dyn FileAuthority) -> Result<Vec<Value>, String
         arg_bool(args, "allow_partial", false)?,
         dry_run,
         report_path,
-        crate::commands::edit::AssetPlan::for_mcp(ctx.roots()),
+        crate::commands::edit::AssetPlan::for_mcp(ctx.roots(), asset_base_dir),
     );
     let report = crate::commands::edit::execute(&input, &output, &plan).map_err(|error| {
         // D-12 abort-path parity (Task 2 decision, Option A, 2026-09-24): an aborted batch
@@ -2485,7 +2495,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_edit",
-            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 이름 있는 스타일 배열은 다른 편집 배열보다 먼저 create_style/update_style/apply_style 순서로 실행한다. 다른 순서가 필요하면 CLI --ops 배열을 사용한다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
+            "description": "CLI와 같은 strict·atomic·재읽기 검증 경로로 기존 문서를 편집한다. 이름 있는 스타일 배열은 다른 편집 배열보다 먼저 create_style/update_style/apply_style 순서로 실행한다. 다른 순서가 필요하면 CLI --ops 배열을 사용한다. insert_blocks는 DocumentSpec 블록을 문단 주소 앞/뒤에 삽입하고(이미지는 base_dir 기준 상대 경로), 삽입된 문단·런 id를 report의 changed로 돌려준다. 기본은 미적용 요청 하나라도 있으면 실패. set_format·set_align·set_para(pattern), insert_para(anchor), delete_para(matching)는 텍스트 선택자와 address 중 정확히 하나가 필요하다: address만 주면 CLI --ops와 같은 주소 전용 형태이고, 둘 다 주면 CLI --ops와 같이 거부한다.",
             "inputSchema": {"type": "object", "additionalProperties": false, "properties": {
                 "input": {"type": "string"},
                 "output": {"type": "string"},
@@ -2659,6 +2669,26 @@ fn tool_defs() -> Vec<Value> {
                         "description": "문단 정렬"}},
                     "required": ["table", "row", "col"]},
                     "description": "셀 문단모양(앵커 없이 그 셀의 모든 문단): 줄간격·들여쓰기·여백(mm)·정렬. 한 번의 실행에서 set_cell 뒤에 적용된다"},
+                "insert_blocks": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+                    "description": "DocumentSpec v1 블록(문단·목록·표·이미지·필드·수식·쪽/단 나누기)을 기존 문서의 문단 주소 앞/뒤에 삽입한다. 항목은 edit-ops-v1의 insert_blocks에서 op를 뺀 객체이며 blocks의 상세 형태는 schemas/document-spec-v1.schema.json의 block이다(표 셀 안에 블록이 재귀하므로 여기서는 펼치지 않는다). 삽입 결과의 문단·런 id는 report의 해당 op changed에 돌려준다",
+                    "properties": {
+                        "address": {"type": "object", "additionalProperties": false,
+                            "description": "삽입 기준 문단 — id(체크섬 segment id, 드리프트 검사)와 at({section,paragraph}) 중 정확히 하나. 본문 또는 표 셀 문단이어야 한다",
+                            "properties": {
+                                "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                                "at": {"type": "object", "additionalProperties": false,
+                                    "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
+                                    "required": ["section", "paragraph"]}
+                            }},
+                        "position": {"type": "string", "enum": ["before", "after"]},
+                        "missing_style": {"type": "string", "enum": ["create", "refuse"], "default": "create",
+                            "description": "대상 문서에 없는 스타일 이름: create는 styles 정의로 만들고, refuse는 문서를 바꾸지 않고 거부한다"},
+                        "styles": {"type": "object", "description": "DocumentSpec v1 styles 정의(대상 문서에 없는 이름에만 쓰인다)"},
+                        "lists": {"type": "object", "description": "DocumentSpec v1 lists 정의(블록의 list 이름마다 필요)"},
+                        "blocks": {"type": "array", "minItems": 1, "maxItems": 20000, "items": {"type": "object"}}
+                    },
+                    "required": ["address", "position", "blocks"]}},
+                "base_dir": {"type": "string", "description": "insert_blocks 이미지 블록의 상대 경로를 해석할 디렉터리(샌드박스 읽기 경로). 생략하면 이미지 블록은 거부된다"},
                 "move_para": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",

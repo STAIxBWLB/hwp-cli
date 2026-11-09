@@ -393,12 +393,16 @@ impl AssetPlan {
         }
     }
 
-    /// MCP `hwp_edit`: the sandbox roots bind every asset read. `insert_blocks` is not an MCP
-    /// argument until T4 (#428), so there is no asset directory to offer yet and image blocks
-    /// stay refused on this path rather than reading from the server's working directory.
-    pub(crate) fn for_mcp(roots: &[std::path::PathBuf]) -> Self {
+    /// MCP `hwp_edit`: the sandbox roots bind every asset read, and `base_dir` is the
+    /// directory `insert_blocks` image paths resolve against (the caller has already checked it
+    /// as a sandbox read path). With no `base_dir` there is no asset directory, and image blocks
+    /// are refused rather than read from the server's working directory.
+    pub(crate) fn for_mcp(
+        roots: &[std::path::PathBuf],
+        base_dir: Option<std::path::PathBuf>,
+    ) -> Self {
         Self {
-            base_dir: None,
+            base_dir,
             roots: roots.to_vec(),
         }
     }
