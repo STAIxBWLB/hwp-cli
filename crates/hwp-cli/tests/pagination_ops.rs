@@ -559,8 +559,7 @@ fn keep_together_refuses_before_writing_and_names_the_missing_evidence() {
 fn shape_at(para: &Paragraph, wpos: u32) -> hwp_model::CharShapeId {
     para.char_shape_runs
         .iter()
-        .filter(|(start, _)| *start <= wpos)
-        .next_back()
+        .rfind(|(start, _)| *start <= wpos)
         .map(|(_, id)| *id)
         .expect("a run covers the offset")
 }
