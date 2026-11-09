@@ -2751,6 +2751,20 @@ fn grouped(report: &Value, op: usize, output: &Path) -> Vec<(String, Vec<String>
     groups
 }
 
+/// The plain text of the paragraph a top-level paragraph id (depth 1) names in `doc`, found by
+/// matching the id `hwp cat` publishes for each body paragraph.
+fn text_at_id(path: &Path, doc: &Document, id: &str) -> String {
+    assert!(
+        segments_of(path)
+            .iter()
+            .any(|(kind, candidate)| kind == "para" && candidate == id),
+        "{id} is not a published paragraph"
+    );
+    // The id's own last step is the paragraph's index in the body: <hash>.<section>.<index>.
+    let index: usize = id.rsplit('.').next().unwrap().parse().unwrap();
+    doc.sections[0].paragraphs[index].plain_text()
+}
+
 fn is_bold_para(doc: &Document, text: &str) -> bool {
     paragraph(doc, text)
         .char_shape_runs
@@ -2867,6 +2881,16 @@ fn insert_blocks_report_ids_hold_for_before_cell_and_object_blocks() {
             "{extension}: before: consecutive"
         );
         let after = read(&output);
+        assert_eq!(
+            text_at_id(&output, &after, &groups[0].0),
+            "Ahead one.",
+            "{extension}: the first reported id addresses the first inserted paragraph"
+        );
+        assert_eq!(
+            text_at_id(&output, &after, &groups[1].0),
+            "Ahead two.",
+            "{extension}: and the second the second, directly ahead of the anchor"
+        );
         assert_eq!(
             index(&after, "Ahead one."),
             index(&after, ANCHOR) - 2,
