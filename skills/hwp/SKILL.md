@@ -375,6 +375,31 @@ hwp validate bound.hwpx
 - For MCP, use `hwp_slots` with `forms`/`occurrences` true and `hwp_edit` with one `apply_form_bindings` object, following the same recipe and advertised schemas. Do not send a `verify` property.
 - Collect render/font and person-run Hancom evidence separately under #419; the semantic receipt does not establish it.
 
+### Page breaks and typed indentation
+
+Use `set_break_before` (`value` is `on` or `off`) to start one body paragraph on a new page and
+`set_indent_level` (`level` 0 to 7, `step`, optional `hanging`, such as `5mm`) to replace
+leading spaces with real indentation. Both take a paragraph `address` from
+`hwp cat doc.hwpx --format json --with-segments --segments v2`:
+
+```json
+[{"op":"set_break_before","address":{"at":{"section":0,"paragraph":5}},"value":"on"},
+ {"op":"set_indent_level","address":{"at":{"section":0,"paragraph":7}},
+  "level":2,"step":"5mm","hanging":"3mm"}]
+```
+
+- A paragraph in a table cell and a section's first paragraph are refused for the page break,
+  with the cause. Repeating either op is a successful no-op. A real change drops the line
+  layout of that paragraph and the ones after it up to the next break so they are re-measured.
+- Put `set_format` run edits BEFORE `set_indent_level` or `replace` on the same paragraph in a
+  batch: a run address that follows a length change is refused with nothing written.
+- `set_indent_level` strips only the leading blanks (also those after a section, field or
+  bookmark control, which stays), never inner spacing or a numbering label. The first remaining
+  character keeps its bold or other character shape. A blank-only paragraph is left as is. A paragraph with highlight or proofreading marks is
+  refused when blanks would go: remove the marks first, or use `set_para` with `left_mm`.
+- `keep_together` (keep with next, keep lines) is always refused: no Hangul-saved sample shows
+  those bits. Do not retry it. Use `set_break_before`, or ask for a sample saved from Hangul.
+- Over MCP use the `set_break_before` and `set_indent_level` arrays of `hwp_edit`.
 
 ## MCP server
 

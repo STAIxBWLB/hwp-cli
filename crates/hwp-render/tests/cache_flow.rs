@@ -429,7 +429,7 @@ fn floating_section_first_paragraph_omits_only_its_space_before() {
 }
 
 #[test]
-fn native_floating_edit_keeps_base_cursor_at_an_explicit_break() {
+fn native_floating_edit_restarts_the_base_cursor_at_an_explicit_break() {
     let mut doc = hwp_convert::from_markdown("First\n\nEdited\n");
     doc.meta.source_format = "hwp5".into();
     for shape in &mut doc.header.char_shapes {
@@ -468,9 +468,17 @@ fn native_floating_edit_keeps_base_cursor_at_an_explicit_break() {
     changed.header.break_type |= 0x04;
     changed.line_segs.clear();
     synthesize(&mut doc);
+    // Genuine Hangul-saved HWP5 files (#420, 07-hangul-compat-rules J1): a body paragraph that
+    // carries the break bit starts its first line at v_pos 0 (or its space-before), also after
+    // a floating table, and sets no page-start flag. The earlier expectation of the running
+    // cursor (1766) had no byte evidence behind it.
     assert_eq!(
-        doc.sections[0].paragraphs[1].line_segs[0].v_pos, 1766,
-        "native edits retain base cursor synthesis even at an explicit break"
+        doc.sections[0].paragraphs[1].line_segs[0].v_pos, 0,
+        "native edits restart the cursor at an explicit break, like genuine caches"
     );
-    assert_eq!(doc.sections[0].paragraphs[1].line_segs[0].flags & 1, 0);
+    assert_eq!(
+        doc.sections[0].paragraphs[1].line_segs[0].flags & 1,
+        0,
+        "the native base path sets no cacheless page-start flag"
+    );
 }

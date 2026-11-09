@@ -184,6 +184,20 @@ pub(crate) enum TypedEditOperation {
     OutdentPara {
         address: hwp_convert::address::Address,
     },
+    /// Sets (`on`) or clears the page-break-before bit of ONE body paragraph (#420). Refuses a
+    /// table-cell paragraph and a section's first paragraph. Idempotent.
+    SetBreakBefore {
+        address: hwp_convert::address::Address,
+        on: bool,
+    },
+    /// Replaces a paragraph's leading blanks with shape indentation: `margin_left = level *
+    /// step`, `indent = -hanging` (both HWPUNIT). Idempotent (#420).
+    SetIndentLevel {
+        address: hwp_convert::address::Address,
+        level: u8,
+        step: i32,
+        hanging: i32,
+    },
     AddRow {
         table: usize,
         at: Option<u16>,
@@ -496,6 +510,8 @@ fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
         TypedEditOperation::MoveParagraph { .. } => "move_para",
         TypedEditOperation::IndentPara { .. } => "indent_para",
         TypedEditOperation::OutdentPara { .. } => "outdent_para",
+        TypedEditOperation::SetBreakBefore { .. } => "set_break_before",
+        TypedEditOperation::SetIndentLevel { .. } => "set_indent_level",
         TypedEditOperation::AddRow { .. } => "add_row",
         TypedEditOperation::AddCol { .. } => "add_col",
         TypedEditOperation::DeleteRow { .. } => "delete_row",
@@ -1164,7 +1180,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     // publish guard below must not treat that as an error the way it does for a --replace/
     // --set-* request that silently matched nothing. `--table-placement` (#296) follows the
     // same contract. Named apply_style and update_style (#427) likewise succeed
-    // when the requested style/direct-format policy or style definition is unchanged.
+    // when the requested style/direct-format policy or style definition is unchanged. So do
+    // set_break_before and set_indent_level (#420) when the bit/shape is already as requested.
     let requested_idempotent_op = plan.operations.iter().any(|op| {
         matches!(
             op,
@@ -1177,6 +1194,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 | TypedEditOperation::SetTablePlacement { .. }
                 | TypedEditOperation::ApplyStyle { .. }
                 | TypedEditOperation::UpdateStyle { .. }
+                | TypedEditOperation::SetBreakBefore { .. }
+                | TypedEditOperation::SetIndentLevel { .. }
         )
     });
 
@@ -1868,6 +1887,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     | TypedEditOperation::SetTablePlacement { .. }
                     | TypedEditOperation::ApplyStyle { .. }
                     | TypedEditOperation::UpdateStyle { .. }
+                    | TypedEditOperation::SetBreakBefore { .. }
+                    | TypedEditOperation::SetIndentLevel { .. }
             )
         {
             // #359/#427: table styling, placement and named-style application/update are
@@ -2190,6 +2211,8 @@ fn preflight_addressed_ops(
             | TypedEditOperation::MoveParagraph { address, .. }
             | TypedEditOperation::IndentPara { address }
             | TypedEditOperation::OutdentPara { address }
+            | TypedEditOperation::SetBreakBefore { address, .. }
+            | TypedEditOperation::SetIndentLevel { address, .. }
             | TypedEditOperation::InsertBlocks { address, .. }
             | TypedEditOperation::ApplyStyle { address, .. } => {
                 Some((address, hwp_convert::address::Granularity::Paragraph))
@@ -3044,6 +3067,8 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         | Op::MoveParagraph { .. }
         | Op::IndentPara { .. }
         | Op::OutdentPara { .. }
+        | Op::SetBreakBefore { .. }
+        | Op::SetIndentLevel { .. }
         | Op::AddRow { .. }
         | Op::AddCol { .. }
         | Op::DeleteRow { .. }
@@ -3490,13 +3515,30 @@ fn apply_typed_operation(
             if address.is_some() {
                 let target = resolved_target
                     .expect("preflight_addressed_ops resolved every addressed set_format op");
-                let hwp_convert::address::TargetKind::Run { w_start, w_end, .. } = target.kind
+                let hwp_convert::address::TargetKind::Run {
+                    w_start,
+                    w_end,
+                    paragraph_wchar_len,
+                    ..
+                } = target.kind
                 else {
                     anyhow::bail!("set_format 주소는 run 단위여야 합니다");
                 };
                 // Structural drift (planner decision 3): the paragraph's own list position may
                 // have shifted; w_start/w_end stay valid, they are content offsets WITHIN it.
                 let current_path = offsets.current_path(&target.path)?;
+                // Content drift (#420): an earlier op of this batch (set_indent_level stripping
+                // blanks, replace changing a length) may have moved the text under the range.
+                // The offsets were resolved against the pre-batch paragraph, so a changed
+                // length means they no longer name the characters the caller addressed.
+                let current_len = hwp_convert::address::paragraph_at_mut(doc, &current_path)
+                    .map(|paragraph| paragraph.wchar_len());
+                if current_len != Some(paragraph_wchar_len) {
+                    anyhow::bail!(
+                        "set_format 주소 [{w_start}, {w_end})의 문단은 앞선 연산(set_indent_level, replace 등)으로 글자 수가 {paragraph_wchar_len}에서 {}(으)로 바뀌어 범위가 다른 글자를 가리킵니다. 아무것도 쓰지 않았습니다. 연산 순서를 바꿔 set_format을 앞에 두거나 별도 편집으로 나누어 실행하세요",
+                        current_len.map_or_else(|| "알 수 없음".to_string(), |n| n.to_string())
+                    );
+                }
                 hwp_convert::restyle_range_at(doc, &current_path, w_start, w_end, format)
                     .map_err(|error| anyhow::anyhow!(error))?;
                 eprintln!("글자 서식(주소): {current_path} [{w_start}, {w_end})");
@@ -3689,6 +3731,41 @@ fn apply_typed_operation(
                 .map_err(|error| anyhow::anyhow!(error))?;
             eprintln!("문단 내어쓰기(주소): {current_path} → 수준 {new_level}");
             *edits += 1;
+        }
+        TypedEditOperation::SetBreakBefore { on, .. } => {
+            let target = resolved_target
+                .expect("preflight_addressed_ops resolved every set_break_before op");
+            let current_path = offsets.current_path(&target.path)?;
+            let changed = hwp_convert::set_break_before_at(doc, &current_path, *on)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!(
+                "쪽 나눔(주소): {current_path} → {}{}",
+                if *on { "켬" } else { "끔" },
+                if changed { "" } else { " (이미 적용됨)" }
+            );
+            if changed {
+                *edits += 1;
+            }
+        }
+        TypedEditOperation::SetIndentLevel {
+            level,
+            step,
+            hanging,
+            ..
+        } => {
+            let target = resolved_target
+                .expect("preflight_addressed_ops resolved every set_indent_level op");
+            let current_path = offsets.current_path(&target.path)?;
+            let changed =
+                hwp_convert::set_indent_level_at(doc, &current_path, *level, *step, *hanging)
+                    .map_err(|error| anyhow::anyhow!(error))?;
+            eprintln!(
+                "들여쓰기 수준(주소): {current_path} → {level}{}",
+                if changed { "" } else { " (이미 적용됨)" }
+            );
+            if changed {
+                *edits += 1;
+            }
         }
         TypedEditOperation::AddRow {
             table,

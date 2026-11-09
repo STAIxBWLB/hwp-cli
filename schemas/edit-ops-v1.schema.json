@@ -955,7 +955,7 @@
           "type": "object",
           "unevaluatedProperties": false,
           "required": ["op"],
-          "description": "Exactly one of pattern (anchor-text selector) or address (id/at selector, D-12) is required (parser-enforced). Char-format props are flat on the entry via the shared charPropsFields definition (D-08).",
+          "description": "Exactly one of pattern (anchor-text selector) or address (id/at selector, D-12) is required (parser-enforced). Char-format props are flat on the entry via the shared charPropsFields definition (D-08). An address resolves against the document before the batch, so a set_format address that follows an op that changed the same paragraph's text length (set_indent_level stripping blanks, replace) in one batch is refused with nothing written; put set_format first or run the edits separately.",
           "allOf": [
             { "$ref": "#/$defs/charPropsFields" },
             {
@@ -1051,6 +1051,43 @@
           "properties": {
             "op": { "const": "outdent_para" },
             "address": { "$ref": "#/$defs/paragraphAddress" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "address", "value"],
+          "description": "Sets (on) or clears (off) the page-break-before bit of ONE body paragraph: the HWP5 paragraph-header break_type page bit and HWPX pageBreak on hp:p, the only placement the genuine Hangul-saved files show. A paragraph inside a table cell or text box, and the first paragraph of a section (it owns the section setup), are refused with the cause and the remedy. A value other than on or off is refused by the parser with both accepted values named. Idempotent: an already-applied request touches nothing. A change also drops the stored line layout of that paragraph and of the paragraphs after it up to the next page break, so they are re-measured from the new page top.",
+          "properties": {
+            "op": { "const": "set_break_before" },
+            "address": { "$ref": "#/$defs/paragraphAddress" },
+            "value": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "address", "level", "step"],
+          "description": "Idempotent nested-indentation recipe for ONE paragraph: removes only the leading blank characters (ASCII space, ideographic space, no-break space) before the first non-blank character and sets margin_left = level * step and indent = -hanging (a hanging first line) on its paragraph shape. Invisible controls at the start (section and column definitions, field start, bookmark, page control) stay in place and the blanks after them are removed; blanks after a visible leading item (auto number, tab, object) and a blank-only paragraph are left alone. The first remaining character keeps its character shape. A paragraph carrying HWP range tags (highlight, proofreading marks) is refused when blanks would be removed, because the tags hold text offsets this edit does not move; the refusal names the remedy. Words, inner spacing and labels are never touched. A second application finds no leading blanks and an identical shape, touches nothing, appends no shape and keeps the paragraph's native line layout. level must be 0..=7 (the parser refuses others with the range); step and hanging are non-negative lengths such as 5mm.",
+          "properties": {
+            "op": { "const": "set_indent_level" },
+            "address": { "$ref": "#/$defs/paragraphAddress" },
+            "level": { "type": "integer", "minimum": 0 },
+            "step": { "$ref": "#/$defs/unit" },
+            "hanging": { "$ref": "#/$defs/unit" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op", "address"],
+          "description": "Always refused before anything is written: the paragraph-shape keep-with-next, keep-lines and break-before bits (attr1 bits 17 to 19) never appear in any genuine Hangul-saved file available, so there is no saved byte to base the encoding on. The refusal names the remedy: save a sample from Hangul with the option on, or use set_break_before to start a new page.",
+          "properties": {
+            "op": { "const": "keep_together" },
+            "address": { "$ref": "#/$defs/paragraphAddress" },
+            "keep_with_next": { "type": "boolean" },
+            "keep_lines": { "type": "boolean" },
+            "break_before_shape": { "type": "boolean" }
           }
         },
         {

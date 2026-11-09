@@ -657,6 +657,22 @@ pub(crate) enum OpsEntry {
     OutdentPara {
         address: AddressSpec,
     },
+    SetBreakBefore {
+        address: AddressSpec,
+        value: String,
+    },
+    SetIndentLevel {
+        address: AddressSpec,
+        level: u64,
+        step: String,
+        hanging: Option<String>,
+    },
+    KeepTogether {
+        address: AddressSpec,
+        keep_with_next: Option<bool>,
+        keep_lines: Option<bool>,
+        break_before_shape: Option<bool>,
+    },
     AddRow {
         table: usize,
         at: Option<u16>,
@@ -1057,6 +1073,72 @@ impl OpsEntry {
                 let address = address.into_address()?;
                 Ok(TypedEditOperation::OutdentPara { address })
             }
+            OpsEntry::SetBreakBefore { address, value } => {
+                let address = address.into_address()?;
+                let on = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(format!(
+                            "set_break_before.value는 on 또는 off여야 합니다: {other:?}. on은 문단 앞에서 새 쪽을 시작하고 off는 해제합니다"
+                        ));
+                    }
+                };
+                Ok(TypedEditOperation::SetBreakBefore { address, on })
+            }
+            OpsEntry::SetIndentLevel {
+                address,
+                level,
+                step,
+                hanging,
+            } => {
+                let address = address.into_address()?;
+                let level = u8::try_from(level)
+                    .ok()
+                    .filter(|level| *level <= 7)
+                    .ok_or_else(|| {
+                        format!(
+                            "set_indent_level.level은 0..=7이어야 합니다: {level}. 수준을 줄여 다시 시도하세요"
+                        )
+                    })?;
+                let step = string_error(parse_mm(&step))?;
+                let hanging = mm_opt(hanging)?.unwrap_or(0);
+                Ok(TypedEditOperation::SetIndentLevel {
+                    address,
+                    level,
+                    step,
+                    hanging,
+                })
+            }
+            OpsEntry::KeepTogether {
+                address,
+                keep_with_next,
+                keep_lines,
+                break_before_shape,
+            } => {
+                // Refused at parse time so nothing is ever written: the paragraph-shape keep
+                // bits have no genuine Hangul-saved evidence (docs/design/07, rule J2).
+                address.into_address()?;
+                let requested: Vec<&str> = [
+                    ("keep_with_next", keep_with_next),
+                    ("keep_lines", keep_lines),
+                    ("break_before_shape", break_before_shape),
+                ]
+                .into_iter()
+                .filter_map(|(name, value)| value.map(|_| name))
+                .collect();
+                if requested.is_empty() {
+                    return Err(format!(
+                        "keep_together에 keep_with_next, keep_lines, break_before_shape 중 하나가 필요합니다. {}",
+                        hwp_convert::KEEP_TOGETHER_REFUSAL
+                    ));
+                }
+                Err(format!(
+                    "{} (요청한 항목: {})",
+                    hwp_convert::KEEP_TOGETHER_REFUSAL,
+                    requested.join(", ")
+                ))
+            }
             OpsEntry::AddRow {
                 table,
                 at,
@@ -1327,6 +1409,73 @@ fn string_error<T>(result: anyhow::Result<T>) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn typed(value: serde_json::Value) -> Result<TypedEditOperation, String> {
+        serde_json::from_value::<OpsEntry>(value)
+            .map_err(|error| error.to_string())?
+            .into_typed()
+    }
+
+    /// The refusal message of an entry that must not parse (`TypedEditOperation` has no Debug).
+    fn refusal(value: serde_json::Value) -> String {
+        match typed(value) {
+            Ok(_) => panic!("the entry must be refused"),
+            Err(message) => message,
+        }
+    }
+
+    #[test]
+    fn pagination_entries_validate_their_own_values_with_a_remedy() {
+        use serde_json::json;
+        let at = json!({"at": {"section": 0, "paragraph": 2}});
+        // Level 7 is accepted, 8 is not; the hanging length defaults to zero.
+        let TypedEditOperation::SetIndentLevel {
+            level,
+            step,
+            hanging,
+            ..
+        } = typed(json!({"op":"set_indent_level","address":at,"level":7,"step":"5mm"})).unwrap()
+        else {
+            panic!("wrong variant");
+        };
+        assert_eq!((level, hanging), (7, 0));
+        assert_eq!(step, 1417, "5 mm in HWPUNIT (5 * 7200 / 25.4)");
+        let error = refusal(json!({"op":"set_indent_level","address":at,"level":8,"step":"5mm"}));
+        assert!(error.contains("0..=7"), "{error}");
+        // A negative length reaches into_typed through MCP (no schema pattern there); the shared
+        // mm parser refuses it, so a negative step can never flip the margin's sign.
+        for field in ["step", "hanging"] {
+            let mut entry = json!({"op":"set_indent_level","address":at,"level":1,"step":"5mm"});
+            entry[field] = json!("-3mm");
+            let error = refusal(entry);
+            assert!(
+                error.contains("0..=5000"),
+                "{field}: the shared mm parser names the range: {error}"
+            );
+        }
+        // on/off map to true/false, anything else is refused with both words.
+        for (word, expected) in [("on", true), ("off", false)] {
+            let TypedEditOperation::SetBreakBefore { on, .. } =
+                typed(json!({"op":"set_break_before","address":at,"value":word})).unwrap()
+            else {
+                panic!("wrong variant");
+            };
+            assert_eq!(on, expected, "{word}");
+        }
+        let error = refusal(json!({"op":"set_break_before","address":at,"value":"yes"}));
+        assert!(error.contains("on 또는 off"), "{error}");
+        // keep_together never parses: a named request is echoed, an empty one says what to name.
+        let error = refusal(json!({"op":"keep_together","address":at,"keep_lines":true}));
+        assert!(
+            error.contains("keep_lines") && error.contains("set_break_before"),
+            "{error}"
+        );
+        let error = refusal(json!({"op":"keep_together","address":at}));
+        assert!(
+            error.contains("중 하나가 필요") && error.contains("set_break_before"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn named_style_transport_schemas_remain_closed_and_match_ops() {

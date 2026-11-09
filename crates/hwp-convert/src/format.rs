@@ -6,8 +6,8 @@
 //! their lengths. Clear edited paragraph caches so the writer resynthesizes them.
 
 use hwp_model::{
-    CharShape, CharShapeId, Control, Document, FaceName, LANG_COUNT, ParaShape, ParaShapeId,
-    Paragraph,
+    CharShape, CharShapeId, Control, Document, FaceName, HwpChar, LANG_COUNT, ParaShape,
+    ParaShapeId, Paragraph,
 };
 
 use crate::edit::{find_match, utf16_len};
@@ -285,6 +285,239 @@ pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> b
         crate::address::invalidate_ancestors(doc, path);
     }
     applied
+}
+
+/// HWP5 `HWPTAG_PARA_RANGE_TAG` (HWPTAG_BEGIN + 54; 한글 문서 파일 형식 5.0 §4.3.5, 표 63):
+/// highlight and proofreading marks whose start and end are text offsets. They sit in
+/// `Paragraph::extras` as opaque records and no splice path in this crate rebases them
+/// (#470), so an edit that moves text under one must refuse instead.
+const PARA_RANGE_TAG: u16 = 0x10 + 54;
+
+/// Why `keep_together` is not implemented. The paragraph-shape bits it would write (attr1 bit 17
+/// keep-with-next, bit 18 keep-lines, bit 19 break-before) are **unverified**: none of the
+/// genuine Hangul-saved files available (902 parsed, about 13,000 paragraph shapes) sets any of
+/// them, so there is no saved byte to copy the encoding from (`docs/design/07-hangul-compat-rules.md`,
+/// rule J2). The op refuses before writing and names the supported alternative.
+pub const KEEP_TOGETHER_REFUSAL: &str = "keep_together는 아직 지원하지 않습니다: 문단 모양의 '다음 문단과 함께'·'문단 보호'·'문단 앞 쪽 나눔' 비트는 한글이 저장한 정품 파일에서 한 번도 관찰되지 않아 저장 형식을 추측할 수 없습니다(Hangul-saved sample required). 한글에서 해당 옵션을 켜 저장한 파일을 제공하면 근거를 맞추어 구현합니다. 새 쪽에서 시작하려면 set_break_before를 사용하세요";
+
+/// Address-driven page-break-before for ONE body paragraph: sets or clears the page bit (0x04)
+/// of the paragraph header's `break_type`, the encoding both genuine formats show (HWP5
+/// `break_type`; HWPX `pageBreak="1"` on `hp:p`, which the reader maps to the same bit).
+///
+/// Refused, each with a cause and a remedy, because no genuine saved file shows them:
+/// - a paragraph inside a table cell or any nested list (`path.indices.len() != 1`);
+/// - the first paragraph of a section, which owns the section setup (`SectionDef` /
+///   `break_type` 0x03 on HWP5 output, set by the writer).
+///
+/// Returns whether the document changed: `Ok(false)` when the bit already has the requested
+/// value (nothing is touched then, caches included). A change clears the line caches of the
+/// paragraph and of the body paragraphs that follow it up to the next explicit break, because
+/// their page-relative positions were measured against the old boundary.
+pub fn set_break_before_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    on: bool,
+) -> Result<bool, String> {
+    if path.indices.len() != 1 {
+        return Err("set_break_before는 표 셀 등 중첩 문단에 쓸 수 없습니다: 한글이 저장한 정품 파일에서 쪽 나눔이 표시된 문단은 모두 본문 문단이었습니다. 본문 문단 주소를 선택하세요".to_string());
+    }
+    let section = doc.sections.get_mut(path.section).ok_or_else(|| {
+        "set_break_before: 주소가 가리키는 구역을 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 선택하세요".to_string()
+    })?;
+    let index = path.indices[0];
+    let para = section.paragraphs.get_mut(index).ok_or_else(|| {
+        "set_break_before: 주소가 가리키는 문단을 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 선택하세요".to_string()
+    })?;
+    if index == 0
+        || para
+            .controls
+            .iter()
+            .any(|control| matches!(control, Control::SectionDef(_)))
+    {
+        return Err("set_break_before는 구역의 첫 문단에 쓸 수 없습니다: 그 문단이 구역 설정을 가지고 있고 정품 파일에서도 이에 쪽 나눔이 표시된 적이 없습니다. 다음 문단에 설정하거나 새 구역이 필요하면 새 문서를 만드세요".to_string());
+    }
+    let current = para.header.break_type & 0x04 != 0;
+    if current == on {
+        return Ok(false);
+    }
+    if on {
+        para.header.break_type |= 0x04;
+    } else {
+        para.header.break_type &= !0x04;
+    }
+    // The line caches are page-relative: this paragraph and every body paragraph after it up
+    // to the next explicit break were measured with the old page boundary, so their `v_pos`
+    // values (and, for a new break, the target's own accumulated offset) are stale. Dropping
+    // them lets the writer re-measure from the new boundary: genuine Hangul-saved files start
+    // a break paragraph at `v_pos` 0 and continue the next paragraph from it (J1). Paragraphs
+    // before the target, the next break paragraph and everything after it keep their caches.
+    for (offset, later) in section.paragraphs.iter_mut().enumerate().skip(index) {
+        if offset > index && later.header.break_type & 0x04 != 0 {
+            break;
+        }
+        later.line_segs.clear();
+    }
+    crate::address::invalidate_ancestors(doc, path);
+    Ok(true)
+}
+
+/// Whether `ch` is a blank that `set_indent_level` may remove: ASCII space, ideographic space
+/// (U+3000) or no-break space (U+00A0).
+fn is_indent_blank(ch: char) -> bool {
+    matches!(ch, ' ' | '\u{3000}' | '\u{00a0}')
+}
+
+/// Whether a control may sit between a paragraph's start and its first visible character
+/// without making the blanks around it "not leading": it prints nothing itself. That is the
+/// section/column definition pair a section's first paragraph opens with, a field start, a
+/// bookmark and a page control. Auto numbers, tabs, objects and notes are visible, so blanks
+/// after them are separators, not indentation, and stay.
+fn is_invisible_leading_control(ch: &HwpChar) -> bool {
+    use hwp_model::ctrl_char::{BOOKMARK, FIELD_START, PAGE_CONTROL, SECTION_COLUMN_DEF};
+    matches!(
+        ch,
+        HwpChar::ExtCtrl { code, .. }
+            if matches!(*code, SECTION_COLUMN_DEF | FIELD_START | BOOKMARK | PAGE_CONTROL)
+    )
+}
+
+/// Which characters (by index) and WCHAR offsets a leading-blank strip would remove.
+struct BlankPlan {
+    doomed: Vec<usize>,
+    /// WCHAR offsets of the removed blanks. Every accepted blank is in the BMP: one WCHAR each.
+    removed: Vec<u32>,
+}
+
+/// Finds the blanks that lead `para`'s text without changing it, keeping every control where
+/// it is; `None` when there is nothing to strip.
+///
+/// "Leading" means before the first visible character, so blanks that follow invisible
+/// leading controls count (a section's first paragraph is `secd`, `cold`, then the text). A
+/// paragraph with nothing after its blanks yields `None`: a spacer line is not an indent.
+fn leading_blank_plan(para: &Paragraph) -> Option<BlankPlan> {
+    let mut doomed: Vec<usize> = Vec::new();
+    let mut removed: Vec<u32> = Vec::new();
+    let mut wpos = 0u32;
+    let mut reached_text = false;
+    for (index, ch) in para.chars.iter().enumerate() {
+        match ch {
+            HwpChar::Text(c) if is_indent_blank(*c) => {
+                doomed.push(index);
+                removed.push(wpos);
+            }
+            ch if is_invisible_leading_control(ch) => {}
+            HwpChar::CharCtrl(code) if *code == hwp_model::ctrl_char::PARA_BREAK => break,
+            _ => {
+                reached_text = true;
+                break;
+            }
+        }
+        wpos += ch.wchar_width();
+    }
+    if !reached_text || doomed.is_empty() {
+        return None;
+    }
+    Some(BlankPlan { doomed, removed })
+}
+
+/// Removes the planned blanks from `para`.
+///
+/// Character-shape runs are rebased here rather than through `adjust_runs`: when the removed
+/// blanks end exactly where a run starts, that run must win, so the first surviving character
+/// keeps the shape it had. Runs whose whole span was removed collapse onto the next run. The
+/// stale line layout is dropped.
+fn apply_blank_plan(para: &mut Paragraph, plan: &BlankPlan) {
+    let BlankPlan { doomed, removed } = plan;
+    let mut next = 0usize;
+    let mut position = 0usize;
+    para.chars.retain(|_| {
+        let keep = doomed.get(next) != Some(&position);
+        if !keep {
+            next += 1;
+        }
+        position += 1;
+        keep
+    });
+    // A run keeps its start minus the width removed before it; two runs landing on one offset
+    // leave the LATER one, which is the run that covers the first surviving character.
+    let mut rebased: Vec<(u32, hwp_model::CharShapeId)> =
+        Vec::with_capacity(para.char_shape_runs.len());
+    for &(start, id) in &para.char_shape_runs {
+        let before = removed.iter().filter(|at| **at < start).count() as u32;
+        let start = start - before;
+        match rebased.last_mut() {
+            Some(last) if last.0 == start => *last = (start, id),
+            _ => rebased.push((start, id)),
+        }
+    }
+    para.char_shape_runs = rebased;
+    para.line_segs.clear();
+}
+
+/// Address-driven, idempotent nested-indentation recipe for ONE paragraph: replaces its
+/// leading blank characters with shape indentation. The paragraph's `margin_left` becomes
+/// `level * step` and its `indent` becomes `-hanging` (a hanging first line), both given in
+/// HWPUNIT and stored in IR units like every [`ParaProps`] field; the leading blanks, and ONLY
+/// those, are removed from the text. Words, inner spacing and labels are never touched.
+/// Blanks that follow invisible leading controls are removed too and the controls stay (see
+/// [`leading_blank_plan`]); the first surviving character keeps its character shape.
+///
+/// Idempotent: a second application finds no leading blanks and an identical shape, so it
+/// returns `Ok(false)`, appends no shape and leaves the paragraph, line layout included,
+/// untouched. Refuses a `level` outside 0..=7, and a paragraph that carries a
+/// [`PARA_RANGE_TAG`] record when blanks would be removed (before anything is changed).
+pub fn set_indent_level_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    level: u8,
+    step: i32,
+    hanging: i32,
+) -> Result<bool, String> {
+    if level > 7 {
+        return Err(format!(
+            "set_indent_level의 level은 0..=7이어야 합니다: {level}. 수준을 줄여 다시 시도하세요"
+        ));
+    }
+    let left = i32::from(level).checked_mul(step).ok_or_else(|| {
+        "set_indent_level: level과 step_mm의 곱이 범위를 벗어났습니다. 더 작은 step_mm을 쓰세요"
+            .to_string()
+    })?;
+    let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
+        return Err("set_indent_level: 주소가 가리키는 문단을 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 선택하세요".to_string());
+    };
+    // Plan first, mutate later: every refusal happens before the document is touched.
+    let plan = leading_blank_plan(para);
+    if plan.is_some() && para.extras.iter().any(|e| e.tag == PARA_RANGE_TAG) {
+        return Err("set_indent_level은 구간 표시(형광펜·교정 부호)가 있는 문단의 앞쪽 공백을 지울 수 없습니다: 표시의 위치가 글자 위치를 가리켜 공백을 지우면 엉뚱한 글자에 표시가 걸립니다. 표시를 먼저 지우거나, 공백을 지우지 않는 set_para로 left_mm·indent_mm만 지정하세요".to_string());
+    }
+    let stripped = plan.is_some();
+    if let Some(plan) = &plan {
+        apply_blank_plan(para, plan);
+    }
+    let props = to_ir_units(&ParaProps {
+        margin_left: Some(left),
+        indent: Some(-hanging),
+        ..ParaProps::default()
+    });
+    // Apply the shape only when it differs: `apply_para_props` drops the paragraph's native
+    // line layout, which a request that is already in effect must leave alone.
+    let mut pshapes = std::mem::take(&mut doc.header.para_shapes);
+    let mut shape_changed = false;
+    if let Some(para) = crate::address::paragraph_at_mut(doc, path) {
+        let current = pshapes
+            .get(para.para_shape.0 as usize)
+            .cloned()
+            .unwrap_or_default();
+        if apply_para_shape_props(current.clone(), &props) != current {
+            apply_para_props(para, &props, &mut pshapes);
+            shape_changed = true;
+        }
+    }
+    doc.header.para_shapes = pshapes;
+    if stripped || shape_changed {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    Ok(stripped || shape_changed)
 }
 
 /// Address-driven entry point for list indent/outdent (EDT-05, 07-04): resolves the target
@@ -838,6 +1071,359 @@ mod tests {
         assert_eq!(page.attr & 1, 1, "가로 방향");
     }
     use crate::from_markdown;
+
+    fn body_path(index: usize) -> SegmentPath {
+        SegmentPath {
+            section: 0,
+            indices: vec![index],
+        }
+    }
+
+    #[test]
+    fn set_break_before_refuses_the_first_paragraph_even_without_a_section_def() {
+        // The first paragraph is refused by position, not only because it carries the section
+        // setup: strip its controls and it must still be refused.
+        let mut doc = from_markdown::from_markdown("하나\n\n둘\n\n셋\n");
+        doc.sections[0].paragraphs[0].controls.clear();
+        let error = set_break_before_at(&mut doc, &body_path(0), true).unwrap_err();
+        assert!(error.contains("구역의 첫 문단"), "{error}");
+        assert_eq!(doc.sections[0].paragraphs[0].header.break_type & 0x04, 0);
+    }
+
+    #[test]
+    fn set_break_before_refuses_a_later_paragraph_that_owns_a_section_def() {
+        let mut doc = from_markdown::from_markdown("하나\n\n둘\n\n셋\n");
+        let secd = doc.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find(|c| matches!(c, Control::SectionDef(_)))
+            .cloned()
+            .expect("the first paragraph owns the section setup");
+        doc.sections[0].paragraphs[2].controls.push(secd);
+        let error = set_break_before_at(&mut doc, &body_path(2), true).unwrap_err();
+        assert!(error.contains("구역의 첫 문단"), "{error}");
+        assert_eq!(doc.sections[0].paragraphs[2].header.break_type & 0x04, 0);
+        // A plain later paragraph is accepted and the repeat reports no change.
+        assert_eq!(set_break_before_at(&mut doc, &body_path(1), true), Ok(true));
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), true),
+            Ok(false)
+        );
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), false),
+            Ok(true)
+        );
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), false),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn set_indent_level_strips_a_no_break_space_lead_and_bounds_the_level() {
+        let mut doc = from_markdown::from_markdown("하나\n\n둘 항목\n");
+        let para = &mut doc.sections[0].paragraphs[1];
+        para.chars.insert(0, HwpChar::Text('\u{00a0}'));
+        para.chars.insert(0, HwpChar::Text(' '));
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 1, 100, 50),
+            Ok(true)
+        );
+        assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "둘 항목");
+        // Level 7 is the last accepted, 8 is refused, and a refusal changes nothing.
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 7, 100, 50),
+            Ok(true)
+        );
+        let snapshot = doc.clone();
+        let error = set_indent_level_at(&mut doc, &body_path(1), 8, 100, 50).unwrap_err();
+        assert!(error.contains("0..=7"), "{error}");
+        assert_eq!(doc, snapshot);
+    }
+
+    fn ext(code: u16, id: &[u8; 4]) -> HwpChar {
+        HwpChar::ExtCtrl {
+            code,
+            ctrl_id: *id,
+            payload: vec![0; 12],
+            ctrl_index: None,
+        }
+    }
+
+    /// A paragraph from `parts` with explicit (WCHAR start, shape) runs.
+    fn para_of(parts: Vec<HwpChar>, runs: &[(u32, u16)]) -> Paragraph {
+        Paragraph {
+            chars: parts,
+            char_shape_runs: runs
+                .iter()
+                .map(|(start, id)| (*start, hwp_model::CharShapeId(*id)))
+                .collect(),
+            ..Paragraph::default()
+        }
+    }
+    fn text(s: &str) -> Vec<HwpChar> {
+        s.chars().map(HwpChar::Text).collect()
+    }
+    fn run_pairs(p: &Paragraph) -> Vec<(u32, u32)> {
+        p.char_shape_runs
+            .iter()
+            .map(|(s, id)| (*s, u32::from(id.0)))
+            .collect()
+    }
+
+    #[test]
+    fn strip_leading_blanks_rebases_runs_so_the_first_survivor_keeps_its_shape() {
+        // "  " (shape 0) + "Bold" (shape 1) + " tail" (shape 2): the blanks end on a run start.
+        let mut parts = text("  Bold tail");
+        parts.push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
+        let mut p = para_of(parts, &[(0, 0), (2, 1), (6, 2)]);
+        p.line_segs.push(dummy_lineseg());
+        assert!(strip_leading_blanks(&mut p));
+        assert!(p.line_segs.is_empty(), "the stale line layout is dropped");
+        assert_eq!(p.plain_text(), "Bold tail");
+        assert_eq!(
+            run_pairs(&p),
+            [(0, 1), (4, 2)],
+            "bold stays on B, the tail stays on the tail"
+        );
+        // Blanks inside a longer first run: the run keeps its shape and start.
+        let mut p = para_of(text("  Item x"), &[(0, 7), (6, 8)]);
+        assert!(strip_leading_blanks(&mut p));
+        assert_eq!(run_pairs(&p), [(0, 7), (4, 8)]);
+    }
+
+    #[test]
+    fn strip_leading_blanks_skips_only_invisible_controls() {
+        let secd = || vec![ext(2, b"secd"), ext(2, b"cold")];
+        // Section and column controls (16 WCHAR) lead: the blanks after them go, the controls stay.
+        let mut chars = secd();
+        chars.extend(text("  A"));
+        let mut p = para_of(chars, &[(0, 0), (16, 1)]);
+        assert!(strip_leading_blanks(&mut p));
+        assert_eq!(
+            p.chars.len(),
+            3,
+            "controls kept in place, two blanks removed"
+        );
+        assert!(matches!(p.chars[0], HwpChar::ExtCtrl { .. }));
+        assert_eq!(
+            run_pairs(&p),
+            [(0, 0), (16, 1)],
+            "runs start where they did: only blanks left"
+        );
+        // A field start, a bookmark and a page control are invisible as well.
+        for (code, id) in [(3u16, b"%clk"), (22, b"bokm"), (21, b"pgct")] {
+            let mut chars = vec![ext(code, id)];
+            chars.extend(text("  A"));
+            let mut p = para_of(chars, &[(0, 0)]);
+            assert!(strip_leading_blanks(&mut p), "code {code}");
+            assert_eq!(p.plain_text(), "A", "code {code}");
+        }
+        // An auto number, a tab and an object print something: the blanks after them are a
+        // separator, not indentation, and stay. Blanks BEFORE them still lead the paragraph.
+        for (code, id) in [(18u16, b"atno"), (11, b"tbl "), (17, b"fn  ")] {
+            let mut chars = vec![ext(code, id)];
+            chars.extend(text("  A"));
+            let mut p = para_of(chars, &[(0, 0)]);
+            assert!(!strip_leading_blanks(&mut p), "code {code}");
+            assert_eq!(p.plain_text(), "  A", "code {code}");
+            let mut chars = text("  ");
+            chars.push(ext(code, id));
+            chars.extend(text("A"));
+            let mut p = para_of(chars, &[(0, 0)]);
+            assert!(strip_leading_blanks(&mut p), "blanks before code {code}");
+            assert_eq!(p.plain_text(), "A", "blanks before code {code}");
+        }
+        let mut chars = vec![HwpChar::InlineCtrl {
+            code: hwp_model::ctrl_char::TAB,
+            payload: vec![0; 12],
+        }];
+        chars.extend(text("  A"));
+        let mut p = para_of(chars, &[(0, 0)]);
+        assert!(!strip_leading_blanks(&mut p), "blanks after a tab stay");
+    }
+
+    #[test]
+    fn strip_leading_blanks_leaves_a_spacer_only_paragraph_and_wide_blanks_alone() {
+        // Nothing but blanks (a spacer line) is not an indent: the text is left as written.
+        let mut p = para_of(text("   "), &[(0, 0)]);
+        assert!(!strip_leading_blanks(&mut p));
+        assert_eq!(p.plain_text(), "   ");
+        let mut parts = text("  ");
+        parts.push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
+        let mut p = para_of(parts, &[(0, 0)]);
+        assert!(
+            !strip_leading_blanks(&mut p),
+            "blanks before the paragraph break only"
+        );
+        // A supplementary-plane character counts two WCHAR and shifts later runs by two.
+        let mut chars = text("\u{3000}\u{a0} ");
+        chars.push(HwpChar::Text('\u{1F600}'));
+        chars.extend(text("x"));
+        let mut p = para_of(chars, &[(0, 0), (5, 1)]);
+        assert!(strip_leading_blanks(&mut p));
+        assert_eq!(p.plain_text(), "\u{1F600}x");
+        assert_eq!(
+            run_pairs(&p),
+            [(0, 0), (2, 1)],
+            "the 2-WCHAR emoji stays on its shape and x moves back by the 3 removed WCHAR"
+        );
+    }
+
+    /// Plans and applies a strip in one step, as `set_indent_level_at` does after its checks.
+    fn strip_leading_blanks(para: &mut Paragraph) -> bool {
+        let Some(plan) = leading_blank_plan(para) else {
+            return false;
+        };
+        apply_blank_plan(para, &plan);
+        true
+    }
+
+    #[test]
+    fn set_break_before_clears_only_the_caches_the_break_moves() {
+        // Five body paragraphs with caches; paragraph 3 already starts a page.
+        let mut doc = from_markdown::from_markdown("a\n\nb\n\nc\n\nd\n\ne\n");
+        let count = doc.sections[0].paragraphs.len();
+        assert!(count >= 5, "fixture has five paragraphs");
+        for para in &mut doc.sections[0].paragraphs {
+            para.line_segs = vec![dummy_lineseg()];
+        }
+        doc.sections[0].paragraphs[3].header.break_type |= 0x04;
+        assert_eq!(set_break_before_at(&mut doc, &body_path(1), true), Ok(true));
+        let kept: Vec<bool> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| !p.line_segs.is_empty())
+            .collect();
+        assert_eq!(
+            &kept[..5],
+            [true, false, false, true, true],
+            "the target and the paragraphs up to the next break are re-measured, the rest keep \
+             their caches"
+        );
+        // Turning a break off re-measures the same span: the paragraph now continues the page.
+        for para in &mut doc.sections[0].paragraphs {
+            para.line_segs = vec![dummy_lineseg()];
+        }
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), false),
+            Ok(true)
+        );
+        let kept: Vec<bool> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| !p.line_segs.is_empty())
+            .collect();
+        assert_eq!(&kept[..5], [true, false, false, true, true]);
+        // A request already in effect touches no cache at all.
+        for para in &mut doc.sections[0].paragraphs {
+            para.line_segs = vec![dummy_lineseg()];
+        }
+        let before = doc.clone();
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), false),
+            Ok(false)
+        );
+        assert_eq!(doc, before);
+        // The last paragraph has no successor to clear.
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(count - 1), true),
+            Ok(true)
+        );
+        assert!(doc.sections[0].paragraphs[count - 1].line_segs.is_empty());
+        assert!(!doc.sections[0].paragraphs[count - 2].line_segs.is_empty());
+    }
+
+    fn range_tag() -> hwp_model::OpaqueRecord {
+        hwp_model::OpaqueRecord {
+            tag: PARA_RANGE_TAG,
+            data: vec![0, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0],
+            children: Vec::new(),
+        }
+    }
+
+    /// A one-section document whose paragraph 1 is `parts`, with a line cache and one extra.
+    fn doc_with_paragraph(parts: Vec<HwpChar>, extras: Vec<hwp_model::OpaqueRecord>) -> Document {
+        let mut doc = from_markdown::from_markdown("하나\n\n둘\n\n셋\n");
+        let para = &mut doc.sections[0].paragraphs[1];
+        para.chars = parts;
+        para.char_shape_runs = vec![(0, hwp_model::CharShapeId(0))];
+        para.line_segs = vec![dummy_lineseg()];
+        para.extras = extras;
+        doc
+    }
+
+    #[test]
+    fn set_indent_level_refuses_to_strip_blanks_under_a_range_tag_and_changes_nothing() {
+        // T12-F3: PARA_RANGE_TAG records keep WCHAR offsets this edit would not move.
+        let mut doc = doc_with_paragraph(text("  Marked"), vec![range_tag()]);
+        let before = doc.clone();
+        let error = set_indent_level_at(&mut doc, &body_path(1), 2, 100, 50).unwrap_err();
+        assert!(
+            error.contains("구간 표시") && error.contains("set_para"),
+            "the refusal names the cause and the remedy: {error}"
+        );
+        assert_eq!(doc, before, "a refusal leaves the document unchanged");
+        // Only a range tag blocks the strip. Another opaque record does not.
+        let other = hwp_model::OpaqueRecord {
+            tag: 0x10 + 99,
+            ..range_tag()
+        };
+        let mut doc = doc_with_paragraph(text("  Plain"), vec![other]);
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 1, 100, 0),
+            Ok(true)
+        );
+        assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "Plain");
+        // A range tag is harmless when no blank would move: the shape is still applied.
+        let mut doc = doc_with_paragraph(text("Marked"), vec![range_tag()]);
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 1, 100, 0),
+            Ok(true)
+        );
+        assert_eq!(
+            doc.sections[0].paragraphs[1].extras,
+            vec![range_tag()],
+            "the tag is carried through untouched"
+        );
+    }
+
+    #[test]
+    fn set_indent_level_that_changes_nothing_keeps_the_native_line_cache() {
+        // T12-F4: an already-applied request must not drop the paragraph's line layout.
+        let mut doc = doc_with_paragraph(text("Item"), Vec::new());
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 2, 100, 40),
+            Ok(true)
+        );
+        assert!(
+            doc.sections[0].paragraphs[1].line_segs.is_empty(),
+            "a real change drops the stale layout"
+        );
+        doc.sections[0].paragraphs[1].line_segs = vec![dummy_lineseg()];
+        let shapes = doc.header.para_shapes.len();
+        let before = doc.clone();
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 2, 100, 40),
+            Ok(false)
+        );
+        assert_eq!(
+            doc, before,
+            "the repeat leaves the whole document as it was"
+        );
+        assert_eq!(doc.header.para_shapes.len(), shapes, "no shape is appended");
+        // Level 0 with no hanging on a paragraph that already has that shape is a no-op too.
+        let mut doc = doc_with_paragraph(text("Plain"), Vec::new());
+        let before = doc.clone();
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 0, 100, 0),
+            Ok(false)
+        );
+        assert_eq!(
+            doc, before,
+            "level 0 on an untouched paragraph changes nothing"
+        );
+    }
 
     fn dummy_lineseg() -> hwp_model::LineSeg {
         hwp_model::LineSeg {

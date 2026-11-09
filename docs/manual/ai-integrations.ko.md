@@ -279,6 +279,49 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 필드·상한·증거 경계는 [바인딩 설계](../design/25-form-binding-plan.ko.md)와 버전 계약
 `schemas/form-discovery-v1.schema.json`, `schemas/form-binding-plan-v1.schema.json`을 참고한다.
 
+### 문단을 새 쪽에서 시작하기와 공백 들여쓰기 바꾸기
+
+양식 쪽 나눔에는 문단 단위 연산 세 개가 있다. 문단 주소는 `hwp cat doc.hwpx --format json
+--with-segments --segments v2`에서 얻는다. 각 연산은 `--ops`의 한 항목이며, MCP `hwp_edit`에서는
+같은 이름의 배열이다.
+
+```json
+[
+  {"op":"set_break_before","address":{"at":{"section":0,"paragraph":5}},"value":"on"},
+  {"op":"set_indent_level","address":{"at":{"section":0,"paragraph":7}},
+   "level":2,"step":"5mm","hanging":"3mm"}
+]
+```
+
+- `set_break_before`는 본문 문단 한 개의 '문단 앞 쪽 나눔'을 켜거나(`on`) 끈다(`off`). HWP에서는
+  문단 머리의 나눔 종류, HWPX에서는 `pageBreak`이다. 한글이 저장한 정품 파일에서 나타나는 위치가
+  이 머리 비트뿐이므로, 표 셀 안의 문단과 구역의 첫 문단은 원인과 해결 방법을 알리며 거부한다.
+  단 나눔은 제공하지 않는다. 줄 배치 캐시는 쪽 기준 상대 위치이므로, 변경하면 그 문단과 다음 쪽
+  나눔 문단 앞까지의 후속 문단의 저장된 줄 배치도 버려 새 쪽 맨 위부터 다시 계산한다(변경이 없는
+  반복은 아무것도 건드리지 않는다). 이미 적용된 요청을 반복하면 성공하고 아무것도 바꾸지 않는다.
+- `set_indent_level`은 문단 한 개의 앞쪽 공백 문자(ASCII 공백, 전각 공백, 줄바꿈 없는 공백)만
+  지우고 들여쓰기를 문단 모양에 둔다. `margin_left`는 `level` 곱하기 `step`이고 첫 줄은
+  `hanging`(기본 `0mm`)만큼 내어 쓴다. `level`은 0에서 7이다. 단어, 안쪽 간격, 라벨은 입력한
+  그대로다. 문단 맨 앞의 보이지 않는 컨트롤(구역의 첫 문단이 가진 구역·단 정의, 필드 시작, 책갈피,
+  쪽 컨트롤)은 제자리에 두고 그 뒤의 공백을 지운다. 남은 첫 글자는 원래의 글자 모양을 유지하므로
+  굵은 라벨 앞의 일반 공백을 지워도 라벨이 굵기를 잃지 않는다. 보이는 선행 요소(자동 번호, 탭,
+  개체) 뒤의 공백은 구분자이므로 남기고, 공백만 있는 문단은 그대로 둔다. 형광펜·교정 부호 같은
+  HWP 구간 표시(range tag)가 있는 문단은, 표시가 글자 위치를 가리키는데 그 위치를 옮기지 않으므로
+  (#470) 공백을 지워야 할 때 거부한다. 표시를 먼저 지우거나, 아무것도 지우지 않는 `set_para`의
+  `left_mm`·`indent_mm`을 쓴다. 두 번째 실행은 아무것도 지우지 않고 문단 모양도 추가하지 않으며
+  문단의 네이티브 줄 배치를 그대로 두고 `pieces_touched` 0으로 보고한다.
+- `keep_together`(`keep_with_next`, `keep_lines`, `break_before_shape`)는 아무것도 쓰기 전에 항상
+  거부한다. 쓸 수 있는 한글 저장 파일 중 이 문단 모양 비트를 켠 것이 없어, 추측 없이는 저장 방식을
+  정할 수 없다. 거부를 풀려면 한글에서 해당 옵션을 켜 저장한 문서를 받아 바이트를 먼저 비교해야
+  한다. 새 쪽에서 시작하려면 `set_break_before`를 쓴다.
+
+두 연산 모두 문단 하나를 주소로 가리키므로, 낡은 `id`는 다른 주소 지정 연산처럼 거부된다.
+`set_format`의 run 주소는 일괄 편집 이전 문서를 기준으로 해석되므로, 같은 문단의 앞쪽 공백을
+지우거나(`set_indent_level`) 글을 바꾸는 연산이 먼저 오는 일괄 편집은 원인을 알리며 아무것도
+쓰지 않고 거부한다. `set_format`을 앞에 두거나 편집을 나누어 실행한다.
+결과는 구조 기준이며, 이 문서는 한글에서 보이는 쪽 수를 보장하지 않는다. 근거와 한계는
+`docs/design/07-hangul-compat-rules.ko.md`(J1~J3)에 있다.
+
 ### 보존 손실 원장
 
 `convert`·`merge`·`split`은 보존하지 못한 항목을 모두 `hwp-preservation-report-v1` 원장에

@@ -69,6 +69,10 @@ pub enum TargetKind {
         /// `chars`, or the validated sub-range when it did.
         w_start: u32,
         w_end: u32,
+        /// The paragraph's length in WCHAR when the address was resolved. `w_start` and `w_end`
+        /// are offsets into that text, so an op applied after an earlier one changed the
+        /// paragraph's length must refuse instead of restyling shifted characters (#420).
+        paragraph_wchar_len: u32,
     },
 }
 
@@ -190,6 +194,7 @@ pub fn resolve(
                     index: run_index,
                     w_start,
                     w_end,
+                    paragraph_wchar_len: paragraph.wchar_len(),
                 },
                 before_id: found,
             })
@@ -469,6 +474,7 @@ mod tests {
                 index: 1,
                 w_start: runs[1].0,
                 w_end: runs[2].0,
+                paragraph_wchar_len: doc.sections[0].paragraphs[2].wchar_len(),
             }
         );
     }

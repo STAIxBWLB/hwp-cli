@@ -27,6 +27,28 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   are inventoried but not bindable. Render, font and Hancom proof remain separate
   ([#418](https://github.com/STAIxBWLB/hwp-cli/issues/418)).
 
+- `hwp edit --ops` and `hwp_edit` accept three form-pagination ops
+  ([#420](https://github.com/STAIxBWLB/hwp-cli/issues/420)). `set_break_before` (`on` or
+  `off`) sets the page-break-before bit of one body paragraph (HWP5 paragraph-header break type,
+  HWPX `pageBreak`) and refuses a table-cell paragraph or a section's first paragraph, the only
+  placements no genuine Hangul-saved file shows. `set_indent_level` (`level` 0 to 7, `step`,
+  optional `hanging`) removes only a paragraph's leading blanks (also those after invisible leading controls such as
+  a section's first paragraph opens with, which stay) and sets its left margin and hanging
+  indent on the paragraph shape; the first remaining character keeps its character shape.
+  A paragraph carrying HWP range tags (highlight, proofreading marks) is refused when blanks
+  would be removed, since their offsets are not rebased (#470). A second run changes nothing,
+  appends no shape and keeps the native line layout.
+  `keep_together` (keep with next, keep lines, shape break-before) is always refused before
+  anything is written: none of about 13,000 paragraph shapes in 902 genuine files sets those
+  bits, so their encoding is unverified (`docs/design/07-hangul-compat-rules.md`, J1 to J3).
+  Repeated requests succeed with `pieces_touched` 0. Because line caches are page-relative, a
+  page-break change also drops the stored line layout of the paragraph and of those after it
+  up to the next break, and the native HWP5 cache synthesis now restarts its cursor at an
+  explicit page break as genuine Hangul-saved caches do (`v_pos` 0 plus the paragraph's own
+  space-before, no page-start flag). A `set_format` run address that follows a text-length
+  change in the same batch (a stripping `set_indent_level`, a `replace`) is refused with nothing
+  written, naming the ordering remedy. Bilingual manual and bundled-skill recipes are included.
+
 ## [1.4.0]
 
 **Compatibility**

@@ -369,6 +369,31 @@ hwp validate bound.hwpx
 - MCP에서는 같은 절차와 advertised schema에 따라 `forms`/`occurrences`가 true인 `hwp_slots`와 단일 `apply_form_bindings` 객체를 담은 `hwp_edit`를 쓴다. `verify` 속성을 보내지 않는다.
 - 렌더·폰트와 사람이 수행한 한컴 증거는 #419에서 별도로 수집한다. 의미 영수증만으로 해당 결과를 주장하지 않는다.
 
+### 쪽 나눔과 공백 들여쓰기
+
+본문 문단 하나를 새 쪽에서 시작하려면 `set_break_before`(`value`는 `on` 또는 `off`)를, 앞쪽
+공백을 실제 들여쓰기로 바꾸려면 `set_indent_level`(`level` 0~7, `step`, 선택 `hanging`, 예
+`5mm`)을 쓴다. 둘 다 `hwp cat doc.hwpx --format json --with-segments --segments v2`의 문단
+`address`를 받는다.
+
+```json
+[{"op":"set_break_before","address":{"at":{"section":0,"paragraph":5}},"value":"on"},
+ {"op":"set_indent_level","address":{"at":{"section":0,"paragraph":7}},
+  "level":2,"step":"5mm","hanging":"3mm"}]
+```
+
+- 표 셀 안의 문단과 구역의 첫 문단은 쪽 나눔이 원인과 함께 거부된다. 두 연산 모두 반복해도
+  성공하며 변경이 없다. 실제로 바뀌면 그 문단과 다음 쪽 나눔 앞까지의 후속 문단의 줄 배치를
+  버려 다시 계산한다.
+- 일괄 편집에서 같은 문단의 `set_format` run 편집은 `set_indent_level`이나 `replace`보다 앞에
+  둔다. 글자 수가 바뀐 뒤에 오는 run 주소는 아무것도 쓰지 않고 거부된다.
+- `set_indent_level`은 앞쪽 공백만 지우며(구역·필드·책갈피 컨트롤은 제자리에 두고 그 뒤 공백도
+  포함), 안쪽 간격이나 번호 라벨은 건드리지 않는다. 남은 첫 글자는 굵게 등 원래 글자 모양을
+  유지한다. 공백만 있는 문단은 그대로 둔다. 형광펜·교정 부호가 있는 문단은 공백을 지워야 할 때 거부되므로
+  표시를 먼저 지우거나 `set_para`의 `left_mm`을 쓴다.
+- `keep_together`(다음 문단과 함께, 문단 보호)는 항상 거부된다. 해당 비트를 보여 주는 한글 저장
+  표본이 없다. 재시도하지 말고 `set_break_before`를 쓰거나 한글에서 저장한 표본을 요청한다.
+- MCP에서는 `hwp_edit`의 `set_break_before`, `set_indent_level` 배열을 쓴다.
 
 ## MCP 서버
 
