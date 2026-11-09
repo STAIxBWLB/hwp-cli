@@ -560,6 +560,69 @@ fn binding_artifact_aliases_and_legacy_report_refuse_before_any_publish() {
     assert!(!workspace.0.join("receipt.json").exists());
 }
 
+fn immutable_ops_alias_case(field: &str, spelling: u8, extension: &str) {
+    let workspace = Workspace::new(&format!("immutable-ops-{field}-{spelling}-{extension}"));
+    let source = workspace.source(extension);
+    let source_bytes = std::fs::read(&source).unwrap();
+    let ops = workspace.0.join("plan.json");
+    let alias = match spelling {
+        0 => PathBuf::from("plan.json"),
+        1 => PathBuf::from("./plan.json"),
+        _ => workspace.0.canonicalize().unwrap().join("plan.json"),
+    };
+    let mut operation = binding_operation(&workspace, &source, "700");
+    operation[field] = json!(alias);
+    let plan_bytes = serde_json::to_vec(&json!([operation])).unwrap();
+    std::fs::write(&ops, &plan_bytes).unwrap();
+    let counterpart = workspace.0.join(if field == "receipt" {
+        "preview.json"
+    } else {
+        "receipt.json"
+    });
+    std::fs::write(&counterpart, b"unchanged artifact").unwrap();
+    let output = workspace.0.join(format!("bound.{extension}"));
+    let result = hwp()
+        .current_dir(&workspace.0)
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .args(["--ops", "plan.json", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        !result.status.success(),
+        "an immutable ops alias must refuse {field}/{spelling}/{extension}"
+    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("immutable"));
+    assert_eq!(std::fs::read(&ops).unwrap(), plan_bytes);
+    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(std::fs::read(counterpart).unwrap(), b"unchanged artifact");
+    assert!(!output.exists(), "no native output may be published");
+}
+
+macro_rules! immutable_ops_alias_test {
+    ($name:ident, $field:literal, $spelling:literal, $extension:literal) => {
+        #[test]
+        fn $name() {
+            immutable_ops_alias_case($field, $spelling, $extension);
+        }
+    };
+}
+
+immutable_ops_alias_test!(immutable_ops_receipt_plain_hwp, "receipt", 0, "hwp");
+immutable_ops_alias_test!(immutable_ops_receipt_dot_hwp, "receipt", 1, "hwp");
+immutable_ops_alias_test!(immutable_ops_receipt_absolute_hwp, "receipt", 2, "hwp");
+immutable_ops_alias_test!(immutable_ops_preview_plain_hwp, "preview", 0, "hwp");
+immutable_ops_alias_test!(immutable_ops_preview_dot_hwp, "preview", 1, "hwp");
+immutable_ops_alias_test!(immutable_ops_preview_absolute_hwp, "preview", 2, "hwp");
+immutable_ops_alias_test!(immutable_ops_receipt_plain_hwpx, "receipt", 0, "hwpx");
+immutable_ops_alias_test!(immutable_ops_receipt_dot_hwpx, "receipt", 1, "hwpx");
+immutable_ops_alias_test!(immutable_ops_receipt_absolute_hwpx, "receipt", 2, "hwpx");
+immutable_ops_alias_test!(immutable_ops_preview_plain_hwpx, "preview", 0, "hwpx");
+immutable_ops_alias_test!(immutable_ops_preview_dot_hwpx, "preview", 1, "hwpx");
+immutable_ops_alias_test!(immutable_ops_preview_absolute_hwpx, "preview", 2, "hwpx");
+
 fn immutable_source_alias_case(field: &str, spelling: u8, extension: &str) {
     let workspace = Workspace::new(&format!("immutable-{field}-{spelling}-{extension}"));
     let source = workspace.source(extension);
