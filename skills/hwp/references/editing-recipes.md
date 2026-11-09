@@ -5,8 +5,8 @@
 This is the canonical editing guide in the one bundled `hwp` skill. It replaces old `hwpx`
 guidance without adding a wrapper, helper script, executable recipe, or binary template. Run the
 commands with a binary whose release and capability record cover the selected recipe. The
-original-form reference run below is explicitly an unreleased-source verification, not evidence
-that an older installed release supports its commands.
+original-form reference run below was made on a pre-release source build, not on an installed
+release; the workflow first ships in v1.5.0, and older releases do not support its commands.
 
 ## Scope and release boundary
 
@@ -26,11 +26,11 @@ When completing a supplied HWP/HWPX form, start from that native file. Use Markd
 reauthoring is intended. Do not extract a form by slicing JSON paragraph arrays or unpacking and
 patching package XML. Use typed `split`, source-bound bindings and native edits.
 
-The complete workflow below reflects main after #417-#420, including `document.original_form`.
-The [versioned capability record](original-form-capabilities-v1.json) was checked against released
-v1.4.0 and an **unreleased source build** at its recorded commit. The latter also reports package
-version 1.4.0; `hwp --version` alone does not distinguish them. Do not claim that released v1.4.0
-contains the complete workflow. Check the record exported by your binary before using it.
+The complete workflow below needs v1.5.0 or later, including `document.original_form`. The
+[versioned capability record](original-form-capabilities-v1.json) records its reference run on a
+**pre-release source build** at its recorded commit (which reported package version 1.4.0) and
+checked that released v1.4.0 lacks the workflow. Check `hwp --version` and the record exported
+by your binary before using it.
 
 ```sh
 hwp --version

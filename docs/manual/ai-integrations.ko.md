@@ -20,8 +20,8 @@
 ### 원본 양식 워크플로
 
 기존 양식을 완성할 때는 제공된 네이티브 HWP/HWPX 양식을 우선한다. Markdown은 재작성이
-목적일 때 선택한다. 여기의 #417-#420 전체 워크플로는 main을 대상으로 하며 아직 출시되지
-않았다. 출시된 v1.4.0에 `document.original_form` 인증이 있다고 가정하지 않는다. 작업을
+목적일 때 선택한다. 여기의 #417-#420 전체 워크플로는 v1.5.0부터
+포함된다. v1.4.0 이하 릴리스에는 `document.original_form` 인증이 없다. 작업을
 선택하기 전에 바이너리 버전과
 [버전별 기능·제한 증거](../../skills/hwp/references/original-form-capabilities-v1.json)를 확인한다.
 

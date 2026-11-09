@@ -1047,7 +1047,8 @@ mod tests {
         assert_eq!(policy["document"]["fonts"]["forbid_substitution"], true);
         assert_eq!(policy["render"]["fail_on_outside_page_bounds"], true);
         assert_eq!(policy["render"]["fail_on_potential_collision"], true);
-        assert_eq!(record["availability"]["status"], "main_unreleased");
+        assert_eq!(record["availability"]["status"], "released");
+        assert_eq!(record["availability"]["first_release"], "v1.5.0");
         assert_eq!(
             record["availability"]["complete_workflow_in_checked_stable"],
             false
