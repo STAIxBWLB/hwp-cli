@@ -955,6 +955,75 @@ mod tests {
     }
     use crate::from_markdown;
 
+    fn body_path(index: usize) -> SegmentPath {
+        SegmentPath {
+            section: 0,
+            indices: vec![index],
+        }
+    }
+
+    #[test]
+    fn set_break_before_refuses_the_first_paragraph_even_without_a_section_def() {
+        // The first paragraph is refused by position, not only because it carries the section
+        // setup: strip its controls and it must still be refused.
+        let mut doc = from_markdown::from_markdown("하나\n\n둘\n\n셋\n");
+        doc.sections[0].paragraphs[0].controls.clear();
+        let error = set_break_before_at(&mut doc, &body_path(0), true).unwrap_err();
+        assert!(error.contains("구역의 첫 문단"), "{error}");
+        assert_eq!(doc.sections[0].paragraphs[0].header.break_type & 0x04, 0);
+    }
+
+    #[test]
+    fn set_break_before_refuses_a_later_paragraph_that_owns_a_section_def() {
+        let mut doc = from_markdown::from_markdown("하나\n\n둘\n\n셋\n");
+        let secd = doc.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find(|c| matches!(c, Control::SectionDef(_)))
+            .cloned()
+            .expect("the first paragraph owns the section setup");
+        doc.sections[0].paragraphs[2].controls.push(secd);
+        let error = set_break_before_at(&mut doc, &body_path(2), true).unwrap_err();
+        assert!(error.contains("구역의 첫 문단"), "{error}");
+        assert_eq!(doc.sections[0].paragraphs[2].header.break_type & 0x04, 0);
+        // A plain later paragraph is accepted and the repeat reports no change.
+        assert_eq!(set_break_before_at(&mut doc, &body_path(1), true), Ok(true));
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), true),
+            Ok(false)
+        );
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), false),
+            Ok(true)
+        );
+        assert_eq!(
+            set_break_before_at(&mut doc, &body_path(1), false),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn set_indent_level_strips_a_no_break_space_lead_and_bounds_the_level() {
+        let mut doc = from_markdown::from_markdown("하나\n\n둘 항목\n");
+        let para = &mut doc.sections[0].paragraphs[1];
+        para.chars.insert(0, HwpChar::Text('\u{00a0}'));
+        para.chars.insert(0, HwpChar::Text(' '));
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 1, 100, 50),
+            Ok(true)
+        );
+        assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "둘 항목");
+        // Level 7 is the last accepted, 8 is refused, and a refusal changes nothing.
+        assert_eq!(
+            set_indent_level_at(&mut doc, &body_path(1), 7, 100, 50),
+            Ok(true)
+        );
+        let snapshot = doc.clone();
+        let error = set_indent_level_at(&mut doc, &body_path(1), 8, 100, 50).unwrap_err();
+        assert!(error.contains("0..=7"), "{error}");
+        assert_eq!(doc, snapshot);
+    }
+
     fn dummy_lineseg() -> hwp_model::LineSeg {
         hwp_model::LineSeg {
             text_start: 0,

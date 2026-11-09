@@ -215,6 +215,10 @@ fn break_before_sets_the_page_bit_on_exactly_one_body_paragraph_in_both_formats(
                 .unwrap();
         assert_eq!(report["ops"][0]["op"], "set_break_before");
         assert_eq!(report["ops"][0]["status"], "applied");
+        assert_eq!(
+            report["ops"][0]["pieces_touched"], 1,
+            "{extension}: a real change touches one piece"
+        );
     }
 }
 
@@ -351,6 +355,14 @@ fn indent_level_replaces_leading_spaces_with_shape_indentation_and_keeps_every_w
             json!([indent_op(at(&before, leading), 2, 5.0, 3.0)]),
         );
         success(run, "set_indent_level");
+        let report: Value = serde_json::from_slice(
+            &std::fs::read(fixture.dir.join("indented-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            report["ops"][0]["pieces_touched"], 1,
+            "{extension}: a real change touches one piece"
+        );
         let after = read(&output);
         let item = paragraph(&after, "Four-space indented item.");
         assert_eq!(
