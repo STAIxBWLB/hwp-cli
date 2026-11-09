@@ -922,6 +922,125 @@ pub fn address_map_bytes(report: &OriginalFormCheckReport, map: &[MapEntry]) -> 
 mod tests {
     use super::*;
 
+    fn evaluate_layout(document: &hwp_model::Document, plan: serde_json::Value) -> Evaluation {
+        let prepared = PreparedPlan {
+            plan: serde_json::from_value(plan).unwrap(),
+            plan_sha256: "0".repeat(64),
+            address_map: false,
+        };
+        let mut fonts = hwp_render::FontStore::new();
+        let mut issues = hwp_render::RenderIssueAccumulator::new();
+        let (_, segments) =
+            hwp_render::layout::layout_document_with_segments(document, &mut fonts, &mut issues);
+        let issues = issues.finish();
+        evaluate(
+            &prepared,
+            document,
+            &"0".repeat(64),
+            Some(&RenderEvidence {
+                segments: &segments,
+                issues: &issues,
+                // These tests exercise the evaluator's pinned-evidence branch. Geometry comes
+                // from cached lines or the same host layout, never from a font-dependent oracle.
+                fonts_pinned: true,
+                font_substituted: false,
+                forbid_substitution: true,
+            }),
+        )
+    }
+
+    #[test]
+    fn expected_cell_text_clipped_behind_a_drawn_border_is_rejected() {
+        use hwp_model::{Control, HwpChar};
+        // Same cache/flow boundary as segment_map's fully/partially clipped paragraph
+        // regressions: a visible first paragraph shifts the cached text past the cell edge.
+        for height in [1_800, 3_300, 10_000] {
+            let mut document = hwp_convert::from_markdown("| a | b |\n| --- | --- |\n| c | d |\n");
+            let table = document.sections[0]
+                .paragraphs
+                .iter_mut()
+                .flat_map(|p| &mut p.controls)
+                .find_map(|control| match control {
+                    Control::Table(table) => Some(table),
+                    _ => None,
+                })
+                .unwrap();
+            let cell = &mut table.cells[0];
+            let mut cached = cell.paragraphs[0].clone();
+            cached.chars.retain(|ch| !matches!(ch, HwpChar::Text(_)));
+            let start = cached.wchar_len();
+            cached.chars.extend("firstline".chars().map(HwpChar::Text));
+            let line = |text_start, v_pos| hwp_model::paragraph::LineSeg {
+                text_start,
+                v_pos,
+                line_height: 1_000,
+                text_height: 1_000,
+                baseline_gap: 850,
+                line_spacing: 0,
+                col_start: 0,
+                seg_width: 4_000,
+                flags: 0,
+            };
+            cached.line_segs = vec![line(start, 0), line(start + 5, 1_000)];
+            cell.paragraphs.push(cached);
+            cell.height = hwp_model::units::HwpUnit(height);
+            let expected = cell_text(cell);
+            let result = evaluate_layout(
+                &document,
+                serde_json::json!({
+                    "contract": PLAN_CONTRACT, "version": 1,
+                    "expected_cells": [{"id":"cell", "table":0, "row":0, "col":0, "text":expected}]
+                }),
+            );
+            let clipped = result
+                .report
+                .findings
+                .iter()
+                .any(|f| f.id == "cell" && f.code == "expected_cell_clipped");
+            assert_eq!(
+                clipped,
+                height < 10_000,
+                "a drawn border must not hide fully or partially clipped text: height={height}, {:?}",
+                result.report.findings
+            );
+        }
+    }
+
+    #[test]
+    fn a_table_before_the_anchor_prevents_a_page_start_but_an_empty_row_does_not() {
+        let document =
+            hwp_convert::from_markdown("| a | b |\n| --- | --- |\n| c | d |\n\nANCHOR\n");
+        let result = evaluate_layout(
+            &document,
+            serde_json::json!({
+                "contract": PLAN_CONTRACT, "version":1,
+                "form_starts":[{"id":"start", "text":"ANCHOR", "page_start":true}]
+            }),
+        );
+        assert!(
+            result
+                .report
+                .findings
+                .iter()
+                .any(|f| f.id == "start" && f.code == "form_start_not_at_page_start"),
+            "a table-bearing paragraph is earlier visible content: {:?}",
+            result.report.findings
+        );
+        let document = hwp_convert::from_markdown("\n\nANCHOR\n");
+        let result = evaluate_layout(
+            &document,
+            serde_json::json!({
+                "contract": PLAN_CONTRACT, "version":1,
+                "form_starts":[{"id":"start", "text":"ANCHOR", "page_start":true}]
+            }),
+        );
+        assert!(
+            result.report.findings.is_empty(),
+            "{:?}",
+            result.report.findings
+        );
+    }
+
     #[test]
     fn year_allowance_masks_only_standalone_years() {
         assert!(values_match("2025학년도", "2026학년도", true));
