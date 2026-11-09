@@ -18,6 +18,51 @@ stays under the given directories, and run `hwp validate` on any file the agent 
 
 These hold for the CLI and the MCP server alike, whichever client drives them.
 
+### Original-form workflow
+
+Prefer the supplied native HWP/HWPX form when completing an existing form. Choose Markdown
+when reauthoring is intended. The complete #417-#420 workflow described here targets main and is
+not yet released; released v1.4.0 must not be assumed to include `document.original_form`
+certification. Check the binary version and
+[versioned capability/limitation evidence](../../skills/hwp/references/original-form-capabilities-v1.json)
+before selecting the workflow.
+
+Use the [canonical original-form recipe](../../skills/hwp/references/editing-recipes.md#original-form-workflow)
+for the concrete commands, reviewed JSON inputs and bounded evidence:
+
+1. Discover the source hash, occurrences and addresses; extract the chosen native range with
+   resource closure and retain the source-to-output map.
+2. Rediscover the extracted source, review explicit claims and copy targets, dry-run the binding
+   plan and inspect its local preview. Apply fill/repeat atomically to those same source bytes.
+3. Replay revised allocations against that reviewed source with explicit numeric constraints and
+   caller-supplied totals. Refresh addresses before styling/pagination; apply indentation twice
+   and inspect the no-op comparison.
+4. Validate, render under pinned fonts and certify the delivered artifact against reviewed cell
+   values, table dimensions and form starts. Retain source/plan/output/font/render identities.
+5. Reopen and export the exact delivered file in Hancom through a person-run check; retain its
+   separate receipt before claiming native compatibility.
+
+Use structured `--ops` JSON rather than delimiter-based flags for arbitrary text, including
+leading hyphens. Discovery catalogues, expectation plans and exact previews contain document
+content and stay local; default receipts identify results without exposing those values. The
+canonical recipe also distinguishes the IR character array from a plain string and explains why
+`convert --to json --embed-bin` is required for self-contained resource export.
+
+For MCP, use `hwp_split`, `hwp_slots`, `hwp_edit`, `hwp_render` and `hwp_certify` in the same staged
+order. `hwp_read` offers only legacy markdown `with_segments`, not CLI segments v2 or JSON with
+segments. Obtain fresh advertised addresses; `apply_form_bindings` is one object, not an array,
+and has no `verify` property. Do not combine that exclusive binding operation with style edits.
+MCP `insert_para` does not expose the CLI's inline `style`/`char` fields. Refresh the inserted
+heading's address, then apply a named style through a separate advertised `apply_style` request.
+MCP `hwp_render` has no `report` or `layout_json` arguments: typed layout/report artifact export
+is CLI-only. MCP `hwp_certify` still publishes its own policy/render evidence in the report directory.
+
+Read each policy result and its limitations. Structural validity, preservation, complete render
+diagnostics, visual acceptance and person-run Hancom evidence remain separate. A bounded native
+render or PDF success is evidence only for the tested fixture, font environment and selected
+policy. Quick/web installations that start with only `SKILL.md` can materialize the full bundled
+recipe and capability JSON with `hwp skill export -o ./hwp-guide`.
+
 ### Document-level workflows
 
 Since v0.13.0 the toolkit works on whole documents, not just one at a time:

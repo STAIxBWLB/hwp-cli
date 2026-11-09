@@ -19,6 +19,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- The bundled skill and bilingual integration guide now link one original-form workflow:
+  native extraction, reviewed binding/repetition, idempotent style/pagination and per-artifact
+  certification. An exported versioned capability record carries complete source-bound P0
+  example inputs, measured CLI/MCP results and explicit limits. The recorded native-backend
+  result remains separate from person-run Hancom open/export evidence
+  ([#421](https://github.com/STAIxBWLB/hwp-cli/issues/421)).
+
 - `hwp slots --forms --json --occurrences` and MCP `hwp_slots` expose individual,
   source-bound form targets. The exclusive `apply_form_bindings` edit op and matching
   MCP object apply reviewed literal bindings, explicit profile copies and checked integer

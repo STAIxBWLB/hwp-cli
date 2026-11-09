@@ -87,6 +87,12 @@ pub const SKILL_FILES: &[EmbeddedFile] = &[
         contents: include_str!("../../../../skills/hwp/references/editing-recipes.ko.md"),
     },
     EmbeddedFile {
+        rel: "references/original-form-capabilities-v1.json",
+        contents: include_str!(
+            "../../../../skills/hwp/references/original-form-capabilities-v1.json"
+        ),
+    },
+    EmbeddedFile {
         rel: "templates/gian-internal.md",
         contents: include_str!("../../../../skills/hwp/templates/gian-internal.md"),
     },
@@ -966,6 +972,88 @@ fn ensure_quick_directory(path: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// The exported evidence must keep its runnable inputs, identity links and measured
+    /// scope consistent. Validate inputs with the shipped parsers, without editing native IR.
+    #[test]
+    fn original_form_capability_inputs_and_evidence_agree() {
+        let asset = SKILL_FILES
+            .iter()
+            .find(|file| file.rel == "references/original-form-capabilities-v1.json")
+            .expect("capability asset is exported");
+        let record: serde_json::Value = serde_json::from_str(asset.contents).unwrap();
+        assert_eq!(record["contract"], "hwp-original-form-capabilities-v1");
+        assert_eq!(record["version"], 1);
+        let inputs = record["reference_inputs"].as_object().unwrap();
+        for (name, input) in inputs {
+            if input.is_array() {
+                crate::edit_ops::parse_ops_value(input.clone())
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+            }
+        }
+        for (name, schema) in [
+            (
+                "expect-hwpx.json",
+                include_str!("../../../../schemas/original-form-certification-plan-v1.schema.json"),
+            ),
+            (
+                "certify-hwpx.json",
+                include_str!("../../../../schemas/certification-policy-v1.schema.json"),
+            ),
+        ] {
+            let schema: serde_json::Value = serde_json::from_str(schema).unwrap();
+            jsonschema::options()
+                .with_draft(jsonschema::Draft::Draft202012)
+                .build(&schema)
+                .unwrap()
+                .validate(&inputs[name])
+                .unwrap();
+        }
+        let run = &record["reference_run"];
+        let binding = &inputs["binding.ops.json"][0];
+        assert_eq!(binding["plan"]["source_sha256"], run["prepared_sha256"]);
+        assert_eq!(
+            binding["plan"]["source_sha256"],
+            run["binding_receipt"]["source_sha256"]
+        );
+        assert_eq!(
+            binding["plan"]["bindings"].as_array().unwrap().len(),
+            run["bindings"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            binding["plan"]["constraints"].as_array().unwrap().len(),
+            run["constraints"].as_u64().unwrap() as usize
+        );
+        let repeat = &binding["plan"]["repeats"][0];
+        assert_eq!(repeat["copies"], run["profile_copies_including_original"]);
+        assert_eq!(
+            repeat["profile_ids"].as_array().unwrap().len(),
+            repeat["copies"].as_u64().unwrap() as usize
+        );
+        let plan = &inputs["expect-hwpx.json"];
+        assert_eq!(plan["source_sha256"], run["prepared_sha256"]);
+        let output = &run["outputs"][0];
+        assert_eq!(output["format"], "hwpx");
+        assert_eq!(plan["output_sha256"], output["native_sha256"]);
+        assert_eq!(
+            plan["expected_cells"].as_array().unwrap().len(),
+            output["expected_cells"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            plan["form_starts"].as_array().unwrap().len(),
+            output["form_starts"].as_u64().unwrap() as usize
+        );
+        let policy = &inputs["certify-hwpx.json"];
+        assert_eq!(policy["document"]["fonts"]["forbid_substitution"], true);
+        assert_eq!(policy["render"]["fail_on_outside_page_bounds"], true);
+        assert_eq!(policy["render"]["fail_on_potential_collision"], true);
+        assert_eq!(record["availability"]["status"], "main_unreleased");
+        assert_eq!(
+            record["availability"]["complete_workflow_in_checked_stable"],
+            false
+        );
+        assert_eq!(run["hancom_open_export"], "not_run");
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()

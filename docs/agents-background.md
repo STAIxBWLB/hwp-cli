@@ -73,3 +73,8 @@ AGENTS.md. This file holds rationale and history only, no directives.
   persisted cell heights, then nested-list margins and paragraph gaps inferred from body text.
   Synthetic render parity demonstrated internal agreement, not native-format validity. The
   revision removed the added cell-height floor and restored the prior nested-cache convention.
+
+- 2026-11-10 (#421): The skill entry points make the native-first original-form selection visible
+  after #411 recorded an unnecessary Markdown regeneration decision. The canonical recipe and
+  capability asset distinguish source-bound mutation, policy-scoped certification, diagnostic
+  completeness and person-run native proof; automated evidence does not supply the last layer.
