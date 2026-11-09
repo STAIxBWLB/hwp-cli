@@ -2496,8 +2496,8 @@ fn default_shape_at(
 ///
 /// Structural ops (`insert_para`/`delete_para`/`move_para`) use the same private helpers
 /// (`move_to_index`, `moved_paragraph_path`) as their `apply_typed_operation` arms, so
-/// the ids describe the state immediately after this op. `insert_blocks` deliberately
-/// defers inserted-id reporting to #428 T4. Every
+/// the ids describe the state immediately after this op, `insert_blocks` included (one creation
+/// pair per inserted paragraph). Every
 /// non-structural addressed kind uses
 /// `target_current_path` directly (already correct for any EARLIER structural op in the batch,
 /// since none of these kinds change list length themselves).
@@ -2513,7 +2513,48 @@ fn report_changed_ids(
         return Vec::new();
     };
     match operation {
-        TypedEditOperation::InsertBlocks { .. } => Vec::new(),
+        TypedEditOperation::InsertBlocks { request, .. } => {
+            // The segment ids of every inserted top-level paragraph (a block compiles to
+            // exactly one; `pieces_touched` counts them), each followed by the ids of its
+            // canonical runs, in the state right after this op. A run id is what `set_format`
+            // addresses, so a caller can style an inserted paragraph without guessing indices
+            // (#428 AC3). The paragraphs sit consecutively from the anchor's index, or from
+            // the one after it, exactly as `insert_para` places its single paragraph.
+            let Some(anchor_path) = target_current_path else {
+                return Vec::new();
+            };
+            let Some(&anchor_idx) = anchor_path.indices.last() else {
+                return Vec::new();
+            };
+            let first = if request.before() {
+                anchor_idx
+            } else {
+                anchor_idx + 1
+            };
+            let mut created = Vec::new();
+            for offset in 0..request.blocks.len() {
+                let mut indices = anchor_path.indices.clone();
+                *indices.last_mut().expect("non-empty path") = first + offset;
+                let path = hwp_convert::SegmentPath {
+                    section: anchor_path.section,
+                    indices,
+                };
+                let Some(paragraph) = hwp_convert::address::paragraph_at_mut(doc, &path) else {
+                    return Vec::new();
+                };
+                created.push(IdPair {
+                    before: None,
+                    after: Some(hwp_convert::paragraph_id(&path, paragraph)),
+                });
+                for run in 0..hwp_convert::canonical_char_shape_runs(paragraph).len() {
+                    created.push(IdPair {
+                        before: None,
+                        after: Some(hwp_convert::run_id(&path, paragraph, run)),
+                    });
+                }
+            }
+            created
+        }
         TypedEditOperation::DeletePara {
             address: Some(_), ..
         } => {
