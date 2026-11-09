@@ -5767,7 +5767,11 @@ mod tests {
             &sandbox,
         )
         .unwrap_err();
-        assert!(!error.is_empty());
+        assert!(
+            error.contains("--root"),
+            "the base_dir itself must be refused by the sandbox read-path check, not only the \
+             asset read behind it: {error}"
+        );
         assert!(!out.exists());
 
         // An asset that escapes base_dir is refused by the containment rule.
@@ -5779,7 +5783,7 @@ mod tests {
             &sandbox,
         )
         .unwrap_err();
-        assert!(!error.is_empty());
+        assert!(error.contains("invalid_asset_path"), "{error}");
         assert!(!out.exists());
         let _ = std::fs::remove_dir_all(&directory);
         let _ = std::fs::remove_dir_all(&other);
