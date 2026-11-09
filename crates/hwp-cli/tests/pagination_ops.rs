@@ -17,6 +17,11 @@ const CELL: &str = "Cell text.";
 /// Leading ASCII blanks, then words separated by double spaces and a trailing blank.
 const SPACED: &str = "  Item  with  inner  spaces ";
 /// A leading ideographic space (U+3000) before a Korean label.
+/// The section's first paragraph (it owns the section and column controls) is given this text
+/// after its controls, the layout a Hangul-saved form has.
+const LEAD_FIRST: &str = "  Form title";
+/// Plain leading blanks, then a bold label, then a plain tail.
+const BOLD_LEAD: &str = "  Bold label tail";
 const IDEOGRAPHIC: &str = "\u{3000}가. 항목";
 
 fn hwp() -> Command {
@@ -68,8 +73,13 @@ impl Fixture {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let bold_lead = json!({"type":"paragraph","runs":[
+            {"type":"text","text":"  "},
+            {"type":"text","text":"Bold label","bold":true},
+            {"type":"text","text":" tail"}]});
         let spec = json!({"version":"1.0","sections":[{"blocks":[
             text(FIRST),
+            bold_lead,
             text("    Four-space indented item."),
             text(SPACED),
             text(IDEOGRAPHIC),
@@ -106,6 +116,33 @@ impl Fixture {
         } else {
             hwpx
         };
+        // Give the section's first paragraph visible text after its leading controls.
+        let mut doc = read(&base);
+        let first = &mut doc.sections[0].paragraphs[0];
+        assert_eq!(
+            first.plain_text(),
+            "",
+            "compose keeps the section controls alone"
+        );
+        // After the section and column controls, before the paragraph-break character HWP5
+        // stores at the end of the paragraph.
+        let lead = first
+            .chars
+            .iter()
+            .take_while(|c| matches!(c, hwp_model::HwpChar::ExtCtrl { .. }))
+            .count();
+        assert_eq!(lead, 2, "{extension}: secd and cold lead the paragraph");
+        for (offset, c) in LEAD_FIRST.chars().enumerate() {
+            first
+                .chars
+                .insert(lead + offset, hwp_model::HwpChar::Text(c));
+        }
+        first.line_segs.clear();
+        if extension == "hwp" {
+            hwp5::write_document(&doc, &base, &hwp5::WriteOptions::default()).unwrap();
+        } else {
+            hwpx::write_document(&doc, &base).unwrap();
+        }
         Self {
             dir,
             base,
@@ -513,5 +550,121 @@ fn keep_together_refuses_before_writing_and_names_the_missing_evidence() {
                 "{extension} {field}: the refusal names the cause and the supported alternative: {message}"
             );
         }
+    }
+}
+
+// ---- set_indent_level: run boundaries and leading controls (T12-F1, T12-F2) -----------------
+
+/// The character shape in effect at WCHAR offset `wpos` of `para`.
+fn shape_at(para: &Paragraph, wpos: u32) -> hwp_model::CharShapeId {
+    para.char_shape_runs
+        .iter()
+        .filter(|(start, _)| *start <= wpos)
+        .next_back()
+        .map(|(_, id)| *id)
+        .expect("a run covers the offset")
+}
+
+#[test]
+fn indent_level_keeps_the_shape_of_the_first_surviving_character() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("indent-runs", extension);
+        let before = read(&fixture.base);
+        let para = paragraph(&before, BOLD_LEAD);
+        let blank_shape = shape_at(para, 0);
+        let bold_shape = shape_at(para, 2);
+        let tail_shape = shape_at(para, 2 + "Bold label".len() as u32);
+        assert_ne!(
+            blank_shape, bold_shape,
+            "{extension}: the blanks are plain, the label bold"
+        );
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "bold",
+            json!([indent_op(at(&before, BOLD_LEAD), 1, 5.0, 0.0)]),
+        );
+        success(run, "indent a paragraph whose blanks end at a run boundary");
+        let after = read(&output);
+        let para = paragraph(&after, "Bold label tail");
+        assert_eq!(
+            shape_at(para, 0),
+            bold_shape,
+            "{extension}: the first surviving character keeps its bold shape"
+        );
+        assert_eq!(
+            shape_at(para, "Bold label".len() as u32),
+            tail_shape,
+            "{extension}: the tail keeps its shape"
+        );
+        assert!(
+            para.char_shape_runs
+                .iter()
+                .all(|(start, _)| *start < para.wchar_len()),
+            "{extension}: no run starts past the text"
+        );
+    }
+}
+
+#[test]
+fn indent_level_strips_blanks_that_follow_the_sections_leading_controls() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("indent-controls", extension);
+        let before = read(&fixture.base);
+        let first = &before.sections[0].paragraphs[0];
+        assert_eq!(
+            first.plain_text(),
+            LEAD_FIRST,
+            "{extension}: the fixture's first paragraph"
+        );
+        let controls = |p: &Paragraph| {
+            p.chars
+                .iter()
+                .filter(|c| !matches!(c, hwp_model::HwpChar::Text(_)))
+                .count()
+        };
+        assert!(
+            controls(first) >= 2,
+            "{extension}: section and column controls lead"
+        );
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "controls",
+            json!([indent_op(
+                json!({"at":{"section":0,"paragraph":0}}),
+                1,
+                5.0,
+                0.0
+            )]),
+        );
+        success(run, "indent the section's first paragraph");
+        let after = read(&output);
+        let first_after = &after.sections[0].paragraphs[0];
+        assert_eq!(
+            first_after.plain_text(),
+            "Form title",
+            "{extension}: blanks go, words stay"
+        );
+        assert_eq!(
+            controls(first_after),
+            controls(first),
+            "{extension}: the leading controls stay in place"
+        );
+        assert!(
+            first_after
+                .controls
+                .iter()
+                .any(|c| matches!(c, Control::SectionDef(_))),
+            "{extension}: the section setup is preserved"
+        );
+        assert_eq!(
+            first_after.wchar_len(),
+            first.wchar_len() - 2,
+            "{extension}: exactly the two blanks left the paragraph"
+        );
+        let ps = shape(&after, first_after);
+        assert!(
+            ps.margin_left > 0,
+            "{extension}: the indentation is now on the shape"
+        );
     }
 }

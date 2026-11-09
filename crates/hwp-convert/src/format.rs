@@ -342,13 +342,89 @@ pub fn set_break_before_at(
     Ok(true)
 }
 
-/// The leading blank characters of a paragraph: ASCII space, ideographic space (U+3000) and
-/// no-break space (U+00A0) that precede the first non-blank character, counted over `chars`.
-fn leading_blank_count(chars: &[HwpChar]) -> usize {
-    chars
-        .iter()
-        .take_while(|c| matches!(c, HwpChar::Text(' ' | '\u{3000}' | '\u{00a0}')))
-        .count()
+/// Whether `ch` is a blank that `set_indent_level` may remove: ASCII space, ideographic space
+/// (U+3000) or no-break space (U+00A0).
+fn is_indent_blank(ch: char) -> bool {
+    matches!(ch, ' ' | '\u{3000}' | '\u{00a0}')
+}
+
+/// Whether a control may sit between a paragraph's start and its first visible character
+/// without making the blanks around it "not leading": it prints nothing itself. That is the
+/// section/column definition pair a section's first paragraph opens with, a field start, a
+/// bookmark and a page control. Auto numbers, tabs, objects and notes are visible, so blanks
+/// after them are separators, not indentation, and stay.
+fn is_invisible_leading_control(ch: &HwpChar) -> bool {
+    use hwp_model::ctrl_char::{BOOKMARK, FIELD_START, PAGE_CONTROL, SECTION_COLUMN_DEF};
+    matches!(
+        ch,
+        HwpChar::ExtCtrl { code, .. }
+            if matches!(*code, SECTION_COLUMN_DEF | FIELD_START | BOOKMARK | PAGE_CONTROL)
+    )
+}
+
+/// Removes the blanks that lead `para`'s text, keeping every control where it is, and returns
+/// whether anything was removed.
+///
+/// "Leading" means before the first visible character, so blanks that follow invisible
+/// leading controls count (a section's first paragraph is `secd`, `cold`, then the text). A
+/// paragraph with nothing after its blanks is left alone: a spacer line is not an indent.
+///
+/// Character-shape runs are rebased here rather than through `adjust_runs`: when the removed
+/// blanks end exactly where a run starts, that run must win, so the first surviving character
+/// keeps the shape it had. Runs whose whole span was removed collapse onto the next run.
+fn strip_leading_blanks(para: &mut Paragraph) -> bool {
+    let mut doomed: Vec<usize> = Vec::new();
+    let mut removed: Vec<(u32, u32)> = Vec::new();
+    let mut wpos = 0u32;
+    let mut reached_text = false;
+    for (index, ch) in para.chars.iter().enumerate() {
+        match ch {
+            HwpChar::Text(c) if is_indent_blank(*c) => {
+                doomed.push(index);
+                removed.push((wpos, ch.wchar_width()));
+            }
+            ch if is_invisible_leading_control(ch) => {}
+            HwpChar::CharCtrl(code) if *code == hwp_model::ctrl_char::PARA_BREAK => break,
+            _ => {
+                reached_text = true;
+                break;
+            }
+        }
+        wpos += ch.wchar_width();
+    }
+    if !reached_text || doomed.is_empty() {
+        return false;
+    }
+    let mut next = 0usize;
+    let mut position = 0usize;
+    para.chars.retain(|_| {
+        let keep = doomed.get(next) != Some(&position);
+        if !keep {
+            next += 1;
+        }
+        position += 1;
+        keep
+    });
+    // A run keeps its start minus the width removed before it; two runs landing on one offset
+    // leave the LATER one, which is the run that covers the first surviving character.
+    let mut rebased: Vec<(u32, hwp_model::CharShapeId)> =
+        Vec::with_capacity(para.char_shape_runs.len());
+    for &(start, id) in &para.char_shape_runs {
+        let before: u32 = removed
+            .iter()
+            .filter(|(at, _)| *at < start)
+            .map(|(_, width)| *width)
+            .sum();
+        let start = start - before;
+        match rebased.last_mut() {
+            Some(last) if last.0 == start => *last = (start, id),
+            _ => rebased.push((start, id)),
+        }
+    }
+    rebased.dedup_by_key(|run| run.1);
+    para.char_shape_runs = rebased;
+    para.line_segs.clear();
+    true
 }
 
 /// Address-driven, idempotent nested-indentation recipe for ONE paragraph: replaces its
@@ -378,11 +454,7 @@ pub fn set_indent_level_at(
     let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
         return Err("set_indent_level: 주소가 가리키는 문단을 찾을 수 없습니다. 최신 문서에서 문단 주소를 다시 선택하세요".to_string());
     };
-    let blanks = leading_blank_count(&para.chars);
-    let stripped = blanks > 0;
-    if stripped {
-        crate::edit::splice_edits(para, vec![(0..blanks, String::new())]);
-    }
+    let stripped = strip_leading_blanks(para);
     let before_shape = para.para_shape;
     let props = ParaProps {
         margin_left: Some(left),
@@ -1022,6 +1094,133 @@ mod tests {
         let error = set_indent_level_at(&mut doc, &body_path(1), 8, 100, 50).unwrap_err();
         assert!(error.contains("0..=7"), "{error}");
         assert_eq!(doc, snapshot);
+    }
+
+    fn ext(code: u16, id: &[u8; 4]) -> HwpChar {
+        HwpChar::ExtCtrl {
+            code,
+            ctrl_id: *id,
+            payload: vec![0; 12],
+            ctrl_index: None,
+        }
+    }
+
+    /// A paragraph from `parts` with explicit (WCHAR start, shape) runs.
+    fn para_of(parts: Vec<HwpChar>, runs: &[(u32, u16)]) -> Paragraph {
+        Paragraph {
+            chars: parts,
+            char_shape_runs: runs
+                .iter()
+                .map(|(start, id)| (*start, hwp_model::CharShapeId(*id)))
+                .collect(),
+            ..Paragraph::default()
+        }
+    }
+    fn text(s: &str) -> Vec<HwpChar> {
+        s.chars().map(HwpChar::Text).collect()
+    }
+    fn run_pairs(p: &Paragraph) -> Vec<(u32, u32)> {
+        p.char_shape_runs
+            .iter()
+            .map(|(s, id)| (*s, u32::from(id.0)))
+            .collect()
+    }
+
+    #[test]
+    fn strip_leading_blanks_rebases_runs_so_the_first_survivor_keeps_its_shape() {
+        // "  " (shape 0) + "Bold" (shape 1) + " tail" (shape 2): the blanks end on a run start.
+        let mut parts = text("  Bold tail");
+        parts.push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
+        let mut p = para_of(parts, &[(0, 0), (2, 1), (6, 2)]);
+        assert!(strip_leading_blanks(&mut p));
+        assert_eq!(p.plain_text(), "Bold tail");
+        assert_eq!(
+            run_pairs(&p),
+            [(0, 1), (4, 2)],
+            "bold stays on B, the tail stays on the tail"
+        );
+        // Blanks inside a longer first run: the run keeps its shape and start.
+        let mut p = para_of(text("  Item x"), &[(0, 7), (6, 8)]);
+        assert!(strip_leading_blanks(&mut p));
+        assert_eq!(run_pairs(&p), [(0, 7), (4, 8)]);
+    }
+
+    #[test]
+    fn strip_leading_blanks_skips_only_invisible_controls() {
+        let secd = || vec![ext(2, b"secd"), ext(2, b"cold")];
+        // Section and column controls (16 WCHAR) lead: the blanks after them go, the controls stay.
+        let mut chars = secd();
+        chars.extend(text("  A"));
+        let mut p = para_of(chars, &[(0, 0), (16, 1)]);
+        assert!(strip_leading_blanks(&mut p));
+        assert_eq!(
+            p.chars.len(),
+            3,
+            "controls kept in place, two blanks removed"
+        );
+        assert!(matches!(p.chars[0], HwpChar::ExtCtrl { .. }));
+        assert_eq!(
+            run_pairs(&p),
+            [(0, 0), (16, 1)],
+            "runs start where they did: only blanks left"
+        );
+        // A field start, a bookmark and a page control are invisible as well.
+        for (code, id) in [(3u16, b"%clk"), (22, b"bokm"), (21, b"pgct")] {
+            let mut chars = vec![ext(code, id)];
+            chars.extend(text("  A"));
+            let mut p = para_of(chars, &[(0, 0)]);
+            assert!(strip_leading_blanks(&mut p), "code {code}");
+            assert_eq!(p.plain_text(), "A", "code {code}");
+        }
+        // An auto number, a tab and an object print something: the blanks after them are a
+        // separator, not indentation, and stay. Blanks BEFORE them still lead the paragraph.
+        for (code, id) in [(18u16, b"atno"), (11, b"tbl "), (17, b"fn  ")] {
+            let mut chars = vec![ext(code, id)];
+            chars.extend(text("  A"));
+            let mut p = para_of(chars, &[(0, 0)]);
+            assert!(!strip_leading_blanks(&mut p), "code {code}");
+            assert_eq!(p.plain_text(), "  A", "code {code}");
+            let mut chars = text("  ");
+            chars.push(ext(code, id));
+            chars.extend(text("A"));
+            let mut p = para_of(chars, &[(0, 0)]);
+            assert!(strip_leading_blanks(&mut p), "blanks before code {code}");
+            assert_eq!(p.plain_text(), "A", "blanks before code {code}");
+        }
+        let mut chars = vec![HwpChar::InlineCtrl {
+            code: hwp_model::ctrl_char::TAB,
+            payload: vec![0; 12],
+        }];
+        chars.extend(text("  A"));
+        let mut p = para_of(chars, &[(0, 0)]);
+        assert!(!strip_leading_blanks(&mut p), "blanks after a tab stay");
+    }
+
+    #[test]
+    fn strip_leading_blanks_leaves_a_spacer_only_paragraph_and_wide_blanks_alone() {
+        // Nothing but blanks (a spacer line) is not an indent: the text is left as written.
+        let mut p = para_of(text("   "), &[(0, 0)]);
+        assert!(!strip_leading_blanks(&mut p));
+        assert_eq!(p.plain_text(), "   ");
+        let mut parts = text("  ");
+        parts.push(HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK));
+        let mut p = para_of(parts, &[(0, 0)]);
+        assert!(
+            !strip_leading_blanks(&mut p),
+            "blanks before the paragraph break only"
+        );
+        // A supplementary-plane character counts two WCHAR and shifts later runs by two.
+        let mut chars = text("\u{3000}\u{a0} ");
+        chars.push(HwpChar::Text('\u{1F600}'));
+        chars.extend(text("x"));
+        let mut p = para_of(chars, &[(0, 0), (5, 1)]);
+        assert!(strip_leading_blanks(&mut p));
+        assert_eq!(p.plain_text(), "\u{1F600}x");
+        assert_eq!(
+            run_pairs(&p),
+            [(0, 0), (2, 1)],
+            "the 2-WCHAR emoji stays on its shape and x moves back by the 3 removed WCHAR"
+        );
     }
 
     fn dummy_lineseg() -> hwp_model::LineSeg {
