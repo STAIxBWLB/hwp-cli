@@ -172,6 +172,43 @@ fn build_display_list_with_font_scope(
     (list, issues, store.resolutions, store.resolutions_complete)
 }
 
+/// Segment geometry of the certification layout: the same isolated font set and layout budget
+/// as [`render_document_pages_isolated_bounded`], with the per-(page, segment) rows of
+/// [`segment_map`]. Read-only evidence for original-form certification (#419); it neither
+/// rasterizes nor changes any report. The issue report is returned so a caller can check that
+/// this pass saw the same render issues as the raster pass.
+pub fn layout_segments_isolated_bounded(
+    doc: &Document,
+    opts: &RenderOptions,
+    font_files: &[std::path::PathBuf],
+    budget: &layout::LayoutBudget,
+) -> Result<
+    (
+        display::DisplayList,
+        segment_map::SegmentMap,
+        RenderIssueReport,
+    ),
+    RenderError,
+> {
+    let mut store = FontStore::new_isolated();
+    for dir in &opts.font_dirs {
+        store.load_dir(dir);
+    }
+    for file in font_files {
+        if let Err(error) = store.load_file(file) {
+            store
+                .issues
+                .push(RenderIssueCode::FontManifestLoadFailed, format!("{error}"));
+            store.resolutions_complete = false;
+        }
+    }
+    let mut issues = RenderIssueAccumulator::new();
+    let (list, map) =
+        layout::layout_document_with_segments_bounded(doc, &mut store, &mut issues, budget)?;
+    issues.absorb(store.issues.finish());
+    Ok((list, map, issues.finish()))
+}
+
 fn build_display_list_with_font_scope_bounded(
     doc: &Document,
     opts: &RenderOptions,

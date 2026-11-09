@@ -805,6 +805,32 @@ fn render_positioned_page_number(
     push_run(page, x, y, run, &doc.header.border_fills, warnings);
 }
 
+/// [`layout_document_bounded`] that also records where each source segment landed, for a
+/// caller that must locate segments in the SAME layout it certifies (original-form
+/// certification, #419). The budget is checked exactly as the bounded path does; the
+/// segment map is itself bounded by `segment_map::MAX_SEGMENT_ROWS` and reports truncation.
+pub fn layout_document_with_segments_bounded(
+    doc: &Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    budget: &LayoutBudget,
+) -> Result<(DisplayList, SegmentMap), RenderError> {
+    if let Err(error) = preflight_layout_budget(doc, budget) {
+        warnings.push(RenderIssueCode::LayoutBudgetExceeded, error.to_string());
+        return Err(error);
+    }
+    warnings.set_display_item_limit(budget.max_display_items);
+    warnings.set_page_limit(budget.max_pages);
+    let (list, map) = layout_document_with_segments(doc, store, warnings);
+    if warnings.display_item_budget_exceeded()
+        || warnings.page_budget_exceeded()
+        || list.pages.len() > budget.max_pages
+    {
+        return Err(budget_error("pages"));
+    }
+    Ok((list, map))
+}
+
 pub fn layout_document_bounded(
     doc: &Document,
     store: &mut FontStore,

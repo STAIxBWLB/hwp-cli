@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- Original-form certification rejects partially or fully clipped expected-cell text even when
+  its cell border is drawn, and counts table-bearing body paragraphs before a page-start
+  anchor as preceding content (#419). These checks use the layout's own paragraph ranges
+  and bounding boxes and retain the pinned-font evidence requirement.
+
 **Added**
 
 - `hwp slots --forms --json --occurrences` and MCP `hwp_slots` expose individual,
@@ -48,6 +55,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   space-before, no page-start flag). A `set_format` run address that follows a text-length
   change in the same batch (a stripping `set_indent_level`, a `replace`) is refused with nothing
   written, naming the ordering remedy. Bilingual manual and bundled-skill recipes are included.
+- `hwp certify` and MCP `hwp_certify` accept an optional `document.original_form` policy
+  section ([#419](https://github.com/STAIxBWLB/hwp-cli/issues/419)). It checks the delivered
+  artifact against a local `original-form-certification-plan-v1` plan: expected cell values by
+  table/row/column, required form-start anchors (present, unique, opening a page), the table
+  grid, and explicit allowances for repeated profile tables and changed year labels. Clipped
+  rows, incomplete cell fragmentation and form-start placement are read from the same isolated
+  layout the certification render uses, never inferred from text length. Without a pinned font
+  environment the check is limited and names `pinned_font_environment`, and the overall
+  result is at most `partial`. `checks.original_form` carries plan IDs, cause codes and
+  next-step codes only; an opt-in `original-form/address-map.json` locates findings by address,
+  never by text, and `address_map_published` says whether it was written. A font substitution
+  is a finding only when the policy forbids substitution; an unusable plan is refused with one
+  content-free cause class (unreadable, not JSON, contract, bounds, IDs). Policy and report
+  schemas gain the optional sections; reports without them
+  keep their shape. Results are local renderer evidence, not Hancom parity.
 
 **Fixed**
 

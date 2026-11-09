@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/original-form-certification-plan-v1.schema.json",
+  "title": "hwp-original-form-certification-plan-v1",
+  "description": "Local expectation plan for original-form certification (#419). It holds expected document text, so it stays local: certify reads it but never copies it into a report, refusal or log.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version"],
+  "properties": {
+    "contract": { "const": "hwp-original-form-certification-plan-v1" },
+    "version": { "const": 1 },
+    "source_sha256": { "$ref": "#/$defs/sha256", "description": "SHA-256 of the supplied source form; echoed into the report to bind the result." },
+    "output_sha256": { "$ref": "#/$defs/sha256", "description": "When present, the certified artifact must have exactly this SHA-256." },
+    "table_count": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "Tables in the source form, in the recursive order --set-cell indexes. Declared repeats are added." },
+    "form_starts": {
+      "type": "array", "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "text"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "text": { "$ref": "#/$defs/text", "description": "Exact text of the top-level body paragraph opening the form; whitespace runs are normalized. Must match exactly one paragraph." },
+          "page_start": { "type": "boolean", "description": "Default true: no earlier body paragraph with text may be drawn on the form's first page." },
+          "page": { "type": "integer", "minimum": 1, "maximum": 4096 }
+        }
+      }
+    },
+    "tables": {
+      "type": "array", "maxItems": 512,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "table", "rows", "cols"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "table": { "type": "integer", "minimum": 0, "maximum": 65535 },
+          "rows": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "cols": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        }
+      }
+    },
+    "expected_cells": {
+      "type": "array", "maxItems": 4096,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "table", "row", "col", "text"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "table": { "type": "integer", "minimum": 0, "maximum": 65535 },
+          "row": { "type": "integer", "minimum": 0, "maximum": 65535 },
+          "col": { "type": "integer", "minimum": 0, "maximum": 65535 },
+          "text": { "$ref": "#/$defs/text" },
+          "allow_year_change": { "type": "boolean", "description": "Allowance: standalone four-digit years 1900-2099 may differ." }
+        }
+      }
+    },
+    "allowances": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "repeated_tables": {
+          "type": "array", "maxItems": 512,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["id", "table", "extra_copies"],
+            "properties": {
+              "id": { "$ref": "#/$defs/id" },
+              "table": { "type": "integer", "minimum": 0, "maximum": 65535 },
+              "extra_copies": { "type": "integer", "minimum": 1, "maximum": 512, "description": "Copies that directly follow the table in table order and keep its grid." }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" },
+    "text": { "type": "string", "maxLength": 4096 }
+  }
+}

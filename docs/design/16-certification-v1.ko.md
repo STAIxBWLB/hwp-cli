@@ -88,6 +88,11 @@ Dockerfile은 의도적으로 없다. 베이스 이미지와 LibreOffice 런타�
 
 두 검사 모두 한컴 렌더링 동등성을 주장하지 않는다. 이름 붙인 외부 증거만 입증할 뿐이다.
 
+`document.original_form`은 세 번째 로컬 검사를 더한다. 전달된 산출물을 제공받은 네이티브 양식의 검토된
+기대 계획(기대 셀, 양식 시작 앵커, 격자, 명시적 허용)과 대조해 `checks.original_form`으로 보고한다.
+위 두 검사처럼 실패하며, 렌더 증거가 제한되면(글꼴 미고정) 통과한 검사도 전체 결과를
+`passed`가 아닌 `partial`로 만든다. [원본 양식 인증](26-original-form-certification.ko.md)을 참고한다.
+
 ## 스키마와 소비자
 
 - `schemas/certification-policy-v1.schema.json`
@@ -95,6 +100,8 @@ Dockerfile은 의도적으로 없다. 베이스 이미지와 LibreOffice 런타�
 - `schemas/certification-oracle-result-v1.schema.json`
 - `schemas/preservation-report-v1.schema.json` (선택적 `preservation` 증거 입력)
 - `schemas/hancom-verification-receipt-v1.schema.json` (선택적 `hancom_open` 증거 입력)
+- `schemas/original-form-certification-plan-v1.schema.json` (선택적 `original_form` 계획 입력)
+- `schemas/original-form-address-map-v1.schema.json` (선택형 로컬 `original-form/address-map.json`)
 
 Maru 같은 소비자는 리포트 스키마를 검증한 뒤, JSON Schema로 표현할 수 없는 런타임 불변식을 직접
 확인해야 한다. typed issue 수·해시 재계산, 선택 쪽 진단과 쪽 산출물의 정확한 일치, 산출물 경로의
@@ -102,3 +109,5 @@ Maru 같은 소비자는 리포트 스키마를 검증한 뒤, JSON Schema로 �
 그것이다. 개수 제한은 다음과 같다. `report.artifacts`는 최대 257개(쪽 PNG 256개 + 오라클 PDF 1개),
 `manifest.files`는 `report.json`이 더해져 최대 258개, 게시된 트리는 `manifest.json`이 더해져 정확히
 259개가 상한이다. 내부 publisher의 260 가드는 구현 여유분이며 소비자 기준이 아니다.
+선택형 원본 양식 주소 맵은 같은 258개 상한 안의 manifest 파일 하나이며, 이미 상한에 이른 리포트에서는
+생략된다.

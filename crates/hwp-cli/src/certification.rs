@@ -15,6 +15,8 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+pub mod original_form;
+
 pub const POLICY_SCHEMA_VERSION: &str = "1.0";
 pub const REPORT_SCHEMA_VERSION: &str = "1.0";
 pub const MAX_INPUT_BYTES: u64 = 128 * 1024 * 1024;
@@ -102,6 +104,9 @@ pub struct DocumentPolicy {
     pub preservation: Option<PreservationPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hancom_open: Option<HancomOpenPolicy>,
+    /// Optional original-form check against a local expectation plan (#419).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_form: Option<original_form::OriginalFormPolicy>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -380,6 +385,8 @@ pub struct CheckSet {
     pub preservation: Option<PreservationCheckReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hancom_open: Option<HancomOpenCheckReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_form: Option<original_form::OriginalFormCheckReport>,
 }
 
 /// Outcome of the optional preservation evidence check. Content-free: only aggregated loss
@@ -641,6 +648,13 @@ pub fn execute(
     set_private_permissions(&font_dir)?;
     let font_files =
         snapshot_font_manifest(&policy.document.fonts.manifest, policy_base, &font_dir)?;
+    // The plan is read once, here, so its identity binds the whole run. A refusal is reported
+    // in the check section, never as a process error carrying plan or document text.
+    let original_form_plan = policy
+        .document
+        .original_form
+        .as_ref()
+        .map(|section| original_form::prepare(section, policy_base));
 
     let (preflight, parse_budget_failed) = match preflight_parse_budget(&input_snapshot) {
         Ok(preflight) => (Some(preflight), false),
@@ -773,12 +787,72 @@ pub fn execute(
     let hancom_open_check = policy.document.hancom_open.as_ref().map(|section| {
         evaluate_hancom_open_evidence(section, policy_base, &input_snapshot_report.sha256)
     });
+    let mut original_form_map = None;
+    let original_form_check = original_form_plan.as_ref().map(|prepared| {
+        let output_sha256 = input_snapshot_report.sha256.as_str();
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(refusal) => return original_form::invalid_plan_report(*refusal, output_sha256),
+        };
+        let Some(doc) = document.as_ref() else {
+            return original_form::unparsed_report(prepared, output_sha256);
+        };
+        // Segment geometry from the same isolated font set and layout budget as the render.
+        // A render that failed leaves no layout evidence; the check then reports it missing.
+        let options = hwp_render::RenderOptions {
+            dpi: policy.render.dpi,
+            font_dirs: Vec::new(),
+        };
+        let layout = (render_report.status != CheckStatus::Skipped)
+            .then(|| {
+                hwp_render::layout_segments_isolated_bounded(
+                    doc,
+                    &options,
+                    &font_files,
+                    &hwp_render::layout::LayoutBudget::certification(),
+                )
+                .ok()
+            })
+            .flatten();
+        let fonts_pinned = !policy.document.fonts.manifest.is_empty()
+            && policy.document.fonts.forbid_substitution
+            && !render_report.fonts.is_empty()
+            && render_report
+                .fonts
+                .iter()
+                .all(|font| font.outcome == "matched");
+        let font_substituted = render_report
+            .fonts
+            .iter()
+            .any(|font| font.outcome != "matched");
+        let evidence = layout
+            .as_ref()
+            .map(|(_, segments, issues)| original_form::RenderEvidence {
+                segments,
+                issues,
+                fonts_pinned,
+                font_substituted,
+                forbid_substitution: policy.document.fonts.forbid_substitution,
+            });
+        let evaluation = original_form::evaluate(prepared, doc, output_sha256, evidence.as_ref());
+        if prepared.address_map {
+            original_form_map = Some(evaluation.map);
+        }
+        evaluation.report
+    });
+    let original_form_failed = original_form_check
+        .as_ref()
+        .is_some_and(|check| check.status != CheckStatus::Passed);
+    let original_form_limited = original_form_check
+        .as_ref()
+        .is_some_and(|check| check.limited);
     let evidence_failed = preservation_check
         .as_ref()
         .is_some_and(|check| check.status != CheckStatus::Passed)
         || hancom_open_check
             .as_ref()
-            .is_some_and(|check| check.status != CheckStatus::Passed);
+            .is_some_and(|check| check.status != CheckStatus::Passed)
+        || original_form_failed;
 
     let local_failed = package_check.status != CheckStatus::Passed
         || semantic_check.status != CheckStatus::Passed
@@ -815,12 +889,25 @@ pub fn execute(
     };
     local_artifacts.append(&mut oracle_artifacts);
 
-    let overall = overall_status(local_failed, policy.oracle.mode, oracle.status);
+    let mut overall = overall_status(local_failed, policy.oracle.mode, oracle.status);
+    // Limited original-form evidence (no pinned fonts, no layout) never certifies on its own.
+    if original_form_limited && overall == OverallStatus::Passed {
+        overall = OverallStatus::Partial;
+    }
     let scope = if oracle.status == OracleStatus::Passed {
         "native_plus_independent_import"
     } else {
         "native_only"
     };
+    // The manifest holds the local artifacts plus report.json; the opted-in address map is one
+    // more file within the published 258 cap. Decide before the report is written so
+    // `address_map_published` says whether the file exists (T11-N2).
+    let publish_address_map =
+        original_form_map.is_some() && local_artifacts.len() + 1 < MAX_MANIFEST_FILES;
+    let mut original_form_check = original_form_check;
+    if let Some(check) = original_form_check.as_mut() {
+        check.address_map_published = publish_address_map;
+    }
     let report = CertificationReport {
         schema_version: REPORT_SCHEMA_VERSION,
         contract: "hwp-certification-report-v1",
@@ -838,6 +925,7 @@ pub fn execute(
             rules,
             preservation: preservation_check,
             hancom_open: hancom_open_check,
+            original_form: original_form_check,
         },
         render: render_report,
         oracle,
@@ -859,6 +947,23 @@ pub fn execute(
     let report_artifact = write_artifact(&stage.root, "report.json", &report_bytes, true)?;
     let mut manifest_files = local_artifacts;
     manifest_files.push(report_artifact);
+    if let (Some(map), Some(check)) = (&original_form_map, &report.checks.original_form)
+        && publish_address_map
+    {
+        // Local opt-in address map: addresses only, never document text. Listed in the
+        // manifest, not among the report's artifact set (whose paths are a fixed schema set).
+        // A report already at the 258-file cap (256 pages plus the oracle PDF) leaves it out,
+        // and says so through `address_map_published: false`.
+        fs::create_dir(stage.root.join("original-form"))?;
+        set_private_permissions(&stage.root.join("original-form"))?;
+        let bytes = original_form::address_map_bytes(check, map)?;
+        manifest_files.push(write_artifact(
+            &stage.root,
+            original_form::ADDRESS_MAP_PATH,
+            &bytes,
+            true,
+        )?);
+    }
     manifest_files.sort_by(|left, right| left.path.cmp(&right.path));
     if manifest_files.len() > MAX_MANIFEST_FILES {
         anyhow::bail!("manifest file count exceeds {MAX_MANIFEST_FILES}");
@@ -1077,6 +1182,9 @@ fn validate_policy(policy: &CertificationPolicy) -> Result<()> {
     }
     if let Some(hancom_open) = &policy.document.hancom_open {
         validate_relative_asset_path(&hancom_open.receipt)?;
+    }
+    if let Some(original_form) = &policy.document.original_form {
+        validate_relative_asset_path(&original_form.plan)?;
     }
     Ok(())
 }
@@ -2300,6 +2408,25 @@ fn validate_evidence_check_invariants(report: &CertificationReport) -> Result<()
         }
         if check.status != CheckStatus::Passed {
             evidence_failed = true;
+        }
+    }
+    if let Some(check) = &report.checks.original_form {
+        if (check.status == CheckStatus::Passed) != check.reason_codes.is_empty() {
+            anyhow::bail!("original_form status/reason invariant violated");
+        }
+        if check.limited == check.missing_evidence.is_empty() {
+            anyhow::bail!("original_form limited/missing_evidence invariant violated");
+        }
+        if check.findings.len() > original_form::MAX_FINDINGS {
+            anyhow::bail!("original_form findings exceed their bound");
+        }
+        if check.address_map_published && !check.address_map {
+            anyhow::bail!("original_form address map published without being requested");
+        }
+        if check.status != CheckStatus::Passed {
+            evidence_failed = true;
+        } else if check.limited && report.overall == OverallStatus::Passed {
+            anyhow::bail!("limited original-form evidence must not pass certification");
         }
     }
     if evidence_failed && report.overall != OverallStatus::Failed {
@@ -5521,6 +5648,7 @@ exit 2"#,
                 rules,
                 preservation: None,
                 hancom_open: None,
+                original_form: None,
             },
             render,
             oracle: OracleReport {

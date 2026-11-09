@@ -94,6 +94,7 @@
 | 23 | [hwpx-skill-absorption](23-hwpx-skill-absorption.ko.md) | **hwpx 스킬 흡수** — 서브커맨드 단위 패리티 매트릭스(구 서브커맨드 28개 + 스크립트 수준 보장, verified/inferred 표기), D-14 여백 기록, Phase 2.2~2.5가 제자리에서 갱신하는 살아있는 체크리스트 (issue #121, skills#35) |
 | 24 | [original-form-contract](24-original-form-contract.ko.md) | **원본 서식 보존 계약** - 합성 P0 fixture, 셀·격자·서식·자원 투영, 명시적 변경, 상대 앵커와 별도의 글꼴·실기 근거 (#411, #416) |
 | 25 | [form-binding-plan](25-form-binding-plan.ko.md) | **원본 결속 양식 바인딩 계획** - 검토된 개별 위치, 명시적 프로필 복제, 유계 정수 제약, 원자적 적용과 별도 레이아웃·실기 증거 (#411, #418) |
+| 26 | [original-form-certification](26-original-form-certification.ko.md) | **원본 양식 인증** - 로컬 계획과 대조하는 기대 셀·양식 시작 앵커·격자, 레이아웃에서 읽는 잘림, 글꼴 미고정 시 제한된 결과, 내용 없는 발견 사항 (#411, #419) |
 
 ---
 

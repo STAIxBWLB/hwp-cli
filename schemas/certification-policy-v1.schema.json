@@ -122,7 +122,8 @@
           }
         },
         "preservation": { "$ref": "#/$defs/preservationPolicy" },
-        "hancom_open": { "$ref": "#/$defs/hancomOpenPolicy" }
+        "hancom_open": { "$ref": "#/$defs/hancomOpenPolicy" },
+        "original_form": { "$ref": "#/$defs/originalFormPolicy" }
       }
     },
     "evidencePath": {
@@ -138,6 +139,16 @@
       "properties": {
         "report": { "$ref": "#/$defs/evidencePath" },
         "max_loss_codes": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+      }
+    },
+    "originalFormPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan"],
+      "description": "Original-form certification (#419). The plan file holds expected text and stays local; it is never copied into the report directory.",
+      "properties": {
+        "plan": { "$ref": "#/$defs/evidencePath", "description": "Path to an original-form-certification-plan-v1 JSON file, relative to the policy file." },
+        "address_map": { "type": "boolean", "description": "Opt-in: publish original-form/address-map.json, mapping finding IDs to document addresses. It never carries document text." }
       }
     },
     "hancomOpenPolicy": {

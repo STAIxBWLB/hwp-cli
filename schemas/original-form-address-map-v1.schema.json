@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/original-form-address-map-v1.schema.json",
+  "title": "hwp-original-form-address-map-v1",
+  "description": "Opt-in local map from original-form finding IDs to document addresses. Addresses only, never document text; keep it local with the plan.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "schema_version", "plan_sha256", "output_sha256", "entries"],
+  "properties": {
+    "contract": { "const": "hwp-original-form-address-map-v1" },
+    "schema_version": { "const": "1.0" },
+    "plan_sha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "output_sha256": { "$ref": "#/$defs/sha256" },
+    "entries": {
+      "type": "array", "maxItems": 1024,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "section", "paragraph", "table", "row", "col", "page"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" },
+          "section": { "type": ["integer", "null"], "minimum": 0 },
+          "paragraph": { "type": ["integer", "null"], "minimum": 0 },
+          "table": { "type": ["integer", "null"], "minimum": 0, "maximum": 65535 },
+          "row": { "type": ["integer", "null"], "minimum": 0, "maximum": 65535 },
+          "col": { "type": ["integer", "null"], "minimum": 0, "maximum": 65535 },
+          "page": { "type": ["integer", "null"], "minimum": 1, "maximum": 4096 }
+        }
+      }
+    }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+}
