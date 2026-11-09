@@ -368,24 +368,6 @@ fn is_invisible_leading_control(ch: &HwpChar) -> bool {
     )
 }
 
-/// Removes the blanks that lead `para`'s text, keeping every control where it is, and returns
-/// whether anything was removed.
-///
-/// "Leading" means before the first visible character, so blanks that follow invisible
-/// leading controls count (a section's first paragraph is `secd`, `cold`, then the text). A
-/// paragraph with nothing after its blanks is left alone: a spacer line is not an indent.
-///
-/// Character-shape runs are rebased here rather than through `adjust_runs`: when the removed
-/// blanks end exactly where a run starts, that run must win, so the first surviving character
-/// keeps the shape it had. Runs whose whole span was removed collapse onto the next run.
-fn strip_leading_blanks(para: &mut Paragraph) -> bool {
-    let Some(plan) = leading_blank_plan(para) else {
-        return false;
-    };
-    apply_blank_plan(para, &plan);
-    true
-}
-
 /// Which characters (by index) and WCHAR offsets a leading-blank strip would remove.
 struct BlankPlan {
     doomed: Vec<usize>,
@@ -393,8 +375,12 @@ struct BlankPlan {
     removed: Vec<u32>,
 }
 
-/// Finds the leading blanks of `para` without changing it; `None` when there is nothing to
-/// strip (see [`strip_leading_blanks`] for what counts as leading).
+/// Finds the blanks that lead `para`'s text without changing it, keeping every control where
+/// it is; `None` when there is nothing to strip.
+///
+/// "Leading" means before the first visible character, so blanks that follow invisible
+/// leading controls count (a section's first paragraph is `secd`, `cold`, then the text). A
+/// paragraph with nothing after its blanks yields `None`: a spacer line is not an indent.
 fn leading_blank_plan(para: &Paragraph) -> Option<BlankPlan> {
     let mut doomed: Vec<usize> = Vec::new();
     let mut removed: Vec<u32> = Vec::new();
@@ -421,6 +407,12 @@ fn leading_blank_plan(para: &Paragraph) -> Option<BlankPlan> {
     Some(BlankPlan { doomed, removed })
 }
 
+/// Removes the planned blanks from `para`.
+///
+/// Character-shape runs are rebased here rather than through `adjust_runs`: when the removed
+/// blanks end exactly where a run starts, that run must win, so the first surviving character
+/// keeps the shape it had. Runs whose whole span was removed collapse onto the next run. The
+/// stale line layout is dropped.
 fn apply_blank_plan(para: &mut Paragraph, plan: &BlankPlan) {
     let BlankPlan { doomed, removed } = plan;
     let mut next = 0usize;
@@ -455,7 +447,7 @@ fn apply_blank_plan(para: &mut Paragraph, plan: &BlankPlan) {
 /// HWPUNIT and stored in IR units like every [`ParaProps`] field; the leading blanks, and ONLY
 /// those, are removed from the text. Words, inner spacing and labels are never touched.
 /// Blanks that follow invisible leading controls are removed too and the controls stay (see
-/// [`strip_leading_blanks`]); the first surviving character keeps its character shape.
+/// [`leading_blank_plan`]); the first surviving character keeps its character shape.
 ///
 /// Idempotent: a second application finds no leading blanks and an identical shape, so it
 /// returns `Ok(false)`, appends no shape and leaves the paragraph, line layout included,
@@ -1263,6 +1255,15 @@ mod tests {
             [(0, 0), (2, 1)],
             "the 2-WCHAR emoji stays on its shape and x moves back by the 3 removed WCHAR"
         );
+    }
+
+    /// Plans and applies a strip in one step, as `set_indent_level_at` does after its checks.
+    fn strip_leading_blanks(para: &mut Paragraph) -> bool {
+        let Some(plan) = leading_blank_plan(para) else {
+            return false;
+        };
+        apply_blank_plan(para, &plan);
+        true
     }
 
     fn range_tag() -> hwp_model::OpaqueRecord {
