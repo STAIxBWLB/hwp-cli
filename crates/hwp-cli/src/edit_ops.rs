@@ -1103,12 +1103,6 @@ impl OpsEntry {
                     })?;
                 let step = string_error(parse_mm(&step))?;
                 let hanging = mm_opt(hanging)?.unwrap_or(0);
-                if step < 0 || hanging < 0 {
-                    return Err(
-                        "set_indent_level.step과 hanging은 0 이상이어야 합니다. 내어쓰기는 hanging으로, 들여쓰기는 level로 표현하세요"
-                            .to_string(),
-                    );
-                }
                 Ok(TypedEditOperation::SetIndentLevel {
                     address,
                     level,
@@ -1448,12 +1442,16 @@ mod tests {
         assert_eq!(step, 1417, "5 mm in HWPUNIT (5 * 7200 / 25.4)");
         let error = refusal(json!({"op":"set_indent_level","address":at,"level":8,"step":"5mm"}));
         assert!(error.contains("0..=7"), "{error}");
-        // A negative length reaches into_typed through MCP (no schema pattern there).
+        // A negative length reaches into_typed through MCP (no schema pattern there); the shared
+        // mm parser refuses it, so a negative step can never flip the margin's sign.
         for field in ["step", "hanging"] {
             let mut entry = json!({"op":"set_indent_level","address":at,"level":1,"step":"5mm"});
             entry[field] = json!("-3mm");
             let error = refusal(entry);
-            assert!(error.contains("0 이상"), "{field}: {error}");
+            assert!(
+                error.contains("0..=5000"),
+                "{field}: the shared mm parser names the range: {error}"
+            );
         }
         // on/off map to true/false, anything else is refused with both words.
         for (word, expected) in [("on", true), ("off", false)] {
