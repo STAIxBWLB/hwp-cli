@@ -1601,6 +1601,55 @@
           },
           "type": "array"
         },
+        "keep_together": {
+          "description": "항상 거부됨: 문단 모양의 다음 문단과 함께·문단 보호·쪽 나눔 비트는 한글이 저장한 정품 파일에서 관찰된 적이 없어 쓰지 않는다. 새 쪽에서 시작하려면 set_break_before를 사용",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "break_before_shape": {
+                "type": "boolean"
+              },
+              "keep_lines": {
+                "type": "boolean"
+              },
+              "keep_with_next": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "address"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
         "merge_cells": {
           "items": {
             "properties": {
@@ -1951,6 +2000,55 @@
           },
           "type": "array"
         },
+        "set_break_before": {
+          "description": "본문 문단 한 개의 '문단 앞 쪽 나눔' 켜기/끄기(한글이 저장한 정품 파일에 나타나는 위치만 허용: 표 셀 문단과 구역의 첫 문단은 거부). 이미 적용된 요청은 변경 없이 성공",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "value": {
+                "description": "on: 문단 앞에서 새 쪽 시작, off: 해제",
+                "enum": [
+                  "on",
+                  "off"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "address",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
         "set_cell": {
           "description": "표 셀 설정(0-기반)",
           "items": {
@@ -2160,6 +2258,62 @@
                 "type": "boolean"
               }
             },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "set_indent_level": {
+          "description": "문단 한 개의 앞쪽 공백만 제거하고 왼쪽 여백=level*step, 내어쓰기=hanging으로 문단 모양에 반영(멱등: 두 번째 실행은 변경 없음)",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "additionalProperties": false,
+                "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
+                "properties": {
+                  "at": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "paragraph": {
+                        "type": "integer"
+                      },
+                      "section": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "section",
+                      "paragraph"
+                    ],
+                    "type": "object"
+                  },
+                  "id": {
+                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "hanging": {
+                "description": "내어쓰기(첫 줄 돌출) 길이(예: 3mm), 기본 0mm",
+                "type": "string"
+              },
+              "level": {
+                "description": "들여쓰기 수준 0..=7",
+                "maximum": 7,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "step": {
+                "description": "수준당 들여쓰기 길이(예: 5mm)",
+                "type": "string"
+              }
+            },
+            "required": [
+              "address",
+              "level",
+              "step"
+            ],
             "type": "object"
           },
           "type": "array"

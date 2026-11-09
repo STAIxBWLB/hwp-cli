@@ -27,6 +27,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   are inventoried but not bindable. Render, font and Hancom proof remain separate
   ([#418](https://github.com/STAIxBWLB/hwp-cli/issues/418)).
 
+- `hwp edit --ops` and `hwp_edit` accept three form-pagination ops
+  ([#420](https://github.com/STAIxBWLB/hwp-cli/issues/420)). `set_break_before` (`on` or
+  `off`) sets the page-break-before bit of one body paragraph (HWP5 paragraph-header break type,
+  HWPX `pageBreak`) and refuses a table-cell paragraph or a section's first paragraph, the only
+  placements no genuine Hangul-saved file shows. `set_indent_level` (`level` 0 to 7, `step`,
+  optional `hanging`) removes only a paragraph's leading blanks and sets its left margin and
+  hanging indent on the paragraph shape; a second run changes nothing and appends no shape.
+  `keep_together` (keep with next, keep lines, shape break-before) is always refused before
+  anything is written: none of about 13,000 paragraph shapes in 902 genuine files sets those
+  bits, so their encoding is unverified (`docs/design/07-hangul-compat-rules.md`, J1 to J3).
+  Repeated requests succeed with `pieces_touched` 0. Bilingual manual and bundled-skill recipes
+  are included.
+
 ## [1.4.0]
 
 **Compatibility**

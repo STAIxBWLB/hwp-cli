@@ -288,6 +288,40 @@ engine. There is no MCP `verify` flag; native verification is part of the operat
 See [the binding design](../design/25-form-binding-plan.md) and the versioned `schemas/form-discovery-v1.schema.json` and
 `schemas/form-binding-plan-v1.schema.json` contracts for fields, bounds and evidence limits.
 
+### Start a paragraph on a new page, and replace typed indentation
+
+Three paragraph-level ops handle form pagination. Take the paragraph address from `hwp cat
+doc.hwpx --format json --with-segments --segments v2`; each op is a flat `--ops` entry, or an
+array of `hwp_edit` of the same name.
+
+```json
+[
+  {"op":"set_break_before","address":{"at":{"section":0,"paragraph":5}},"value":"on"},
+  {"op":"set_indent_level","address":{"at":{"section":0,"paragraph":7}},
+   "level":2,"step":"5mm","hanging":"3mm"}
+]
+```
+
+- `set_break_before` sets (`on`) or clears (`off`) the page-break-before bit of one body
+  paragraph: the paragraph-header break type in HWP and `pageBreak` in HWPX. That header bit is
+  the only placement that genuine Hangul-saved files show, so a paragraph inside a table cell
+  and the first paragraph of a section are refused with the cause and the remedy. Column breaks
+  are not offered. Repeating a request that is already in effect succeeds and changes nothing.
+- `set_indent_level` removes only the blank characters at the start of one paragraph (ASCII,
+  ideographic and no-break spaces) and puts the indentation on the paragraph shape instead:
+  `margin_left` is `level` times `step` and the first line hangs by `hanging` (default `0mm`).
+  `level` is 0 to 7. Words, inner spacing and labels stay as typed. Running it a second time
+  strips nothing, adds no paragraph shape and reports `pieces_touched` 0.
+- `keep_together` (`keep_with_next`, `keep_lines`, `break_before_shape`) is always refused before
+  anything is written. No Hangul-saved file available sets those paragraph-shape bits, so their
+  storage cannot be established without guessing. To lift the refusal, save from Hangul a
+  document with the option turned on and compare the bytes first. Use `set_break_before` to
+  start a new page.
+
+Both ops address one paragraph at a time, so a stale `id` is refused as with any addressed op.
+Results are structural; this manual makes no claim about the page count Hangul will show.
+Evidence and limits are recorded in `docs/design/07-hangul-compat-rules.md` (J1 to J3).
+
 ### The preservation ledger
 
 `convert`, `merge` and `split` record every item they could not preserve in the typed

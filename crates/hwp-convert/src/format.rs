@@ -291,7 +291,7 @@ pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> b
 /// keep-with-next, bit 18 keep-lines, bit 19 break-before) are **unverified**: none of the
 /// genuine Hangul-saved files available (902 parsed, about 13,000 paragraph shapes) sets any of
 /// them, so there is no saved byte to copy the encoding from (`docs/design/07-hangul-compat-rules.md`,
-/// rule K). The op refuses before writing and names the supported alternative.
+/// rule J2). The op refuses before writing and names the supported alternative.
 pub const KEEP_TOGETHER_REFUSAL: &str = "keep_together는 아직 지원하지 않습니다: 문단 모양의 '다음 문단과 함께'·'문단 보호'·'문단 앞 쪽 나눔' 비트는 한글이 저장한 정품 파일에서 한 번도 관찰되지 않아 저장 형식을 추측할 수 없습니다(Hangul-saved sample required). 한글에서 해당 옵션을 켜 저장한 파일을 제공하면 근거를 맞추어 구현합니다. 새 쪽에서 시작하려면 set_break_before를 사용하세요";
 
 /// Address-driven page-break-before for ONE body paragraph: sets or clears the page bit (0x04)

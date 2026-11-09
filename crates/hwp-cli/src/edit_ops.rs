@@ -1117,7 +1117,7 @@ impl OpsEntry {
                 break_before_shape,
             } => {
                 // Refused at parse time so nothing is ever written: the paragraph-shape keep
-                // bits have no genuine Hangul-saved evidence (docs/design/07, rule K).
+                // bits have no genuine Hangul-saved evidence (docs/design/07, rule J2).
                 address.into_address()?;
                 let requested: Vec<&str> = [
                     ("keep_with_next", keep_with_next),
