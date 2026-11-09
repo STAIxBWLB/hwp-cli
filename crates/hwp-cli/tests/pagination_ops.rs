@@ -977,9 +977,14 @@ fn break_before_on_a_native_source_restarts_the_cache_at_the_page_top() {
         first_v_pos(next)
     );
     // Paragraphs before the break keep their genuine caches untouched.
-    for offset in 0..target {
+    for (offset, (kept, original)) in paragraphs
+        .iter()
+        .zip(&before.sections[0].paragraphs)
+        .take(target)
+        .enumerate()
+    {
         assert_eq!(
-            paragraphs[offset].line_segs, before.sections[0].paragraphs[offset].line_segs,
+            kept.line_segs, original.line_segs,
             "paragraph {offset} before the break keeps its cache"
         );
     }
