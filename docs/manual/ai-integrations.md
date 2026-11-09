@@ -181,6 +181,113 @@ Equivalent `hwp_edit` MCP arguments (the item is the op without its `op` tag):
 {"input":"doc.hwpx","output":"with-component.hwpx","base_dir":"/work/assets","insert_blocks":[{"address":{"at":{"section":0,"paragraph":2}},"position":"after","blocks":[{"type":"image","path":"logo.png","width_mm":20}]}]}
 ```
 
+### Review and apply native form bindings
+
+Discover exact occurrences on the source that will actually be edited:
+
+```bash
+hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
+```
+
+The version 1 catalogue contains `source_sha256`, the parsed-IR `structural_sha256` and
+source-bound occurrence IDs. It contains document text: keep it local for explicit review.
+Cell paragraphs are inventory targets; neighboring labels are evidence, not automatic value
+ownership. Select explicit, nonoverlapping bindable claims. Captions, raw-preserved/rich targets
+and native named fields remain visible but unsupported; native fields direct callers to
+`hwp fields`. Do not replace that refusal with a broad text replacement.
+`label_occurrences` counts exact same-kind label matches and `label_ambiguous` marks repeated
+labels. These expose ambiguity for review; they never select one occurrence automatically.
+
+Save the following request shape as `OPS.json`, replacing the example hashes and occurrence ID
+with the exact catalogue values, selecting the intended claim and reviewing its value/budget:
+
+```json
+[
+  {
+    "op": "apply_form_bindings",
+    "plan": {
+      "version": 1,
+      "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "structural_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "bindings": [
+        {
+          "key": "course.name",
+          "targets": [
+            {
+              "occurrence_id": "occ-2222222222222222222222222222222222222222222222222222222222222222",
+              "copies": [
+                0
+              ],
+              "max_chars": 100,
+              "allow_reflow": true
+            }
+          ]
+        }
+      ],
+      "repeats": [],
+      "constraints": []
+    },
+    "values": {
+      "course.name": "Reviewed course title"
+    },
+    "receipt": "./binding-receipt.json",
+    "preview": "./binding-preview.json"
+  }
+]
+```
+
+```bash
+hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
+hwp validate bound.hwpx
+```
+
+`apply_form_bindings` must be the only operation in its batch. The receipt is mandatory and
+publishes atomically with the document and optional local preview. Do not combine this operation
+with `--allow-partial` or `--report`; use its receipt instead. The preview contains exact values
+and addresses. Default receipts/logs contain identities, hashes, counts and occurrence IDs,
+not labels or values; read their outcome and retain the source/plan/output identities.
+Native/preview warning counts are included in the receipt; original messages appear only in
+the explicitly requested preview (`native_warnings`). Preview font substitution is not semantic
+loss, and render/font acceptance remains separate.
+
+As an alternative, add `--dry-run` to the edit invocation. It still writes and verifies a private
+native candidate, then publishes a receipt with `published: false` and the requested preview;
+it never publishes the native output. This is a review step, not a promise that apply is safe
+for changed source bytes.
+
+Both HWP and HWPX are supported only for same-format apply. To use another native format,
+convert first and discover that converted source afresh. Revised values may replay against the
+same original bytes and reviewed plan; do not feed earlier output to an old plan or repeat clones
+on earlier output. Changed source requires fresh discovery and review.
+
+Each target requires `max_chars` and an explicit `allow_reflow`; `copies` defaults to `[0]`
+(the original), and additional copies must be selected explicitly. `max_chars` is a Unicode
+scalar budget. Without reflow permission, replacement WCHAR length must not exceed the prior
+claim, and LF/TAB are refused. Reviewed permission allows bounded text growth, not font shrinking,
+grid/style changes or proof that the result fits a page. Render/font/Hancom evidence remains a
+separate #419 acceptance step; a semantic receipt does not supply it.
+
+For repetition, use a supported top-level table ID and an existing body paragraph ID whose text
+is a unique insertion anchor. `copies` includes the original, so four means three clones. Supply
+exactly that many unique caller-assigned `profile_ids`; select each target copy explicitly (0 is
+the original). Read the returned source-to-copy maps. If the form was extracted, retain the real
+#417 range report and its source-to-output map; do not infer shifted table indices or manually
+slice IR. Existing #358 snapshot rules for ordinary batches remain unchanged.
+
+Constraints are numeric `equal` or `sum` over explicit keys and caller-supplied totals. Numbers
+are unsigned ASCII digits, optionally correctly grouped comma thousands, within `i64::MAX`.
+`1,000` and `1000` compare equal; signs, units, decimals and whitespace refuse. Addition is
+checked, mismatches refuse, and there is no expression evaluator or implicit total calculation.
+
+Over MCP, `hwp_slots` with `path`, `forms: true`, `occurrences: true` returns the same catalogue.
+Call `hwp_edit` with `input`, `output` and one `apply_form_bindings` **object**, not an array.
+That object contains the same `plan`, `values`, `receipt` and optional `preview` shown above,
+without `op`. It uses schema validation, checked write paths and the same ops normalization and
+engine. There is no MCP `verify` flag; native verification is part of the operation.
+
+See [the binding design](../design/25-form-binding-plan.md) and the versioned `schemas/form-discovery-v1.schema.json` and
+`schemas/form-binding-plan-v1.schema.json` contracts for fields, bounds and evidence limits.
+
 ### The preservation ledger
 
 `convert`, `merge` and `split` record every item they could not preserve in the typed

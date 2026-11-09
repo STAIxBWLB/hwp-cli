@@ -18,6 +18,8 @@ use sha2::{Digest, Sha256};
 
 use crate::commands::cat::load_document;
 
+pub(crate) mod form_bindings;
+
 enum EditOperation {
     Replace(Vec<String>),
     SetCell(Vec<String>),
@@ -64,6 +66,9 @@ enum EditOperation {
 /// Separators =>, =, : and @ inside strings remain data. Keep CLI-only string parsers
 /// on EditOperation; use this type at JSON/MCP boundaries.
 pub(crate) enum TypedEditOperation {
+    ApplyFormBindings {
+        request: form_bindings::Request,
+    },
     CreateStyle {
         request: hwp_convert::styles::edit::CreateStyle,
     },
@@ -345,6 +350,9 @@ impl EditOperation {
 pub struct EditPlan {
     operations: Vec<EditOperation>,
     typed_operations: Vec<TypedEditOperation>,
+    /// File-backed reviewed operations must remain immutable during compound publication.
+    /// Stdin and MCP requests have no operations file to protect.
+    ops_input: Option<std::path::PathBuf>,
     verify: bool,
     allow_partial: bool,
     /// EDT-06 (D-14): when set, the write-dispatch step swaps `write_validated`/
@@ -466,6 +474,7 @@ pub struct EditReport {
 /// symmetry), so a consumer never has to learn a second vocabulary for the same op kinds.
 fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
     match operation {
+        TypedEditOperation::ApplyFormBindings { .. } => "apply_form_bindings",
         TypedEditOperation::CreateStyle { .. } => "create_style",
         TypedEditOperation::UpdateStyle { .. } => "update_style",
         TypedEditOperation::ApplyStyle { .. } => "apply_style",
@@ -739,6 +748,7 @@ impl EditPlan {
             Self {
                 operations,
                 typed_operations: Vec::new(),
+                ops_input: None,
                 verify,
                 allow_partial,
                 dry_run,
@@ -769,12 +779,14 @@ impl EditPlan {
         let ops = ops.expect("from_ops is only called when --ops is set");
         let typed_operations = crate::edit_ops::load_ops(&ops)?;
         let assets = AssetPlan::beside_ops(&ops);
+        let ops_input = (ops.as_os_str() != "-").then_some(ops);
         Ok((
             input,
             output,
             Self {
                 operations: Vec::new(),
                 typed_operations,
+                ops_input,
                 verify,
                 allow_partial,
                 dry_run,
@@ -799,6 +811,7 @@ impl EditPlan {
         Self {
             operations: Vec::new(),
             typed_operations: operations,
+            ops_input: None,
             verify,
             allow_partial,
             dry_run,
@@ -1010,6 +1023,24 @@ pub(crate) fn emit_edit_report(plan: &EditPlan, report: &EditReport) -> anyhow::
 }
 
 pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<EditReport> {
+    if plan
+        .typed_operations
+        .iter()
+        .any(|op| matches!(op, TypedEditOperation::ApplyFormBindings { .. }))
+    {
+        let [TypedEditOperation::ApplyFormBindings { request }] = plan.typed_operations.as_slice()
+        else {
+            anyhow::bail!(
+                "apply_form_bindings는 단독 compound 연산입니다. 다른 편집 요청을 별도 호출로 분리하고 새 원본 discovery를 만드세요"
+            );
+        };
+        if !plan.operations.is_empty() {
+            anyhow::bail!(
+                "apply_form_bindings와 개별 편집 플래그를 섞을 수 없습니다. --ops에 단독 연산만 지정하세요"
+            );
+        }
+        return form_bindings::execute(input, output, plan, request);
+    }
     let output_format = OutputFormat::from_path(output)?;
     if plan.verify && !output_format.supports_verify() {
         anyhow::bail!(
@@ -3003,7 +3034,8 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         | Op::SetPage { .. } => "no change",
         // These fail with an error rather than an unapplied request; listed so a new op kind
         // has to pick its cause here.
-        Op::InsertBlocks { .. }
+        Op::ApplyFormBindings { .. }
+        | Op::InsertBlocks { .. }
         | Op::CreateStyle { .. }
         | Op::ApplyStyle { .. }
         | Op::UpdateStyle { .. }
@@ -3239,6 +3271,11 @@ fn apply_typed_operation(
         .next()
         .expect("resolved_move_destinations is aligned 1:1 with typed_operations");
     match operation {
+        TypedEditOperation::ApplyFormBindings { .. } => {
+            anyhow::bail!(
+                "apply_form_bindings는 단독 실행 경로가 필요합니다. compound 연산을 다른 요청과 분리하세요"
+            );
+        }
         TypedEditOperation::CreateStyle { request } => {
             // hwp5/src/write.rs::emit_paragraph narrows StyleId to one byte.
             // Reject before mutation rather than allowing the writer's narrowing cast.
@@ -5124,6 +5161,23 @@ fn verify_output(output: &Path, expected: Option<&hwp_model::Document>) -> anyho
     verify_output_with_success_log(output, expected, true)
 }
 
+/// Typed phase marker for callers that must classify a mismatch without parsing diagnostics.
+/// Its display preserves the existing bounded, content-free mismatch summary.
+#[derive(Debug)]
+struct SemanticVerificationMismatch(String);
+
+impl std::fmt::Display for SemanticVerificationMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "재읽은 문서의 의미 불변식이 편집 결과와 다릅니다 ({})",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for SemanticVerificationMismatch {}
+
 fn verify_output_with_success_log(
     output: &Path,
     expected: Option<&hwp_model::Document>,
@@ -5140,10 +5194,10 @@ fn verify_output_with_success_log(
         let expected = semantic_signature_for(expected, target);
         let actual = semantic_signature_for(&doc, target);
         if actual != expected {
-            anyhow::bail!(
-                "재읽은 문서의 의미 불변식이 편집 결과와 다릅니다 ({})",
-                semantic_mismatch_summary(&expected, &actual)
-            );
+            return Err(SemanticVerificationMismatch(semantic_mismatch_summary(
+                &expected, &actual,
+            ))
+            .into());
         }
     }
     if print_success {

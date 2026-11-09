@@ -1,0 +1,540 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/form-binding-plan-v1.schema.json",
+  "title": "hwp-cli FormBindingPlan v1",
+  "description": "Source-bound reviewed form bindings. Keys are literal and are never normalized. Runtime additionally checks unique binding keys and unique (occurrence_id, copy) ownership, exact values-key membership, integer constraints and source/catalogue identity. Equal is numeric equality; constraints accept only unsigned ASCII integer strings, optionally with correctly grouped comma thousands, within i64::MAX. No expression evaluator. Profile copy counts include the original. This schema defines plan data, not native-open or layout evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "source_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "structural_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "bindings": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/binding"
+      }
+    },
+    "repeats": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/repeat"
+      },
+      "default": []
+    },
+    "constraints": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "$ref": "#/$defs/constraint"
+      },
+      "default": []
+    }
+  },
+  "required": [
+    "version",
+    "source_sha256",
+    "structural_sha256",
+    "bindings"
+  ],
+  "$defs": {
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "occurrence_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "copies": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15
+          },
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "default": [
+            0
+          ]
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20000
+        },
+        "allow_reflow": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "occurrence_id",
+        "max_chars",
+        "allow_reflow"
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/key"
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/target"
+          }
+        }
+      },
+      "required": [
+        "key",
+        "targets"
+      ]
+    },
+    "repeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "table_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "after_paragraph_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "copies": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "profile_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/key"
+          }
+        }
+      },
+      "required": [
+        "table_id",
+        "after_paragraph_id",
+        "copies",
+        "profile_ids"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 1
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 1,
+                "maxItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 2
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 3
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 3,
+                "maxItems": 3
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 4
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 4,
+                "maxItems": 4
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 5
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 5,
+                "maxItems": 5
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 6
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 6,
+                "maxItems": 6
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 7
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 7,
+                "maxItems": 7
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 8
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 8,
+                "maxItems": 8
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 9
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 9,
+                "maxItems": 9
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 10
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 10,
+                "maxItems": 10
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 11
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 11,
+                "maxItems": 11
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 12
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 12,
+                "maxItems": 12
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 13
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 13,
+                "maxItems": 13
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 14
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 14,
+                "maxItems": 14
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 15
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 15,
+                "maxItems": 15
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "copies": {
+                "const": 16
+              }
+            },
+            "required": [
+              "copies"
+            ]
+          },
+          "then": {
+            "properties": {
+              "profile_ids": {
+                "minItems": 16,
+                "maxItems": 16
+              }
+            }
+          }
+        }
+      ]
+    },
+    "constraint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "equal"
+            },
+            "left": {
+              "$ref": "#/$defs/key"
+            },
+            "right": {
+              "$ref": "#/$defs/key"
+            }
+          },
+          "required": [
+            "kind",
+            "left",
+            "right"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "sum"
+            },
+            "keys": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "$ref": "#/$defs/key"
+              }
+            },
+            "total": {
+              "$ref": "#/$defs/key"
+            }
+          },
+          "required": [
+            "kind",
+            "keys",
+            "total"
+          ]
+        }
+      ]
+    },
+    "values": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": {
+        "$ref": "#/$defs/key"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 20000,
+        "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F]*$"
+      },
+      "description": "Literal values. LF and TAB are allowed; other C0 controls, including CR, are forbidden. Runtime requires exactly the binding keys and validates numeric rules."
+    }
+  }
+}

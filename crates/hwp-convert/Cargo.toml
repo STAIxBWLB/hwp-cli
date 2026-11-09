@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 hwp-model = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 pulldown-cmark = { workspace = true }
 quick-xml = { workspace = true }
 regex = { workspace = true }

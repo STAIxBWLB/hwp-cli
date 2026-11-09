@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hwp-cli.staix.net/schemas/form-discovery-v1.schema.json",
+  "title": "hwp-cli FormDiscovery v1",
+  "description": "Source-bound local form occurrence inventory. label and old_text contain source content and require explicit local review handling; they are not public log/receipt fields. Native fields are inventory-only and direct callers to hwp fields. Runtime additionally verifies source identity, occurrence identity and start <= end.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "source_sha256",
+    "structural_sha256",
+    "occurrences"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "source_sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "structural_sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "occurrences": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": {
+        "$ref": "#/$defs/occurrence"
+      }
+    }
+  },
+  "$defs": {
+    "occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 68,
+          "maxLength": 68,
+          "pattern": "^occ-[0-9a-f]{64}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "cell_text",
+            "placeholder",
+            "inline_value",
+            "native_field"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "paragraph_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "section": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "indices": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "model_route": {
+          "type": "string",
+          "minLength": 1
+        },
+        "table_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "table_index": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "row": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "col": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "old_text": {
+          "type": "string"
+        },
+        "prior_sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bindable": {
+          "type": "boolean"
+        },
+        "cause": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "caption_target",
+                "raw_preserved_target",
+                "rich_target",
+                "native_field"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_step": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label_occurrences": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20000,
+          "description": "Exact same-kind, same-literal-label matches including unsupported occurrences. Empty labels have0. No legacy label normalization or automatic target choice."
+        },
+        "label_ambiguous": {
+          "type": "boolean",
+          "description": "True when the literal label names multiple occurrences; explicit IDs still select exact reviewed targets."
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "paragraph_id",
+        "section",
+        "indices",
+        "model_route",
+        "table_id",
+        "table_index",
+        "row",
+        "col",
+        "start",
+        "end",
+        "old_text",
+        "prior_sha256",
+        "bindable",
+        "cause",
+        "next_step",
+        "label_occurrences",
+        "label_ambiguous"
+      ],
+      "description": "Exact local-review inventory. start/end are half-open Paragraph.chars indices, not UTF-8 bytes, WCHAR offsets or Markdown ranges. Repeated labels and overlapping claims remain separate; bindable does not select a target or assert unique label ownership.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "bindable": {
+                "const": false
+              }
+            },
+            "required": [
+              "bindable"
+            ]
+          },
+          "then": {
+            "properties": {
+              "cause": {
+                "type": "string",
+                "enum": [
+                  "caption_target",
+                  "raw_preserved_target",
+                  "rich_target",
+                  "native_field"
+                ]
+              },
+              "next_step": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "cause": {
+                "type": "null"
+              },
+              "next_step": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "native_field"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "bindable": {
+                "const": false
+              },
+              "next_step": {
+                "const": "hwp fields"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

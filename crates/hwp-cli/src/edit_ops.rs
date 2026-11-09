@@ -64,7 +64,9 @@ fn read_bounded(reader: impl std::io::Read, cap: u64) -> anyhow::Result<String> 
 
 /// Read operation input, validate its schema, deserialize OpsEntry, then convert into Op.
 /// Refuse input, schema and semantic-constraint failures with Korean errors. Schema
-/// violations retain the instance path and jsonschema error wording.
+/// Malformed envelopes and binding-bearing failures omit payloads; other legacy violations
+/// retain jsonschema wording. Redaction is required because
+/// values, keys and unknown property names may contain private document content.
 pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     let raw = read_ops_source(path)?;
     let value: serde_json::Value = serde_json::from_str(&raw)
@@ -74,6 +76,36 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
 
 /// Validate every JSON channel against the same closed vocabulary before normalization.
 pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<TypedEditOperation>> {
+    let entries = value.as_array().ok_or_else(|| anyhow::anyhow!(
+        "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: 최상위 값은 배열이어야 합니다. 연산 객체를 [ ... ]로 감싸세요 (입력 내용 생략)"))?;
+    if entries.iter().any(|entry| !entry.is_object()) {
+        anyhow::bail!(
+            "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: 모든 배열 항목은 객체여야 합니다. 중첩 배열/문자열 포장을 제거하고 op 속성을 가진 객체를 지정하세요 (입력 내용 생략)"
+        );
+    }
+    fn contains_binding(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(object) => {
+                object.contains_key("plan")
+                    || object.contains_key("values")
+                    || object.get("op").and_then(serde_json::Value::as_str)
+                        == Some("apply_form_bindings")
+                    || object.values().any(contains_binding)
+            }
+            serde_json::Value::Array(items) => items.iter().any(contains_binding),
+            serde_json::Value::String(text) => text.contains("apply_form_bindings"),
+            _ => false,
+        }
+    }
+    let binding_input = contains_binding(&value);
+    if entries.iter().any(|entry| {
+        entry.get("op").and_then(serde_json::Value::as_str) == Some("apply_form_bindings")
+    }) && entries.len() != 1
+    {
+        anyhow::bail!(
+            "apply_form_bindings는 단독 compound 연산이어야 합니다. 다른 연산을 별도 요청으로 분리하세요 (입력 내용 생략)"
+        );
+    }
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../schemas/edit-ops-v1.schema.json"))
             .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 해석할 수 없습니다: {error}"))?;
@@ -91,13 +123,20 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
         .build(&schema)
         .map_err(|error| anyhow::anyhow!("edit-ops-v1 스키마를 컴파일할 수 없습니다: {error}"))?;
     if let Some(error) = validator.iter_errors(&value).next() {
+        if binding_input {
+            anyhow::bail!(
+                "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: 닫힌 연산 계약과 다릅니다. 필수 속성과 자료형을 스키마와 비교해 수정하세요 (입력 내용 생략)"
+            );
+        }
         anyhow::bail!(
             "편집 연산이 edit-ops-v1 스키마를 벗어났습니다: {}: {error}",
             error.instance_path
         );
     }
-    let entries: Vec<OpsEntry> = serde_json::from_value(value)
-        .map_err(|error| anyhow::anyhow!("편집 연산을 해석할 수 없습니다: {error}"))?;
+    let entries: Vec<OpsEntry> = serde_json::from_value(value).map_err(|error| {
+        if binding_input { anyhow::anyhow!("양식 바인딩 JSON을 해석할 수 없습니다. 닫힌 스키마의 필수 속성과 자료형을 확인하세요 (입력 내용 생략)") }
+        else { anyhow::anyhow!("편집 연산을 해석할 수 없습니다: {error}") }
+    })?;
     if entries.len() > MAX_OPS_ITEMS {
         anyhow::bail!("편집 연산이 항목 상한({MAX_OPS_ITEMS}개)을 초과했습니다");
     }
@@ -108,7 +147,7 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-/// Tag one named-style payload. The transport chooses its operation, not a nested `op`.
+/// Tag one typed MCP payload. The transport chooses its operation, not a nested `op`.
 pub(crate) fn named_style_item(
     mut value: serde_json::Value,
     operation: &str,
@@ -125,8 +164,8 @@ pub(crate) fn named_style_item(
     Ok(value)
 }
 
-/// Publish the same style-item vocabulary over MCP without exposing external schema refs.
-/// Only the three embedded named-style schemas are selected; every local reference is inlined.
+/// Publish an embedded edit-op vocabulary without external schema refs. Named-style callers
+/// use the array wrapper; the compound binding caller takes its inlined item schema.
 pub(crate) fn named_style_schema(operation: &str) -> serde_json::Value {
     use serde_json::Value;
     fn expand(value: &Value, root: &Value, depth: usize) -> Value {
@@ -470,6 +509,10 @@ pub(crate) struct MoveToSpec {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum OpsEntry {
+    ApplyFormBindings {
+        #[serde(flatten)]
+        request: crate::commands::edit::form_bindings::Request,
+    },
     Replace {
         /// Always required — unlike `pattern` on `set_para`/`set_align`, `from` is never purely
         /// a selector, it is always the matched substring (Task 3's WCHAR-drift fixture depends
@@ -718,6 +761,10 @@ impl OpsEntry {
     /// Error wording matches the MCP tool_edit boundary.
     pub(crate) fn into_typed(self) -> Result<TypedEditOperation, String> {
         match self {
+            OpsEntry::ApplyFormBindings { request } => {
+                request.plan.validate_values(&request.values)?;
+                Ok(TypedEditOperation::ApplyFormBindings { request })
+            }
             OpsEntry::Replace { from, address, to } => {
                 let address = address.map(AddressSpec::into_address).transpose()?;
                 Ok(TypedEditOperation::Replace { from, to, address })

@@ -831,6 +831,7 @@ dependencies = [
  "quick-xml",
  "regex",
  "resvg",
+ "serde",
  "serde_json",
  "sha2",
  "windows-sys",

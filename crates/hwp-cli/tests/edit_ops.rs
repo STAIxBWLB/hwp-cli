@@ -2471,7 +2471,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "7b0d3acb1032b4c2f2d46e024ef35d7d72e98c4027656a85059a83b75644c761",
+        actual, "bbf10d7429d097c5d982422582ffb8fca2f2b7d427f2f46acd328f722fc42d0e",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -2494,7 +2494,7 @@ fn edit_report_schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "7b70a76e0efbc6704ee0cc3a7b27ef8d5bfda2a19ea51b3d4432ee4313b4b892",
+        actual, "2b1fe63066c880782be3dd2abcee17d4350f8424fd472505ad7a7d27fbf179de",
         "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

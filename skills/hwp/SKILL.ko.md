@@ -351,6 +351,25 @@ hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.js
   `[{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]`. id는 해당 연산
   직후 문서를 기준으로 한다.
 
+### 네이티브 양식 바인딩 검토와 적용
+
+제공된 양식을 바인딩하기 전에 [정본 바인딩 절차](https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/ai-integrations.ko.md#네이티브-양식-바인딩-검토와-적용)에서 닫힌 계획 스키마, 복제 주소 맵, 거부 범위를 읽는다.
+
+```bash
+hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
+hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify --dry-run
+hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
+hwp validate bound.hwpx
+```
+
+- 해당 원본 목록으로 `OPS.json`에 단독 `apply_form_bindings` 요청을 만들고 검토한다. 겹치지 않는 occurrence ID와 대상별 허용 범위를 명시하며 반복 라벨로 값의 소유권을 추측하지 않는다.
+- 목록과 선택적 정확한 preview는 로컬에 둔다. 필수 content-free receipt를 사용하고 `--report`나 `--allow-partial`과 함께 쓰지 않는다.
+- 실제 적용 전에 dry-run preview와 복제 맵을 확인한다. 수정 값은 같은 원본 바이트에 재적용하며 원본 수정이나 형식 변환 뒤에는 discovery와 검토를 다시 한다.
+- 목록에 나온 native field는 `hwp fields`로 다룬다. raw/rich/caption 거부를 광범위 텍스트 치환으로 우회하지 않는다.
+- MCP에서는 같은 절차와 advertised schema에 따라 `forms`/`occurrences`가 true인 `hwp_slots`와 단일 `apply_form_bindings` 객체를 담은 `hwp_edit`를 쓴다. `verify` 속성을 보내지 않는다.
+- 렌더·폰트와 사람이 수행한 한컴 증거는 #419에서 별도로 수집한다. 의미 영수증만으로 해당 결과를 주장하지 않는다.
+
+
 ## MCP 서버
 
 `hwp mcp`는 stdio 위에서 동기 JSON-RPC 2.0을 사용합니다 (줄 구분; stdout이 프로토콜을
