@@ -119,7 +119,7 @@ pub(super) fn execute(
             Ok((preview, report.preservation))
         },
     )?;
-    let count = preview.changes.len();
+    let count = preview.changes.len() + cloned_profiles(&preview);
     Ok(EditReport {
         output: output.display().to_string(),
         applied: count,
@@ -153,13 +153,79 @@ fn write_bound_output(
     format: OutputFormat,
     source: Option<(&Path, &hwp_model::Document)>,
 ) -> anyhow::Result<hwp_model::WriteReport> {
-    write_output(doc, output, structural, format, source).map_err(|_| anyhow::anyhow!(
-        "바인딩 결과를 기존 native writer로 만들 수 없습니다. 지원하지 않는 개체/보존 항목을 validate로 확인하고 다른 대상을 선택하세요"))
+    write_output(doc, output, structural, format, source)
+        .map_err(|error| native_failure(NativePhase::Write, &error))
 }
 
 fn verify_bound_output(output: &Path, expected: &hwp_model::Document) -> anyhow::Result<()> {
-    super::verify_output(output, Some(expected)).map_err(|_| anyhow::anyhow!(
-        "바인딩 결과의 native 재읽기/의미 검증이 실패했습니다. 출력을 게시하지 않았습니다. 원본 validate 결과와 지원 대상/서식 보존 범위를 확인하세요"))
+    super::verify_output(output, Some(expected))
+        .map_err(|error| native_failure(NativePhase::Verify, &error))
+}
+
+enum NativePhase {
+    Write,
+    Verify,
+}
+
+/// Inspect types only. Never retain the original chain: the CLI formats every source, and
+/// native errors may contain cell text, XML attributes or private paths.
+fn native_failure(phase: NativePhase, error: &anyhow::Error) -> anyhow::Error {
+    let io = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>());
+    let (cause, next_step) = match phase {
+        NativePhase::Verify
+            if error
+                .downcast_ref::<super::SemanticVerificationMismatch>()
+                .is_some() =>
+        {
+            (
+                "verify_semantic_mismatch",
+                "원본을 validate로 확인하고 지원 대상/서식 보존 범위를 줄인 뒤 다시 실행하세요",
+            )
+        }
+        NativePhase::Verify if io.is_some() => (
+            "verify_readback_io",
+            "후보 파일의 읽기 권한·출력 경로·디스크 상태를 확인한 뒤 다시 실행하세요",
+        ),
+        NativePhase::Verify => (
+            "verify_readback_package",
+            "원본을 validate로 검사하고 손상된 native 패키지를 복구하거나 지원 대상을 선택하세요",
+        ),
+        NativePhase::Write => match io.map(std::io::Error::kind) {
+            Some(std::io::ErrorKind::PermissionDenied) => (
+                "native_write_io_permission",
+                "출력 경로의 디렉터리 쓰기 권한을 확인하거나 쓰기 가능한 경로를 지정하세요",
+            ),
+            Some(std::io::ErrorKind::StorageFull) => (
+                "native_write_io_space",
+                "출력 디스크의 여유 공간을 확보하거나 다른 출력 경로를 지정하세요",
+            ),
+            Some(
+                std::io::ErrorKind::IsADirectory
+                | std::io::ErrorKind::NotADirectory
+                | std::io::ErrorKind::NotFound,
+            ) => (
+                "native_write_io_path",
+                "출력 경로가 파일이며 상위 디렉터리가 존재하는지 확인한 뒤 다시 실행하세요",
+            ),
+            Some(_) => (
+                "native_write_io",
+                "출력 경로·디렉터리 쓰기 권한·디스크 여유 공간을 확인한 뒤 다시 실행하세요",
+            ),
+            None => (
+                "native_write_package",
+                "원본을 validate로 검사하고 지원하지 않는 개체/보존 항목을 복구하거나 다른 대상을 선택하세요",
+            ),
+        },
+    };
+    anyhow::anyhow!(
+        "바인딩 native 처리 실패 ({cause}). 출력을 게시하지 않았습니다. {next_step} (원문 생략)"
+    )
+}
+
+fn cloned_profiles(preview: &BindingPreview) -> usize {
+    preview.copies.iter().filter(|copy| copy.copy != 0).count()
 }
 
 fn receipt(preview: &BindingPreview, bytes: &[u8], published: bool) -> Receipt {
@@ -176,7 +242,7 @@ fn receipt(preview: &BindingPreview, bytes: &[u8], published: bool) -> Receipt {
             .map(|change| change.occurrence_id.clone())
             .collect(),
         targets: preview.changes.len(),
-        cloned_profiles: preview.copies.iter().filter(|copy| copy.copy != 0).count(),
+        cloned_profiles: cloned_profiles(preview),
         native_warning_count: preview.native_warnings.len(),
         semantic_budget: "selected_text_and_declared_clones_only",
         render_font_native: "unverified",
@@ -241,5 +307,54 @@ mod tests {
             "semantic failure needs a repair step: {message}"
         );
         assert!(!message.contains("PRIVATE_VALUE"));
+    }
+
+    #[test]
+    fn binding_native_verify_readback_failures_are_distinct_and_private() {
+        let workspace = Workspace::new("readback");
+        let output = workspace.0.join("PRIVATE_VALUE.hwpx");
+        let expected = hwp_convert::from_markdown("PRIVATE_VALUE");
+        let missing = verify_bound_output(&output, &expected).unwrap_err();
+        assert!(missing.to_string().contains("verify_readback_io"));
+        assert!(!format!("{missing:#}").contains("PRIVATE_VALUE"));
+        std::fs::write(&output, b"PRIVATE_VALUE invalid package").unwrap();
+        let corrupt = verify_bound_output(&output, &expected).unwrap_err();
+        assert!(corrupt.to_string().contains("verify_readback_package"));
+        assert!(!format!("{corrupt:#}").contains("PRIVATE_VALUE"));
+    }
+
+    #[test]
+    fn binding_native_error_classification_discards_private_chains() {
+        for (error, expected) in [
+            (
+                anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "PRIVATE_VALUE",
+                )),
+                "native_write_io_permission",
+            ),
+            (
+                anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::StorageFull,
+                    "PRIVATE_VALUE",
+                )),
+                "native_write_io_space",
+            ),
+            (
+                anyhow::Error::new(hwpx::HwpxError::PackageIntegrity("PRIVATE_VALUE".into())),
+                "native_write_package",
+            ),
+        ] {
+            let error = native_failure(NativePhase::Write, &error.context("PRIVATE_CONTEXT"));
+            assert!(error.to_string().contains(expected));
+            assert_eq!(
+                error.chain().count(),
+                1,
+                "redacted errors must not retain private sources"
+            );
+            let rendered = format!("{error:#}");
+            assert!(!rendered.contains("PRIVATE_VALUE"));
+            assert!(!rendered.contains("PRIVATE_CONTEXT"));
+        }
     }
 }

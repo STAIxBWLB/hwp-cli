@@ -36,6 +36,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   identity; stale, overlapping, unsupported or over-budget targets refuse before publication.
   Native output, a content-free receipt and an optional local preview publish atomically.
   Output paths cannot alias the native source or a file-backed `--ops` request.
+  Applied piece counts include clones as well as text changes; native write/verify refusals
+  retain content-free cause classes and matching repair steps.
   Same-format HWP/HWPX workflows preserve untouched form structure and formatting; dry-run
   verifies a staged native candidate. Captions, raw/rich targets and native named fields
   are inventoried but not bindable. Render, font and Hancom proof remain separate

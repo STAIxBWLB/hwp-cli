@@ -124,6 +124,12 @@ and clone maps. Public logs and default receipts contain hashes, occurrence/oper
 counts and bounded cause/next-action codes. Do not leak discovery text, semantic values or legacy
 warnings containing original cell contents. Receipt identity binds source, reviewed plan, values,
 output and actual outcome; it does not attest layout or native compatibility.
+The engine's applied summary and `pieces_touched` count selected text replacements plus newly
+cloned profile tables, excluding each original table. Receipt `targets` counts only text
+replacements and `cloned_profiles` counts only new clones. The edit report's `changed` stays empty.
+Native failures expose only a fixed cause class and matching next step: write I/O (permission,
+space or path), package writing, verify read-back I/O/package, or semantic mismatch. Original
+error chains are discarded, so private text, XML and paths never enter the public refusal.
 The receipt records `native_warning_count`; original writer/preview-render messages appear
 only in the explicit local preview's `native_warnings`. Font substitution during preview is
 not semantic loss and does not supply the separate #419 render/font acceptance.

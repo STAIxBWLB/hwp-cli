@@ -5161,6 +5161,23 @@ fn verify_output(output: &Path, expected: Option<&hwp_model::Document>) -> anyho
     verify_output_with_success_log(output, expected, true)
 }
 
+/// Typed phase marker for callers that must classify a mismatch without parsing diagnostics.
+/// Its display preserves the existing bounded, content-free mismatch summary.
+#[derive(Debug)]
+struct SemanticVerificationMismatch(String);
+
+impl std::fmt::Display for SemanticVerificationMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "재읽은 문서의 의미 불변식이 편집 결과와 다릅니다 ({})",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for SemanticVerificationMismatch {}
+
 fn verify_output_with_success_log(
     output: &Path,
     expected: Option<&hwp_model::Document>,
@@ -5177,10 +5194,10 @@ fn verify_output_with_success_log(
         let expected = semantic_signature_for(expected, target);
         let actual = semantic_signature_for(&doc, target);
         if actual != expected {
-            anyhow::bail!(
-                "재읽은 문서의 의미 불변식이 편집 결과와 다릅니다 ({})",
-                semantic_mismatch_summary(&expected, &actual)
-            );
+            return Err(SemanticVerificationMismatch(semantic_mismatch_summary(
+                &expected, &actual,
+            ))
+            .into());
         }
     }
     if print_success {
