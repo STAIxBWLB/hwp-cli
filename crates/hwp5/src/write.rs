@@ -663,6 +663,7 @@ fn materialize_document(
                 if d.meta.source_format != "hwp5" && !opts.para_shape_defaults_prepared {
                     ensure_para_shape_defaults(&mut d.header);
                 }
+                encode_numbered_levels_zero_based(&mut d);
                 materialize_evidenced_official_numbering(&mut d)?;
             }
             for section in &mut d.sections {
@@ -1343,6 +1344,79 @@ fn collect_evidenced_official_numbering_counts(doc: &Document) -> Result<[usize;
     Ok(counters)
 }
 
+/// Re-encodes a numbered paragraph shape whose semantic level no longer matches its stored
+/// attr1 bits 25..=27 (07-hangul-compat-rules K1, #472). The HWP5 reader sets `list_level`
+/// from the zero-based bits, so a shape read and left alone already agrees and nothing is
+/// touched (the identity gate stays byte-identical, including the tails the probe could not
+/// explain). A shape with no `list_level` was not read from HWP5 (a merge or fill grafts
+/// markdown/HWPX shapes into an HWP5 target): its bits hold the IR's one-based level. An edit
+/// such as `ParaShape::set_head_level` writes a one-based level into the bits together with
+/// `list_level`. Both are put back to level-1 (at most 6) in the bits and the same level (at
+/// most 7, the deepest measured form) in the tail's final u32, materializing the 16-byte tail
+/// `emit_para_shape` would otherwise synthesize with a zero level.
+pub fn normalize_numbered_level_encoding(para_shape: &mut ParaShape) {
+    if para_shape.head_type() != 2 {
+        return;
+    }
+    let level = para_shape.head_level();
+    let zero_based = u32::from(level.saturating_sub(1));
+    if para_shape.list_level.is_some() && (para_shape.attr1 >> 25) & 0x7 == zero_based.min(6) {
+        return;
+    }
+    para_shape.list_level = Some(level);
+    para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (zero_based.min(6) << 25);
+    if para_shape.tail.is_empty() {
+        if para_shape.line_spacing <= 0 {
+            para_shape.line_spacing = 160;
+        }
+        para_shape.tail = vec![0; 16];
+    }
+    if para_shape.tail.len() >= 16 {
+        para_shape.tail[12..16].copy_from_slice(&zero_based.min(7).to_le_bytes());
+    }
+}
+
+/// Encodes numbered-paragraph levels the way genuine Hangul-saved HWP5 files store them, for a
+/// document that did not come from HWP5 (07-hangul-compat-rules K1, #472). Such an IR holds
+/// the one-based semantic level in attr1 bits 25..=27 (the HWPX reader adds one), while
+/// Hancom reads those bits zero-based and draws NUMBERING slot bits+1, so level 0 drew the
+/// second slot. The bits become `level - 1` (at most 6, the three-bit ceiling) and the final
+/// u32 of the 16-byte PARA_SHAPE tail repeats the level. The deepest measured form is bits 6
+/// with tail 7 (the eighth level) and no deeper value is measured, so the tail is bounded to
+/// 7: HWPX's levels 9 and 10 have no measured HWP5 encoding and land on the deepest one.
+///
+/// Skipped for HWP5 sources, whose bits are already on-disk values, and for the official
+/// eight-level contract, which [`materialize_evidenced_official_numbering`] encodes itself.
+/// Only head type 2 (numbered) is touched: bullets were not measured. Public so the
+/// semantic verifier can project an expected document the same way.
+pub fn encode_numbered_levels_zero_based(doc: &mut Document) {
+    if doc.meta.source_format == "hwp5"
+        || (doc.header.numberings.is_empty()
+            && crate::numbering::is_official_eight_level_contract(&doc.header.numbering_levels))
+    {
+        return;
+    }
+    for para_shape in &mut doc.header.para_shapes {
+        if para_shape.head_type() != 2 {
+            continue;
+        }
+        let zero_based = u32::from(para_shape.head_level().saturating_sub(1));
+        para_shape.list_level = Some(para_shape.head_level());
+        para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (zero_based.min(6) << 25);
+        if para_shape.tail.is_empty() {
+            // Same 16-byte layout emit_para_shape synthesizes for an empty tail: attr2, attr3,
+            // line spacing (the emitter rewrites tail[8..12] from `line_spacing`), list level.
+            if para_shape.line_spacing <= 0 {
+                para_shape.line_spacing = 160;
+            }
+            para_shape.tail = vec![0; 16];
+        }
+        if para_shape.tail.len() >= 16 {
+            para_shape.tail[12..16].copy_from_slice(&zero_based.min(7).to_le_bytes());
+        }
+    }
+}
+
 /// Materializes only the complete direct NUMBERING contract observed in the
 /// private Hancom-saved source. A source-free document that merely contains a
 /// circled-Hangul level remains on the established default serializer unless
@@ -1370,6 +1444,9 @@ fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
         let semantic_level = para_shape.head_level();
         let raw_level = u32::from(semantic_level.saturating_sub(1).min(6));
         para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (raw_level << 25);
+        // The bits are now on-disk values: record the semantic level so the emit-time
+        // normalization (#472) reads them as encoded instead of re-encoding them.
+        para_shape.list_level = Some(semantic_level);
         para_shape.border_fill_id = 1;
         // The native HWP5 contract repeats the list level in the final u32 of
         // PARA_SHAPE.  The attr1 bits are enough for our semantic reader, but
@@ -3108,6 +3185,12 @@ fn emit_char_shape(cs: &CharShape) -> RecordNode {
 }
 
 fn emit_para_shape(ps: &ParaShape) -> RecordNode {
+    // A level edited after reading (set_head_level) is put back into the zero-based
+    // on-disk form here, the one place every write path passes; untouched shapes are
+    // already consistent and pass through unchanged (#472, K1).
+    let mut normalized = ps.clone();
+    normalize_numbered_level_encoding(&mut normalized);
+    let ps = &normalized;
     let mut w = ByteWriter::new();
     // 줄간격 종류는 attr1 bits 0~1이다(parse_para_shape와 같은 규약). IR에서 바뀐
     // 종류를 되접어 넣지 않으면 한글 2010+ 가 예전 종류로 읽는다. clear-then-set이라

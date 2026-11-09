@@ -719,3 +719,290 @@ fn document_spec_v2_rejects_deprecated_global_fallback_policy() {
 
     let _ = std::fs::remove_file(spec);
 }
+
+/// Reads the raw paragraph-head level of every numbered paragraph whose text starts with
+/// `prefix`, straight from the written HWP5 file: attr1 bits 25..=27 and the PARA_SHAPE
+/// tail's final u32 (07-hangul-compat-rules K1, #472). The raw values are what Hancom uses
+/// to pick the NUMBERING slot, so `head_level()` (which `list_level` can override) is not used.
+fn hwp_numbered_raw_levels(path: &Path) -> Vec<(String, u32, Option<u32>, String)> {
+    let doc = hwp5::read::read_document(path).unwrap().document;
+    let mut out = Vec::new();
+    for paragraph in &doc.sections[0].paragraphs {
+        let shape = &doc.header.para_shapes[paragraph.para_shape.0 as usize];
+        if shape.head_type() != 2 {
+            continue;
+        }
+        let text: String = paragraph
+            .chars
+            .iter()
+            .filter_map(|c| match c {
+                hwp_model::HwpChar::Text(ch) => Some(*ch),
+                _ => None,
+            })
+            .collect();
+        let raw = (shape.attr1 >> 25) & 0x7;
+        let tail = (shape.tail.len() >= 16)
+            .then(|| u32::from_le_bytes(shape.tail[12..16].try_into().unwrap()));
+        let template = doc.header.numbering_levels[usize::from(shape.numbering_id)][raw as usize]
+            .template
+            .clone();
+        out.push((text, raw, tail, template));
+    }
+    out
+}
+
+const ORDERED_472_SPEC: &str = r#"{"version":"1.0","styles":{"body":{"font_size_pt":10}},
+"lists":{"o":{"kind":"ordered","levels":[{"marker":"{n}.","start":1},{"marker":"{n}.","start":1},{"marker":"{n})","start":1}]}},
+"sections":[{"blocks":[
+{"type":"paragraph","style":"body","list":{"name":"o","level":0},"runs":[{"type":"text","text":"top"}]},
+{"type":"paragraph","style":"body","list":{"name":"o","level":2},"runs":[{"type":"text","text":"deep"}]}]}]}"#;
+
+fn assert_472_levels(path: &Path, label: &str) {
+    let levels = hwp_numbered_raw_levels(path);
+    let find = |text: &str| {
+        levels
+            .iter()
+            .find(|(t, ..)| t == text)
+            .unwrap_or_else(|| panic!("{label}: numbered paragraph {text} missing: {levels:?}"))
+            .clone()
+    };
+    for (text, level, template) in [("top", 0, "^1."), ("deep", 2, "^3)")] {
+        let (_, raw, tail, drawn) = find(text);
+        assert_eq!(
+            raw, level,
+            "{label}: {text} attr1 level bits must be zero-based"
+        );
+        assert_eq!(
+            tail,
+            Some(level),
+            "{label}: {text} tail level must repeat the bits"
+        );
+        assert_eq!(
+            drawn, template,
+            "{label}: {text} draws its own level's slot"
+        );
+    }
+}
+
+/// #472: `compose` to `.hwp` must store an ordered list's levels zero-based. Before the fix
+/// the run refused at semantic verification, or level 0 drew the second slot ("가.").
+#[test]
+fn compose_ordered_list_to_hwp_stores_zero_based_levels() {
+    let spec = temp("ordered-472.json");
+    std::fs::write(&spec, ORDERED_472_SPEC).unwrap();
+    let output = temp("ordered-472.hwp");
+    let _ = std::fs::remove_file(&output);
+    let run = hwp()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "compose ordered list to HWP: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_472_levels(&output, "compose .hwp");
+}
+
+/// #472: `hwp convert` HWPX → HWP is the same writer path; the levels must come out
+/// zero-based too.
+#[test]
+fn convert_hwpx_ordered_list_to_hwp_stores_zero_based_levels() {
+    let spec = temp("ordered-472-convert.json");
+    std::fs::write(&spec, ORDERED_472_SPEC).unwrap();
+    let hwpx = temp("ordered-472.hwpx");
+    let hwp_out = temp("ordered-472-converted.hwp");
+    let _ = std::fs::remove_file(&hwp_out);
+    let run = hwp()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&hwpx)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let run = hwp()
+        .arg("convert")
+        .arg(&hwpx)
+        .arg("-o")
+        .arg(&hwp_out)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_472_levels(&hwp_out, "convert hwpx->hwp");
+}
+
+/// Semantic level and drawn marker of each numbered paragraph, after rereading with hwp-cli's
+/// own reader. A one-shallow reread (the reader taking zero-based bits as one-based) would
+/// show level 1 for "deep" and draw the previous level's template.
+fn reread_levels_and_markers(path: &Path) -> Vec<(String, u8, String)> {
+    let doc = hwp5::read::read_document(path).unwrap().document;
+    let mut state = hwp_model::list::ListState::default();
+    let mut out = Vec::new();
+    for paragraph in &doc.sections[0].paragraphs {
+        let shape = &doc.header.para_shapes[paragraph.para_shape.0 as usize];
+        let marker = state.marker(&doc, paragraph);
+        if shape.head_type() != 2 {
+            continue;
+        }
+        let text: String = paragraph
+            .chars
+            .iter()
+            .filter_map(|c| match c {
+                hwp_model::HwpChar::Text(ch) => Some(*ch),
+                _ => None,
+            })
+            .collect();
+        out.push((text, shape.head_level(), marker.unwrap_or_default()));
+    }
+    out
+}
+
+fn assert_round_trip_levels(path: &Path, label: &str) {
+    let rows = reread_levels_and_markers(path);
+    let expected = [
+        ("top".to_string(), 1u8, "1.".to_string()),
+        ("deep".to_string(), 3u8, "1)".to_string()),
+    ];
+    for (text, level, marker) in expected {
+        let row = rows
+            .iter()
+            .find(|(t, ..)| *t == text)
+            .unwrap_or_else(|| panic!("{label}: {text} missing: {rows:?}"));
+        assert_eq!(row.1, level, "{label}: {text} rereads at its own level");
+        assert_eq!(
+            row.2, marker,
+            "{label}: {text} draws its own level's marker"
+        );
+    }
+}
+
+/// #472 T28-F2: what the HWP writer stores zero-based, hwp-cli's own reader must read back at
+/// the same semantic level, for both `compose` and HWPX→HWP `convert`.
+#[test]
+fn ordered_list_hwp_round_trip_keeps_level_and_marker() {
+    let spec = temp("ordered-472-rt.json");
+    std::fs::write(&spec, ORDERED_472_SPEC).unwrap();
+    let hwp_direct = temp("ordered-472-rt.hwp");
+    let hwpx = temp("ordered-472-rt.hwpx");
+    let hwp_converted = temp("ordered-472-rt-converted.hwp");
+    for path in [&hwp_direct, &hwp_converted] {
+        let _ = std::fs::remove_file(path);
+    }
+    for out in [&hwp_direct, &hwpx] {
+        let run = hwp()
+            .arg("compose")
+            .arg(&spec)
+            .arg("-o")
+            .arg(out)
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+    let run = hwp()
+        .arg("convert")
+        .arg(&hwpx)
+        .arg("-o")
+        .arg(&hwp_converted)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_round_trip_levels(&hwp_direct, "compose .hwp");
+    assert_round_trip_levels(&hwp_converted, "convert hwpx->hwp");
+}
+
+/// #472 T28-F2 audit: `indent_para` on an HWP-read numbered paragraph goes through
+/// `ParaShape::set_head_level`, which writes a one-based level into attr1. The written HWP
+/// must still store it zero-based and reread at the new semantic level.
+#[test]
+fn indent_para_on_hwp_numbered_item_keeps_zero_based_levels() {
+    let spec = temp("ordered-472-indent.json");
+    std::fs::write(&spec, ORDERED_472_SPEC).unwrap();
+    let source = temp("ordered-472-indent-src.hwp");
+    let output = temp("ordered-472-indent-out.hwp");
+    let ops = temp("ordered-472-indent-ops.json");
+    let _ = std::fs::remove_file(&source);
+    let _ = std::fs::remove_file(&output);
+    let run = hwp()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    // The "top" item is paragraph 0 of section 0 (the spec has no other body paragraph before it).
+    let doc = hwp5::read::read_document(&source).unwrap().document;
+    let top = doc.sections[0]
+        .paragraphs
+        .iter()
+        .position(|p| {
+            p.chars
+                .iter()
+                .filter_map(|c| match c {
+                    hwp_model::HwpChar::Text(ch) => Some(*ch),
+                    _ => None,
+                })
+                .collect::<String>()
+                == "top"
+        })
+        .unwrap();
+    std::fs::write(
+        &ops,
+        serde_json::to_vec(&serde_json::json!([
+            {"op":"indent_para","address":{"at":{"section":0,"paragraph":top}}}
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let levels = hwp_numbered_raw_levels(&output);
+    let (_, raw, tail, _) = levels.iter().find(|(t, ..)| t == "top").unwrap().clone();
+    assert_eq!(
+        raw, 1,
+        "indented level 1 item stores bits zero-based: {levels:?}"
+    );
+    assert_eq!(tail, Some(1), "tail repeats the new level: {levels:?}");
+    let reread = reread_levels_and_markers(&output);
+    let row = reread.iter().find(|(t, ..)| t == "top").unwrap();
+    assert_eq!(
+        row.1, 2,
+        "indented item rereads at semantic level 2: {reread:?}"
+    );
+}

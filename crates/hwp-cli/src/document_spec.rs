@@ -2217,7 +2217,26 @@ impl<'a> BlockCompiler<'a> {
             ListKind::Bullet => 3_u32,
         };
         shape.attr1 |= head_type << 23;
-        shape.attr1 |= (u32::from(list_ref.level) + 1) << 25;
+        // The IR's attr1 level bits follow the source format. HWPX- and spec-built documents
+        // hold the one-based semantic level there (the HWPX reader adds one). An HWP5-read
+        // document holds the on-disk bits unchanged, and genuine Hangul-saved HWP5 files store
+        // them zero-based: level n sits at bits n, matching the zero-based level in the
+        // PARA_SHAPE tail and the NUMBERING slot n+1 (07-hangul-compat-rules, #472). Writing
+        // n+1 there made a level-0 item draw slot 2, Hangul syllables. `list_level` keeps
+        // the semantic level readable in the IR; the HWP5 writer emits attr1 as it is.
+        // Bullets keep the prior encoding: the probe measured numbered (head type 2) only.
+        if self.document.meta.source_format == "hwp5" && list.kind == ListKind::Ordered {
+            shape.attr1 |= u32::from(list_ref.level.min(6)) << 25;
+            // Genuine files repeat the zero-based level in the tail's final u32; the deepest
+            // measured form is bits 6 with tail 7 (the eighth level, 07 K1). No deeper value
+            // is measured, so the tail is bounded to 7.
+            if shape.tail.len() >= 16 {
+                shape.tail[12..16].copy_from_slice(&u32::from(list_ref.level.min(7)).to_le_bytes());
+            }
+            shape.list_level = Some(list_ref.level + 1);
+        } else {
+            shape.attr1 |= (u32::from(list_ref.level) + 1) << 25;
+        }
         shape.numbering_id = definition_id;
         let id = find_or_push_para_shape(&mut self.document.header, shape)?;
         self.list_para_shapes.insert(key, id);

@@ -4725,6 +4725,17 @@ fn canonical_document(
     }
 
     let mut canonical = doc.clone();
+    if matches!(target, Some(SemanticTarget::Hwp)) {
+        // The HWP5 writer re-encodes a non-HWP5 IR's numbered levels zero-based (#472), and
+        // the reread HWP5 IR keeps those on-disk bits; project the expected side the same way
+        // while its source format is still known.
+        hwp5::write::encode_numbered_levels_zero_based(&mut canonical);
+        // emit_para_shape re-encodes any numbered shape whose bits disagree with its semantic
+        // level (grafted shapes in an HWP5 target, edited levels); project the same.
+        for shape in &mut canonical.header.para_shapes {
+            hwp5::write::normalize_numbered_level_encoding(shape);
+        }
+    }
     canonical.meta = hwp_model::DocMeta::default();
     canonical.header.id_mappings_counts.clear();
     canonical.header.properties.section_count =
@@ -4785,7 +4796,16 @@ fn canonical_document(
         // stands for: every level counts from 1, in digits or in the record's own format for
         // that level (a markdown list takes Hancom's default ladder, #382). Any other start or
         // format is lost in the default record, so it is left to fail the comparison.
-        if !canonical.header.numberings.is_empty() {
+        // A non-HWP5 document with ordered lists has modeled levels but no raw records; the
+        // writer synthesizes one default record per definition (`numbering_records`), unless
+        // the official eight-level contract applies (it writes its own records). Project that
+        // the same way, so a list the default record can draw compares equal (#472 compose).
+        let synthesized_numbering = canonical.header.numberings.is_empty()
+            && !canonical.header.numbering_levels.is_empty()
+            && !hwp5::numbering::is_official_eight_level_contract(
+                &canonical.header.numbering_levels,
+            );
+        if !canonical.header.numberings.is_empty() || synthesized_numbering {
             let raw = canonical.header.numberings.len();
             canonical.header.numberings = hwp5::write::numbering_records(&canonical.header);
             for levels in canonical.header.numbering_levels.iter_mut().skip(raw) {

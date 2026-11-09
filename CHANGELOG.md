@@ -49,6 +49,18 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   change in the same batch (a stripping `set_indent_level`, a `replace`) is refused with nothing
   written, naming the ordering remedy. Bilingual manual and bundled-skill recipes are included.
 
+**Fixed**
+
+- An ordered list written to HWP 5.0 (by `insert_blocks` into an HWP document, `hwp convert`
+  from HWPX, or `compose` to `.hwp`) now stores its level zero-based in the paragraph shape,
+  as genuine Hangul-saved files do, so level 0 draws "1." instead of the Hangul-syllable
+  "가." of the next level. `compose` of an ordered list to `.hwp` no longer refuses at
+  semantic verification. Reading an HWP 5.0 file now takes numbered-paragraph levels
+  zero-based for every document, so genuine Hangul files and hwp-cli's own output reread at
+  the right level and draw that level's marker; `indent_para`/`outdent_para` on an HWP list
+  item keep the stored encoding. HWPX output and bullets are unchanged; Hancom display still
+  needs a person-run open check ([#472](https://github.com/STAIxBWLB/hwp-cli/issues/472)).
+
 ## [1.4.0]
 
 **Compatibility**
