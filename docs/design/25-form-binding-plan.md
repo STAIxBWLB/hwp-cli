@@ -67,7 +67,8 @@ for an extracted source, not permission to guess shifted table indices.
 It is exclusive with other operations in its batch. It verifies one reviewed plan and literal
 values, performs declared repeats, resolves explicit targets, applies existing primitives and
 publishes once through the existing atomic transaction. This does not change older ops or their
-selector semantics. CLI/MCP transport implementation and delivery checks are still in progress.
+selector semantics. CLI file/stdin and MCP transports are implemented and checked through the
+same native engine, with generated schemas and the P0 preservation contract.
 
 Plan version 1 contains `bindings`, optional `repeats` and optional `constraints`. Bounds are
 256 bindings, 1..256 targets per binding, 16 repeat entries and 128 constraints. Each target

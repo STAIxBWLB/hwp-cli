@@ -298,13 +298,27 @@ fn copy_input_snapshot(
 }
 
 /// Reject an output that aliases any immutable command input. Unlike the
-/// single-source edit path, exact in-place use is not permitted.
+/// single-source edit path, no in-place spelling of the same file is permitted.
 pub(crate) fn reject_output_aliases(destination: &Path, inputs: &[&Path]) -> anyhow::Result<()> {
     let snapshot = inspect_destination(destination)?;
     for input in inputs {
-        if *input == destination {
+        let same_file = if let DestinationSnapshot::Regular { identity, .. } = &snapshot {
+            match fs::metadata(input) {
+                Ok(metadata) if metadata.is_file() => {
+                    FileIdentity::from_metadata(&metadata, input)?.same_file(identity)
+                }
+                Ok(_) => false,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error).with_context(|| {
+                    format!("immutable 입력의 파일 identity를 확인할 수 없습니다: {}. 입력 경로와 읽기 권한을 확인하세요", input.display())
+                }),
+            }
+        } else {
+            false
+        };
+        if *input == destination || same_file {
             anyhow::bail!(
-                "출력이 immutable 입력과 같아 게시할 수 없습니다: {}",
+                "출력이 immutable 입력과 같은 파일이어서 게시할 수 없습니다: {}. 다른 출력 경로를 지정하세요",
                 destination.display()
             );
         }
