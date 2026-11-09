@@ -5785,6 +5785,34 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("invalid_asset_path"), "{error}");
         assert!(!out.exists());
+
+        // The roots bind the asset read itself, independently of the base_dir check: a sandbox
+        // that allows the asset directory's PARENT only through a narrower root must refuse an
+        // asset the opened handle puts outside every root. Here the root is a sub-directory and
+        // `base_dir` is the (sandboxed) root, but the asset path climbs out through a symlink.
+        #[cfg(unix)]
+        {
+            let inside = directory.join("inside");
+            std::fs::create_dir_all(&inside).unwrap();
+            let outside_target = other.join("assets");
+            std::os::unix::fs::symlink(&outside_target, inside.join("link")).unwrap();
+            let narrow = ctx_with_roots(vec![std::fs::canonicalize(&inside).unwrap()]);
+            let out = inside.join("symlink.hwpx");
+            let source_inside = inside.join("source.hwpx");
+            create_hwpx(&source_inside, "첫째 문단\n\n둘째 문단\n");
+            let error = tool_edit(
+                &json!({"input": source_inside, "output": out, "base_dir": inside,
+                    "insert_blocks": [insert_blocks_item(json!([
+                        {"type": "image", "path": "link/logo.png", "width_mm": 10}]))]}),
+                &narrow,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("asset_snapshot_"),
+                "a symlinked asset must be refused by the asset snapshot, not read: {error}"
+            );
+            assert!(!out.exists());
+        }
         let _ = std::fs::remove_dir_all(&directory);
         let _ = std::fs::remove_dir_all(&other);
     }
