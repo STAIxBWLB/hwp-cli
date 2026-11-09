@@ -1360,7 +1360,12 @@ pub fn normalize_numbered_level_encoding(para_shape: &mut ParaShape) {
     }
     let level = para_shape.head_level();
     let zero_based = u32::from(level.saturating_sub(1));
-    if para_shape.list_level.is_some() && (para_shape.attr1 >> 25) & 0x7 == zero_based.min(6) {
+    // Skip when the stored encoding already decodes to the semantic level, by the reader's own
+    // rule. Comparing against min(level-1, 6) instead would rewrite a read shape with raw bits
+    // 7 (unobserved but representable; it reads as level 8) and break byte identity (T28-N2).
+    if para_shape.list_level.is_some()
+        && crate::doc_info::semantic_numbered_level(para_shape) == level
+    {
         return;
     }
     para_shape.list_level = Some(level);
@@ -3969,6 +3974,36 @@ fn emit_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #472 T28-N2: a read numbered shape whose stored bits already decode to its semantic level
+    /// is emitted unchanged, including raw bits 7 (representable, unobserved in K1), which the
+    /// reader decodes as level 8. Only a disagreeing shape is re-encoded.
+    #[test]
+    fn normalization_leaves_a_read_raw_7_numbered_shape_untouched() {
+        let mut tail = vec![0u8; 16];
+        tail[12..16].copy_from_slice(&5u32.to_le_bytes());
+        let mut shape = ParaShape {
+            attr1: (2 << 23) | (7 << 25),
+            tail: tail.clone(),
+            line_spacing: 160,
+            ..ParaShape::default()
+        };
+        shape.list_level = Some(crate::doc_info::semantic_numbered_level(&shape));
+        assert_eq!(shape.list_level, Some(8));
+        let before = shape.clone();
+        normalize_numbered_level_encoding(&mut shape);
+        assert_eq!(shape.attr1, before.attr1, "raw 7 bits stay as read");
+        assert_eq!(shape.tail, before.tail, "the tail stays as read");
+
+        // An edited level (list_level 3, bits still 7) is re-encoded zero-based.
+        shape.list_level = Some(3);
+        normalize_numbered_level_encoding(&mut shape);
+        assert_eq!((shape.attr1 >> 25) & 0x7, 2);
+        assert_eq!(
+            u32::from_le_bytes(shape.tail[12..16].try_into().unwrap()),
+            2
+        );
+    }
 
     fn paragraph_id_record(id: u32) -> RecordNode {
         let mut data = vec![0x5a; 24];

@@ -302,7 +302,9 @@ fn parse_char_shape(data: &[u8]) -> Result<CharShape> {
 /// The one-based semantic level of a numbered (head type 2) paragraph shape read from HWP5:
 /// attr1 bits 25..=27 hold level-1, and the eighth level is the clamped form bits 6 with the
 /// 16-byte tail's final u32 at 7 (07-hangul-compat-rules K1). No deeper form is measured.
-fn semantic_numbered_level(para_shape: &ParaShape) -> u8 {
+/// The writer's emit-time normalization uses this as its inverse check, so a shape whose stored
+/// encoding already decodes to its semantic level is never rewritten (#472 T28-N2).
+pub fn semantic_numbered_level(para_shape: &ParaShape) -> u8 {
     let raw = ((para_shape.attr1 >> 25) & 0x7) as u8;
     let tail_level = (para_shape.tail.len() >= 16).then(|| {
         u32::from_le_bytes([
