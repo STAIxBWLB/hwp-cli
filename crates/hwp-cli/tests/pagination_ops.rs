@@ -667,3 +667,127 @@ fn indent_level_strips_blanks_that_follow_the_sections_leading_controls() {
         );
     }
 }
+
+// ---- set_indent_level: range tags and native line caches (T12-F3, T12-F4) -------------------
+
+/// HWPTAG_PARA_RANGE_TAG (HWPTAG_BEGIN + 54).
+const RANGE_TAG: u16 = 0x10 + 54;
+
+#[test]
+fn indent_level_keeps_a_native_line_cache_when_nothing_changes() {
+    let fixture = Fixture::new("indent-cache", "hwp");
+    // Give the paragraph a native line cache and write it the way a byte-preserving round trip
+    // does, so the file under test carries line segments like one Hangul saved.
+    let mut seeded = read(&fixture.base);
+    let index = index(&seeded, FIRST);
+    seeded.sections[0].paragraphs[index].line_segs = vec![hwp_model::LineSeg {
+        text_start: 0,
+        v_pos: 0,
+        line_height: 1000,
+        text_height: 1000,
+        baseline_gap: 850,
+        line_spacing: 600,
+        col_start: 0,
+        seg_width: 40000,
+        flags: 0,
+    }];
+    let native = fixture.dir.join("native.hwp");
+    let options = hwp5::WriteOptions {
+        preserve_linesegs: true,
+        ..hwp5::WriteOptions::default()
+    };
+    hwp5::write_document(&seeded, &native, &options).unwrap();
+    let before = read(&native);
+    let cache = before.sections[0].paragraphs[index].line_segs.clone();
+    assert!(
+        !cache.is_empty(),
+        "the native file carries a line cache for this paragraph"
+    );
+    // Level 0 with no hanging on a paragraph that has no indentation is already in effect.
+    let (output, run) = fixture.edit(
+        &native,
+        "noop",
+        json!([indent_op(at(&before, FIRST), 0, 5.0, 0.0)]),
+    );
+    success(run, "a request that is already in effect");
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(fixture.dir.join("noop-report.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["ops"][0]["pieces_touched"], 0);
+    let after = read(&output);
+    assert_eq!(
+        after.sections[0].paragraphs[index].line_segs, cache,
+        "an op that reports no change must not drop the paragraph's native line cache"
+    );
+    assert_eq!(
+        before.header.para_shapes.len(),
+        after.header.para_shapes.len(),
+        "no shape is appended"
+    );
+}
+
+#[test]
+fn indent_level_refuses_to_strip_blanks_under_a_range_tag_in_a_native_file() {
+    let fixture = Fixture::new("indent-range", "hwp");
+    let mut doc = read(&fixture.base);
+    let marked = index(&doc, "    Four-space indented item.");
+    doc.sections[0].paragraphs[marked]
+        .extras
+        .push(hwp_model::OpaqueRecord {
+            tag: RANGE_TAG,
+            data: vec![4, 0, 0, 0, 8, 0, 0, 0, 1, 0, 0, 0],
+            children: Vec::new(),
+        });
+    let tagged = fixture.dir.join("tagged.hwp");
+    hwp5::write_document(&doc, &tagged, &hwp5::WriteOptions::default()).unwrap();
+    let reread = read(&tagged);
+    assert!(
+        reread.sections[0].paragraphs[marked]
+            .extras
+            .iter()
+            .any(|e| e.tag == RANGE_TAG),
+        "the range tag survives the round trip"
+    );
+    let message = fixture.refuse(
+        &tagged,
+        "ranged",
+        json!([indent_op(
+            at(&reread, "    Four-space indented item."),
+            1,
+            5.0,
+            0.0
+        )]),
+    );
+    assert!(
+        message.contains("구간 표시") && message.contains("set_para"),
+        "the refusal names the cause and the remedy: {message}"
+    );
+    // A paragraph with the tag but no leading blanks is not refused, and the tag stays.
+    let mut doc = read(&tagged);
+    let plain = index(&doc, FIRST);
+    doc.sections[0].paragraphs[plain]
+        .extras
+        .push(hwp_model::OpaqueRecord {
+            tag: RANGE_TAG,
+            data: vec![0, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0],
+            children: Vec::new(),
+        });
+    let tagged_plain = fixture.dir.join("tagged-plain.hwp");
+    hwp5::write_document(&doc, &tagged_plain, &hwp5::WriteOptions::default()).unwrap();
+    let (output, run) = fixture.edit(
+        &tagged_plain,
+        "plain-tag",
+        json!([indent_op(at(&doc, FIRST), 1, 5.0, 0.0)]),
+    );
+    success(
+        run,
+        "nothing is stripped, so the range tag does not block the shape",
+    );
+    assert!(
+        read(&output).sections[0].paragraphs[plain]
+            .extras
+            .iter()
+            .any(|e| e.tag == RANGE_TAG),
+        "the tag is carried through"
+    );
+}
