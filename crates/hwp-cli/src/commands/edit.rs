@@ -4730,6 +4730,11 @@ fn canonical_document(
         // the reread HWP5 IR keeps those on-disk bits; project the expected side the same way
         // while its source format is still known.
         hwp5::write::encode_numbered_levels_zero_based(&mut canonical);
+        // emit_para_shape re-encodes any numbered shape whose bits disagree with its semantic
+        // level (grafted shapes in an HWP5 target, edited levels); project the same.
+        for shape in &mut canonical.header.para_shapes {
+            hwp5::write::normalize_numbered_level_encoding(shape);
+        }
     }
     canonical.meta = hwp_model::DocMeta::default();
     canonical.header.id_mappings_counts.clear();
