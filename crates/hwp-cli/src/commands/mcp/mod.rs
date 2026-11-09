@@ -5842,7 +5842,7 @@ mod tests {
             plan.apply_insert_blocks_for_test(&mut doc, &at, &request)
         };
         assert!(
-            apply_with(&[canonical.clone()]).is_ok(),
+            apply_with(std::slice::from_ref(&canonical)).is_ok(),
             "an allowed root admits the asset"
         );
         let elsewhere =
