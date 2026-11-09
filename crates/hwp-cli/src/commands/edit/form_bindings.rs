@@ -87,8 +87,13 @@ pub(super) fn execute(
             }
             let prepared = prepare_binding_plan(&original, hash, &request.plan, &request.values)
                 .map_err(anyhow::Error::msg)?;
-            let mut report = write_output(prepared.document(), stage, request.plan.repeats.iter().any(|repeat| repeat.copies > 1), format, Some((snapshot, &original)))
-                .map_err(|_| anyhow::anyhow!("바인딩 결과를 기존 native writer로 만들 수 없습니다. 지원하지 않는 개체/보존 항목을 validate로 확인하고 다른 대상을 선택하세요"))?;
+            let mut report = write_bound_output(
+                prepared.document(),
+                stage,
+                request.plan.repeats.iter().any(|repeat| repeat.copies > 1),
+                format,
+                Some((snapshot, &original)),
+            )?;
             report.preservation.extend(
                 crate::commands::preservation::inspect_same_format_container_with_binary_allowance(
                     snapshot,
@@ -100,8 +105,7 @@ pub(super) fn execute(
                 )?,
             );
             crate::commands::reject_preservation_loss("apply_form_bindings", &report.preservation)?;
-            super::verify_output(stage, Some(prepared.document())).map_err(|_| anyhow::anyhow!(
-                "바인딩 결과의 native 재읽기/의미 검증이 실패했습니다. 출력을 게시하지 않았습니다. 원본 validate 결과와 지원 대상/서식 보존 범위를 확인하세요"))?;
+            verify_bound_output(stage, prepared.document())?;
             let bytes = std::fs::read(stage)?;
             let mut preview = prepared.preview;
             // write_output includes preview-render/font diagnostics. Keep original messages
@@ -142,6 +146,22 @@ pub(super) fn execute(
     })
 }
 
+fn write_bound_output(
+    doc: &hwp_model::Document,
+    output: &Path,
+    structural: bool,
+    format: OutputFormat,
+    source: Option<(&Path, &hwp_model::Document)>,
+) -> anyhow::Result<hwp_model::WriteReport> {
+    write_output(doc, output, structural, format, source).map_err(|_| anyhow::anyhow!(
+        "바인딩 결과를 기존 native writer로 만들 수 없습니다. 지원하지 않는 개체/보존 항목을 validate로 확인하고 다른 대상을 선택하세요"))
+}
+
+fn verify_bound_output(output: &Path, expected: &hwp_model::Document) -> anyhow::Result<()> {
+    super::verify_output(output, Some(expected)).map_err(|_| anyhow::anyhow!(
+        "바인딩 결과의 native 재읽기/의미 검증이 실패했습니다. 출력을 게시하지 않았습니다. 원본 validate 결과와 지원 대상/서식 보존 범위를 확인하세요"))
+}
+
 fn receipt(preview: &BindingPreview, bytes: &[u8], published: bool) -> Receipt {
     Receipt {
         version: 1,
@@ -160,5 +180,66 @@ fn receipt(preview: &BindingPreview, bytes: &[u8], published: bool) -> Receipt {
         native_warning_count: preview.native_warnings.len(),
         semantic_budget: "selected_text_and_declared_clones_only",
         render_font_native: "unverified",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Workspace(PathBuf);
+    impl Workspace {
+        fn new(label: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "hwp-binding-failure-{}-{label}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for Workspace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn binding_native_write_failure_names_io_cause_without_content() {
+        let workspace = Workspace::new("write");
+        let output = workspace.0.join("PRIVATE_VALUE.hwpx");
+        std::fs::create_dir(&output).unwrap();
+        let doc = hwp_convert::from_markdown("PRIVATE_VALUE");
+        let error = write_bound_output(&doc, &output, false, OutputFormat::Hwpx, None).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("native_write_io"),
+            "write I/O must have its own cause: {message}"
+        );
+        assert!(
+            message.contains("경로"),
+            "write failure needs a path remedy: {message}"
+        );
+        assert!(!message.contains("PRIVATE_VALUE"));
+    }
+
+    #[test]
+    fn binding_native_verify_failure_names_semantic_cause_without_content() {
+        let workspace = Workspace::new("verify");
+        let output = workspace.0.join("PRIVATE_VALUE.hwpx");
+        let actual = hwp_convert::from_markdown("original");
+        hwpx::write_document(&actual, &output).unwrap();
+        let expected = hwp_convert::from_markdown("PRIVATE_VALUE");
+        let error = verify_bound_output(&output, &expected).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("verify_semantic_mismatch"),
+            "semantic mismatch needs its own cause: {message}"
+        );
+        assert!(
+            message.contains("validate"),
+            "semantic failure needs a repair step: {message}"
+        );
+        assert!(!message.contains("PRIVATE_VALUE"));
     }
 }
