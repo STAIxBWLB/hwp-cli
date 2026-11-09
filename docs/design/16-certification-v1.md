@@ -98,6 +98,12 @@ schema expresses through dedicated `localPassed + evidenceFailed` branches.
 Neither check claims Hancom rendering parity; they attest only the specific external evidence
 they name.
 
+`document.original_form` adds a third, local check: the delivered artifact against a reviewed
+expectation plan for a supplied native form (expected cells, form-start anchors, grid, explicit
+allowances), reported as `checks.original_form`. It fails like the two above, and when its
+render evidence is limited (no pinned fonts) a passing check makes the overall result `partial`,
+never `passed`. See [original-form certification](26-original-form-certification.md).
+
 ## Schemas and consumers
 
 - `schemas/certification-policy-v1.schema.json`
@@ -105,6 +111,8 @@ they name.
 - `schemas/certification-oracle-result-v1.schema.json`
 - `schemas/preservation-report-v1.schema.json` (optional `preservation` evidence input)
 - `schemas/hancom-verification-receipt-v1.schema.json` (optional `hancom_open` evidence input)
+- `schemas/original-form-certification-plan-v1.schema.json` (optional `original_form` plan input)
+- `schemas/original-form-address-map-v1.schema.json` (opt-in local `original-form/address-map.json`)
 
 Consumers such as Maru must validate the report schema and then verify the runtime invariants that
 JSON Schema cannot express: typed issue count/hash recomputation, exact selected-page diagnostics
@@ -113,3 +121,5 @@ and page artifacts, unique artifact paths, and `oracle/import.pdf` only for a pa
 contains at most 257 entries (256 page PNGs plus one oracle PDF); `manifest.files` adds
 `report.json` for at most 258; the published tree adds `manifest.json` for an exact cap of 259.
 The internal publisher guard of 260 is implementation slack and is not the consumer limit.
+The opt-in original-form address map is one more manifest file within the same 258 cap; a report
+already at the cap leaves it out.

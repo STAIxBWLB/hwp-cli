@@ -98,6 +98,7 @@ width 1, inline width 8, extended width 8). Lossless round-tripping is preserved
 | 23 | [hwpx-skill-absorption](23-hwpx-skill-absorption.md) | **hwpx skill absorption** — subcommand-grain parity matrix (28 old subcommands + script-level guarantees, verified/inferred marked), the D-14 margin record, the living checklist phases 2.2-2.5 update in place (issue #121, skills#35) |
 | 24 | [original-form-contract](24-original-form-contract.md) | **Original-form preservation contract** - synthetic P0 fixture, cell/grid/style/resource projections, explicit changes, relative anchors and separate font/native evidence (#411, #416) |
 | 25 | [form-binding-plan](25-form-binding-plan.md) | **Source-bound form binding plan** - reviewed occurrences, explicit profile copies, bounded numeric constraints, atomic apply and separate layout/native evidence (#411, #418) |
+| 26 | [original-form-certification](26-original-form-certification.md) | **Original-form certification** - expected cells, form-start anchors and grid against a local plan, layout-read clipping, limited results without pinned fonts, content-free findings (#411, #419) |
 
 ---
 

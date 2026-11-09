@@ -1149,3 +1149,33 @@ fn the_layout_and_the_envelope_join_totally_on_every_available_document() {
         checked.len()
     );
 }
+
+/// #419: the bounded segment seam original-form certification uses records the same rows as
+/// the unbounded layout pass, under the same font set. Both sides use one isolated store with
+/// no font files, so the comparison is font-independent on every host.
+#[test]
+fn the_bounded_certification_segment_seam_matches_the_unbounded_layout() {
+    let doc = hwp_convert::from_markdown(TABLE_MARKDOWN);
+    let mut store = hwp_render::FontStore::new_isolated();
+    let mut warnings = hwp_render::RenderIssueAccumulator::new();
+    let (list, map) =
+        hwp_render::layout::layout_document_with_segments(&doc, &mut store, &mut warnings);
+    let (bounded_list, bounded_map, _) = hwp_render::layout_segments_isolated_bounded(
+        &doc,
+        &hwp_render::RenderOptions::default(),
+        &[],
+        &hwp_render::layout::LayoutBudget::certification(),
+    )
+    .expect("a small document fits the certification budget");
+    assert_eq!(bounded_list.pages.len(), list.pages.len());
+    assert_eq!(
+        bounded_map, map,
+        "the seam must describe the layout that was certified"
+    );
+    assert!(
+        map.rows
+            .iter()
+            .any(|row| row.kind == hwp_render::segment_map::kind::CELL),
+        "the table's cells are recorded"
+    );
+}
