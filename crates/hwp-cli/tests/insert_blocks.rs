@@ -3008,6 +3008,103 @@ fn insert_blocks_in_a_cell_reports_only_the_cell_paragraphs_it_inserted() {
     }
 }
 
+/// Two tables in the same section: inserting into the first table's cell must not report the
+/// second table's cell paragraphs, which sit at the same depth and the same final index range
+/// but under a different parent.
+#[test]
+fn insert_blocks_in_one_table_does_not_report_a_sibling_tables_cell_paragraphs() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("report-ids-two-tables", extension);
+        let mut spec: Value =
+            serde_json::from_slice(&std::fs::read(fixture.dir.join("spec.json")).unwrap()).unwrap();
+        let second = json!({"type":"table","columns":[{"width_mm":40}],"rows":[{"cells":[
+            {"blocks":[block("body","Second cell A."), block("body","Second cell B.")]}]}]});
+        spec["sections"][0]["blocks"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        let spec_path = fixture.dir.join("two-tables.json");
+        std::fs::write(&spec_path, serde_json::to_vec(&spec).unwrap()).unwrap();
+        let hwpx = fixture.dir.join("two-tables.hwpx");
+        success(
+            hwp()
+                .arg("compose")
+                .arg(&spec_path)
+                .arg("-o")
+                .arg(&hwpx)
+                .output()
+                .unwrap(),
+            "compose two tables",
+        );
+        let source = if extension == "hwp" {
+            let native = fixture.dir.join("two-tables.hwp");
+            success(
+                hwp()
+                    .arg("convert")
+                    .arg(&hwpx)
+                    .arg("-o")
+                    .arg(&native)
+                    .output()
+                    .unwrap(),
+                "convert two tables",
+            );
+            native
+        } else {
+            hwpx
+        };
+        let id = para_id(&source, CELL);
+        let (output, run) = fixture.edit(
+            &source,
+            "two-tables",
+            json!([insert(
+                json!({"id": id}),
+                "after",
+                "create",
+                json!({}),
+                json!([
+                    block("body", "Into first."),
+                    block("body", "Into first too.")
+                ])
+            )]),
+            false,
+        );
+        success(run, "insert into the first table's cell");
+        let reported = created_ids(&report_of(&fixture, "two-tables"), 0);
+        let after = read(&output);
+        let second_cell_ids: Vec<String> = segments_of(&output)
+            .into_iter()
+            .map(|(_, id)| id)
+            .filter(|candidate| {
+                // every segment whose path runs through the second table
+                let steps: Vec<usize> = candidate
+                    .split('.')
+                    .skip(2)
+                    .filter_map(|n| n.parse().ok())
+                    .collect();
+                steps.len() >= 4
+                    && steps[0]
+                        == after.sections[0]
+                            .paragraphs
+                            .iter()
+                            .rposition(|p| {
+                                p.controls.iter().any(|c| matches!(c, Control::Table(_)))
+                            })
+                            .unwrap()
+            })
+            .collect();
+        assert!(
+            !second_cell_ids.is_empty(),
+            "{extension}: the second table publishes segments"
+        );
+        for other in second_cell_ids {
+            assert!(
+                !reported.contains(&other),
+                "{extension}: {other} belongs to the second table and was not inserted"
+            );
+        }
+    }
+}
+
 #[test]
 fn insert_blocks_report_ids_follow_an_earlier_insertion_in_the_same_batch() {
     let fixture = Fixture::new("report-ids-batch", "hwpx");
