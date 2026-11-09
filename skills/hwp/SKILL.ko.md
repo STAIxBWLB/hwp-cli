@@ -323,6 +323,34 @@ hwp certify updated.hwpx --policy policy.json --report ./style-certification
 한컴에서 파일을 열거나 렌더했다는 증거가 아니다. 한컴 열기 증거는 별도 영수증으로 제공한다.
 `.hwp` 경로에도 같은 순서를 쓸 수 있으며 출력 형식 제한과 거부 진단은 계속 적용된다.
 
+### 구성 요소 삽입
+
+문단 주소는 `hwp cat doc.hwpx --format json --with-segments --segments v2`에서 얻는다.
+블록(DocumentSpec v1: 문단, 표, 이미지, 필드, 수식, 쪽·단 나누기)을 `component.json`으로
+저장하고 `--report`와 함께 실행한다.
+
+```json
+[{"op":"insert_blocks","address":{"at":{"section":0,"paragraph":2}},"position":"after",
+  "blocks":[{"type":"paragraph","runs":[{"type":"text","text":"결재:"}]},
+            {"type":"image","path":"logo.png","width_mm":20}]}]
+```
+
+```bash
+hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
+```
+
+- 스타일 이름은 문서에서 먼저 찾고, 없으면 `styles`로 만들거나(`missing_style: "create"`,
+  기본값) 거부한다(`"refuse"`). 목록은 `lists` 항목이 필요하다.
+- 이미지 경로는 `--ops` 파일 디렉터리 기준이며 `--ops -`는 이미지를 거부한다. MCP에서는
+  `hwp_edit`의 `insert_blocks` 배열(항목은 `op`를 뺀 연산)과 함께 `base_dir`를 넘긴다.
+- 블록은 들어갈 단이나 표 셀의 폭으로 검사한다(가로 용지·다단 구역 포함). 폭을 넘으면 아무것도
+  쓰기 전에 거부한다.
+- 수식은 HWPX에만 삽입한다. 구역 나누기는 지원하지 않는다. 거부되면 아무것도 쓰지 않는다.
+- 이 연산의 보고서 `changed`에는 삽입된 문단 id와 각 문단의 런 id(표·셀·이미지 id 포함)가
+  있다. 인덱스를 추측하지 말고 런 id를 `set_format`에 넘긴다.
+  `[{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]`. id는 해당 연산
+  직후 문서를 기준으로 한다.
+
 ## MCP 서버
 
 `hwp mcp`는 stdio 위에서 동기 JSON-RPC 2.0을 사용합니다 (줄 구분; stdout이 프로토콜을

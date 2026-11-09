@@ -116,6 +116,64 @@ hwp certify updated.hwpx --policy policy.json --report ./style-certification
 한컴에서 파일을 열거나 렌더했다는 증거가 아니다. 한컴 열기 증거는 별도 영수증으로 제공한다.
 `.hwp` 경로에도 같은 순서를 쓸 수 있으며 출력 형식 제한과 거부 진단은 계속 적용된다.
 
+### 기존 문서에 구성 요소 삽입
+
+`insert_blocks`는 DocumentSpec v1 블록(문단, 목록, 표, 이미지, 필드, 수식, 쪽·단 나누기)을
+지정한 문단 앞이나 뒤에 문서의 서식 그대로 넣는다. 문단 주소는 `hwp cat doc.hwpx --format
+json --with-segments --segments v2`에서 얻고, 구성 요소를 `component.json`으로 저장한다.
+
+```json
+[
+  {"op":"insert_blocks","address":{"at":{"section":0,"paragraph":2}},"position":"after",
+   "blocks":[
+     {"type":"paragraph","runs":[{"type":"text","text":"결재:"}]},
+     {"type":"table","columns":[{"width_mm":40},{"width_mm":40}],
+      "rows":[{"cells":[{"blocks":[{"type":"paragraph","runs":[{"type":"text","text":"기안"}]}]},
+                       {"blocks":[{"type":"paragraph","runs":[{"type":"text","text":"결재"}]}]}]}]},
+     {"type":"image","path":"logo.png","width_mm":20}
+   ]}
+]
+```
+
+```bash
+hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
+```
+
+알아둘 규칙은 다음과 같다.
+
+- 블록의 스타일 이름은 문서가 가진 스타일에서 먼저 찾는다. 문서에 없는 이름은 연산의
+  `styles` 정의로 만들거나(`missing_style: "create"`, 기본값) 거부한다(`"refuse"`). 보고서에
+  적용된 정책이 적힌다. 목록 이름은 `lists`에 정의가 있어야 한다.
+- 이미지 경로는 `--ops` 파일이 있는 디렉터리 기준 상대 경로이며 그 밖으로 나갈 수 없다.
+  `--ops -`로 표준 입력에서 읽으면 디렉터리가 없어 이미지 블록을 거부한다. MCP에서는
+  `base_dir`(샌드박스 검사를 받는 디렉터리)을 넘기며, 서버의 `--root` 샌드박스가 모든 자산
+  읽기를 묶는다.
+- 표와 이미지는 들어갈 본문 단이나 표 셀의 폭으로 검사한다. 가로 구역은 회전한 용지 폭,
+  다단 구역은 한 단의 폭, 셀 안은 셀 폭에서 셀 여백을 뺀 값이다. `position: "before"`는
+  주소 앞의 단 구성을 쓴다. 폭을 넘는 블록은 아무것도 쓰기 전에 거부한다.
+- 수식은 HWPX에만 삽입한다. HWP 쓰기는 수식 레코드가 없어, HWP 출력은 HWPX 대안을 알리며
+  거부한다. 구역 나누기는 지원하지 않는다.
+- 편집은 원자적이다. 하나라도 거부되면 `--allow-partial`이어도 출력이 쓰이지 않는다.
+
+보고서의 해당 연산 항목은 삽입된 대상의 id를 알려 주므로 다음 호출에서 인덱스를 추측할 필요가
+없다. `pieces_touched`는 삽입된 문단 수이고, `changed`에는 `hwp cat`이 그 문단 안에서 발행할
+세그먼트마다 생성 쌍(`before`는 null)이 하나씩 있다. 문단 id 다음에 그 런 id가 오고, 표나
+이미지 블록이면 표·셀·이미지 id도 있다. `set_format`에는 런 id를 넘긴다.
+
+```json
+[{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]
+```
+
+id는 해당 연산 직후의 문서를 기준으로 한다. 이후 편집을 하면 새로 얻어야 한다. 결과에는
+다른 문서와 똑같이 `hwp validate`와 `hwp certify`를 적용한다. 필드 블록은 네이티브 렌더가
+생략된 컨트롤을 보고하게 하는데, 삽입 오류가 아니라 렌더러의 한계다.
+
+대응하는 `hwp_edit` MCP 인수는 다음과 같다(항목은 `op` 태그를 뺀 연산이다).
+
+```json
+{"input":"doc.hwpx","output":"with-component.hwpx","base_dir":"/work/assets","insert_blocks":[{"address":{"at":{"section":0,"paragraph":2}},"position":"after","blocks":[{"type":"image","path":"logo.png","width_mm":20}]}]}
+```
+
 ### 보존 손실 원장
 
 `convert`·`merge`·`split`은 보존하지 못한 항목을 모두 `hwp-preservation-report-v1` 원장에

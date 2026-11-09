@@ -329,6 +329,34 @@ native implementation under that policy; it does not attest that Hancom opened o
 file. Hancom-open evidence is a separate receipt. The same workflow accepts `.hwp` paths; output
 format constraints and refusal diagnostics still apply.
 
+### Insert a component
+
+Take the paragraph address from `hwp cat doc.hwpx --format json --with-segments --segments v2`.
+Save the blocks (DocumentSpec v1: paragraph, table, image, field, equation, page or column
+break) as `component.json` and run it with `--report`:
+
+```json
+[{"op":"insert_blocks","address":{"at":{"section":0,"paragraph":2}},"position":"after",
+  "blocks":[{"type":"paragraph","runs":[{"type":"text","text":"Approval:"}]},
+            {"type":"image","path":"logo.png","width_mm":20}]}]
+```
+
+```bash
+hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
+```
+
+- Style names resolve against the document first; a missing one is created from `styles`
+  (`missing_style: "create"`, the default) or refused (`"refuse"`). Lists need a `lists` entry.
+- Image paths are relative to the `--ops` file's directory; `--ops -` refuses images. Over MCP
+  pass `base_dir` with the `insert_blocks` array of `hwp_edit` (items are the op without `op`).
+- Blocks are measured against the column or table cell they land in (landscape pages and
+  multi-column sections included) and an oversized one is refused before anything is written.
+- Equations insert into HWPX only. Section breaks are not supported. Any refusal writes nothing.
+- The report's `changed` for this op lists the inserted paragraph ids, each followed by its run
+  ids (and table, cell and image ids). Pass a run id to `set_format` without guessing indices:
+  `[{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]`. Ids describe the
+  document right after that op.
+
 ## MCP server
 
 `hwp mcp` speaks synchronous JSON-RPC 2.0 over stdio (line-delimited; stdout carries the

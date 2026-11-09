@@ -59,7 +59,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   same-named file under a folder, compared the way the most permissive writer does, ignoring
   ASCII case) is renamed so it still resolves to its own. Equations insert
   into HWPX only because the HWP writer drops them. Compilation no longer clones the whole
-  target per operation. Inserted-id reporting and MCP reachability remain follow-ups
+  target per operation.
+  The edit report lists what was inserted: one creation pair for every segment `hwp cat
+  --segments v2` publishes inside the inserted paragraphs (paragraph, run, and for tables and
+  images the table, cell and image ids), so a run id feeds `set_format` in the next call.
+  `hwp_edit` takes the same operation as an `insert_blocks` array plus a `base_dir` directory,
+  checked against the `--root` sandbox, that image paths resolve against; without it image
+  blocks are refused
   ([#428](https://github.com/STAIxBWLB/hwp-cli/issues/428)).
 
 - `hwp edit --ops` accepts `update_style` for named paragraph styles. Changed character and

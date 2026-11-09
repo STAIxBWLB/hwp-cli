@@ -18,6 +18,16 @@ header-only copy of the target, so it no longer clones sections or binary stream
 New image streams are grafted by name afterwards: an identical stream is shared and a same-named
 stream with different bytes is refused.
 
+Reporting and transport. The edit report lists the inserted segments: one creation pair
+(`before` null) for each segment `hwp cat --segments v2` publishes inside the inserted top-level
+paragraphs, read from the document right after the op, so the ids equal what a fresh `cat` shows
+and a run id is directly addressable by `set_format`. `hwp_edit` accepts the op as an
+`insert_blocks` array (the item is the edit-ops object without its `op` tag, deserialized by the
+ops channel's own entry type, so CLI and MCP share one parser). Its image paths resolve against
+the `base_dir` argument, itself a sandbox-checked read path; the `--root` roots bind every asset
+read. With no `base_dir` image blocks are refused rather than read from the server's working
+directory.
+
 The contract is deliberately closed:
 
 - root `version` is exactly `"1.0"`;
