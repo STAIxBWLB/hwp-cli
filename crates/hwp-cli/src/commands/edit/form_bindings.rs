@@ -70,6 +70,7 @@ pub(super) fn execute(
     // those same snapshots and the existing atomic-set identity/rollback machinery.
     let (_, (preview, preservation)) = output::write_snapshot_output_set(
         input,
+        &edit.ops_input.as_deref().into_iter().collect::<Vec<_>>(),
         64 * 1024 * 1024,
         &destinations,
         |snapshot, stages, hash| {

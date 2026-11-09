@@ -72,6 +72,11 @@ publishes once through the existing atomic transaction. This does not change old
 selector semantics. CLI file/stdin and MCP transports are implemented and checked through the
 same native engine, with generated schemas and the P0 preservation contract.
 
+Publication treats both the native source and a file-backed `--ops` request as immutable
+inputs. Native output, receipt and preview must not alias either file, including alternate
+path spellings or hard links. Stdin/MCP requests have no operations file; plan and values are
+inline in the request, with no separate values file.
+
 Plan version 1 contains `bindings`, optional `repeats` and optional `constraints`. Bounds are
 256 bindings, 1..256 targets per binding, 16 repeat entries and 128 constraints. Each target
 requires `occurrence_id`, `max_chars` (1..20000) and an explicit `allow_reflow` boolean; `copies`

@@ -99,8 +99,10 @@ pub(crate) fn write_with_private_input_snapshot<T>(
 
 /// Snapshot-bound multi-file counterpart of the single-output transaction.
 /// The first entry supplies the native stage; false entries are verified but not published.
+/// Additional immutable inputs include reviewed operation files read before this transaction.
 pub(crate) fn write_snapshot_output_set<T>(
     input: &Path,
+    additional_immutable_inputs: &[&Path],
     max_bytes: u64,
     destinations: &[(PathBuf, bool)],
     writer: impl FnOnce(&Path, &[PathBuf], &str) -> anyhow::Result<T>,
@@ -110,6 +112,7 @@ pub(crate) fn write_snapshot_output_set<T>(
     }
     for (index, (destination, _)) in destinations.iter().enumerate() {
         let mut inputs = vec![input];
+        inputs.extend_from_slice(additional_immutable_inputs);
         inputs.extend(destinations[..index].iter().map(|(path, _)| path.as_path()));
         reject_output_aliases(destination, &inputs)?;
     }
@@ -2625,7 +2628,7 @@ mod tests {
             fs::write(destination, b"original").unwrap();
         }
         let result =
-            write_snapshot_output_set(&input, 1024, &destinations, |snapshot, stages, _| {
+            write_snapshot_output_set(&input, &[], 1024, &destinations, |snapshot, stages, _| {
                 assert_eq!(fs::read(snapshot)?, b"source");
                 fs::write(&destinations[changed].0, b"external update")?;
                 for stage in stages {
@@ -2676,7 +2679,7 @@ mod tests {
             let folded = receipt.exists();
             fs::remove_file(&native).unwrap();
             let outputs = vec![(native.clone(), false), (receipt.clone(), true)];
-            let result = write_snapshot_output_set(&input, 1024, &outputs, |_, stages, _| {
+            let result = write_snapshot_output_set(&input, &[], 1024, &outputs, |_, stages, _| {
                 for stage in stages {
                     fs::write(stage, b"candidate")?;
                 }

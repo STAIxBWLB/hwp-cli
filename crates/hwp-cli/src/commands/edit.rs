@@ -350,6 +350,9 @@ impl EditOperation {
 pub struct EditPlan {
     operations: Vec<EditOperation>,
     typed_operations: Vec<TypedEditOperation>,
+    /// File-backed reviewed operations must remain immutable during compound publication.
+    /// Stdin and MCP requests have no operations file to protect.
+    ops_input: Option<std::path::PathBuf>,
     verify: bool,
     allow_partial: bool,
     /// EDT-06 (D-14): when set, the write-dispatch step swaps `write_validated`/
@@ -745,6 +748,7 @@ impl EditPlan {
             Self {
                 operations,
                 typed_operations: Vec::new(),
+                ops_input: None,
                 verify,
                 allow_partial,
                 dry_run,
@@ -775,12 +779,14 @@ impl EditPlan {
         let ops = ops.expect("from_ops is only called when --ops is set");
         let typed_operations = crate::edit_ops::load_ops(&ops)?;
         let assets = AssetPlan::beside_ops(&ops);
+        let ops_input = (ops.as_os_str() != "-").then_some(ops);
         Ok((
             input,
             output,
             Self {
                 operations: Vec::new(),
                 typed_operations,
+                ops_input,
                 verify,
                 allow_partial,
                 dry_run,
@@ -805,6 +811,7 @@ impl EditPlan {
         Self {
             operations: Vec::new(),
             typed_operations: operations,
+            ops_input: None,
             verify,
             allow_partial,
             dry_run,
