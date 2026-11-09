@@ -1400,12 +1400,11 @@ fn ordered_used_level_case(level: usize) {
             let item = paragraph(&after, "Ordered ladder item.");
             let shape = &after.header.para_shapes[item.para_shape.0 as usize];
             assert_eq!(shape.head_type(), 2);
+            // The semantic level reads back one-based in both formats (#472 T28-F2).
+            assert_eq!(usize::from(shape.head_level()), level + 1);
             if extension == "hwp" {
-                // HWP5 stores the level zero-based (#472, 07-hangul-compat-rules K1); the
-                // HWP5 reader exposes those raw bits, so check them, not `head_level()`.
+                // HWP5 stores the level zero-based (#472, 07-hangul-compat-rules K1).
                 assert_eq!(((shape.attr1 >> 25) & 0x7) as usize, level);
-            } else {
-                assert_eq!(usize::from(shape.head_level()), level + 1);
             }
             let actual = &after.header.numbering_levels[usize::from(shape.numbering_id)][level];
             assert_eq!(actual.template, if level == 2 { "^3)" } else { "^2." });
@@ -1473,6 +1472,22 @@ fn ordered_component_hwp_level_bits_are_zero_based() {
             drawn.template,
             if level == 2 { "^3)" } else { "^1." },
             "the slot the raw bits select is the requested level's template"
+        );
+        // #472 T28-F2: hwp-cli's own reader reads the zero-based bits back at the same
+        // semantic level, and the drawn marker is that level's own.
+        assert_eq!(usize::from(shape.head_level()), level + 1);
+        let mut state = hwp_model::list::ListState::default();
+        let mut marker = None;
+        for para in &after.sections[0].paragraphs {
+            let m = state.marker(&after, para);
+            if std::ptr::eq(para, item) {
+                marker = m;
+            }
+        }
+        assert_eq!(
+            marker.as_deref(),
+            Some(if level == 2 { "1)" } else { "1." }),
+            "level {level} draws its own marker after reread"
         );
     }
 }

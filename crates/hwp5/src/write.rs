@@ -1344,6 +1344,30 @@ fn collect_evidenced_official_numbering_counts(doc: &Document) -> Result<[usize;
     Ok(counters)
 }
 
+/// Re-encodes a numbered paragraph shape whose semantic level (`list_level`) no longer matches
+/// its stored attr1 bits 25..=27 (07-hangul-compat-rules K1, #472). The HWP5 reader sets
+/// `list_level` from the zero-based bits, so a shape read and left alone already agrees and
+/// nothing is touched (the identity gate stays byte-identical, including the tails the probe
+/// could not explain). An edit such as `ParaShape::set_head_level` writes a one-based level
+/// into the bits together with `list_level`; this puts the bits back to level-1 (at most 6)
+/// and the tail's final u32 to the same level (at most 7, the deepest measured form).
+pub fn normalize_numbered_level_encoding(para_shape: &mut ParaShape) {
+    if para_shape.head_type() != 2 {
+        return;
+    }
+    let Some(level) = para_shape.list_level else {
+        return;
+    };
+    let zero_based = u32::from(level.saturating_sub(1));
+    if (para_shape.attr1 >> 25) & 0x7 == zero_based.min(6) {
+        return;
+    }
+    para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (zero_based.min(6) << 25);
+    if para_shape.tail.len() >= 16 {
+        para_shape.tail[12..16].copy_from_slice(&zero_based.min(7).to_le_bytes());
+    }
+}
+
 /// Encodes numbered-paragraph levels the way genuine Hangul-saved HWP5 files store them, for a
 /// document that did not come from HWP5 (07-hangul-compat-rules K1, #472). Such an IR holds
 /// the one-based semantic level in attr1 bits 25..=27 (the HWPX reader adds one), while
@@ -1369,6 +1393,7 @@ pub fn encode_numbered_levels_zero_based(doc: &mut Document) {
             continue;
         }
         let zero_based = u32::from(para_shape.head_level().saturating_sub(1));
+        para_shape.list_level = Some(para_shape.head_level());
         para_shape.attr1 = (para_shape.attr1 & !(0x7 << 25)) | (zero_based.min(6) << 25);
         if para_shape.tail.is_empty() {
             // Same 16-byte layout emit_para_shape synthesizes for an empty tail: attr2, attr3,
@@ -3149,6 +3174,12 @@ fn emit_char_shape(cs: &CharShape) -> RecordNode {
 }
 
 fn emit_para_shape(ps: &ParaShape) -> RecordNode {
+    // A level edited after reading (set_head_level) is put back into the zero-based
+    // on-disk form here, the one place every write path passes; untouched shapes are
+    // already consistent and pass through unchanged (#472, K1).
+    let mut normalized = ps.clone();
+    normalize_numbered_level_encoding(&mut normalized);
+    let ps = &normalized;
     let mut w = ByteWriter::new();
     // 줄간격 종류는 attr1 bits 0~1이다(parse_para_shape와 같은 규약). IR에서 바뀐
     // 종류를 되접어 넣지 않으면 한글 2010+ 가 예전 종류로 읽는다. clear-then-set이라

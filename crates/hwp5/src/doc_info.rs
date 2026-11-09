@@ -58,6 +58,17 @@ pub fn parse_doc_info(roots: &[RecordNode]) -> (DocHeader, Vec<String>) {
         }
     }
 
+    // Numbered paragraph levels are stored zero-based (07-hangul-compat-rules K1, #472):
+    // attr1 bits 25..=27 hold level-1, and the eighth level is bits 6 with the PARA_SHAPE
+    // tail's final u32 at 7. Expose the semantic one-based level through `list_level` and
+    // leave attr1 and the tail bytes as read, so identity re-serialization stays
+    // byte-identical. The official-contract block below may refine it.
+    for para_shape in &mut header.para_shapes {
+        if para_shape.head_type() == 2 {
+            para_shape.list_level = Some(semantic_numbered_level(para_shape));
+        }
+    }
+
     // The direct eight-level contract is intentionally narrower than generic
     // NUMBERING parsing. Only eight complete observed records may restore the
     // semantic level carried by the level-8 definition reference. Records past
@@ -286,6 +297,26 @@ fn parse_char_shape(data: &[u8]) -> Result<CharShape> {
         border_fill_id,
         tail,
     })
+}
+
+/// The one-based semantic level of a numbered (head type 2) paragraph shape read from HWP5:
+/// attr1 bits 25..=27 hold level-1, and the eighth level is the clamped form bits 6 with the
+/// 16-byte tail's final u32 at 7 (07-hangul-compat-rules K1). No deeper form is measured.
+fn semantic_numbered_level(para_shape: &ParaShape) -> u8 {
+    let raw = ((para_shape.attr1 >> 25) & 0x7) as u8;
+    let tail_level = (para_shape.tail.len() >= 16).then(|| {
+        u32::from_le_bytes([
+            para_shape.tail[12],
+            para_shape.tail[13],
+            para_shape.tail[14],
+            para_shape.tail[15],
+        ])
+    });
+    if raw == 6 && tail_level == Some(7) {
+        8
+    } else {
+        raw + 1
+    }
 }
 
 fn parse_para_shape(data: &[u8]) -> Result<ParaShape> {
