@@ -543,6 +543,62 @@ fn adjacent_slot_claims_are_disjoint_and_both_apply() {
     apply_prepared_bindings(&mut doc, prepared).unwrap();
     assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "XX");
 }
+
+fn empty_inline_placeholder_overlap_case(inline_first: bool) {
+    let mut doc = document();
+    doc.sections[0].paragraphs[1] = paragraph("Name: {{x}}");
+    let catalogue = scan_form_occurrences(&doc, &source_hash()).unwrap();
+    let inline = catalogue
+        .occurrences
+        .iter()
+        .find(|item| item.kind == "inline_value" && item.label == "Name")
+        .expect("fixture must expose the competing inline claim");
+    let slot = catalogue
+        .occurrences
+        .iter()
+        .find(|item| item.kind == "placeholder" && item.label == "x")
+        .expect("fixture must expose the placeholder claim");
+    assert!(inline.bindable && slot.bindable);
+    assert_eq!(
+        inline.start, inline.end,
+        "inline fixture must claim an insertion point"
+    );
+    assert_eq!(inline.start, slot.start, "claims must share their start");
+    let (mut plan, _) = plan(&doc, inline, "B", true);
+    plan.bindings[0].key = "inline".into();
+    let slot_binding = Binding {
+        key: "slot".into(),
+        targets: vec![BindingTarget {
+            occurrence_id: slot.id.clone(),
+            copies: vec![0],
+            max_chars: 100,
+            allow_reflow: true,
+        }],
+    };
+    plan.bindings.push(slot_binding);
+    if !inline_first {
+        plan.bindings.reverse();
+    }
+    let values: Values = [("inline".into(), "B".into()), ("slot".into(), "A".into())]
+        .into_iter()
+        .collect();
+    let before = doc.clone();
+    let error = prepare_binding_plan(&doc, &source_hash(), &plan, &values)
+        .err()
+        .expect("empty and non-empty claims sharing a start must refuse before preparation");
+    assert!(error.contains("겹침") || error.contains("중복"));
+    assert_eq!(doc, before);
+}
+
+#[test]
+fn empty_inline_then_placeholder_refuses_atomically() {
+    empty_inline_placeholder_overlap_case(true);
+}
+
+#[test]
+fn placeholder_then_empty_inline_refuses_atomically() {
+    empty_inline_placeholder_overlap_case(false);
+}
 #[test]
 fn nonreflow_budget_counts_wchars_and_explicit_growth_needs_permission() {
     let mut doc = document();

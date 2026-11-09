@@ -736,6 +736,83 @@ fn binding_values_are_literal_text_in_both_native_formats() {
     }
 }
 
+fn empty_inline_placeholder_cli_case(extension: &str, inline_first: bool) {
+    let workspace = Workspace::new(&format!("empty-overlap-{extension}-{inline_first}"));
+    let markdown = workspace.0.join("fixture.md");
+    std::fs::write(&markdown, "# Fixture\n\nName: {{x}}\n").unwrap();
+    let source = workspace.0.join(format!("source.{extension}"));
+    success(
+        &hwp()
+            .args(["new", "--from"])
+            .arg(markdown)
+            .arg("-o")
+            .arg(&source)
+            .output()
+            .unwrap(),
+        "overlap fixture creation",
+    );
+    let original = std::fs::read(&source).unwrap();
+    let catalogue = discovery(&source);
+    let items = catalogue["occurrences"].as_array().unwrap();
+    let inline = items
+        .iter()
+        .find(|item| item["kind"] == "inline_value" && item["label"] == "Name")
+        .expect("inline fixture claim");
+    let slot = items
+        .iter()
+        .find(|item| item["kind"] == "placeholder" && item["label"] == "x")
+        .expect("slot fixture claim");
+    assert!(inline["bindable"] == true && slot["bindable"] == true);
+    assert_eq!(inline["start"], inline["end"]);
+    assert_eq!(inline["start"], slot["start"]);
+    let mut bindings = vec![
+        json!({"key":"inline","targets":[{"occurrence_id":inline["id"],"copies":[0],"max_chars":100,"allow_reflow":true}]}),
+        json!({"key":"slot","targets":[{"occurrence_id":slot["id"],"copies":[0],"max_chars":100,"allow_reflow":true}]}),
+    ];
+    if !inline_first {
+        bindings.reverse();
+    }
+    let operation = json!({"op":"apply_form_bindings", "plan":{"version":1,"source_sha256":catalogue["source_sha256"],
+        "structural_sha256":catalogue["structural_sha256"],"bindings":bindings,"repeats":[],"constraints":[]},
+        "values":{"inline":"B","slot":"A"},"receipt":workspace.0.join("receipt.json"),"preview":workspace.0.join("preview.json")});
+    let output = workspace.0.join(format!("bound.{extension}"));
+    std::fs::write(&output, b"original output").unwrap();
+    std::fs::write(workspace.0.join("receipt.json"), b"original receipt").unwrap();
+    std::fs::write(workspace.0.join("preview.json"), b"original preview").unwrap();
+    let result = edit(&workspace, &source, &output, operation, false);
+    assert!(
+        !result.status.success(),
+        "an empty inline and placeholder claim must refuse in either plan order"
+    );
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert_eq!(std::fs::read(output).unwrap(), b"original output");
+    assert_eq!(
+        std::fs::read(workspace.0.join("receipt.json")).unwrap(),
+        b"original receipt"
+    );
+    assert_eq!(
+        std::fs::read(workspace.0.join("preview.json")).unwrap(),
+        b"original preview"
+    );
+}
+
+#[test]
+fn empty_overlap_inline_first_hwp_refuses() {
+    empty_inline_placeholder_cli_case("hwp", true);
+}
+#[test]
+fn empty_overlap_slot_first_hwp_refuses() {
+    empty_inline_placeholder_cli_case("hwp", false);
+}
+#[test]
+fn empty_overlap_inline_first_hwpx_refuses() {
+    empty_inline_placeholder_cli_case("hwpx", true);
+}
+#[test]
+fn empty_overlap_slot_first_hwpx_refuses() {
+    empty_inline_placeholder_cli_case("hwpx", false);
+}
+
 fn mcp_tool(name: &str, arguments: Value) -> Value {
     let mut child = hwp()
         .arg("mcp")
