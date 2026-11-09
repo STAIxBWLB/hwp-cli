@@ -3970,6 +3970,38 @@ fn emit_picture(
 mod tests {
     use super::*;
 
+    /// Raw bits 7 are representable and decode as semantic level 8, though K1 observed no
+    /// genuine sample. Preserve their original record bytes rather than invent an encoding.
+    #[test]
+    fn read_raw_7_numbered_shape_emits_byte_identical() {
+        for tail_level in [0_u32, 5, 7] {
+            let mut data = vec![0; 58];
+            data[..4].copy_from_slice(&((2_u32 << 23) | (7 << 25)).to_le_bytes());
+            data[30..32].copy_from_slice(&1_u16.to_le_bytes());
+            data[50..54].copy_from_slice(&160_i32.to_le_bytes());
+            data[54..58].copy_from_slice(&tail_level.to_le_bytes());
+            let roots = [RecordNode {
+                tag: tag::ID_MAPPINGS,
+                data: Vec::new(),
+                children: vec![RecordNode {
+                    tag: tag::PARA_SHAPE,
+                    data: data.clone(),
+                    children: Vec::new(),
+                }],
+            }];
+            let (header, warnings) = crate::doc_info::parse_doc_info(&roots);
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(header.para_shapes.len(), 1);
+            let shape = &header.para_shapes[0];
+            assert_eq!(shape.list_level, Some(8));
+            assert_eq!(
+                emit_para_shape(shape).data,
+                data,
+                "a read raw-7 record must retain both its level bits and tail (tail={tail_level})"
+            );
+        }
+    }
+
     fn paragraph_id_record(id: u32) -> RecordNode {
         let mut data = vec![0x5a; 24];
         data[18..22].copy_from_slice(&id.to_le_bytes());
