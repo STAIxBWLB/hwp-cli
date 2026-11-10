@@ -1298,7 +1298,14 @@ fn layout_document_pages(
                 // Set when the greedy wrap itself crossed a page boundary (#282).
                 let mut para_split = false;
                 if para.chars.is_empty() {
-                    content_bottom += 16.0; // Approximate empty-paragraph height.
+                    // The anchor recorded above already carries this paragraph's space-before, so
+                    // the flow has to consume that position, not skip past it, and the paragraph
+                    // then owns the one line synthesis writes for it (its own line advance) (#422).
+                    // Space-after is left out on purpose: nothing here establishes that an empty
+                    // paragraph's gap moves a following anchor, and the raw-vs-half spacing unit
+                    // question belongs to #415.
+                    content_bottom += geom.spacing_top
+                        + crate::lineseg::paragraph_metrics(doc, para).advance as f32 / 100.0;
                 } else {
                     let end = para.wchar_len();
                     let mut items = shape_range_page(
@@ -3384,7 +3391,9 @@ fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
 /// always advances between paragraphs; equal `v_pos` inside a paragraph is one
 /// line split into several segments) — which is Hancom continuing the cell on a
 /// later page (#233); each run's extent is its last line bottom minus its first
-/// line top. A trailing empty cache record is legal and adds no height.
+/// line top. A record whose text range is empty adds no height — except an empty
+/// paragraph's own line, which occupies a line in the cell even though it carries
+/// no text, so a trailing blank keeps contributing its line to the row (#422).
 ///
 /// The stored row height is only a lower bound on this. Hancom's HWPX export
 /// keeps the declared minimum height while the cache runs past it, and an edit
@@ -3403,7 +3412,7 @@ fn cell_cache_total(cell: &hwp_model::Cell) -> f32 {
                 .line_segs
                 .get(index + 1)
                 .map_or(wchar_len, |next| next.text_start);
-            if line_end <= seg.text_start {
+            if line_end <= seg.text_start && !para.chars.is_empty() {
                 continue;
             }
             let restarts = previous_v.is_some_and(|previous| {
@@ -4896,7 +4905,21 @@ fn layout_box_para_iter<'a>(
 
         if line_segs.is_empty() {
             if para.chars.is_empty() {
-                content_bottom += 12.0;
+                // An empty cacheless paragraph still owns the one line synthesis writes for it
+                // (#422). It is not synthesized here, so it stays out of the list counter and
+                // draws no marker, but it has to contribute that line: its own line bottom is
+                // what the row measures, including when it is the last paragraph, and the
+                // transient cursor steps by its line spacing for whatever follows.
+                let metrics = crate::lineseg::paragraph_metrics(doc, para);
+                if synthesize_uncached {
+                    let line_bottom = origin_y
+                        + (uncached_next_v.saturating_add(metrics.height) - v_origin) as f32
+                            / 100.0;
+                    content_bottom = content_bottom.max(line_bottom);
+                    uncached_next_v = uncached_next_v.saturating_add(metrics.advance);
+                } else {
+                    content_bottom += metrics.height as f32 / 100.0;
+                }
             } else {
                 let end = para.wchar_len();
                 let items = shape_range_page(
@@ -4975,6 +4998,22 @@ fn layout_box_para_iter<'a>(
                 }
                 BoxParaSelection::Empty => unreachable!("empty selections are skipped above"),
             };
+            if para.chars.is_empty() {
+                // An empty paragraph's cache carries the one line synthesis writes for it, but
+                // every segment of it is zero length, so the loop below skips it and the row
+                // measured as if the blank were not there: a trailing blank stopped adding its
+                // line, and a cell holding only an empty paragraph collapsed to its margins and
+                // stored minimum. Its line bottom is the paragraph's whole contribution (#422
+                // review P2), taken at the same floor the placed lines below obey.
+                if let Some(seg) = line_segs.last() {
+                    let gap_pt = seg.baseline_gap as f32 / 100.0;
+                    let v_pos = seg.v_pos.saturating_sub(v_origin);
+                    let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
+                    let baseline_y = stored.max(flow_floor + gap_pt);
+                    content_bottom = content_bottom
+                        .max(baseline_y + (seg.line_height as f32 / 100.0 - gap_pt).max(0.0));
+                }
+            }
             // A paragraph whose cached position starts above the flow floor is
             // moved down as a whole, by the one offset its first line needs.
             // Clamping each line to the floor on its own would fold every line
@@ -7840,6 +7879,107 @@ mod cell_render_cache_tests {
         assert_eq!(
             native[0].col_start, 1000,
             "native synthesis retains its prior col_start"
+        );
+    }
+}
+
+#[cfg(test)]
+mod empty_paragraph_advance_tests {
+    use super::*;
+    use hwp_model::ids::{CharShapeId, ParaShapeId};
+
+    /// Three cacheless body paragraphs whose middle one is empty, with `spacing_top`/
+    /// `spacing_bottom` in IR units (twice HWPUNIT) and the empty paragraph's own char shape
+    /// carrying `base_size` HWPUNIT.
+    fn empty_middle_document(spacing_top: i32, spacing_bottom: i32, base_size: i32) -> Document {
+        let mut doc = hwp_convert::from_markdown("one\n");
+        let mut empty_shape =
+            doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize].clone();
+        empty_shape.spacing_top = spacing_top;
+        empty_shape.spacing_bottom = spacing_bottom;
+        doc.header.para_shapes.push(empty_shape);
+        let empty_shape_id = ParaShapeId(doc.header.para_shapes.len() as u16 - 1);
+        let mut empty_char_shape = doc.header.char_shapes[0].clone();
+        empty_char_shape.base_size = base_size;
+        doc.header.char_shapes.push(empty_char_shape);
+        let empty_char_shape_id = CharShapeId(doc.header.char_shapes.len() as u16 - 1);
+
+        let mut empty = doc.sections[0].paragraphs[0].clone();
+        empty.chars.clear();
+        empty.controls.clear();
+        empty.line_segs.clear();
+        empty.para_shape = empty_shape_id;
+        empty.char_shape_runs = vec![(0, empty_char_shape_id)];
+        let mut third = doc.sections[0].paragraphs[0].clone();
+        third.controls.clear();
+        third.line_segs.clear();
+        doc.sections[0].paragraphs[0].line_segs.clear();
+        doc.sections[0].paragraphs.insert(1, empty);
+        doc.sections[0].paragraphs.insert(2, third);
+        doc
+    }
+
+    /// The floating-table prepass, which is where the renderer records the flow position it
+    /// hands to synthesis. Body caches are cleared first, as that caller contract requires.
+    fn anchors_of(doc: &Document) -> BodyAnchors {
+        let mut store = crate::FontStore::new_isolated();
+        let mut warnings = crate::RenderIssueAccumulator::new();
+        synthesized_body_anchors(doc, &mut store, &mut warnings)
+    }
+
+    /// The empty paragraph's recorded anchor must be consumed by the paragraph's own flow
+    /// advancement: its one synthesized line's advance, with the following paragraph adding only
+    /// its own space-before (#422). Its space-after is deliberately not part of that advance yet,
+    /// so the row that sets one pins the boundary.
+    ///
+    /// Both spacing terms stay in the flow's own unit (IR / 200); the raw-vs-half difference
+    /// between this and the synthesized cursor is the paragraph-spacing unit calibration of
+    /// #415, so this pins consumption, not units. Font-free: metrics come from the char and
+    /// para shape tables only.
+    #[test]
+    fn 빈_본문_문단은_자신의_줄_전진과_뒤_여백만큼_전진한다() {
+        for (spacing_top, spacing_bottom, base_size) in
+            [(0, 0, 1000), (600, 0, 1400), (600, 1000, 1400)]
+        {
+            let doc = empty_middle_document(spacing_top, spacing_bottom, base_size);
+            let anchors = anchors_of(&doc);
+            assert!(
+                anchors.section_complete(0),
+                "the prepass must visit every paragraph: spacing_top={spacing_top}"
+            );
+            let before = anchors.slot(0, 1).expect("empty paragraph anchor");
+            let after = anchors.slot(0, 2).expect("following paragraph anchor");
+            let empty = &doc.sections[0].paragraphs[1];
+            let next = &doc.sections[0].paragraphs[2];
+            let advance = crate::lineseg::paragraph_metrics(&doc, empty).advance;
+            let expected = advance + (para_geometry(&doc, next).spacing_top * 100.0).round() as i32;
+            assert_eq!(
+                after.v_pos - before.v_pos,
+                expected,
+                "empty body paragraph advance with spacing_top={spacing_top}, \
+                 spacing_bottom={spacing_bottom}, base_size={base_size}: the position its own \
+                 anchor records must be consumed, not dropped"
+            );
+        }
+    }
+
+    /// The same step for a default paragraph is the one-line body advance, so the rule above
+    /// only moves paragraphs whose metrics or spacing are not the default.
+    #[test]
+    fn 기본_문단의_빈_줄_전진은_줄_전진_그대로다() {
+        let doc = empty_middle_document(0, 0, 1000);
+        let anchors = anchors_of(&doc);
+        let before = anchors.slot(0, 1).expect("empty paragraph anchor");
+        let after = anchors.slot(0, 2).expect("following paragraph anchor");
+        assert_eq!(
+            after.v_pos - before.v_pos,
+            crate::lineseg::paragraph_metrics(&doc, &doc.sections[0].paragraphs[1]).advance,
+            "a default empty paragraph advances by its line advance alone"
+        );
+        assert_eq!(
+            after.v_pos - before.v_pos,
+            1600,
+            "the default body advance is 10pt at 160% line spacing"
         );
     }
 }

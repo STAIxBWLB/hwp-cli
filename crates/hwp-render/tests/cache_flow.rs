@@ -73,6 +73,14 @@ fn layout(doc: &Document) -> DisplayList {
     hwp_render::layout::layout_document(doc, &mut store, &mut issues)
 }
 
+/// The same layout with the host's fonts, for the one assertion that needs a drawn list marker.
+/// Every other assertion in this file is geometry-only and stays font-free.
+fn layout_with_fonts(doc: &Document) -> DisplayList {
+    let mut store = FontStore::new();
+    let mut issues = RenderIssueAccumulator::new();
+    hwp_render::layout::layout_document(doc, &mut store, &mut issues)
+}
+
 fn rectangles(list: &DisplayList, color: u32) -> Vec<(f32, f32, f32, f32)> {
     list.pages
         .iter()
@@ -178,6 +186,208 @@ fn wholly_uncached_cells_keep_prior_nested_cache_convention() {
     assert!(
         (uncached[0].3 - synthesized[0].3).abs() < 0.01,
         "temporary and persisted cell geometry must have the same height"
+    );
+}
+
+/// An empty paragraph inside a wholly cacheless cell list advances the renderer's flow by the
+/// one line synthesis writes for it, not by a fixed height of its own (#422): the row the two
+/// passes measure must agree, so following cell content does not move once the cache exists.
+#[test]
+fn cacheless_empty_cell_paragraph_advances_like_its_synthesized_line() {
+    let mut source = hwp_convert::from_markdown("Anchor\n");
+    let fill_color = 0x0034_5679;
+    let fill = add_fill(&mut source, fill_color);
+    let mut text = paragraph(&source);
+    text.line_segs.clear();
+    let mut empty = text.clone();
+    empty.chars.clear();
+    let cell = table(vec![text.clone(), empty, text], fill, 1);
+    source.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(cell));
+
+    let uncached = rectangles(&layout(&source), fill_color);
+    let mut cached = source.clone();
+    synthesize(&mut cached);
+    let cell = cached.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => Some(&table.cells[0]),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        cell.paragraphs[1].line_segs.len(),
+        1,
+        "synthesis writes one line for the empty paragraph, so the flow cannot skip it"
+    );
+    let after_first = cell.paragraphs[0].line_segs[0]
+        .v_pos
+        .saturating_add(cell.paragraphs[0].line_segs[0].line_height);
+    assert!(
+        cell.paragraphs[1].line_segs[0].v_pos >= after_first,
+        "the empty paragraph's line starts at the previous line's advance, not a fixed height"
+    );
+    let synthesized = rectangles(&layout(&cached), fill_color);
+    assert_eq!(uncached.len(), 1);
+    assert_eq!(synthesized.len(), 1);
+    assert!(
+        uncached[0].3 > 28.0,
+        "the empty paragraph adds its own line to the two text lines: {uncached:?}"
+    );
+    assert!(
+        (uncached[0].3 - synthesized[0].3).abs() < 0.01,
+        "cacheless and synthesized cell geometry must agree: cacheless {uncached:?}, synthesized {synthesized:?}"
+    );
+}
+
+/// The empty paragraph's line has to reach the measured row even when nothing follows it: a
+/// trailing blank must not collapse the cell back to its single text line (#422 review P2).
+#[test]
+fn trailing_empty_cell_paragraph_contributes_its_line_to_the_row() {
+    let mut source = hwp_convert::from_markdown("Anchor\n");
+    let fill_color = 0x0034_567A;
+    let fill = add_fill(&mut source, fill_color);
+    let mut text = paragraph(&source);
+    text.line_segs.clear();
+    let mut empty = text.clone();
+    empty.chars.clear();
+    let cell = table(vec![text, empty], fill, 1);
+    source.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(cell));
+
+    let uncached = rectangles(&layout(&source), fill_color);
+    let mut cached = source.clone();
+    synthesize(&mut cached);
+    let synthesized = rectangles(&layout(&cached), fill_color);
+    assert_eq!(uncached.len(), 1);
+    assert_eq!(synthesized.len(), 1);
+    // One text line alone is 12.0pt here, so anything above it is the blank's own line.
+    assert!(
+        uncached[0].3 > 12.0,
+        "the trailing empty paragraph keeps the row above the one text line: {uncached:?}"
+    );
+    assert!(
+        synthesized[0].3 > 12.0,
+        "a cached trailing blank contributes its line too: {synthesized:?}"
+    );
+    assert!(
+        (uncached[0].3 - synthesized[0].3).abs() < 0.01,
+        "cacheless and synthesized rows must agree: cacheless {uncached:?}, synthesized {synthesized:?}"
+    );
+}
+
+/// A cell holding only an empty paragraph still owns that paragraph's one line: neither pass may
+/// collapse the row to its margins and authored minimum (#422 review P2).
+#[test]
+fn empty_only_cell_paragraph_keeps_its_line_in_the_row() {
+    let mut source = hwp_convert::from_markdown("Anchor\n");
+    let fill_color = 0x0034_567C;
+    let fill = add_fill(&mut source, fill_color);
+    let mut empty = paragraph(&source);
+    empty.chars.clear();
+    let cell = table(vec![empty], fill, 1);
+    source.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(cell));
+
+    let uncached = rectangles(&layout(&source), fill_color);
+    let mut cached = source.clone();
+    synthesize(&mut cached);
+    let synthesized = rectangles(&layout(&cached), fill_color);
+    assert_eq!(uncached.len(), 1);
+    assert_eq!(synthesized.len(), 1);
+    // 2.0pt is the cell's own margins; the line adds the 10.0pt text line on top of it.
+    assert!(
+        uncached[0].3 > 2.0,
+        "the only paragraph's line keeps the row above the bare margins: {uncached:?}"
+    );
+    assert!(
+        synthesized[0].3 > 2.0,
+        "a cached lone blank contributes its line too: {synthesized:?}"
+    );
+    assert!(
+        (uncached[0].3 - synthesized[0].3).abs() < 0.01,
+        "cacheless and synthesized rows must agree: cacheless {uncached:?}, synthesized {synthesized:?}"
+    );
+}
+
+fn glyph_texts(list: &DisplayList) -> Vec<String> {
+    list.pages
+        .iter()
+        .flat_map(|page| &page.items)
+        .filter_map(|item| match item {
+            Item::Glyphs { run, .. } => Some(run.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An empty paragraph in a numbered, wholly cache-less cell list must not consume a number: the
+/// visible items keep `1.` and `2.` instead of skipping to `3.` (#422 review P2).
+#[test]
+fn empty_cell_paragraph_does_not_consume_a_list_number() {
+    let mut source = hwp_convert::from_markdown("Anchor\n");
+    let fill_color = 0x0034_567B;
+    let fill = add_fill(&mut source, fill_color);
+    // The converter's ordering list carries its own numbering definition, so the marker text is
+    // the list's own `1.` rather than a guessed shape.
+    let numbering = hwp_convert::from_markdown("1. First\n");
+    let numbered = numbering.sections[0]
+        .paragraphs
+        .iter()
+        .find(|para| {
+            numbering
+                .header
+                .para_shapes
+                .get(para.para_shape.0 as usize)
+                .is_some_and(|shape| shape.head_type() == 2)
+        })
+        .expect("the ordering list has a numbered paragraph")
+        .clone();
+    let mut text = paragraph(&source);
+    text.para_shape = numbered.para_shape;
+    text.line_segs.clear();
+    if let Some(shape) = numbering
+        .header
+        .para_shapes
+        .get(numbered.para_shape.0 as usize)
+    {
+        let index = source.header.para_shapes.len();
+        source.header.para_shapes.push(shape.clone());
+        text.para_shape = hwp_model::ParaShapeId(index as u16);
+    }
+    for numbering_list in &numbering.header.numberings {
+        source.header.numberings.push(numbering_list.clone());
+    }
+    let mut empty = text.clone();
+    empty.chars.clear();
+    let cell = table(vec![text.clone(), empty, text], fill, 1);
+    source.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(cell));
+
+    let texts = glyph_texts(&layout_with_fonts(&source));
+    if texts.is_empty() {
+        fixture_skip::resource_unavailable(
+            "host font for the cell list-marker precondition",
+            "install a system font with digit glyphs",
+        );
+        return;
+    }
+    assert!(
+        texts.iter().any(|text| text == "1."),
+        "the first visible item keeps its number: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "2."),
+        "the empty paragraph must not consume the second number: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|text| text == "3."),
+        "no visible item reaches the third number: {texts:?}"
     );
 }
 

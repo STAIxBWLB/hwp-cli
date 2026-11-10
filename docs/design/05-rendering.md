@@ -76,7 +76,11 @@ cursor), `paras_on_page=0`, `page_notes: Vec<&Note>` and `list_state: ListState`
 Per paragraph, prepare `footnote::para_marks`/`para_notes` (collecting footnote markers and notes),
 `tab::tab_stops`, `para_geometry`, `hyperlink_ranges` and `list_state.marker_for_render`, then:
 
-- **When `line_segs` is empty (fallback)**: an empty paragraph advances `content_bottom += 16.0`.
+- **When `line_segs` is empty (fallback)**: an empty paragraph advances `content_bottom` by its
+  own space-before plus the one line synthesis writes for it (`lineseg::paragraph_metrics`
+  advance), so the anchor the flow records is a position the flow itself consumes; a default
+  paragraph therefore keeps its 16 pt step ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
+  Its space-after and the raw-vs-half spacing unit stay out of that advance (#415).
   Otherwise the whole paragraph is shaped with `shape_range_notes` and broken greedily against
   `body_width` by `place_wrapped`. `baseline_y = content_bottom + spacing_top + max_size*1.2`, and
   `content_bottom = last_y + max_size*0.4 + spacing_bottom`. Center and right alignment are corrected
@@ -138,14 +142,17 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
    only a lower bound, though: the cell's own cache is where Hancom drew the lines, so the row is at
    least as tall as the cached text, summed per run (a run ends at a page-start flag, a `v_pos`
    going backwards, or a paragraph start that does not advance — Hancom continuing the cell on a
-   later page, #233). Hancom's HWPX export keeps the declared minimum height under a taller cache,
-   and an edit that re-synthesizes a cell keeps the pre-edit height (#245); in both cases the row
-   grows to the cache total, and `layout_box_para_iter` draws a continuation run below the previous
-   line (`run_shift`, inside one paragraph) or below the previous paragraph (`para_shift`), so the
-   whole cell stays inside one row. Measured content beyond that floor (a nested object, our own
-   wrapping) still does not grow the row and is reported. For `row_span>1`, any shortfall against
-   the spanned sum is added to the last spanned row — again only when the spanned rows carry no
-   stored height or the cache floor exceeds it.
+   later page, #233). A cache record whose text range is empty adds no height, except an empty
+   paragraph's own line: the blank carries no text but still occupies a line, so a trailing or lone
+   empty paragraph keeps contributing its line bottom to the row instead of collapsing the cell to
+   its margins ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)). Hancom's HWPX export keeps
+   the declared minimum height under a taller cache, and an edit that re-synthesizes a cell keeps the
+   pre-edit height (#245); in both cases the row grows to the cache total, and `layout_box_para_iter`
+   draws a continuation run below the previous line (`run_shift`, inside one paragraph) or below the
+   previous paragraph (`para_shift`), so the whole cell stays inside one row. Measured content beyond
+   that floor (a nested object, our own wrapping) still does not grow the row and is reported. For
+   `row_span>1`, any shortfall against the spanned sum is added to the last spanned row — again only
+   when the spanned rows carry no stored height or the cache floor exceeds it.
 4. Cumulative offsets `col_x = prefix_sums(col_w, x)` and `row_prefix = prefix_sums(row_h, 0)` (per
    fragment a base y is added, so the same prefix serves every page fragment).
 5. Per cell: **a background Rect**, then **the content** (margins plus the vertical alignment `voff`
@@ -384,7 +391,12 @@ the standard flag value of a genuine body line.
 
 `fill_nested` first fills the line layout of paragraphs inside cells and text boxes (cell width is
 `cell.width - margins[0] - margins[1]`, v_pos resets per cell, and `content_h=i32::MAX` disables page
-splitting; a text box uses width `gso_shapes[0].w - 566`).
+splitting; a text box uses width `gso_shapes[0].w - 566`). A wholly cache-less list is drawn through
+the same ephemeral synthesis as its neighbours, with one exception: an empty paragraph is not
+synthesized, so it never reaches `marker_for_render` and cannot consume an invisible list number, but
+it still owns exactly one line: that line advances the flow cursor by `paragraph_metrics`, and its
+line bottom is what the row measures, including when it is the cell's last paragraph
+([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
 
 The table height formula (derived from genuine measurements):
 
