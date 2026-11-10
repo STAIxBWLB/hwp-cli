@@ -1,10 +1,9 @@
-//! IR → HWP 5.0 파일 쓰기.
+//! Writes the IR to HWP 5.0 files.
 //!
-//! 모든 방출 함수는 doc_info/body_text 파서와 **거울 대칭**이다 —
-//! "알려진 prefix + tail" 규칙 덕에 hwp5에서 읽은 문서는 바이트
-//! 수준으로 복원된다(단순 컨트롤 한정; gso 등 평탄화된 구조는 의미
-//! 수준). ID_MAPPINGS 카운트는 테이블 길이에서 유도한다(수동 동기화
-//! 금지) — 원본에 버전별 추가 카운트가 있으면 꼬리만 보존.
+//! Every emitter mirrors its doc_info/body_text parser. The known-prefix-plus-tail rule restores
+//! HWP5-origin documents byte-for-byte for simple controls, and semantically for flattened
+//! structures such as gso. Derive ID_MAPPINGS counts from table lengths, never synchronize them
+//! manually; retain only the tail when the source has version-specific extra counts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
@@ -24,20 +23,20 @@ use crate::record::{RecordNode, ScanMode, scan_stream, tag};
 
 #[derive(Default)]
 pub struct WriteOptions {
-    /// PrvImage 스트림 내용 (PNG 권장 — 없으면 스트림 생략)
+    /// PrvImage stream content (PNG recommended); omit the stream when absent.
     pub prv_image: Option<Vec<u8>>,
-    /// 줄 배치(PARA_LINE_SEG) 보존 여부.
+    /// Whether to preserve line layouts (PARA_LINE_SEG).
     ///
-    /// 한글은 줄 배치 캐시가 내용과 정합하지 않으면 "변조" 보안 경고를
-    /// 띄운다 (한컴 공식: 내용 수정 시 제거 권장). 기본 false — 한글이
-    /// 열 때 재계산한다. 무수정 바이트 왕복에만 true를 쓸 것.
+    /// Hangul raises a tampering security warning when cached line layouts disagree with content
+    /// (Hancom officially recommends removing them after content edits). Default false lets Hangul
+    /// recalculate on open. Use true only for unmodified byte round-trips.
     pub preserve_linesegs: bool,
-    /// 편집된 hwp5 원본을 다시 쓸 때 참.
+    /// True when rewriting an edited HWP5 source.
     ///
-    /// hwp5 출신이라도 내용을 바꿨으면 합성 경로의 문단 불변식(문단끝 0x0d·
-    /// nchars bit31=마지막 문단·빈 문단 PARA_TEXT 생략·줄 배치 방출)을 다시
-    /// 세워야 한글이 수용한다. 단 그림은 이미 hwp5 도형 레코드를 가지므로
-    /// 재합성(synthesize_pictures)은 **하지 않는다**(출처 기준으로만 수행).
+    /// Even HWP5-origin content edits must restore synthesized-path paragraph invariants (ending
+    /// 0x0d, nchars bit31 for the last paragraph, omitted PARA_TEXT for empty paragraphs, emitted
+    /// line layouts) for Hangul acceptance. Do not resynthesize existing HWP5 pictures: they
+    /// already carry shape records; synthesize_pictures is gated by origin.
     pub edited: bool,
     /// Conversion defaults were applied to each non-HWP5 input before merging.
     /// Skip document-wide paragraph-shape defaults so grafted HWP5 shapes keep
@@ -67,7 +66,7 @@ struct HwpMutationPlan {
     removed_bins: BTreeSet<String>,
 }
 
-/// 문서를 HWP 5.0 파일로 저장한다. 경고(평탄화/드롭) 목록을 반환한다.
+/// Saves a document as HWP 5.0 and returns flattening/removal warnings.
 ///
 /// This is the legacy compatibility surface. New callers should use
 /// [`write_document_with_report`] so preservation events remain typed rather
@@ -609,24 +608,24 @@ fn materialize_document(
         .map(|stream| normalized_bin_name(&stream.name))
         .collect::<Vec<_>>();
 
-    // hwpx 출신 문서 정규화: hwp5 레코드(SHAPE_COMPONENT)가 없는 그림은
-    // 쓸 수 없으므로 컨트롤과 확장 문자를 동기 제거한다
+    // Normalize HWPX-origin documents: pictures without HWP5 SHAPE_COMPONENT records cannot be
+    // written, so remove controls and extended characters together.
     //
-    // synthesize = 문단 불변식·줄 배치를 다시 세워야 하는 경로(hwpx/md 출신 또는
-    // 편집된 hwp5). synth_pictures = hwpx/md 출신 그림을 hwp5 도형으로 합성해야
-    // 하는 경로(출처 기준 — 편집된 hwp5 그림은 이미 도형 레코드를 가지므로 제외).
-    // 단 편집으로 새로 삽입된 그림(extras 빈 Picture)은 출처와 무관하게 합성해야
-    // strip_unwritable_pictures에 드롭되지 않는다.
+    // synthesize restores paragraph invariants and line layouts for HWPX/Markdown input or edited
+    // HWP5. synth_pictures creates HWP5 shapes for HWPX/Markdown pictures based on origin,
+    // excluding edited HWP5 pictures that already have shape records. Newly inserted pictures with
+    // empty extras must be synthesized regardless of origin or strip_unwritable_pictures removes
+    // them.
     let synth_pictures = doc.meta.source_format != "hwp5" || has_synthesizable_picture(doc);
-    // hwpx-출신 구조화 도형/글상자(gso_shapes)는 hwp5 gso 레코드로 역합성해야
-    // strip에 드롭되지 않는다(그림 합성과 동일 게이트 논리).
+    // HWPX-origin structured shapes/text boxes (gso_shapes) need HWP5 gso record synthesis to
+    // survive stripping, using the same gate logic as picture synthesis.
     let synth_gso = doc.meta.source_format != "hwp5" || has_synthesizable_gso(doc);
     let synthesize = synth_pictures || synth_gso || opts.edited;
     let normalized;
     let doc = if needs_normalize(doc) || synthesize {
         let mut d = doc.clone();
-        // hwpx/md 출신 이미지에 hwp5 도형 레코드(SHAPE_COMPONENT + 그림)를 먼저
-        // 합성한다 — 합성되면 extras가 채워져 아래 strip이 드롭하지 않는다.
+        // First synthesize HWP5 shape records (SHAPE_COMPONENT plus picture) for HWPX/Markdown
+        // images. Populated extras prevent stripping below.
         if synth_pictures {
             synthesize_pictures(&mut d, &mut report);
         }
@@ -638,24 +637,24 @@ fn materialize_document(
                 strip_unwritable_pictures(para, &mut report);
             }
         }
-        // 합성 5.1.x 문서: 줄 배치(PARA_LINE_SEG)를 합성한다. 5.1.x는 줄 배치
-        // 캐시가 없으면 한글이 본문을 0높이로 그려 '검은 바'/'빈 내용', 심하면
-        // '손상'으로 판정한다(실기 13차 확정 — bit31 클리어 시 전부 손상,
-        // work_rt 5.0.2.4는 재계산하나 5.1.x 정품은 본문 문단 lineseg 100% 보유).
+        // Synthesize PARA_LINE_SEG for generated 5.1.x documents. Without this cache, Hangul draws
+        // body text at zero height (black bars/empty content) or declares corruption. Hardware
+        // round 13 confirmed that clearing bit31 corrupts all cases; work_rt 5.0.2.4 recalculates,
+        // but genuine 5.1.x files have line segments for every body paragraph.
         if synthesize {
-            // 줄 배치(PARA_LINE_SEG)는 hwp-cli가 hwp-render의 폰트 셰이핑으로
-            // 정확히 계산해 IR(para.line_segs)에 미리 채운다(hwp5는 hwp-render를
-            // 역참조할 수 없으므로). 여기서는 채워진 줄 배치를 방출만 한다.
-            // nchars bit31 = '리스트의 마지막 문단' 표식: 각 리스트(섹션/표 셀/
-            // 글상자)의 마지막 문단만 세팅한다(정품 다문단 5.1.1.0 실측).
+            // hwp-cli prepopulates para.line_segs using accurate hwp-render font shaping, since
+            // hwp5 cannot depend back on hwp-render. This layer only emits those line layouts.
+            // nchars bit31 marks the last paragraph of a list. Set it only on the last paragraph in
+            // each section/table-cell/text-box list (measured in genuine multiparagraph 5.1.1.0
+            // files).
             for section in &mut d.sections {
                 set_last_para_flag(&mut section.paragraphs);
             }
-            // hwpx 경유 변환은 ParaShape.attr1(한글 줄나눔·줄격자 비트)·
-            // line_spacing_old·border_fill_id 와 구역 첫 문단 break_type=0x03 을
-            // 왕복에서 잃는다(hwpx writer/reader가 직렬화/복원하지 않음). 합성
-            // 경로에서만 정상 표본 기준값을 보정 주입한다 — hwp5 무수정 왕복
-            // (synthesize=false)은 거치지 않으므로 바이트 동일 게이트 무영향.
+            // HWPX round-trips lose ParaShape.attr1 Korean line-breaking/grid bits,
+            // line_spacing_old, border_fill_id, and the first section paragraph's break_type=0x03
+            // because its writer/reader does not serialize/restore them. Inject normal-sample
+            // reference values only on the synthesized path. Unmodified HWP5 round-trips skip this
+            // path (synthesize=false), preserving the byte-identity gate.
             if !source_preserving {
                 // An HWP5 source's own para shapes are genuine: a border_fill_id of 0 there
                 // means "no border", and 5.0.2.x files use it (#381 review). Only a converted
@@ -678,14 +677,14 @@ fn materialize_document(
         doc
     };
 
-    // 레코드 스트림 구성
+    // Construct record streams.
     let doc_info_nodes = emit_doc_info(doc, &mut report);
     let doc_info = RecordNode::serialize_forest(&doc_info_nodes);
-    // PARA_HEADER 꼬리 게이트: 5.0.3.2 이상은 '변경추적 병합 문단여부' UINT16이
-    // 필수다(스펙 표 58, 전체 길이 24B). 합성 문단(tail 비어 있음)에만 적용해
-    // 24B를 맞춘다. 22B만 쓰면 한글이 버전-레이아웃 불일치로 '손상/변조' 경고
-    // (sample_m6 5.1.0.1·halla 5.1.1.0 실증). pre-5.0.3.2(work_report 5.0.2.4)는
-    // 22B가 정답이므로 게이트 false.
+    // PARA_HEADER tail gate: versions 5.0.3.2+ require a UINT16 merged-track-change-paragraph field
+    // (specification table 58, total 24 bytes). Pad only synthesized paragraphs with empty tails to
+    // 24 bytes. Writing 22 causes a version/layout mismatch and Hangul corruption/tampering
+    // warnings, verified with sample_m6 5.1.0.1 and halla 5.1.1.0. Pre-5.0.3.2 (work_report
+    // 5.0.2.4) correctly uses 22 bytes, so disable this gate there.
     let add_tracking_tail = parse_version(&doc.meta.source_version).to_u32() >= 0x05_00_03_02;
     // Paragraph instance id counter: a synthesized paragraph (instance_id 0) gets a non-zero id.
     // Hancom judges instance_id 0 abnormal ("corrupt/tampered", A8; every sample is non-zero).
@@ -732,17 +731,17 @@ fn materialize_document(
     // FileHeader
     let header = FileHeader {
         version: parse_version(&doc.meta.source_version),
-        attributes: 0x1, // 압축
+        attributes: 0x1, // Compressed.
         license: 0,
-        // 비암호 문서라도 현대 한글(2010+)은 EncryptVersion=4(글 7.0+)를
-        // 무조건 쓴다. fixtures/hwp5 표본 6개 전부 attr1 암호화 bit(=bit1)는
-        // 0인데 encver=4. 0을 쓰면 한글이 '손상/변조'로 거부한다(실기 게이트).
+        // Modern Hangul (2010+) always writes EncryptVersion=4 (Hangul 7.0+) even for unencrypted
+        // documents. All six fixtures/hwp5 samples have attr1 encryption bit1 clear but encver=4.
+        // Writing zero makes Hangul reject corruption/tampering (hardware gate).
         encrypt_version: 4,
         kogl_country: 0,
         reserved: [0u8; FILE_HEADER_SIZE - 49],
     };
 
-    // 미리보기 텍스트 (UTF-16LE, 약 1000자)
+    // Preview text (UTF-16LE, approximately 1000 characters).
     let mut preview = doc.plain_text();
     preview.truncate(
         preview
@@ -765,7 +764,7 @@ fn materialize_document(
             encode_compressed_stream(body.clone(), compressed),
         );
     }
-    // BIN_DATA 테이블이 참조하는 스트림만 동봉 (hwp5 명명 규칙)
+    // Include only streams referenced by the BIN_DATA table, following HWP5 naming rules.
     let referenced: Vec<String> = doc
         .header
         .bin_data
@@ -1167,9 +1166,9 @@ fn assign_instance_ids(
     Ok(())
 }
 
-/// 리스트(문단 목록)의 마지막 문단에만 nchars bit31(chars_flags 0x80)을 세팅한다.
-/// 정품 다문단(5.1.1.0): 섹션·표 셀·글상자의 마지막 문단만 세팅, 나머지 0.
-/// 표 셀·글상자 안 문단 리스트도 재귀 처리한다.
+/// Sets nchars bit31 (chars_flags 0x80) only on the last paragraph of each list. Genuine
+/// multiparagraph 5.1.1.0 files set only the last paragraph in sections, table cells and text
+/// boxes; others are zero. Recurse into table-cell/text-box paragraph lists.
 fn set_last_para_flag(paras: &mut [Paragraph]) {
     let n = paras.len();
     for (i, p) in paras.iter_mut().enumerate() {
@@ -1485,15 +1484,15 @@ fn materialize_evidenced_official_numbering(doc: &mut Document) -> Result<()> {
     Ok(())
 }
 
-/// hwp5로 쓸 수 없는 그림(SHAPE_COMPONENT 레코드 부재)이 있는지.
+/// Whether any pictures lack writable HWP5 SHAPE_COMPONENT records.
 fn needs_normalize(doc: &Document) -> bool {
     fn para_has(para: &Paragraph) -> bool {
         para.controls.iter().any(|c| match c {
             Control::Picture(p) => p.extras.is_empty(),
             Control::Table(t) => t.cells.iter().flat_map(|c| &c.paragraphs).any(para_has),
-            // hwp5 출신(raw_children 보존)은 원본 트리를 그대로 방출하므로
-            // 정규화 불필요. raw_children가 없는데 data도 없는 컨트롤만
-            // (hwpx/md 출신 합성 불가) 드롭 대상.
+            // HWP5-origin controls with raw_children emit the original tree without normalization.
+            // Only controls missing both raw_children and data (unsynthesizable HWPX/Markdown
+            // input) are removed.
             Control::Generic(g) => {
                 (g.data.is_empty() && g.ctrl_id != *b"cold" && g.raw_children.is_empty())
                     || g.paragraph_lists
@@ -1510,17 +1509,17 @@ fn needs_normalize(doc: &Document) -> bool {
         .any(para_has)
 }
 
-// ── hwpx/md 출신 이미지의 hwp5 도형 레코드 합성 ───────────────────────────
+// HWP5 shape-record synthesis for HWPX/Markdown images.
 //
-// hwpx의 `<hp:pic>`은 IR Picture(extras 비어 있음)로 읽힌다. hwp5는 그림을
-// gso CTRL_HEADER → SHAPE_COMPONENT → SHAPE_COMPONENT_PICTURE 트리 + BIN_DATA
-// 항목 + BinData 스트림으로 저장한다. 정품 work_report.hwp의 이미지 레코드를
-// 템플릿으로 쓰고 크기·모서리·BinItem ID만 패치한다(단위 변환행렬은 크기
-// 무관). 합성 후 extras가 채워져 strip이 드롭하지 않는다.
+// HWPX hp:pic becomes an IR Picture with empty extras. HWP5 stores it as a gso CTRL_HEADER ->
+// SHAPE_COMPONENT -> SHAPE_COMPONENT_PICTURE tree, a BIN_DATA item, and a BinData stream. Use the
+// genuine work_report.hwp picture records as templates, patching only dimensions, corners and
+// BinItem ID (the identity transform is size-independent). Populated extras keep synthesized
+// pictures from being stripped.
 
-/// 머리말/꼬리말(head/foot) LIST_HEADER 34B 템플릿 (정품 work_report.hwp foot).
-/// paraCount@0(u16)만 실제 문단 수로 패치. hwpx 출신 머리말은 LIST_HEADER가
-/// 비어 있어 이 템플릿으로 채워야 한글이 머리말(과 내부 로고)을 그린다.
+/// 34-byte header/footer (head/foot) LIST_HEADER template from the genuine work_report.hwp footer.
+/// Patch only paraCount at offset 0 (u16) to the actual count. HWPX-origin headers have no
+/// LIST_HEADER; this template lets Hangul draw the header and its logo.
 const HEADER_LIST_HEADER_TEMPLATE: &str =
     "01000000400000003ebc0000130b0000000000000000000000000000000000000000";
 /// SHAPE_COMPONENT 196B. width@20/28, height@24/32.
@@ -1532,8 +1531,8 @@ fn hex_to_bytes(s: &str) -> Vec<u8> {
         .collect()
 }
 
-/// 임베드 이미지 바이트에서 픽셀 크기(가로,세로)를 읽는다. PNG/JPEG/GIF/BMP.
-/// 그림의 자르기(clip)·picture_effect에 들어가는 "원본 자연 크기" 계산용.
+/// Reads embedded PNG/JPEG/GIF/BMP pixel dimensions (width, height) for the original natural size
+/// in picture clipping and picture_effect.
 fn image_pixel_size(data: &[u8]) -> Option<(u32, u32)> {
     if data.len() >= 24 && data.starts_with(b"\x89PNG\r\n\x1a\n") {
         // IHDR: width@16, height@20 (big-endian)
@@ -1542,7 +1541,7 @@ fn image_pixel_size(data: &[u8]) -> Option<(u32, u32)> {
         return Some((w, h));
     }
     if data.len() >= 10 && data.starts_with(b"GIF") {
-        // 논리 화면 width@6, height@8 (little-endian u16)
+        // Logical screen width at 6 and height at 8 (little-endian u16).
         let w = u16::from_le_bytes([data[6], data[7]]) as u32;
         let h = u16::from_le_bytes([data[8], data[9]]) as u32;
         return Some((w, h));
@@ -1554,7 +1553,7 @@ fn image_pixel_size(data: &[u8]) -> Option<(u32, u32)> {
         return Some((w.unsigned_abs(), h.unsigned_abs()));
     }
     if data.len() >= 4 && data[0] == 0xFF && data[1] == 0xD8 {
-        // JPEG: SOFn 마커(C0~CF, 단 C4/C8/CC 제외)에서 height/width(big-endian)
+        // JPEG: height/width in SOFn markers (C0..CF except C4/C8/CC), big-endian.
         let mut i = 2;
         while i + 9 < data.len() {
             if data[i] != 0xFF {
@@ -1579,21 +1578,21 @@ fn image_pixel_size(data: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-/// 픽셀 크기 → HWPUNIT 자연 크기(96 DPI 기준, px × 7200/96 = px × 75).
+/// Pixel dimensions -> natural HWPUNIT dimensions at 96 DPI: px * 7200/96 = px * 75.
 fn natural_size_hwpunit(px: (u32, u32)) -> (i32, i32) {
     let conv = |v: u32| (v as i64 * 7200 / 96) as i32;
     (conv(px.0), conv(px.1))
 }
 
-/// 정품 템플릿을 크기·BinItem ID로 패치해 그림 extras(SHAPE_COMPONENT +
-/// 그 자식 SHAPE_COMPONENT_PICTURE)를 만든다.
+/// Patches the genuine template's dimensions and BinItem ID into picture extras: SHAPE_COMPONENT
+/// plus its SHAPE_COMPONENT_PICTURE child.
 ///
-/// - `width`/`height`: 표시 크기(HWPUNIT). gso 박스·도형 최종 크기.
-/// - `natural`: 원본 이미지 자연 크기(픽셀×7200/96). 그림 자르기(clip)
-///   사각형 = (0,0,natural) — **전체 이미지를 표시**한다. 표시 크기를 자르기로
-///   쓰면 원본의 좌상단 일부만 잘려 보여(예: 8196/150000 ≈ 5%) 한글에서
-///   그림이 거의 안 보인다(정품 한글은 항상 자연 크기를 쓴다).
-/// - `bin_id`: BIN_DATA 항목 ID. `pic_inst`: 그림 개체 유니크 instance_id.
+/// - width/height: display dimensions in HWPUNIT, the final gso box/shape size.
+/// - natural: original-image natural size (pixels * 7200/96). The clipping rectangle (0,0,natural)
+///   shows the whole image. Using display size for clipping shows only a small upper-left crop
+///   (e.g. 8196/150000, about 5%), nearly hiding the picture in Hangul. Genuine Hangul always uses
+///   natural size.
+/// - bin_id: BIN_DATA item ID. pic_inst: the picture object's unique instance_id.
 fn build_picture_extras(
     width: i32,
     height: i32,
@@ -1605,35 +1604,35 @@ fn build_picture_extras(
     let h = height.to_le_bytes();
     let (nw, nh) = natural;
     let mut sc = hex_to_bytes(SHAPE_COMPONENT_TEMPLATE);
-    sc[20..24].copy_from_slice(&w); // 폭(최종)
-    sc[24..28].copy_from_slice(&h); // 높이(최종)
-    sc[28..32].copy_from_slice(&w); // 폭(초기) — 단위행렬이라 최종과 동일
-    sc[32..36].copy_from_slice(&h); // 높이(초기)
+    sc[20..24].copy_from_slice(&w); // Final width.
+    sc[24..28].copy_from_slice(&h); // Final height.
+    sc[28..32].copy_from_slice(&w); // Initial width, equal to final width under the identity matrix.
+    sc[32..36].copy_from_slice(&h); // Initial height.
 
-    // SHAPE_COMPONENT_PICTURE 91B (정품 5.1.x 레이아웃):
-    // 테두리(12) + 표시 사각형 4꼭지점(32) + 자르기(16: 0,0,natural) +
-    // 안쪽여백(8) + 그림(5: 밝기,명암,효과,BinItem ID) + 테두리투명(1) +
+    // SHAPE_COMPONENT_PICTURE, genuine 5.1.x layout (91 bytes): border (12), four display-rectangle
+    // corners (32), clip (16: 0,0,natural), inner margins (8), picture (5: brightness, contrast,
+    // effect, BinItem ID), border transparency (1),
     // instance_id(4) + picture_effect(13: flags4=0 + natural_w4 + natural_h4 + 1)
     let mut pic = Vec::with_capacity(91);
-    pic.extend_from_slice(&[0u8; 12]); // 테두리
+    pic.extend_from_slice(&[0u8; 12]); // Border.
     for &(x, y) in &[(0, 0), (width, 0), (width, height), (0, height)] {
         pic.extend_from_slice(&i32::to_le_bytes(x));
         pic.extend_from_slice(&i32::to_le_bytes(y));
     }
-    pic.extend_from_slice(&0i32.to_le_bytes()); // 자르기 좌
-    pic.extend_from_slice(&0i32.to_le_bytes()); // 자르기 상
-    pic.extend_from_slice(&nw.to_le_bytes()); // 자르기 우 = 자연 폭
-    pic.extend_from_slice(&nh.to_le_bytes()); // 자르기 하 = 자연 높이
-    pic.extend_from_slice(&[0u8; 8]); // 안쪽 여백
-    pic.push(0); // 밝기
-    pic.push(0); // 명암
-    pic.push(0); // 효과
+    pic.extend_from_slice(&0i32.to_le_bytes()); // Clip left.
+    pic.extend_from_slice(&0i32.to_le_bytes()); // Clip top.
+    pic.extend_from_slice(&nw.to_le_bytes()); // Clip right = natural width.
+    pic.extend_from_slice(&nh.to_le_bytes()); // Clip bottom = natural height.
+    pic.extend_from_slice(&[0u8; 8]); // Inner margins.
+    pic.push(0); // Brightness.
+    pic.push(0); // Contrast.
+    pic.push(0); // Effect.
     pic.extend_from_slice(&bin_id.to_le_bytes()); // BinItem ID
-    pic.push(0); // 테두리 투명도
-    pic.extend_from_slice(&pic_inst.to_le_bytes()); // instance_id(유니크)
-    pic.extend_from_slice(&0u32.to_le_bytes()); // picture_effect flags=0(효과 없음)
-    pic.extend_from_slice(&nw.to_le_bytes()); // picture_effect: 자연 폭
-    pic.extend_from_slice(&nh.to_le_bytes()); // picture_effect: 자연 높이
+    pic.push(0); // Border transparency.
+    pic.extend_from_slice(&pic_inst.to_le_bytes()); // Unique instance_id.
+    pic.extend_from_slice(&0u32.to_le_bytes()); // picture_effect flags=0 (no effects).
+    pic.extend_from_slice(&nw.to_le_bytes()); // picture_effect natural width.
+    pic.extend_from_slice(&nh.to_le_bytes()); // picture_effect natural height.
     pic.push(0); // picture_effect reserved
 
     vec![OpaqueRecord {
@@ -1768,18 +1767,20 @@ pub fn is_materialized_generated_picture(picture: &hwp_model::Picture, media: &[
     picture.extras == expected
 }
 
-// ── hwpx-출신 도형/글상자 안전 저하 ──────────────────────────────────────
+// Safe degradation of HWPX-origin shapes/text boxes.
 //
-// hwpx reader가 만든 구조화 도형(GenericControl.gso_shapes)은 hwp5 SHAPE_COMPONENT
-// 레코드가 없다. ㉒에서 정품 템플릿을 패치해 역합성했으나 한글 실기에서 손상 판정
-// (라인 252B 템플릿을 사각형에 사용 → 정품 239B와 테두리/채움 섹션이 13B 어긋남 +
-// attr/desc 불일치). 한글 수용을 자가검증할 수 없어 재-합성은 손상 재발 위험 →
-// **안전 저하**로 전환: 글상자(텍스트 보유)는 그 문단을 본문으로 hoist(텍스트 보존),
-// 순수 장식(텍스트 없음)은 손대지 않아 strip_unwritable_pictures가 드롭(유효 보장).
-// kind별 정품 템플릿 기반 정합 역합성은 사용자 반복 실기가 필요한 후속 과제.
+// Structured shapes produced by the HWPX reader (GenericControl.gso_shapes) have no HWP5
+// SHAPE_COMPONENT records. Attempt 22 patched genuine templates to synthesize them, but Hangul
+// hardware checks reported corruption: using a 252-byte line template for a rectangle shifted
+// border/fill sections by 13 bytes relative to the genuine 239-byte layout, with attr/desc
+// mismatches. Without self-verifiable Hangul acceptance, resynthesis risks corruption; degrade
+// safely instead. Hoist text-box paragraphs into the body to preserve text, and leave textless
+// decorations for strip_unwritable_pictures to remove. Correct per-kind synthesis from genuine
+// templates remains follow-up work requiring repeated owner hardware checks.
 
-/// hwpx-출신 글상자의 문단을 본문으로 hoist해 텍스트를 보존한다(도형 래퍼는 생략).
-/// 순수 장식 도형은 건드리지 않아 strip이 드롭한다. 본문·표 셀·중첩 리스트 재귀.
+/// Hoists HWPX-origin text-box paragraphs into the body, preserving text without the shape wrapper.
+/// Leave textless decorations for stripping. Recurse through body, table-cell and nested paragraph
+/// lists.
 fn degrade_hwpx_gso(doc: &mut Document, warnings: &mut WriteReport) {
     for section in &mut doc.sections {
         degrade_hwpx_gso_list(&mut section.paragraphs, warnings);
@@ -1787,7 +1788,7 @@ fn degrade_hwpx_gso(doc: &mut Document, warnings: &mut WriteReport) {
 }
 
 fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut WriteReport) {
-    // 중첩 컨테이너(표 셀·모든 Generic 문단 리스트)를 먼저 재귀 처리한다.
+    // Recurse first through nested containers: table cells and every Generic paragraph list.
     for p in paras.iter_mut() {
         for c in &mut p.controls {
             match c {
@@ -1805,7 +1806,8 @@ fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut WriteReport)
             }
         }
     }
-    // 이 리스트에서 글상자(hwpx 출신 gso + 텍스트)를 host 문단 뒤 본문으로 펼친다.
+    // Expand HWPX-origin gso text-box paragraphs in this list into the body after the host
+    // paragraph.
     let mut out: Vec<Paragraph> = Vec::with_capacity(paras.len());
     for mut p in std::mem::take(paras) {
         let mut hoisted: Vec<Paragraph> = Vec::new();
@@ -1835,7 +1837,8 @@ fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut WriteReport)
                 }
             }
             p.controls = kept;
-            // 제거된 컨트롤의 ExtCtrl 문자 삭제 + 남은 ctrl_index 재매핑(strip과 동일).
+            // Remove the deleted controls' ExtCtrl characters and remap remaining ctrl_index
+            // values, as stripping does.
             p.chars.retain(|ch| match ch {
                 HwpChar::ExtCtrl {
                     ctrl_index: Some(i),
@@ -1860,7 +1863,7 @@ fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut WriteReport)
     *paras = out;
 }
 
-/// hwpx-출신 구조화 도형(gso 아닌 ctrl_id + gso_shapes 보유)이 있는지 재귀 검사.
+/// Recursively checks for HWPX-origin structured shapes: non-gso ctrl_id plus gso_shapes.
 fn has_synthesizable_gso(doc: &Document) -> bool {
     fn in_para(p: &Paragraph) -> bool {
         p.controls.iter().any(|c| match c {
@@ -1882,8 +1885,8 @@ fn has_synthesizable_gso(doc: &Document) -> bool {
         .any(|s| s.paragraphs.iter().any(in_para))
 }
 
-/// 편집으로 삽입된 그림(도형 레코드 미보유 = extras 빈 Picture)이 있는지 재귀 검사.
-/// 있으면 출처가 hwp5여도 그림 합성을 켜야 한다(안 켜면 strip_unwritable_pictures가 드롭).
+/// Recursively checks for inserted pictures with empty extras and no shape records. Enable picture
+/// synthesis even for HWP5 origin, or strip_unwritable_pictures removes them.
 fn has_synthesizable_picture(doc: &Document) -> bool {
     fn in_para(p: &Paragraph) -> bool {
         p.controls.iter().any(|c| match c {
@@ -1908,11 +1911,10 @@ fn has_synthesizable_picture(doc: &Document) -> bool {
 /// trailing path component case-insensitively, since a stream name may or may not carry a
 /// `BinData/` prefix. `BinRef::ItemRef` is resolved through the package manifest first, the same
 /// rule `Document::bin_stream_index` applies: an id the manifest lists names its href's stream or
-/// nothing (`id="logo" href="BinData/p1.png"` need not look like its file name). An id the
-/// manifest does not list tries the exact trailing-component match, then falls back to the
-/// substring match hwpx-origin documents rely on today. There is no index-0 fallback: an
-/// unresolvable reference returns `None`, which the caller reports as a typed loss instead of
-/// silently substituting an unrelated stream.
+/// nothing (`id="logo" href="BinData/p1.png"` need not look like its file name). An unlisted id
+/// uses the model's exact name, path-suffix and filename-stem rules. There is no substring or
+/// index-0 fallback: an unresolvable reference returns `None`, which the caller reports as a
+/// typed loss instead of silently substituting an unrelated stream.
 fn bin_stream_index(
     bin_names: &[String],
     bin_data: &[hwp_model::BinDataItem],
@@ -1932,20 +1934,24 @@ fn bin_stream_index(
                 .iter()
                 .position(|n| trailing(n).eq_ignore_ascii_case(&name))
         }
-        hwp_model::BinRef::ItemRef(s) if !s.is_empty() => {
-            if let Some((_, href)) = manifest.iter().find(|(id, _)| id == s) {
-                return bin_names.iter().position(|n| n == href);
+        hwp_model::BinRef::ItemRef(item) => {
+            if let Some((_, href)) = manifest.iter().find(|(id, _)| id == item) {
+                return bin_names.iter().position(|name| name == href);
             }
-            bin_names
-                .iter()
-                .position(|n| trailing(n).eq_ignore_ascii_case(s))
-                .or_else(|| bin_names.iter().position(|n| n.contains(s.as_str())))
+            bin_names.iter().position(|name| {
+                name == item
+                    || name.ends_with(&format!("/{item}"))
+                    || name
+                        .rsplit('/')
+                        .next()
+                        .and_then(|file| file.split('.').next())
+                        .is_some_and(|stem| stem == item)
+            })
         }
-        _ => None,
     }
 }
 
-/// 합성 문서의 hwpx 출신 이미지에 도형 레코드 + BIN_DATA 항목을 채운다.
+/// Populates shape records and BIN_DATA items for HWPX-origin images in synthesized documents.
 fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     let bin_names: Vec<String> = doc.bin_streams.iter().map(|b| b.name.clone()).collect();
     if bin_names.is_empty() {
@@ -1959,7 +1965,7 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     let bin_index = |r: &hwp_model::BinRef| {
         bin_stream_index(&bin_names, &bin_data_snapshot, &manifest_snapshot, r)
     };
-    // 각 이미지의 원본 픽셀 크기(자르기·picture_effect의 자연 크기 산출용).
+    // Original pixel dimensions per image, used for clipping and picture_effect natural sizes.
     let bin_dims: Vec<Option<(u32, u32)>> = doc
         .bin_streams
         .iter()
@@ -1973,20 +1979,21 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
         .max()
         .unwrap_or(0)
         + 1;
-    // bin_stream별 부여된 storage_id (여러 그림이 같은 이미지를 공유하면 재사용).
+    // Assigned storage_id per bin_stream, reused when several pictures share one image.
     let mut assigned: Vec<Option<u16>> = vec![None; bin_names.len()];
     let mut new_items: Vec<hwp_model::BinDataItem> = Vec::new();
-    // (bin_stream 인덱스, 새 이름)
+    // Pairs of bin_stream index and new name.
     let mut renames: Vec<(usize, String)> = Vec::new();
-    // gso 개체마다 유니크 instance_id (같은 값이면 한글이 같은 개체로 보고 무시 가능).
+    // Unique instance_id per gso object; Hangul may treat equal IDs as one object and ignore
+    // duplicates.
     // A document that already carries synthesized pictures (a re-read output of this writer)
     // holds ids from this same range, so start past the highest one instead of reusing it.
     let mut inst = InstanceIds::new(doc);
 
-    // 머리말/꼬리말 LIST_HEADER를 구역 PageDef 치수로 채운다(hwpx 출신, 빈 것만).
-    // textWidth=본문 폭(용지−좌우 여백), textHeight=머리말/꼬리말 여백. 과거에는
-    // 다른 문서(work_report)에서 차용한 템플릿(textHeight=2835, list_attr=0x40)을 써
-    // 머리말 영역 높이가 어긋났다. hwp5 출신은 header_data가 차 있어 건드리지 않는다.
+    // Fill empty HWPX-origin header/footer LIST_HEADER values from section PageDef dimensions:
+    // textWidth=body width (paper minus side margins), textHeight=header/footer margin. The
+    // previous work_report-derived template (textHeight=2835, list_attr=0x40) gave the wrong header
+    // height. Leave HWP5 header_data untouched when already populated.
     for section in &mut doc.sections {
         if let Some(pg) = section_page_def(section) {
             let text_width = pg.width.0 - pg.margin_left.0 - pg.margin_right.0;
@@ -2118,7 +2125,7 @@ impl InstanceIds {
     }
 }
 
-/// 구역의 PageDef를 찾는다 (SectionDef 컨트롤).
+/// Finds the section PageDef in its SectionDef control.
 fn section_page_def(section: &Section) -> Option<hwp_model::PageDef> {
     section
         .paragraphs
@@ -2130,9 +2137,9 @@ fn section_page_def(section: &Section) -> Option<hwp_model::PageDef> {
         })
 }
 
-/// 머리말/꼬리말(head/foot) GenericControl의 빈 LIST_HEADER를 구역 치수로 채운다.
-/// textWidth=본문 폭, textHeight=머리말/꼬리말 여백. hwp5 출신(header_data가 이미 참)은
-/// 건드리지 않는다.
+/// Fills empty head/foot GenericControl LIST_HEADER values from section dimensions: textWidth=body
+/// width, textHeight=header/footer margin. Leave already populated HWP5-origin header_data
+/// untouched.
 fn fill_head_foot_list_header(para: &mut Paragraph, text_width: i32, head_h: i32, foot_h: i32) {
     for control in &mut para.controls {
         let Control::Generic(g) = control else {
@@ -2151,7 +2158,7 @@ fn fill_head_foot_list_header(para: &mut Paragraph, text_width: i32, head_h: i32
             let mut lh = hex_to_bytes(HEADER_LIST_HEADER_TEMPLATE);
             let npara = list.paragraphs.len().max(1) as u16;
             lh[0..2].copy_from_slice(&npara.to_le_bytes());
-            lh[4..8].copy_from_slice(&0u32.to_le_bytes()); // list_attr=0 (정품 머리말)
+            lh[4..8].copy_from_slice(&0u32.to_le_bytes()); // list_attr=0, as in genuine headers.
             lh[8..12].copy_from_slice(&text_width.to_le_bytes());
             lh[12..16].copy_from_slice(&text_height.to_le_bytes());
             list.header_data = lh;
@@ -2159,7 +2166,8 @@ fn fill_head_foot_list_header(para: &mut Paragraph, text_width: i32, head_h: i32
     }
 }
 
-/// 한 문단(및 표 셀·글상자 재귀)의 빈 extras 그림에 도형 레코드를 합성한다.
+/// Synthesizes shape records for empty-extras pictures in a paragraph, recursing through table
+/// cells/text boxes.
 #[allow(clippy::too_many_arguments)]
 fn synth_pictures_para(
     para: &mut Paragraph,
@@ -2177,8 +2185,8 @@ fn synth_pictures_para(
         match control {
             Control::Picture(p) if p.extras.is_empty() => {
                 // Resolve the stream this picture actually references: BinRef::Id
-                // through header.bin_data's storage_id naming, BinRef::ItemRef by
-                // exact name then substring. No index-0 fallback - an unresolvable
+                // through header.bin_data's storage_id naming, BinRef::ItemRef through the
+                // manifest or exact model name rules. No index-0 fallback - an unresolvable
                 // reference is a reported loss below, never a silently substituted
                 // image (a different logo, seal, signature or photograph).
                 let pick = bin_index(&p.bin_ref);
@@ -2197,7 +2205,7 @@ fn synth_pictures_para(
                 let Some(inst_id) = inst.next() else {
                     continue;
                 };
-                // 같은 스트림에 이미 storage_id가 있으면 재사용(공유 이미지).
+                // Reuse storage_id for a shared stream already assigned one.
                 let sid = match assigned[idx] {
                     Some(s) => s,
                     None => {
@@ -2211,7 +2219,7 @@ fn synth_pictures_para(
                             .unwrap_or("png")
                             .to_ascii_lowercase();
                         new_items.push(hwp_model::BinDataItem {
-                            attr: 1, // 임베딩
+                            attr: 1, // Embedded.
                             storage_id: Some(s),
                             extension: Some(ext.clone()),
                             ..Default::default()
@@ -2220,31 +2228,31 @@ fn synth_pictures_para(
                         s
                     }
                 };
-                // gso 개체 공통 속성(40B)을 배치에서 합성한다. 정품 한라대 .hwp
-                // 실측 attr: 인라인(글자처럼)=0x042a6001, 떠 있는(floating)=
-                // 0x040a6000. instance_id는 개체마다 유니크 부여. (고정 템플릿을 쓰면
-                // 떠 있는 로고가 인라인으로 배치돼 한글에서 안 보이거나 오배치된다.)
+                // Synthesize the 40-byte gso common attributes from placement. Genuine university
+                // HWP samples measured inline (treat-as-character)=0x042a6001, floating=0x040a6000.
+                // Assign unique instance_id values per object. A fixed template incorrectly placed
+                // floating logos inline, hiding or misplacing them in Hangul.
                 //
-                // 부유는 문단 기준(vertRelTo/horzRelTo=PARA)으로 둔다: 0x040a6000은
-                // relTo=PAPER(용지 좌상단 기준)이라, insert_seal이 앵커 문단 안에서
-                // 계산한 오프셋을 쓰면 도장이 용지 좌상단으로 튄다(D2 미겹침 결함).
-                // PARA 비트(vertRelTo=2<<3, horzRelTo=3<<8)를 세워 hwpx(D1) PARA
-                // 배치와 오프셋 의미를 일치시킨다.
+                // Floating objects use paragraph-relative placement (vertRelTo/horzRelTo=PARA).
+                // 0x040a6000 uses relTo=PAPER, the paper's upper-left origin; applying insert_seal
+                // offsets computed within an anchor paragraph jumps the seal to that corner (D2
+                // non-overlap defect). Set PARA bits (vertRelTo=2<<3, horzRelTo=3<<8) to match HWPX
+                // D1 PARA placement and offset semantics.
                 //
-                // 어울림(bits21-23)은 글 앞(IN_FRONT_OF_TEXT=5)으로: 표본 0x040a6000의
-                // wrap=0(SQUARE)은 본문을 밀어내 겹침이 불가(§4.3.9.1, D2 "(인) 우측
-                // 밀림" 실기 결함). 값 체계는 정품 annual attr 0x046a4000→wrap=3
-                // (TOP_AND_BOTTOM)으로 교차 확인. bit13(본문 영역 제한)도 해제 —
-                // 스펙상 제한 시 겹침 허용(bit14)이 무시된다. hwpx 부유 그림 방출
-                // (IN_FRONT_OF_TEXT 고정)과 대칭.
+                // Set wrapping (bits21-23) to IN_FRONT_OF_TEXT=5. The sample's 0x040a6000 wrap=0
+                // (SQUARE) pushes body text away and prevents overlap (section 4.3.9.1, D2 hardware
+                // defect: seal shifted right). Cross-checked the value scheme with genuine annual
+                // attr 0x046a4000 -> wrap=3 (TOP_AND_BOTTOM). Also clear bit13 (restrict to body
+                // area), since the specification says it overrides overlap-allowed bit14. This
+                // mirrors HWPX floating-picture output fixed to IN_FRONT_OF_TEXT.
                 let attr: u32 = if p.treat_as_char {
                     0x042a_6001
                 } else {
                     (0x040a_6000 & !(1 << 13)) | (2 << 3) | (3 << 8) | (5 << 21) // = 0x04aa4310
                 };
-                // 오프셋은 글자처럼 취급(treat_as_char)이어도 보존한다. 정품 본문 로고는
-                // treatAsChar=1인데도 vertOffset=68401을 유지하므로, 0으로 만들면 좌상단으로
-                // 이동해 본문과 겹친다.
+                // Preserve offsets even for treat_as_char. Genuine body logos retain
+                // vertOffset=68401 with treatAsChar=1; zeroing it moves the logo to the upper-left
+                // and overlaps body text.
                 let voff: i32 = p.vert_offset;
                 let hoff: i32 = p.horz_offset;
                 let mut common = Vec::with_capacity(40);
@@ -2254,24 +2262,25 @@ fn synth_pictures_para(
                 common.extend_from_slice(&p.width.0.to_le_bytes());
                 common.extend_from_slice(&p.height.0.to_le_bytes());
                 common.extend_from_slice(&p.z_order.to_le_bytes());
-                common.extend_from_slice(&0u32.to_le_bytes()); // 바깥 여백(왼/위)
-                common.extend_from_slice(&0u32.to_le_bytes()); // 바깥 여백(오른/아래)
+                common.extend_from_slice(&0u32.to_le_bytes()); // Outer margins, left/top.
+                common.extend_from_slice(&0u32.to_le_bytes()); // Outer margins, right/bottom.
                 common.extend_from_slice(&inst_id.to_le_bytes());
-                common.extend_from_slice(&0u32.to_le_bytes()); // 쪽 나눔 방지(split)
-                // 개체 설명(description) BSTR — CommonControl ≥5.0.0.5 필수 필드.
-                // 빈 설명도 길이(u16=0)는 반드시 있어야 한다(정품 한글은 항상 기록).
+                common.extend_from_slice(&0u32.to_le_bytes()); // Prevent page splitting (split).
+                // Object description BSTR, required for CommonControl >=5.0.0.5. Even an empty
+                // description must include its u16 length=0; genuine Hangul always writes it.
                 append_gso_description(&mut common, p.description.as_deref(), warnings);
                 p.common_data = common;
-                // 원본 이미지 자연 크기(픽셀×7200/96). 못 읽으면 표시 크기로
-                // 대체(구버전 동작) — 자르기가 일부만 보일 수 있으나 차선.
+                // Natural image dimensions (pixels * 7200/96). If unreadable, fall back to display
+                // size (older behavior); clipping may show only part of the image, but this is the
+                // next-best choice.
                 let natural = bin_dims
                     .get(idx)
                     .copied()
                     .flatten()
                     .map(natural_size_hwpunit)
                     .unwrap_or((p.width.0, p.height.0));
-                // 그림 개체 instance_id(SCPIC)는 gso CTRL의 instance_id와 달라야
-                // 한다 — 유니크 비트를 토글해 파생(역시 유니크 유지).
+                // Picture-object instance_id (SCPIC) must differ from the gso CTRL instance_id.
+                // Derive it by toggling a unique bit, retaining uniqueness.
                 let pic_inst = inst_id ^ 0x0010_0000;
                 p.extras = build_picture_extras(p.width.0, p.height.0, natural, sid, pic_inst);
                 patch_picture_extras_fx(
@@ -2294,10 +2303,10 @@ fn synth_pictures_para(
                 }
             }
             Control::Generic(g) => {
-                // hwpx 출신 머리말/꼬리말(head/foot)은 LIST_HEADER가 비어 strip이
-                // 통째로 드롭한다(내부 그림째). 정품 LIST_HEADER 템플릿을 채워 보존한다
-                // (paraCount는 실제 문단 수로 패치). data(적용쪽+id 8B)는 hwpx reader가
-                // 채우지만, 만일 비어 있으면 최소 4B로 대체해 드롭을 막는다.
+                // HWPX-origin head/foot controls lack LIST_HEADER and would be stripped with their
+                // pictures. Populate the genuine LIST_HEADER template, patching paraCount to the
+                // actual count. The HWPX reader fills 8-byte data (page scope plus ID); if absent,
+                // use at least 4 bytes to prevent stripping.
                 if (g.ctrl_id == *b"head" || g.ctrl_id == *b"foot") && g.raw_children.is_empty() {
                     if g.data.is_empty() {
                         g.data = vec![0, 0, 0, 0];
@@ -2351,8 +2360,8 @@ fn append_gso_description(
     }
 }
 
-/// hwp5 레코드가 없는 그림 컨트롤을 확장 문자와 동기 제거하고
-/// 남은 ExtCtrl의 ctrl_index를 재조정한다 (중첩 구조 재귀).
+/// Removes picture controls lacking HWP5 records together with their extended characters and
+/// readjusts remaining ExtCtrl ctrl_index values recursively.
 fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
     let mut removed: Vec<u32> = Vec::new();
     let mut kept = Vec::with_capacity(para.controls.len());
@@ -2368,10 +2377,10 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
                 removed.push(i as u32);
                 continue;
             }
-            // hwp5 페이로드를 합성할 수 없는 컨트롤(hwpx/md 출신 머리말/자동번호
-            // 등)만 생략. raw_children가 있으면 hwp5 원본이므로 보존.
-            // 예외: 각주/미주(fn/en)는 CTRL_HEADER가 ctrl_id뿐(빈 data가 정상)이고
-            // paragraph_lists(본문)로부터 LIST_HEADER+문단을 합성할 수 있으므로 보존한다.
+            // Omit only controls whose HWP5 payload cannot be synthesized (HWPX/Markdown headers,
+            // automatic numbering, etc.). Preserve HWP5 originals with raw_children. Exception:
+            // footnotes/endnotes (fn/en) normally have only ctrl_id and empty CTRL_HEADER data;
+            // their paragraph_lists can synthesize LIST_HEADER plus paragraphs, so preserve them.
             Control::Generic(g)
                 if g.data.is_empty()
                     && g.ctrl_id != *b"cold"
@@ -2429,37 +2438,37 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
     }
 }
 
-/// 한글 빈 문서 표본의 구역 정의 페이로드 (43B — 값 재현, 임베드 아님).
+/// Section-definition payload from a genuine Hangul blank document (43 bytes), reproducing values
+/// rather than embedding the source.
 const DEFAULT_SECD_DATA: [u8; 43] = [
     0x00, 0x00, 0x00, 0x00, 0x6E, 0x04, 0x00, 0x00, 0x00, 0x00, 0x40, 0x1F, 0x00, 0x00, 0x01, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// 한글 빈 문서 표본의 단 정의 페이로드 (12B).
+/// Column-definition payload from a genuine Hangul blank document (12 bytes).
 const DEFAULT_COLD_DATA: [u8; 12] = [
     0x04, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// secd 자식: 각주 모양(FOOTNOTE_SHAPE, 28B) — hello_world 표본 실측.
+/// secd child: FOOTNOTE_SHAPE (28 bytes), measured in hello_world.
 const DEFAULT_FOOTNOTE_SHAPE: [u8; 28] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x29, 0x00, 0x01, 0x00, 0xff, 0xff, 0xff, 0xff,
     0x52, 0x03, 0x37, 0x02, 0x1b, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// secd 자식: 미주 모양(FOOTNOTE_SHAPE 태그 공유, 28B) — hello_world 표본 실측.
+/// secd child: endnote shape (same FOOTNOTE_SHAPE tag, 28 bytes), measured in hello_world.
 const DEFAULT_ENDNOTE_SHAPE: [u8; 28] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x29, 0x00, 0x01, 0x00, 0xf8, 0x2f, 0xe0, 0x00,
     0x52, 0x03, 0x37, 0x02, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// secd 자식: 쪽 테두리/배경(PAGE_BORDER_FILL, 14B) BOTH/EVEN/ODD 3종.
-/// 레이아웃: properties(u32) + 여백 4×HWPUNIT16(left/right/top/bottom=1417) +
-/// borderFillID(u16)=1(합성 DocInfo에 항상 존재).
-/// properties 첫 u32 = 1(flags=1). 정품 한글 저장 파일(가나다.hwp 5.1.1.0) 및
-/// work_report.hwp(5.0.2.4) 모두 3종 전부 0x00000001. hello_world 표본의
-/// BOTH/EVEN 값(0x0978f9c1·0x271b0b81)은 미초기화로 보이는 이상값이라 채택하지
-/// 않는다 — pyhwp가 그 flags를 0x0978f9c1 등으로 파싱(잘못된 속성).
+/// secd children: PAGE_BORDER_FILL (14 bytes) for BOTH/EVEN/ODD. Layout: properties (u32), four
+/// HWPUNIT16 margins (left/right/top/bottom=1417), borderFillID (u16)=1, always present in
+/// synthesized DocInfo. The first u32 properties value is 1 (flags=1): genuine Hangul-saved 가나다.hwp
+/// 5.1.1.0 and work_report.hwp 5.0.2.4 use 0x00000001 for all three. Do not use hello_world's
+/// BOTH/EVEN values (0x0978f9c1, 0x271b0b81), which appear uninitialized; pyhwp parses them as
+/// those invalid flag values.
 const DEFAULT_PAGE_BORDER_FILLS: [[u8; 14]; 3] = [
     [
         0x01, 0x00, 0x00, 0x00, 0x89, 0x05, 0x89, 0x05, 0x89, 0x05, 0x89, 0x05, 0x01, 0x00,
@@ -2472,11 +2481,12 @@ const DEFAULT_PAGE_BORDER_FILLS: [[u8; 14]; 3] = [
     ],
 ];
 
-/// 합성 `SectionDef`가 HWP5 writer에서 materialize된 정확한 기본 payload/자식인지 확인한다.
+/// Whether a synthesized SectionDef has the exact default payload/children materialized by the HWP5
+/// writer.
 ///
-/// semantic 재개방 검증에서 writer가 넣은 기본값만 원래의 빈 합성 표현과 동등하게
-/// 정규화하기 위한 predicate다. 사용자 payload나 opaque child가 한 바이트라도 다르면
-/// false이므로 활성 문서 의미를 숨기지 않는다.
+/// Semantic reopen verification uses this predicate to equate only writer-added defaults with the
+/// original empty synthesized form. Any differing byte in user payload or opaque children yields
+/// false, so active document semantics cannot be hidden.
 pub fn is_materialized_default_section_def(def: &SectionDef) -> bool {
     if def.data != DEFAULT_SECD_DATA
         || def.extras.len() != 5
@@ -2514,7 +2524,8 @@ pub fn is_materialized_default_section_def(def: &SectionDef) -> bool {
         })
 }
 
-/// 합성 단 정의가 HWP5 writer에서 materialize된 정확한 기본 payload인지 확인한다.
+/// Whether a synthesized column definition has the exact default payload materialized by the HWP5
+/// writer.
 pub fn is_materialized_default_column_def(generic: &hwp_model::GenericControl) -> bool {
     generic.ctrl_id == *b"cold"
         && generic.data == DEFAULT_COLD_DATA
@@ -2529,10 +2540,10 @@ pub fn is_materialized_default_column_def(generic: &hwp_model::GenericControl) -
         })
 }
 
-/// 기본 번호 정의(NUMBERING) 페이로드 (226B — 5.1.0.1 표본 hello_world와 바이트 동일).
-/// 문단 머리 7수준(^1.~^7) + 시작번호 7개 + 5.1.x 확장 3수준. PARA_SHAPE가
-/// numbering_id=0 을 참조하므로 테이블이 비면 dangling reference가 되어 한글이
-/// '손상/변조'로 거부한다 — 합성/hwpx 출신 안전망의 기본값.
+/// Default NUMBERING payload (226 bytes), byte-identical to the 5.1.0.1 hello_world sample: seven
+/// paragraph-heading levels (^1..^7), seven start numbers, and three 5.1.x extension levels.
+/// PARA_SHAPE references numbering_id=0, so an empty table dangles and Hangul rejects
+/// corruption/tampering. This default is a safety net for synthesized/HWPX-origin documents.
 pub(crate) const DEFAULT_NUMBERING_DATA: [u8; 226] = [
     0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0xff, 0xff, 0xff, 0xff, 0x03, 0x00, 0x5e, 0x00,
     0x31, 0x00, 0x2e, 0x00, 0x0c, 0x01, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0xff, 0xff, 0xff, 0xff,
@@ -2551,7 +2562,8 @@ pub(crate) const DEFAULT_NUMBERING_DATA: [u8; 226] = [
     0x00, 0x00,
 ];
 
-/// 합성 DocInfo에 writer가 주입한 기본 TAB_DEF 3종인지 확인한다.
+/// Whether these are the three default TAB_DEF records injected by the writer into synthesized
+/// DocInfo.
 pub fn is_materialized_default_tab_defs(raw: &[RawEntry], modeled: &[hwp_model::TabDef]) -> bool {
     let expected_raw = [
         [0, 0, 0, 0, 0, 0, 0, 0],
@@ -2574,7 +2586,8 @@ pub fn is_materialized_default_tab_defs(raw: &[RawEntry], modeled: &[hwp_model::
 /// The NUMBERING records the writer emits: one per `numbering_levels` entry. An entry with a raw
 /// record keeps it; an entry past the raw records (a definition an edit grafted onto an
 /// HWP5-sourced document, #377) gets the default record a synthetic document gets. A synthetic
-/// document (md 출신) has no raw records, so every entry gets the default; at least one, because
+/// document (Markdown-origin) has no raw records, so every entry gets the default; at least one,
+/// because
 /// every PARA_SHAPE references numbering_id=0 and an empty table is a dangling reference.
 pub fn numbering_records(h: &hwp_model::DocHeader) -> Vec<RawEntry> {
     let count = h.numbering_levels.len().max(h.numberings.len()).max(1);
@@ -2623,7 +2636,8 @@ pub fn bullet_records(h: &hwp_model::DocHeader) -> Vec<RawEntry> {
     records
 }
 
-/// 합성 DocInfo에 writer가 주입한 기본 NUMBERING과 그 의미 파싱 결과인지 확인한다.
+/// Whether these are the default NUMBERING injected into synthesized DocInfo and its parsed
+/// semantic form.
 pub fn is_materialized_default_numberings(
     raw: &[RawEntry],
     modeled: &[Vec<hwp_model::NumLevel>],
@@ -2644,7 +2658,8 @@ pub fn is_materialized_default_numberings(
         })
 }
 
-/// 합성 DocInfo에 writer가 `bullet_chars`에서 만든 raw BULLET 레코드인지 확인한다.
+/// Whether this is a raw BULLET record created by the writer from bullet_chars in synthesized
+/// DocInfo.
 pub fn is_materialized_generated_bullets(raw: &[RawEntry], chars: &[char]) -> bool {
     !raw.is_empty()
         && raw.len() == chars.len()
@@ -2654,7 +2669,7 @@ pub fn is_materialized_generated_bullets(raw: &[RawEntry], chars: &[char]) -> bo
             .all(|(entry, ch)| entry.data == make_bullet_data(*ch) && entry.children.is_empty())
 }
 
-/// 합성 문서에 writer가 추가한 정확한 COMPATIBLE_DOCUMENT 서브트리인지 확인한다.
+/// Whether this is the exact COMPATIBLE_DOCUMENT subtree the writer adds to synthesized documents.
 pub fn is_materialized_compatible_document(record: &OpaqueRecord) -> bool {
     record.tag == tag::COMPATIBLE_DOCUMENT
         && record.data == [0; 4]
@@ -2669,7 +2684,7 @@ pub fn is_materialized_compatible_document(record: &OpaqueRecord) -> bool {
         && record.children[1].children.is_empty()
 }
 
-/// 빈 `BorderFill::tail`을 writer가 채운 정확한 버전별 payload인지 확인한다.
+/// Whether the writer filled an empty BorderFill::tail with the exact version-specific payload.
 pub fn is_materialized_generated_border_fill_tail(fill: &hwp_model::BorderFill) -> bool {
     let expected: &[u8] = if fill.fill_type & 0x1 != 0 {
         &[0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0]
@@ -2679,7 +2694,7 @@ pub fn is_materialized_generated_border_fill_tail(fill: &hwp_model::BorderFill) 
     fill.tail == expected
 }
 
-/// 빈 `CharShape::tail`을 writer가 채운 정확한 6바이트 payload인지 확인한다.
+/// Whether the writer filled an empty CharShape::tail with the exact six-byte payload.
 pub fn is_materialized_generated_char_shape_tail(shape: &CharShape) -> bool {
     shape.border_fill_id >= 2
         && shape.tail.len() == 6
@@ -2687,7 +2702,7 @@ pub fn is_materialized_generated_char_shape_tail(shape: &CharShape) -> bool {
         && shape.tail[2..].iter().all(|byte| *byte == 0)
 }
 
-/// 빈 `ParaShape::tail`을 writer가 채운 정확한 5.1.x 16바이트 payload인지 확인한다.
+/// Whether the writer filled an empty ParaShape::tail with the exact 5.1.x 16-byte payload.
 pub fn is_materialized_generated_para_shape_tail(shape: &ParaShape) -> bool {
     shape.tail.len() == 16
         && shape.tail[..8].iter().all(|byte| *byte == 0)
@@ -2695,37 +2710,40 @@ pub fn is_materialized_generated_para_shape_tail(shape: &ParaShape) -> bool {
         && shape.tail[12..].iter().all(|byte| *byte == 0)
 }
 
-/// 빈 `Style::tail`을 writer가 채운 정확한 잠금 기본값인지 확인한다.
+/// Whether the writer filled an empty Style::tail with the exact default lock value.
 pub fn is_materialized_generated_style_tail(style: &Style) -> bool {
     style.tail == [0, 0]
 }
 
-/// HWPTAG_BULLET 레코드 데이터 — **정품 실측 25B**(제주한라대 사업계획서 BULLET 전수 대조).
-/// 레이아웃: 문단 머리 정보(8B, attr 0x08=자동 내어쓰기·본문거리 50%) + **번호 글자모양
-/// id 4B=0xFFFFFFFF(없음)** + 글머리표 문자 WCHAR(오프셋 12) + 후행 11B(0).
+/// HWPTAG_BULLET data: 25 bytes measured against every BULLET in the genuine Jeju Halla University
+/// business-plan sample. Layout: paragraph-heading information (8 bytes, attr 0x08=automatic
+/// hanging indent and 50% text distance), numbering character-shape ID (4 bytes, 0xFFFFFFFF=none),
+/// bullet WCHAR (offset 12), and 11 trailing zero bytes.
 ///
-/// 스펙 md 표42의 "20B / 글머리 문자 오프셋 8"은 오답이다 — 정품엔 머리 정보와 문자 사이에
-/// 글자모양 id 4B가 있어 문자가 오프셋 12에 온다(NUMBERING의 `ff ff ff ff` 필드와 동형).
-/// 이 4B를 빠뜨리면 한글이 오프셋 12를 문자로 읽어 0을 만나 **글머리 마커가 미표시**된다
-/// (1차 H2 실기 결함). doc_info.rs BULLET 파서도 오프셋 12로 함께 교정.
+/// The specification markdown's table 42 incorrectly says 20 bytes with the bullet at offset 8.
+/// Genuine files put a four-byte character-shape ID between heading information and the character,
+/// placing it at offset 12, analogous to NUMBERING's ff ff ff ff field. Omitting it makes Hangul
+/// read zero at offset 12 and hide the bullet marker (first H2 hardware defect). Correct the
+/// doc_info.rs BULLET parser to offset 12 as well.
 fn make_bullet_data(ch: char) -> Vec<u8> {
     let mut v = Vec::with_capacity(25);
-    v.extend_from_slice(&[0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00]); // 문단 머리 정보 8B
-    v.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // 번호 글자모양 id = 없음
-    let code = u16::try_from(u32::from(ch)).unwrap_or(0x2022); // 글머리표 문자(오프셋 12)
+    v.extend_from_slice(&[0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00]); // Eight bytes of paragraph-heading information.
+    v.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // Numbering character-shape ID: none.
+    let code = u16::try_from(u32::from(ch)).unwrap_or(0x2022); // Bullet character at offset 12.
     v.extend_from_slice(&code.to_le_bytes());
-    v.extend_from_slice(&[0u8; 11]); // 이미지 여부/정보·체크 문자·후행 (정품 전수 0)
+    v.extend_from_slice(&[0u8; 11]); // Image presence/information, check character and tail; zero in every genuine sample.
     v
 }
 
-/// `\x05HwpSummaryInformation` (OLE 속성 집합) 작성. 메타데이터(제목/주제/지은이/키워드/
-/// 설명/마지막 저장자/작성·수정 일시)를 채우되, 없으면 기존과 동일한 기본값(빈 문자열/
-/// FILETIME 0)으로 표본 구조를 유지한다 — 스트림 바이트 배치는 재설계하지 않는다.
-/// 헤더 상수는 한글 저장 표본 실측값 — FMTID 9FA2B660-1061-11D4-B4C6-006097C09D8C.
-/// PID: 0x02=제목 0x03=주제 0x04=지은이 0x14=날짜 문자열(작성일시 KST, VT_LPWSTR)
-/// 0x05=키워드 0x06=설명 0x08=마지막저장자 0x0C=작성일시 0x0D=수정일시(VT_FILETIME)
-/// (MS-OLEPS PIDSI). `summary.rs`의 파서와 대칭(단 0x14는 create_time에서 파생하므로
-/// 읽기는 무시하고 쓰기 때 재생성한다).
+/// Writes the HwpSummaryInformation OLE property set (stream name starts with 0x05). Fill metadata
+/// (title, subject, author, keywords, description, last saver, creation/modification times),
+/// retaining prior defaults of empty strings and FILETIME zero when absent. Preserve the sample
+/// structure, without redesigning stream byte layout. Header constants are measured from
+/// Hangul-saved samples: FMTID 9FA2B660-1061-11D4-B4C6-006097C09D8C.
+/// Property IDs (MS-OLEPS PIDSI): 0x02=title, 0x03=subject, 0x04=author, 0x14=date string (creation
+/// time in KST, VT_LPWSTR), 0x05=keywords, 0x06=description, 0x08=last saver, 0x0C=creation time
+/// and 0x0D=modification time (VT_FILETIME). Mirror the summary.rs parser, except 0x14 is derived
+/// from create_time, ignored while reading and regenerated while writing.
 pub(crate) fn hwp_summary_information(meta: &Metadata) -> Vec<u8> {
     const HWP_FMTID: [u8; 16] = [
         0x60, 0xB6, 0xA2, 0x9F, 0x61, 0x10, 0xD4, 0x11, 0xB4, 0xC6, 0x00, 0x60, 0x97, 0xC0, 0x9D,
@@ -2737,20 +2755,22 @@ pub(crate) fn hwp_summary_information(meta: &Metadata) -> Vec<u8> {
     let keywords = meta.keywords.as_deref().unwrap_or("");
     let description = meta.description.as_deref().unwrap_or("");
     let last_saved_by = meta.last_saved_by.as_deref().unwrap_or("");
-    // FILETIME은 raw u64 그대로. None이면 0 → 기존 기본값과 바이트 동일(게이트 불변).
+    // Write FILETIME as raw u64; None becomes zero, byte-identical to prior defaults and preserving
+    // the gate.
     let create_time = meta.create_time.unwrap_or(0);
     let modify_time = meta.modify_time.unwrap_or(0);
-    // PID 0x14 = 한국어 KST 날짜 문자열. 정품 표본 40종 전수 관찰 결과 이 문자열은
-    // **작성일시(0x0C, create_time)**의 KST 표현이다(수정일시가 아님 — 모든 표본에서
-    // 0x14의 연도가 create_time과 일치, modify_time과는 불일치). 한글 문서정보의
-    // '날짜'가 이 문자열에서 온다. create_time이 없으면 modify_time으로 대체하고,
-    // 둘 다 없으면 빈 문자열(기존 구조/바이트 유지 — 게이트 불변).
+    // PID 0x14 is a Korean KST date string. Across all 40 genuine samples it represents creation
+    // time (0x0C, create_time), not modification time: its year matches create_time rather than
+    // modify_time in every sample. Hangul's document-information date comes from this string. Fall
+    // back to modify_time when create_time is absent, and to an empty string when both are absent,
+    // retaining the existing structure/bytes and gate.
     let date_str = meta
         .create_time
         .or(meta.modify_time)
         .and_then(hwp_model::filetime_to_korean_kst)
         .unwrap_or_default();
-    // 표본(한글 빈 문서)과 동일한 PID 순서/타입 — 메타데이터만 채움
+    // Use the same property ID order/types as the genuine blank-document sample; fill metadata
+    // only.
     enum Val<'a> {
         Str(&'a str),
         FileTime(u64),
@@ -2758,26 +2778,26 @@ pub(crate) fn hwp_summary_information(meta: &Metadata) -> Vec<u8> {
         Dictionary,
     }
     let props: [(u32, Val); 14] = [
-        (0x02, Val::Str(title)),         // 제목
-        (0x03, Val::Str(subject)),       // 주제
-        (0x04, Val::Str(author)),        // 지은이
-        (0x14, Val::Str(&date_str)),     // 날짜 문자열(작성일시 KST)
-        (0x05, Val::Str(keywords)),      // 키워드
-        (0x06, Val::Str(description)),   // 설명
-        (0x08, Val::Str(last_saved_by)), // 마지막 저장자
-        (0x09, Val::Str("hwp-cli")),     // 프로그램
+        (0x02, Val::Str(title)),         // Title.
+        (0x03, Val::Str(subject)),       // Subject.
+        (0x04, Val::Str(author)),        // Author.
+        (0x14, Val::Str(&date_str)),     // Date string: creation time in KST.
+        (0x05, Val::Str(keywords)),      // Keywords.
+        (0x06, Val::Str(description)),   // Description.
+        (0x08, Val::Str(last_saved_by)), // Last saver.
+        (0x09, Val::Str("hwp-cli")),     // Application.
         (0x0C, Val::FileTime(create_time)),
         (0x0D, Val::FileTime(modify_time)),
         (0x0B, Val::FileTime(0)),
         (0x0E, Val::I4),
         (0x15, Val::I4),
-        // PID 0 = PID_DICTIONARY (MS-OLEPS 2.17): VT_NULL이 아니라 사전 구조여야 한다.
-        // 한글 표본(hello_world)은 항목 1개 사전(id=0 → 빈 이름). VT_NULL을 쓰면
-        // pyhwp 등이 count=1 사전으로 읽고 항목을 기대하다 EOF(절단)로 거부한다.
+        // PID 0 is PID_DICTIONARY (MS-OLEPS 2.17), requiring a dictionary rather than VT_NULL.
+        // Hangul's hello_world sample has one entry (id=0, empty name). With VT_NULL, pyhwp and
+        // similar parsers read count=1, expect an entry, and reject EOF as truncation.
         (0x00, Val::Dictionary),
     ];
 
-    // 섹션 본문: ID/오프셋 표 + 값들
+    // Section body: property ID/offset table followed by values.
     let mut values = ByteWriter::new();
     let table_size = 8 + props.len() * 8;
     let mut offsets = Vec::with_capacity(props.len());
@@ -2797,7 +2817,7 @@ pub(crate) fn hwp_summary_information(meta: &Metadata) -> Vec<u8> {
             }
             Val::FileTime(ft) => {
                 values.write_u32(64); // VT_FILETIME
-                // dwLowDateTime, dwHighDateTime 순서(리틀엔디언). 0이면 기존 기본값과 동일.
+                // dwLowDateTime then dwHighDateTime, little-endian. Zero matches prior defaults.
                 values.write_u32((*ft & 0xFFFF_FFFF) as u32);
                 values.write_u32((*ft >> 32) as u32);
             }
@@ -2806,13 +2826,13 @@ pub(crate) fn hwp_summary_information(meta: &Metadata) -> Vec<u8> {
                 values.write_u32(0);
             }
             Val::Dictionary => {
-                // MS-OLEPS Dictionary: 항목 수 + DictionaryEntry(id + 이름 길이 + 이름).
-                // 표본 hello_world와 바이트 동일(13B, 패딩 없음 — 마지막 속성):
-                // 항목 1개, id=0, 이름 1바이트(널 종단자).
-                values.write_u32(1); // 사전 항목 수
+                // MS-OLEPS Dictionary: entry count followed by DictionaryEntry (ID, name length,
+                // name). Byte-identical to hello_world: 13 bytes, no padding because this is the
+                // last property; one entry, id=0, one-byte name containing the NUL terminator.
+                values.write_u32(1); // Dictionary entry count.
                 values.write_u32(0); // DictionaryEntry.id
-                values.write_u32(1); // 이름 길이(바이트)
-                values.write_u8(0); // 이름: 빈 문자열(널 종단자)
+                values.write_u32(1); // Name length in bytes.
+                values.write_u8(0); // Name: empty string, NUL-terminated.
             }
         }
     }
@@ -2822,11 +2842,11 @@ pub(crate) fn hwp_summary_information(meta: &Metadata) -> Vec<u8> {
     let mut w = ByteWriter::new();
     w.write_u16(0xFFFE); // byte order
     w.write_u16(0); // format
-    w.write_u32(0x0002_0400); // OS version (표본값)
+    w.write_u32(0x0002_0400); // OS version, sample value.
     w.write_bytes(&HWP_FMTID); // CLSID
-    w.write_u32(1); // 섹션 수
+    w.write_u32(1); // Section count.
     w.write_bytes(&HWP_FMTID); // FMTID
-    w.write_u32(48); // 섹션 오프셋
+    w.write_u32(48); // Section offset.
     w.write_u32(section_size as u32);
     w.write_u32(props.len() as u32);
     for ((pid, _), off) in props.iter().zip(&offsets) {
@@ -2913,14 +2933,12 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
     let h = &doc.header;
     let mut roots = Vec::new();
 
-    // 안전망: 합성(md)·hwpx 출신 문서는 tab_defs/numberings를 비운 채 온다.
-    // 그러나 모든 PARA_SHAPE는 tab_def_id=0·numbering_id=0 을 참조하므로
-    // 테이블이 비면 ID 0 이 가리킬 레코드가 없어 dangling reference가 되고
-    // 한글이 '손상/변조'로 거부한다(halla.hwp 실증: hwpx 출신은 from_markdown
-    // 을 거치지 않아 default_header 수정만으로는 커버 불가). 정상 표본
-    // (hello_world 5.1.0.1)은 예외 없이 TAB_DEF≥1·NUMBERING=1 을 가진다 —
-    // 그 바이트를 그대로 기본값으로 주입한다(값 복제). emit 루프와 ID_MAPPINGS
-    // 카운트가 동일 Vec를 참조하므로 둘은 항상 정합한다.
+    // Safety net: synthesized Markdown/HWPX documents arrive with empty tab_defs/numberings, but
+    // every PARA_SHAPE references tab_def_id=0/numbering_id=0. Empty tables leave dangling ID 0 and
+    // Hangul rejects corruption/tampering. Confirmed with halla.hwp: HWPX input bypasses
+    // from_markdown, so changing default_header alone is insufficient. Every normal hello_world
+    // 5.1.0.1 sample has TAB_DEF>=1 and NUMBERING=1; inject copies of those bytes as defaults.
+    // Emission and ID_MAPPINGS counts use the same Vec and always stay consistent.
     let tab_defs_owned: Vec<RawEntry> = if h.tab_defs.is_empty() {
         vec![
             RawEntry {
@@ -2994,11 +3012,12 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
     }
     let bullets_owned = bullet_records(h);
 
-    // DOCUMENT_PROPERTIES — 구역 수는 실제 섹션 수에서 유도
+    // DOCUMENT_PROPERTIES: derive the section count from actual sections.
     let mut w = ByteWriter::new();
     w.write_u16(doc.sections.len().max(1) as u16);
-    // 시작 번호(쪽/각주/미주/그림/표/수식)는 최소 1. 합성 문서는 전부 0인데
-    // 한글은 쪽 번호 0을 비정상으로 보고 '손상/변조' 판정 (표본 전부 1).
+    // Starting page/footnote/endnote/picture/table/equation numbers must be at least 1. Synthesized
+    // documents use zero throughout, but Hangul treats page zero as corruption/tampering; every
+    // sample uses 1.
     for n in h.properties.start_numbers {
         w.write_u16(n.max(1));
     }
@@ -3011,7 +3030,7 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
         children: Vec::new(),
     });
 
-    // ID_MAPPINGS — 카운트는 테이블 길이에서 유도, 원본의 추가 꼬리는 보존
+    // ID_MAPPINGS: derive counts from table lengths and preserve source extension tails.
     let mut counts: Vec<u32> = Vec::with_capacity(18);
     counts.push(h.bin_data.len() as u32);
     for slot in 0..LANG_COUNT {
@@ -3027,21 +3046,22 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
     if h.id_mappings_counts.len() > counts.len() {
         counts.extend_from_slice(&h.id_mappings_counts[counts.len()..]);
     }
-    // ID_MAPPINGS 카운트 개수는 선언 버전과 일치해야 한다(스펙 표 16, 표 15
-    // "doc version 에 따라 가변적"). 인덱스 15=메모모양(5.0.2.1+),
-    // 16·17=변경추적(5.0.3.2+). 파생 기본은 15개(인덱스 0~14, 스타일까지).
-    //   - 원본을 왕복할 때는 h.id_mappings_counts 길이를 그대로 보존한다
-    //     (실제 한컴 저장본은 이미 버전에 맞는 길이라서).
-    //   - 합성 문서(원본 카운트 없음)는 선언 버전으로 목표 길이를 정한다.
-    // 무조건 18 패딩을 하면 5.0.2.x 문서(16개)를 18개로 부풀려 버전-레이아웃이
-    // 어긋나고 한글이 '손상'으로 거부한다(work_report 5.0.2.4 실증).
+    // The ID_MAPPINGS count length must match the declared version (specification tables 16 and 15:
+    // variable by document version). Index 15=memo shape (5.0.2.1+); indices 16/17=track changes
+    // (5.0.3.2+). The derived default has 15 counts (indices 0..14, through styles).
+    // - For source round-trips, preserve h.id_mappings_counts length; genuine Hancom-saved files
+    //   already use their version's length.
+    // - For synthesized documents without original counts, derive the target length from the
+    //   declared version.
+    // Unconditionally padding to 18 inflates 5.0.2.x documents from 16 counts, creating a
+    // version/layout mismatch Hangul rejects as corrupt, verified with work_report 5.0.2.4.
     let ver = parse_version(&doc.meta.source_version);
     let version_target = if ver.to_u32() >= 0x05_00_03_02 {
-        18 // 5.0.3.2 이상: 메모 + 변경추적 ×2
+        18 // 5.0.3.2+: memo plus two track-change counts.
     } else if ver.to_u32() >= 0x05_00_02_01 {
-        16 // 5.0.2.1 이상: 메모 모양
+        16 // 5.0.2.1+: memo shape.
     } else {
-        15 // 그 이전: 스타일까지
+        15 // Earlier versions: through styles.
     };
     let target = h
         .id_mappings_counts
@@ -3106,18 +3126,18 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
         children,
     });
 
-    // 5.1.x 합성 문서는 COMPATIBLE_DOCUMENT 서브트리가 필수. 정품(가나다.hwp
-    // 5.1.1.0, hello_world 5.1.0.1)은 모두 보유하나 구버전(work_report 5.0.2.4)은
-    // 면제. 누락 시 한글이 '손상/변조'로 거부. hwp5 원본 왕복은 h.extras로
-    // 보존되므로(아래 extend), 합성 경로이고 원본에 없을 때만 추가.
+    // Synthesized 5.1.x documents require a COMPATIBLE_DOCUMENT subtree. Genuine 가나다.hwp 5.1.1.0
+    // and hello_world 5.1.0.1 have it; older work_report 5.0.2.4 is exempt. Missing it triggers
+    // Hangul corruption/tampering rejection. HWP5 round-trips preserve it through h.extras
+    // (extended below), so add it only on synthesized paths where absent from the source.
     let synth = doc.meta.source_format != "hwp5";
     let has_compat = h.extras.iter().any(|r| r.tag == tag::COMPATIBLE_DOCUMENT);
     if synth && !has_compat {
         let mut trackchange = vec![0u8; 1032];
-        trackchange[0] = 0x38; // 표본(가나다/hello_world) 실측: 선두 0x38, 나머지 0
+        trackchange[0] = 0x38; // Measured in the 가나다/hello_world samples: first byte 0x38, all others zero.
         roots.push(RecordNode {
             tag: tag::COMPATIBLE_DOCUMENT,
-            data: vec![0u8; 4], // 대상 프로그램 0
+            data: vec![0u8; 4], // Target application 0.
             children: vec![
                 RecordNode {
                     tag: tag::LAYOUT_COMPATIBILITY,
@@ -3207,17 +3227,18 @@ fn emit_border_fill(bf: &hwp_model::BorderFill) -> RecordNode {
         w.write_u32(bf.bg_color.unwrap_or(0xFFFF_FFFF));
     }
     if bf.tail.is_empty() {
-        // hwpx/md 출신: hwp5 채우기 블록 완성 (표본 40B/53B 레이아웃 역산)
+        // HWPX/Markdown input: complete the HWP5 fill block, derived from genuine 40/53-byte
+        // layouts.
         if bf.fill_type & 0x1 != 0 {
-            w.write_u32(0); // 무늬 색
-            w.write_u32(0xFFFF_FFFF); // 무늬 종류 (-1 = 없음)
+            w.write_u32(0); // Pattern color.
+            w.write_u32(0xFFFF_FFFF); // Pattern kind (-1=none).
         }
-        w.write_u32(0); // 추가 채우기 속성 크기
+        w.write_u32(0); // Additional fill-property size.
         if bf.fill_type & 0x1 != 0 {
-            w.write_u8(0); // 투명도
+            w.write_u8(0); // Transparency.
         }
     } else {
-        // hwp5 왕복: tail이 무늬색 이후 전부를 담고 있다
+        // HWP5 round-trip: tail holds everything after the pattern color.
         w.write_bytes(&bf.tail);
     }
     RecordNode {
@@ -3245,11 +3266,12 @@ fn emit_char_shape(cs: &CharShape) -> RecordNode {
         w.write_u8(v as u8);
     }
     w.write_i32(cs.base_size);
-    // 취소선: IR의 `strike` 플래그가 켜지면 CHAR_SHAPE 속성 bit18(취소선 여부=1)을 세운다.
-    // 스펙 §4.2.7 표35의 취소선 여부(bit18~20) + 정품 코퍼스 실측(취소선 쓰는 문단이 값 1).
-    // **쓰기에만** 적용한다(우리가 취소선임을 아는 md 출신). 읽기는 bit18을 신뢰하지 않는다
-    // (변경추적 삭제표시 등에서 bit18이 세워진 정품이 있어 평문에 가짜 취소선을 그림 — DIFFSPEC,
-    // doc_info.rs가 strike=false 고정). ⚠ bit 조합의 한글 수용은 H2 실기로 최종 확정 대상.
+    // If the IR strike flag is set, set CHAR_SHAPE attr bit18 (strikeout=1). Based on specification
+    // section 4.2.7 table 35 (bits18..20) and genuine corpus paragraphs with strikeout value 1.
+    // Apply only while writing Markdown-origin content known to be struck. The reader does not
+    // trust bit18: genuine track-change deletion markers can set it and cause false strikeout on
+    // plain text (DIFFSPEC; doc_info.rs fixes strike=false). Final Hangul acceptance of bit
+    // combinations still requires H2 hardware verification.
     let attr = if cs.strike {
         cs.attr | (1 << 18)
     } else {
@@ -3263,11 +3285,12 @@ fn emit_char_shape(cs: &CharShape) -> RecordNode {
     w.write_u32(cs.shade_color);
     w.write_u32(cs.shadow_color);
     if cs.tail.is_empty() {
-        // hwpx/md 출신: 5.1.x 규격 충전 (테두리채움 ID 5.0.2.1+, 취소선 색 5.0.3.0+)
+        // HWPX/Markdown input: fill the 5.1.x layout, with border-fill ID (5.0.2.1+) and strikeout
+        // color (5.0.3.0+).
         w.write_u16(cs.border_fill_id.max(2));
-        w.write_u32(0); // 취소선 색
+        w.write_u32(0); // Strikeout color.
     } else {
-        // hwp5 왕복: border_fill_id는 tail 선두에서 추출만 했으므로 그대로 담겨 있다
+        // HWP5 round-trip: border_fill_id was read from the tail's beginning and remains there.
         w.write_bytes(&cs.tail);
     }
     RecordNode {
@@ -3285,9 +3308,9 @@ fn emit_para_shape(ps: &ParaShape) -> RecordNode {
     normalize_numbered_level_encoding(&mut normalized);
     let ps = &normalized;
     let mut w = ByteWriter::new();
-    // 줄간격 종류는 attr1 bits 0~1이다(parse_para_shape와 같은 규약). IR에서 바뀐
-    // 종류를 되접어 넣지 않으면 한글 2010+ 가 예전 종류로 읽는다. clear-then-set이라
-    // 읽은 그대로인 문단모양에는 무영향이다. 바이트 동일 왕복 게이트가 그대로 유지된다.
+    // Line-spacing kind lives in attr1 bits0..1, matching parse_para_shape. Fold IR changes back
+    // into those bits or Hangul 2010+ reads the old kind. Clear then set; unchanged paragraph
+    // shapes receive their original bits, retaining the byte-identity round-trip gate.
     w.write_u32((ps.attr1 & !0x3) | (u32::from(ps.line_spacing_type) & 0x3));
     w.write_i32(ps.margin_left);
     w.write_i32(ps.margin_right);
@@ -3296,8 +3319,9 @@ fn emit_para_shape(ps: &ParaShape) -> RecordNode {
     w.write_i32(ps.spacing_bottom);
     w.write_i32(ps.line_spacing_old);
     w.write_u16(ps.tab_def_id);
-    // IR의 번호/글머리 참조는 0-기반이다. on-disk는 1-기반이므로 head_type 2/3에 한해
-    // +1 복원한다(parse_para_shape의 -1 정규화의 역 — 왕복 바이트 동일). 개요·머리없음은 그대로.
+    // IR numbering/bullet references are zero-based and disk references are one-based. Restore +1
+    // only for head_type 2/3, reversing parse_para_shape's -1 normalization for byte-identical
+    // round-trips. Leave outline/no-heading values unchanged.
     let numbering_id_raw = if matches!(ps.head_type(), 2 | 3) {
         ps.numbering_id.saturating_add(1)
     } else {
@@ -3309,11 +3333,11 @@ fn emit_para_shape(ps: &ParaShape) -> RecordNode {
         w.write_u16(v as u16);
     }
     if ps.tail.is_empty() {
-        // hwpx/md 출신: 5.1.0.1 규격 충전 (속성2/속성3/줄간격 + 후행 4B).
-        // 정상 5.1.0.1 표본(hello_world)의 PARA_SHAPE는 58B이며 tail 16B =
-        // 속성2(4)+속성3(4)+줄간격(4)+후행(4). 후행 4B를 누락하면(54B) 한글이
-        // 무결성 위반으로 '손상/변조' 경고를 띄운다. 합성 문서는 항상
-        // 5.1.0.1로 선언되므로(parse_version 기본값) 58B가 정답.
+        // HWPX/Markdown input: fill the 5.1.0.1 layout (attr2, attr3, line spacing, trailing four
+        // bytes). Normal hello_world 5.1.0.1 PARA_SHAPE records are 58 bytes with a 16-byte tail:
+        // attr2(4)+attr3(4)+line spacing(4)+tail(4). Omitting the last four bytes yields 54 and a
+        // Hangul integrity corruption/tampering warning. Synthesized documents always declare
+        // 5.1.0.1 (parse_version default), requiring 58 bytes.
         w.write_u32(0);
         w.write_u32(0);
         w.write_u32(if ps.line_spacing > 0 {
@@ -3321,12 +3345,12 @@ fn emit_para_shape(ps: &ParaShape) -> RecordNode {
         } else {
             160
         });
-        w.write_u32(0); // 후행 4B — 5.1.0.1 표본 hello_world와 동일 (00 00 00 00)
+        w.write_u32(0); // Trailing four bytes, matching hello_world 5.1.0.1: 00 00 00 00.
     } else if ps.tail.len() >= 12 {
-        // 5.0.2.5+ 줄간격 값은 tail[8..12]에 있다(reader가 여기서 읽는다).
-        // 보존 tail을 그대로 내보내면 IR에서 바뀐 줄간격이 사라지고 한글은
-        // 예전 값을 보여준다. 읽은 그대로인 문단모양에는 같은 값을 다시 쓰므로
-        // 무영향이다. 12바이트 미만 tail은 길이를 바꾸지 않고 그대로 둔다.
+        // For 5.0.2.5+, the reader takes line spacing from tail[8..12]. Emitting the preserved tail
+        // unchanged would lose IR edits and show the old spacing in Hangul. Unedited shapes receive
+        // the same value and stay unchanged. Leave tails shorter than 12 bytes at their original
+        // length.
         let mut tail = ps.tail.clone();
         tail[8..12].copy_from_slice(&ps.line_spacing.to_le_bytes());
         w.write_bytes(&tail);
@@ -3350,7 +3374,7 @@ fn emit_style(st: &Style) -> RecordNode {
     w.write_u16(st.para_shape.0);
     w.write_u16(st.char_shape.0);
     if st.tail.is_empty() {
-        w.write_u16(0); // 잠금 등 후행 2바이트 (표본 실측)
+        w.write_u16(0); // Trailing two bytes for locking, etc., measured in genuine samples.
     } else {
         w.write_bytes(&st.tail);
     }
@@ -3394,25 +3418,26 @@ fn emit_paragraph(
     add_tracking_tail: bool,
     warnings: &mut WriteReport,
 ) -> RecordNode {
-    // 합성 경로(md/hwpx 출신)는 한글 문단 불변식을 직렬화 시 보정한다. 모든
-    // 합성 문단(본문·표 셀·글상자)이 이 단일 지점을 거치므로 누락이 없다.
-    // from_markdown뿐 아니라 hwpx→hwp 변환 경로도 함께 커버하기 위해 IR/변환기가
-    // 아니라 writer에서 일원화한다.
-    // (hwp5 무수정 왕복은 synthesize=false — 원본 보존, 바이트 동일 게이트.)
+    // Normalize Hangul paragraph invariants during serialization on synthesized Markdown/HWPX
+    // paths. Every synthesized paragraph (body, table cells, text boxes) passes through this point.
+    // Centralize in the writer rather than the IR/converter to cover both from_markdown and
+    // HWPX-to-HWP conversion. Unmodified HWP5 round-trips use synthesize=false, preserving
+    // originals and the byte-identity gate.
     let patched;
     let para = if synthesize {
         let mut p = para.clone();
-        // 1. 모든 문단은 문단끝 문자(0x0d=13)로 닫혀야 한다 (정품 188문단 전수).
-        //    누락 시 한글이 '손상/변조'로 거부.
+        // 1. Every paragraph must end with 0x0d=13, as in all 188 genuine paragraphs examined.
+        //    Omitting it causes Hangul corruption/tampering rejection.
         if p.chars.last() != Some(&HwpChar::CharCtrl(13)) {
             p.chars.push(HwpChar::CharCtrl(13));
         }
-        // 2. nchars 최상위 비트(0x80000000)는 '리스트의 마지막 문단' 표식이다.
-        //    정품 다문단(5.1.1.0) 실측: 섹션의 마지막 문단만 세팅, 나머지 0.
-        //    모든 문단에 세팅하면 한글이 첫 문단을 마지막으로 보고 뒤 문단을
-        //    무시한다(다문단 '둘째부터 안 보임' 원인). chars_flags는 IR 단계의
-        //    set_last_para_flag가 리스트별로 설정하므로 여기서 건드리지 않는다.
-        // 3. PARA_CHAR_SHAPE 연속 동일 id run 병합 (중복 run은 손상 판정).
+        // 2. nchars high bit 0x80000000 marks the last paragraph of a list. Genuine multiparagraph
+        //    5.1.1.0 files set only the section's last paragraph; all others use zero. Setting it
+        //    everywhere makes Hangul treat the first paragraph as final and ignore the rest, hiding
+        //    paragraphs after the first. The IR's set_last_para_flag sets chars_flags per list, so
+        //    leave it untouched here.
+        // 3. Merge consecutive PARA_CHAR_SHAPE runs with identical IDs; duplicate runs are treated
+        //    as corruption.
         p.char_shape_runs.dedup_by(|(_, b), (_, a)| a == b);
         patched = p;
         &patched
@@ -3421,9 +3446,9 @@ fn emit_paragraph(
     };
     // PARA_HEADER
     let mut w = ByteWriter::new();
-    // 빈 문단도 한글은 글자 수를 1로 기록한다(암묵적 문단끝, PARA_TEXT는
-    // 생략). 표본 실측: 빈 셀 문단 60개 전부 nchars 하위=1. 0을 쓰면
-    // 한글이 손상으로 판정.
+    // Hangul records one character even for empty paragraphs, the implicit paragraph end, omitting
+    // PARA_TEXT. All 60 measured empty-cell paragraphs have low nchars=1. Zero causes a corruption
+    // verdict.
     let char_count = if para.chars.is_empty() {
         1
     } else {
@@ -3431,10 +3456,10 @@ fn emit_paragraph(
     };
     let nchars = char_count | (u32::from(para.header.chars_flags) << 24);
     w.write_u32(nchars);
-    // ctrl_mask는 확장/인라인 컨트롤만 표시한다. 문자형 컨트롤(문단끝 13,
-    // 줄나눔 10, 하이픈 등)은 포함하지 않는다 — 표본 실측: 텍스트만 있고
-    // 문단끝(13)으로 닫히는 문단의 원본 ctrl_mask=0. CharCtrl까지 비트를
-    // 켜면 한글이 'ctrl_mask에 있다는 컨트롤이 실제로 없다'고 손상 판정.
+    // ctrl_mask marks only extended/inline controls, excluding character controls such as paragraph
+    // end 13, line break 10 and hyphens. Genuine text-only paragraphs ending in 13 have
+    // ctrl_mask=0. Setting bits for CharCtrl makes Hangul report a control declared in ctrl_mask
+    // but absent from the content, treating it as corrupt.
     let ctrl_mask = if para.header.ctrl_mask != 0 {
         para.header.ctrl_mask
     } else {
@@ -3459,10 +3484,11 @@ fn emit_paragraph(
         .filter(|e| e.tag == tag::PARA_RANGE_TAG)
         .count() as u16;
     w.write_u16(range_tags);
-    // 줄 배치(PARA_LINE_SEG) 개수.
-    // - preserve_linesegs(=hwp5 무수정 왕복): 원본 그대로 보존(바이트 동일 게이트).
-    // - synthesize(=md/hwpx 합성): synthesize_linesegs가 채운 줄 배치를 방출.
-    //   5.1.x는 줄 배치 캐시가 없으면 본문이 안 그려진다(13차 실기).
+    // PARA_LINE_SEG count.
+    // - preserve_linesegs (unmodified HWP5 round-trip): preserve the original for the byte-identity
+    //   gate.
+    // - synthesize (Markdown/HWPX synthesis): emit layouts populated by synthesize_linesegs.
+    //   Without this cache, 5.1.x body text does not draw (hardware round 13).
     let emit_lineseg = synthesize || preserve_linesegs;
     let seg_count = if emit_lineseg {
         para.line_segs.len()
@@ -3472,26 +3498,26 @@ fn emit_paragraph(
     w.write_u16(seg_count as u16);
     w.write_u32(para.header.instance_id);
     if para.header.tail.is_empty() {
-        // 합성 문단: 선언 버전이 5.0.3.2 이상이면 '변경추적 병합 문단여부'
-        // UINT16(=0)을 붙여 24B를 맞춘다(스펙 표 58). 정상 5.1.0.1 표본
-        // hello_world의 PARA_HEADER 꼬리(00 00)와 동일. 누락 시(22B) 한글이
-        // 버전-레이아웃 불일치로 '손상/변조' 경고.
+        // Synthesized paragraphs declaring 5.0.3.2+ append the UINT16 merged-track-change-paragraph
+        // field (=0) for 24 bytes (specification table 58), matching the 00 00 tail in normal
+        // hello_world 5.1.0.1 PARA_HEADER records. Omitting it yields 22 bytes and Hangul
+        // version/layout corruption/tampering warnings.
         if add_tracking_tail {
             w.write_u16(0);
         }
     } else {
-        // hwp5 왕복: 꼬리(버전별 추가 필드)를 그대로 보존한다.
+        // HWP5 round-trip: preserve the tail's version-specific extra fields unchanged.
         w.write_bytes(&para.header.tail);
     }
 
     let mut children = Vec::new();
-    // 빈 문단(내용이 암묵적 문단끝뿐, nchars=1)은 PARA_TEXT 레코드를 만들지
-    // 않는다 — 정품 실측: work_report·한라대 정품의 빈 문단/빈 셀은 전부
-    // nchars=1 + PARA_TEXT 없음. 합성 경로는 모든 문단에 CharCtrl(13)을 붙이므로
-    // 빈 문단이 chars=[0x0d](char_count=1)가 되는데, 이를 PARA_TEXT=[0x0d]로
-    // 방출하면 한글이 '손상'으로 거부한다(빈 셀 표 전부 손상의 원인). 따라서
-    // 실제 내용이 있는 문단(char_count>1)만 PARA_TEXT를 방출한다. 채워진 문단은
-    // 끝 0x0d를 포함해 PARA_TEXT 길이=nchars로 정품과 동일하다.
+    // Do not emit PARA_TEXT for empty paragraphs containing only the implicit end (nchars=1).
+    // Genuine work_report and Halla University empty paragraphs/cells all have nchars=1 without
+    // PARA_TEXT. Synthesis appends CharCtrl(13) to every paragraph, yielding chars=[0x0d] with
+    // char_count=1 for empties; emitting PARA_TEXT=[0x0d] makes Hangul reject them as corrupt,
+    // formerly corrupting every table with empty cells. Emit PARA_TEXT only for char_count>1.
+    // Nonempty paragraphs retain the ending 0x0d and PARA_TEXT length=nchars, matching genuine
+    // files.
     if char_count > 1 {
         children.push(RecordNode {
             tag: tag::PARA_TEXT,
@@ -3576,11 +3602,11 @@ fn emit_para_text(chars: &[HwpChar]) -> Vec<u8> {
     let mut w = ByteWriter::new();
     for ch in chars {
         match ch {
-            // 방어선: 탭이 Text로 잘못 적재된 경우(과거 오염 IR)에도 8 WCHAR 인라인
-            // 컨트롤(코드 9)로 정규화한다. 코드 9를 1 WCHAR로 내보내면 한글이 인라인
-            // 컨트롤 선두로 오인해 뒤 7 WCHAR를 잘못 삼킨다(§3.2.3 표 6). 정상 경로는
-            // 탭을 InlineCtrl(9)로 이미 담으므로 여기 오지 않아 왕복 바이트동일 게이트에
-            // 영향이 없다(정품 hwp5는 탭을 Text로 저장하지 않는다).
+            // Defensively normalize tabs incorrectly loaded as Text in legacy malformed IR into
+            // 8-WCHAR InlineCtrl(9). Emitting code9 as one WCHAR makes Hangul consume the next
+            // seven WCHARs as part of the inline control (section 3.2.3 table 6). Normal paths
+            // already store tabs as InlineCtrl(9), so this does not affect the byte-identity gate;
+            // genuine HWP5 does not store tabs as Text.
             HwpChar::Text('\t') => {
                 w.write_u16(9);
                 w.write_bytes(&[0u8; 12]);
@@ -3642,8 +3668,8 @@ fn emit_control(
             } else {
                 w.write_bytes(&g.data);
             }
-            // 원본 hwp5 자식 서브트리가 있으면 중첩 그대로 방출(무손실).
-            // paragraph_lists/extras는 텍스트 추출 전용이므로 평탄화하지 않는다.
+            // Emit original HWP5 child subtrees with their nesting intact for lossless
+            // preservation. paragraph_lists/extras serve only text extraction; do not flatten them.
             if !g.raw_children.is_empty() {
                 return RecordNode {
                     tag: tag::CTRL_HEADER,
@@ -3759,10 +3785,10 @@ fn emit_section_def(def: &SectionDef) -> RecordNode {
         });
     }
     if def.extras.is_empty() {
-        // 합성 문서(md/hwpx 출신): secd 필수 자식을 5.1.0.1 표본(hello_world)
-        // 바이트로 보충한다. 한글은 구역 정의 아래 각주/미주 모양과 쪽
-        // 테두리 3종(BOTH/EVEN/ODD)을 기대하며, PAGE_DEF만 있으면 '손상/변조'
-        // 판정. PAGE_BORDER_FILL 끝 2B=borderFillID=1(항상 존재).
+        // For synthesized Markdown/HWPX documents, supply required secd children from hello_world
+        // 5.1.0.1 values. Hangul expects footnote/endnote shapes and three page borders
+        // (BOTH/EVEN/ODD) under a section definition; PAGE_DEF alone causes corruption/tampering
+        // rejection. PAGE_BORDER_FILL ends with borderFillID=1 (two bytes), always present.
         for shape in [&DEFAULT_FOOTNOTE_SHAPE, &DEFAULT_ENDNOTE_SHAPE] {
             children.push(RecordNode {
                 tag: tag::FOOTNOTE_SHAPE,
@@ -3787,8 +3813,8 @@ fn emit_section_def(def: &SectionDef) -> RecordNode {
     }
 }
 
-/// 표 셀 그리드에서 (전체 너비, 전체 높이) 합산 — 병합 셀은 건너뛰고 열/행 최대값을 더한다
-/// (HWPX writer의 그리드 추정과 같은 규칙, write/section.rs write_table).
+/// Sums total table-cell grid width/height, skipping merged cells and adding column/row maxima.
+/// Matches HWPX grid estimation in write/section.rs write_table.
 fn table_grid_totals(table: &Table) -> (i32, i32) {
     let mut col_w = vec![0i64; table.cols.max(1) as usize];
     let mut row_h = vec![0i64; table.rows.max(1) as usize];
@@ -3817,55 +3843,59 @@ fn emit_table(
     let mut w = ByteWriter::new();
     w.write_bytes(b" lbt");
     if !table.common_data.is_empty() {
-        // hwp5 출신: 원본 개체 공통 속성 그대로 보존.
+        // HWP5 origin: preserve original object-common attributes unchanged.
         w.write_bytes(&table.common_data);
     } else if let Some(pl) = &table.placement {
-        // hwpx 출신: 배치 정보(<hp:pos>/<hp:sz>/<hp:outMargin>/zOrder)에서 합성.
-        // 과거에는 0x082A2210(글자처럼취급=꺼짐) 상수로 덮어써 인라인이어야 할 표가
-        // 떠 있는 개체가 되고 본문 흐름에서 빠져 한글이 재배치(겹침/빈 페이지)했다.
+        // HWPX origin: synthesize from hp:pos/hp:sz/hp:outMargin and zOrder placement. Previously
+        // forcing 0x082A2210 (treat-as-character off) made inline tables float outside body flow,
+        // causing Hangul relayout overlaps/blank pages.
         w.write_u32(pl.synth_attr());
         w.write_i32(pl.vert_offset);
         w.write_i32(pl.horz_offset);
-        // #296: converter가 합성한 placement는 width/height가 0(미측정)이다 — 0을 그대로
-        // 쓰면 한글에서 개체가 깔끔히 접히므로, HWPX writer의 >0 필터와 같은 규칙으로
-        // 셀 그리드 합산에 폴백한다(아래 placement-free 분기와 같은 값).
+        // #296: converter-generated placement has unmeasured width/height=0. Writing zero collapses
+        // the object in Hangul; use the HWPX writer's positive-dimension rule and fall back to
+        // cell-grid sums, matching the placement-free branch below.
         let (width, height) = if pl.width > 0 && pl.height > 0 {
             (pl.width, pl.height)
         } else {
             table_grid_totals(table)
         };
-        w.write_i32(width); // <hp:sz> — 병합 셀 합산보다 정확
+        w.write_i32(width); // hp:sz width, more accurate than merged-cell sums.
         w.write_i32(height);
         w.write_i32(pl.z_order);
         for m in pl.out_margins {
             w.write_u16(m);
         }
-        // instance id: 고유한 비-0 값(z순서 기반). 개체 링크용이라 렌더 영향은 작다.
+        // Unique nonzero instance ID based on z-order; used for object linking with little
+        // rendering effect.
         w.write_u32(0x5000_0000 | (pl.z_order as u32 & 0xffff));
-        // @36 INT32 = 쪽나눔 방지 on(1)/off(0) (스펙 표 69). 정품 표본(color_fill.hwp
-        // 표) 실측 = 0. 과거 이 자리에 hwpx holdAnchorAndSO를 잘못 기록했다 — 두 필드는
-        // 의미가 다르다. holdAnchorAndSO는 hwp5 공통 속성에 대응 자리가 없어 hwp5 합성에서
-        // 버린다(손실 아님: hwpx→hwpx 왕복은 <hp:pos> anchor 속성으로 pl.hold_anchor를 보존).
-        w.write_i32(0); // 쪽나눔 방지 off
-        // 개체 설명문 길이 WORD(len=0) — 스펙 표 69의 마지막 필수 필드(≥5.0.0.5).
-        // 누락하면 45→44B가 되어 스펙 최소 46B(=" lbt" 4 + 42)에 미달, 한글이 레코드를
-        // 짧게 읽어 거부할 수 있다. 그림 경로(emit_picture 합성)와 동일하게 방출한다.
+        // INT32 at offset 36 controls prevention of page splitting: on=1/off=0 (specification
+        // table 69). Measured zero in the genuine color_fill.hwp table. Previously this incorrectly
+        // stored HWPX holdAnchorAndSO, a different semantic field with no HWP5 common-attribute
+        // counterpart. Drop it during HWP5 synthesis; HWPX-to-HWPX still preserves pl.hold_anchor
+        // in hp:pos anchor attributes.
+        w.write_i32(0); // Prevent page splitting: off.
+        // Object-description length WORD (len=0), the final required field in specification table 69
+        // (>=5.0.0.5). Omitting it changes 45 to 44 bytes, below the 46-byte minimum
+        // (4-byte control ID plus 42), so Hangul may read a short record and reject it. Emit the same field
+        // as the synthesized emit_picture path.
         w.write_u16(0); // desc_len = 0
     } else {
-        // md 출신: 셀 크기로 계산한 떠 있는 표본값(기존 동작 유지).
+        // Markdown origin: floating sample values calculated from cell sizes, preserving prior
+        // behavior.
         let (total_w, total_h) = table_grid_totals(table);
-        w.write_u32(0x082A_2210); // 속성 (표본값)
-        w.write_u32(0); // 세로 오프셋
-        w.write_u32(0); // 가로 오프셋
+        w.write_u32(0x082A_2210); // Attributes, sample value.
+        w.write_u32(0); // Vertical offset.
+        w.write_u32(0); // Horizontal offset.
         w.write_i32(total_w);
         w.write_i32(total_h);
         w.write_u32(0); // z-order
         for _ in 0..4 {
-            w.write_u16(283); // 바깥 여백 (표본값)
+            w.write_u16(283); // Outer margin, sample value.
         }
         w.write_u32(0); // instance id
-        w.write_i32(0); // 쪽 나눔 방지
-        w.write_u16(0); // 개체 설명문 길이 WORD(len=0) — 스펙 표 69 필수, 46B 정합
+        w.write_i32(0); // Prevent page splitting.
+        w.write_u16(0); // Object-description length WORD (len=0), required by specification table 69 for 46-byte consistency.
     }
 
     let mut tw = ByteWriter::new();
@@ -3881,7 +3911,7 @@ fn emit_table(
     }
     tw.write_u16(table.border_fill.0);
     if table.table_tail.is_empty() {
-        tw.write_u16(0); // 영역 속성 크기 (5.0.1.0+)
+        tw.write_u16(0); // Region-attribute size (5.0.1.0+).
     } else {
         tw.write_bytes(&table.table_tail);
     }
@@ -4021,19 +4051,19 @@ fn emit_picture(
     let mut w = ByteWriter::new();
     w.write_bytes(b" osg");
     if pic.common_data.is_empty() {
-        // hwpx/md 출신: 개체 공통 속성 최소 구성 (글자처럼 취급)
+        // HWPX/Markdown origin: minimal object-common attributes, treat-as-character.
         warnings.warning("그림 개체 공통 속성을 기본값으로 생성 — 한글에서 확인 필요");
-        w.write_u32(u32::from(pic.treat_as_char)); // 속성
-        w.write_u32(0); // 세로 오프셋
-        w.write_u32(0); // 가로 오프셋
+        w.write_u32(u32::from(pic.treat_as_char)); // Attributes.
+        w.write_u32(0); // Vertical offset.
+        w.write_u32(0); // Horizontal offset.
         w.write_i32(pic.width.0);
         w.write_i32(pic.height.0);
         w.write_u32(0); // z-order
         for _ in 0..4 {
-            w.write_u16(0); // 바깥 여백
+            w.write_u16(0); // Outer margins.
         }
         w.write_u32(0); // instance id
-        w.write_i32(0); // 쪽 나눔 방지
+        w.write_i32(0); // Prevent page splitting.
         let mut description = Vec::new();
         append_gso_description(&mut description, pic.description.as_deref(), warnings);
         w.write_bytes(&description);
@@ -5361,12 +5391,13 @@ mod tests {
         assert_eq!(node.children[1].tag, tag::PARA_HEADER);
     }
 
-    /// hwpx 출신 이미지의 합성 도형 레코드가 정품 5.1.x 구조여야 한다.
-    /// SHAPE_COMPONENT(196B, "$pic") → SHAPE_COMPONENT_PICTURE(91B): 자르기는
-    /// 표시 크기가 아니라 원본 자연 크기여야 한다(부분 크롭 → 미표시 방지).
+    /// Synthesized HWPX-origin picture records must match the genuine 5.1.x structure:
+    /// SHAPE_COMPONENT (196 bytes, "$pic") -> SHAPE_COMPONENT_PICTURE (91 bytes). Clipping must use
+    /// the original natural size rather than display size, avoiding a partial crop that hides the
+    /// image.
     #[test]
     fn 그림_extras_합성_구조() {
-        // 표시 8760×1260, 자연 150000×61875.
+        // Display 8760x1260, natural 150000x61875.
         let extras = build_picture_extras(8760, 1260, (150000, 61875), 1, 0x3010_0000);
         assert_eq!(extras.len(), 1, "SHAPE_COMPONENT 1개");
         let sc = &extras[0];
@@ -5395,7 +5426,7 @@ mod tests {
             1,
             "BinItem ID @71"
         );
-        // 꼭지점2 = 표시 크기 (width, height)
+        // Corner 2 = display dimensions (width, height).
         assert_eq!(
             i32::from_le_bytes(pic.data[28..32].try_into().unwrap()),
             8760
@@ -5404,7 +5435,7 @@ mod tests {
             i32::from_le_bytes(pic.data[32..36].try_into().unwrap()),
             1260
         );
-        // 자르기 우/하 = 자연 크기 (표시 크기 아님!)
+        // Right/bottom clipping bounds = natural dimensions, not display dimensions.
         assert_eq!(
             i32::from_le_bytes(pic.data[52..56].try_into().unwrap()),
             150000,
@@ -5415,13 +5446,13 @@ mod tests {
             61875,
             "자르기 하 = 자연 높이"
         );
-        // instance_id @74 유니크
+        // Unique instance_id at offset 74.
         assert_eq!(
             u32::from_le_bytes(pic.data[74..78].try_into().unwrap()),
             0x3010_0000,
             "instance_id @74"
         );
-        // picture_effect @78: flags=0, 자연 폭@82, 자연 높이@86
+        // picture_effect at 78: flags=0, natural width at 82, natural height at 86.
         assert_eq!(
             u32::from_le_bytes(pic.data[78..82].try_into().unwrap()),
             0,
@@ -5845,8 +5876,7 @@ mod tests {
 
     #[test]
     fn picture_itemref_resolves_to_the_named_stream() {
-        // S3: BinRef::ItemRef("BIN0002.png") already matches the existing substring
-        // heuristic today - a regression guard, not a red-before-fix case.
+        // An exact unlisted filename continues to resolve to its own stream.
         let doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef("BIN0002.png".to_string()));
         let output = picture_report_path("picture-itemref");
 
@@ -5943,10 +5973,166 @@ mod tests {
         std::fs::remove_file(output).unwrap();
     }
 
+    #[derive(Clone, Copy)]
+    enum PartialItemRefSite {
+        Body,
+        Cell,
+        GenericList,
+    }
+
+    fn partial_itemref_doc(site: PartialItemRefSite) -> Document {
+        let mut doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef("image1".into()));
+        doc.meta.source_format = "hwpx".into();
+        doc.bin_streams[0].name = "BinData/image10.png".into();
+        doc.bin_streams[1].name = "BinData/unrelated.png".into();
+        if matches!(site, PartialItemRefSite::Body) {
+            return doc;
+        }
+        let picture = doc.sections[0].paragraphs[0].controls.pop().unwrap();
+        let control = match site {
+            PartialItemRefSite::Body => unreachable!(),
+            PartialItemRefSite::Cell => {
+                let table_doc = hwp_convert::from_markdown("| value |\n| --- |\n| nested |\n");
+                let mut table = table_doc.sections[0]
+                    .paragraphs
+                    .iter()
+                    .flat_map(|paragraph| &paragraph.controls)
+                    .find_map(|control| match control {
+                        Control::Table(table) => Some(table.clone()),
+                        _ => None,
+                    })
+                    .unwrap();
+                table.cells[0].paragraphs[0].controls.push(picture);
+                Control::Table(table)
+            }
+            PartialItemRefSite::GenericList => Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"head",
+                data: vec![0; 8],
+                paragraph_lists: vec![hwp_model::ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs: vec![Paragraph {
+                        controls: vec![picture],
+                        ..Paragraph::default()
+                    }],
+                }],
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                container_box: None,
+            }),
+        };
+        doc.sections[0].paragraphs[0].controls.push(control);
+        doc
+    }
+
+    fn assert_partial_itemref_is_a_loss(site: PartialItemRefSite, label: &str) {
+        let doc = partial_itemref_doc(site);
+        let output = picture_report_path(label);
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        let synthesized = synthesized_bin_stream_bytes(&output);
+        std::fs::remove_file(output).unwrap();
+        assert!(
+            report.preservation.events.iter().any(|event| {
+                event.code == PreservationCode::BinaryAssetRemoved
+                    && event.resource == PreservationResourceKind::BinaryAsset
+                    && event.disposition == PreservationDisposition::Removed
+                    && event.count == 1
+            }),
+            "an unlisted partial stem must report BinaryAssetRemoved instead of another picture: {:?}",
+            report.preservation.events
+        );
+        assert_eq!(synthesized, None, "image1 must not select image10.png");
+    }
+
+    #[test]
+    fn partial_itemref_in_body_is_reported_as_removed() {
+        assert_partial_itemref_is_a_loss(PartialItemRefSite::Body, "partial-itemref-body");
+    }
+
+    #[test]
+    fn partial_itemref_in_cell_is_reported_as_removed() {
+        assert_partial_itemref_is_a_loss(PartialItemRefSite::Cell, "partial-itemref-cell");
+    }
+
+    #[test]
+    fn partial_itemref_in_generic_list_is_reported_as_removed() {
+        assert_partial_itemref_is_a_loss(PartialItemRefSite::GenericList, "partial-itemref-list");
+    }
+
+    #[test]
+    fn exact_itemref_stem_wins_over_an_earlier_partial_stem() {
+        let mut doc = partial_itemref_doc(PartialItemRefSite::Body);
+        doc.bin_streams[1].name = "BinData/image1.png".into();
+        let output = picture_report_path("itemref-exact-stem");
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        let synthesized = synthesized_bin_stream_bytes(&output);
+        std::fs::remove_file(output).unwrap();
+        assert_eq!(
+            synthesized,
+            Some(vec![4, 5, 6]),
+            "the model's exact filename stem must select the second stream, not image10.png"
+        );
+        assert!(
+            report
+                .preservation
+                .events
+                .iter()
+                .all(|event| { event.code != PreservationCode::BinaryAssetRemoved })
+        );
+    }
+
+    #[test]
+    fn itemref_name_resolution_agrees_with_the_model() {
+        let names = ["BinData/image10.png", "BinData/image1.png", "plain.png"];
+        let mut doc = Document {
+            bin_streams: names
+                .iter()
+                .map(|name| hwp_model::BinStream {
+                    name: (*name).into(),
+                    data: Vec::new(),
+                })
+                .collect(),
+            ..Document::default()
+        };
+        let bin_names: Vec<String> = names.iter().map(|name| (*name).into()).collect();
+        for item in [
+            "image10.png",
+            "BinData/image1.png",
+            "plain.png",
+            "image10",
+            "image1",
+            "plain",
+            "image",
+            "IMAGE1.PNG",
+            "",
+            "missing",
+        ] {
+            let reference = hwp_model::BinRef::ItemRef(item.into());
+            assert_eq!(
+                bin_stream_index(&bin_names, &[], &doc.hwpx_bin_manifest, &reference),
+                doc.bin_stream_index(&reference),
+                "unlisted reference {item:?} must use the same stream as the model"
+            );
+        }
+        for (item, href) in [("image1", "plain.png"), ("image1", "BinData/missing.png")] {
+            doc.hwpx_bin_manifest = vec![(item.into(), href.into())];
+            let reference = hwp_model::BinRef::ItemRef(item.into());
+            assert_eq!(
+                bin_stream_index(&bin_names, &[], &doc.hwpx_bin_manifest, &reference),
+                doc.bin_stream_index(&reference),
+                "a listed id must follow its manifest href"
+            );
+        }
+    }
+
     #[test]
     fn picture_with_unresolvable_reference_reports_binary_asset_removed() {
-        // S2: BinRef::ItemRef names no existing stream. Today this silently falls back to
-        // bin_streams[0] instead of reporting a loss - the tangled defect this plan closes.
+        // A reference that names no available stream stays unresolved even when other
+        // payloads are available, and is reported as a typed loss.
         let doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef(
             "not-in-this-document.png".to_string(),
         ));
@@ -6000,14 +6186,15 @@ mod tests {
         }
     }
 
-    /// 합성(hwpx·md 출신) 표의 개체 공통 속성은 스펙 표 69의 최소 46B
-    /// (" lbt" 4 + 40 필드 + desc_len 2)로 방출해야 한다. 그림 경로(46B)와 정합.
-    /// @40(=공통 4+@36) INT32 = 쪽나눔 방지 = 0(정품 표본 실측), @44 WORD = desc_len = 0.
+    /// Synthesized HWPX/Markdown tables must emit the minimum 46-byte object-common attributes
+    /// required by specification table 69 (4-byte " lbt" plus 40-byte fields plus 2-byte desc_len),
+    /// matching the 46-byte picture path. INT32 at 40 (control-common 4 + offset 36) prevents page
+    /// splitting and is 0 in genuine samples; WORD at 44 is desc_len=0.
     #[test]
     fn 합성_표_공통속성_46b_쪽나눔0() {
-        // 1) hwpx 출신(placement) 경로.
+        // 1) HWPX-origin placement path.
         let pl = hwp_model::GsoPlacement {
-            hold_anchor: true, // hwp5 합성에서 버려야 함(쪽나눔 자리로 새면 안 됨)
+            hold_anchor: true, // Must be dropped in HWP5 synthesis, never leaked into the page-splitting field.
             width: 40000,
             height: 20000,
             z_order: 3,
@@ -6037,7 +6224,7 @@ mod tests {
             "@44 desc_len = 0"
         );
 
-        // 2) md 출신 경로(placement=None, common_data 비어 있음).
+        // 2) Markdown-origin path: placement=None, empty common_data.
         let node = emit_table(
             &synth_table(None),
             true,
