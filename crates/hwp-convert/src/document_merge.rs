@@ -164,6 +164,7 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         .ok_or_else(|| "병합할 입력이 없습니다".to_string())?;
 
     let missing_bin_name = unresolved_bin_name(inputs);
+    let unresolved_primary = unresolved_primary_spellings(first);
     let mut target = first.clone();
     let primary_metadata = target.metadata.clone();
     let mut general_path_used = false;
@@ -180,10 +181,11 @@ pub fn merge_documents(inputs: &[Document]) -> Result<MergeOutcome, String> {
         let sections_before = target.sections.len();
 
         let dropped_bin_data = if palette_compatible(&target.header, &input.header) {
-            graft_palette_compatible(&mut target, input, &missing_bin_name)?
+            graft_palette_compatible(&mut target, input, &missing_bin_name, &unresolved_primary)?
         } else {
             general_path_used = true;
-            let (offsets, dropped) = graft_header_general(&mut target, input, &missing_bin_name)?;
+            let (offsets, dropped) =
+                graft_header_general(&mut target, input, &missing_bin_name, &unresolved_primary)?;
             let mut unresolvable_border_fill_refs = 0usize;
             for section in &input.sections {
                 let mut section = section.clone();
@@ -273,6 +275,7 @@ fn u16_len(len: usize) -> Result<u16, String> {
 fn graft_bin_data(
     target: &mut Document,
     input: &Document,
+    unresolved_primary: &[String],
 ) -> Result<(u16, HashMap<u16, u16>, usize), String> {
     let offset = u16_len(target.header.bin_data.len())?;
     let mut used: Vec<u16> = target
@@ -306,7 +309,7 @@ fn graft_bin_data(
             let reserved = |document: &Document, candidate| {
                 extensions[&storage_id]
                     .iter()
-                    .any(|ext| bin_stream_name_taken(document, candidate, ext))
+                    .any(|ext| bin_stream_name_taken(document, candidate, ext, unresolved_primary))
             };
             let new_id = if let Some(&mapped) = remap.get(&storage_id) {
                 mapped
@@ -353,9 +356,20 @@ fn graft_bin_data(
 }
 
 /// Whether a canonical BIN carrier name is reserved by existing streams or the primary
-/// manifest namespace. Native numeric refs require a storage-id remint, not a filename prefix.
-fn bin_stream_name_taken(target: &Document, storage_id: u16, ext: &str) -> bool {
-    bin_namespace_name_taken(target, &format!("BIN{storage_id:04X}.{ext}"))
+/// manifest namespace, or would answer one of the primary's unresolved references — the
+/// remint is the only rename a numeric payload can take. Native numeric refs require a
+/// storage-id remint, not a filename prefix.
+fn bin_stream_name_taken(
+    target: &Document,
+    storage_id: u16,
+    ext: &str,
+    unresolved_primary: &[String],
+) -> bool {
+    bin_namespace_name_taken(
+        target,
+        &format!("BIN{storage_id:04X}.{ext}"),
+        unresolved_primary,
+    )
 }
 
 /// If `bin` is the payload stream of one of `bin_data`'s entries (its
@@ -386,9 +400,12 @@ fn reminted_canonical_name(
 /// A carried filename must not be captured by an earlier stream's suffix/stem/substring
 /// lookup or by the primary manifest's id/href namespace. Checking containment in this
 /// direction lets a longer graft prefix escape a reserved spelling without restoring it.
-fn bin_namespace_name_taken(target: &Document, name: &str) -> bool {
+/// The primary's own unresolved references are the exception that runs the other way
+/// ([`unresolved_primary_spellings`]): their lookup starts at the reference, so a name that
+/// would answer one is taken even though no existing name contains it (#463).
+fn bin_namespace_name_taken(target: &Document, name: &str, unresolved_primary: &[String]) -> bool {
     let candidate = name.to_ascii_lowercase();
-    target
+    let collides = target
         .bin_streams
         .iter()
         .map(|bin| bin.name.as_str())
@@ -398,7 +415,52 @@ fn bin_namespace_name_taken(target: &Document, name: &str) -> bool {
                 .iter()
                 .flat_map(|(id, href)| [id.as_str(), href.as_str()]),
         )
-        .any(|reserved| reserved.to_ascii_lowercase().contains(&candidate))
+        .any(|taken| taken.to_ascii_lowercase().contains(&candidate));
+    collides
+        || unresolved_primary
+            .iter()
+            .any(|spelling| name_answers_spelling(name, spelling))
+}
+
+/// Whether a stream named `name` would resolve `spelling`, mirroring the unlisted-id rules
+/// of [`Document::bin_stream_index`]: exact name, `/{spelling}` suffix, or filename stem.
+/// The resolver compares these case-sensitively, so this check does too.
+fn name_answers_spelling(name: &str, spelling: &str) -> bool {
+    name == spelling
+        || name.ends_with(&format!("/{spelling}"))
+        || name
+            .rsplit('/')
+            .next()
+            .and_then(|file| file.split('.').next())
+            .is_some_and(|stem| stem == spelling)
+}
+
+/// Every `ItemRef` spelling a section of `doc` names that `doc` itself cannot resolve, sorted
+/// and deduplicated. Collected on the primary before any grafting, so a later input's stream
+/// can be renamed instead of silently giving one of these references a meaning (#463).
+fn unresolved_primary_spellings(doc: &Document) -> Vec<String> {
+    let mut spellings = Vec::new();
+    for section in &doc.sections {
+        collect_item_spellings(&section.paragraphs, &mut spellings);
+    }
+    spellings.retain(|spelling| {
+        doc.bin_stream_index(&BinRef::ItemRef(spelling.clone()))
+            .is_none()
+    });
+    spellings.sort();
+    spellings.dedup();
+    spellings
+}
+
+/// A collision-free name for `name` under `prefix` and counter `n`. The counter goes on the
+/// file component: prefixing the whole `dir/file` name would leave the file's stem intact, so
+/// the resolver's stem rule would match the candidate again and the caller's loop could never
+/// leave an [`unresolved_primary_spellings`] entry untouched.
+fn renamed_bin_name(prefix: &str, n: usize, name: &str) -> String {
+    match name.rsplit_once('/') {
+        Some((dir, file)) => format!("{dir}/{prefix}{n}_{file}"),
+        None => format!("{prefix}{n}_{name}"),
+    }
 }
 
 /// Reserve a non-content name that no input or eventual graft can resolve. The HWP5
@@ -469,9 +531,10 @@ fn collect_item_spellings(paragraphs: &[Paragraph], spellings: &mut Vec<String>)
 /// Grafts `input`'s bin streams onto `target`. A stream that is the payload
 /// of an hwp5 BIN_DATA entry takes the entry's reminted canonical name so
 /// `BinRef::Id` references keep resolving; every other stream keeps its name,
-/// minting a `{prefix}{n}_` name on a stream/manifest namespace collision. The returned map
-/// rewires
-/// `BinRef::ItemRef` references. Shared by both grafting tiers.
+/// gaining a `{prefix}{n}_` file component ([`renamed_bin_name`]) on a stream/manifest
+/// namespace collision or when its name would answer one of the first input's unresolved
+/// references. The returned map rewires `BinRef::ItemRef` references. Shared by both
+/// grafting tiers.
 ///
 /// The map is keyed by what a picture's `ItemRef` can say, resolved through the INPUT document:
 /// every stream name, and every id the input's own manifest lists (to the final name of the
@@ -485,6 +548,7 @@ fn graft_bin_streams(
     prefix: &str,
     storage_remap: &HashMap<u16, u16>,
     missing_name: &str,
+    unresolved_primary: &[String],
 ) -> HashMap<String, String> {
     // A double-underscore token cannot begin inside this prefix. Prepending one underscore
     // to every source name above covers the only possible boundary match after `{prefix}{n}_`.
@@ -500,11 +564,11 @@ fn graft_bin_streams(
         if let Some(canonical) = reminted_canonical_name(&input.header.bin_data, bin, storage_remap)
         {
             name = canonical;
-        } else if bin_namespace_name_taken(target, &name) {
+        } else if bin_namespace_name_taken(target, &name, unresolved_primary) {
             let mut n = target.bin_streams.len() + 1;
             loop {
-                let candidate = format!("{prefix}{n}_{}", bin.name);
-                if !bin_namespace_name_taken(target, &candidate) {
+                let candidate = renamed_bin_name(prefix, n, &bin.name);
+                if !bin_namespace_name_taken(target, &candidate, unresolved_primary) {
                     name = candidate;
                     break;
                 }
@@ -563,14 +627,22 @@ fn graft_palette_compatible(
     target: &mut Document,
     input: &Document,
     missing_name: &str,
+    unresolved_primary: &[String],
 ) -> Result<usize, String> {
     let cs_off = u16_len(target.header.char_shapes.len())? - PALETTE_LEN;
     let ps_off = u16_len(target.header.para_shapes.len())? - BASE_PARA_SHAPES;
     let num_off = u16_len(target.header.numbering_levels.len())?;
     let bul_off = u16_len(target.header.bullet_chars.len())?;
 
-    let (bd_off, storage_remap, dropped) = graft_bin_data(target, input)?;
-    let rename = graft_bin_streams(target, input, "merge", &storage_remap, missing_name);
+    let (bd_off, storage_remap, dropped) = graft_bin_data(target, input, unresolved_primary)?;
+    let rename = graft_bin_streams(
+        target,
+        input,
+        "merge",
+        &storage_remap,
+        missing_name,
+        unresolved_primary,
+    );
 
     // Extend target with the input's off-palette extras (numbering/bullet
     // references shifted by the offsets computed above).
@@ -726,6 +798,7 @@ fn graft_header_general(
     target: &mut Document,
     input: &Document,
     missing_name: &str,
+    unresolved_primary: &[String],
 ) -> Result<(HeaderOffsets, usize), String> {
     let char_shape = u16_len(target.header.char_shapes.len())?;
     let para_shape = u16_len(target.header.para_shapes.len())?;
@@ -739,8 +812,15 @@ fn graft_header_general(
         *offset = u16_len(target.header.fonts[lang].len())?;
     }
 
-    let (bin_data, storage_remap, dropped) = graft_bin_data(target, input)?;
-    let bin_rename = graft_bin_streams(target, input, "graft", &storage_remap, missing_name);
+    let (bin_data, storage_remap, dropped) = graft_bin_data(target, input, unresolved_primary)?;
+    let bin_rename = graft_bin_streams(
+        target,
+        input,
+        "graft",
+        &storage_remap,
+        missing_name,
+        unresolved_primary,
+    );
 
     // Fonts, border fills, tab defs/stops, numberings/numbering_levels and
     // bullets/bullet_chars carry no id references of their own — append verbatim.
@@ -1844,6 +1924,223 @@ mod tests {
         assert_eq!(
             picture_bytes(&doc, a_sections, 0).as_deref(),
             Some(b"B-IMAGE".as_slice())
+        );
+    }
+
+    /// #463: the first input's picture names an id nothing in the first input resolves — no
+    /// manifest entry, no stream. A later input carries `BinData/logo.png`, which the resolver's
+    /// stem rule would hand to the first input's picture, so the graft must not let it keep a
+    /// name that answers the first input.
+    #[test]
+    fn 병합_뒤_첫_입력의_미해결_id가_뒤_입력의_스트림으로_해석되지_않는다() {
+        for general in [false, true] {
+            let mut a = from_markdown("문서 A\n");
+            a.sections[0].paragraphs.insert(
+                0,
+                hwp_model::Paragraph {
+                    controls: vec![Control::Picture(sample_picture("logo"))],
+                    ..Default::default()
+                },
+            );
+            assert!(
+                picture_bytes(&a, 0, 0).is_none(),
+                "general={general}: the first input must not carry the id it names"
+            );
+            let mut b = document_with_item("logo", "BinData/logo.png", b"B-IMAGE");
+            if general {
+                b = non_palette_compatible(b);
+                b.hwpx_bin_manifest = vec![("logo".into(), "BinData/logo.png".into())];
+            }
+            assert_eq!(
+                picture_bytes(&b, 0, 0).as_deref(),
+                Some(b"B-IMAGE".as_slice()),
+                "general={general}: the second input resolves the id on its own"
+            );
+            let a_sections = a.sections.len();
+            let doc = merge_documents(&[a, b]).unwrap().document;
+            assert_eq!(
+                picture_bytes(&doc, 0, 0),
+                None,
+                "general={general}: a later input's stream must not answer the first input's \
+                 unresolved id"
+            );
+            assert_eq!(
+                picture_bytes(&doc, a_sections, 0).as_deref(),
+                Some(b"B-IMAGE".as_slice()),
+                "general={general}: the second input's picture keeps its own bytes"
+            );
+        }
+    }
+
+    /// A paragraph carrying one picture that names `item`.
+    fn unresolved_picture_paragraph(item: &str) -> Paragraph {
+        Paragraph {
+            controls: vec![Control::Picture(sample_picture(item))],
+            ..Default::default()
+        }
+    }
+
+    fn push_paragraph(doc: &mut Document, paragraph: Paragraph) {
+        doc.sections[0].paragraphs.insert(0, paragraph);
+    }
+
+    fn nest_picture_in_table_cell(doc: &mut Document) {
+        let mut control = table_with_common_id(9);
+        if let Control::Table(table) = &mut control {
+            table.cells[0].paragraphs = vec![unresolved_picture_paragraph("logo")];
+        }
+        push_paragraph(
+            doc,
+            Paragraph {
+                controls: vec![control],
+                ..Default::default()
+            },
+        );
+    }
+
+    fn nest_picture_in_table_caption(doc: &mut Document) {
+        let mut control = table_with_common_id(9);
+        if let Control::Table(table) = &mut control {
+            table.caption = Some(caption_with_para(unresolved_picture_paragraph("logo")));
+        }
+        push_paragraph(
+            doc,
+            Paragraph {
+                controls: vec![control],
+                ..Default::default()
+            },
+        );
+    }
+
+    /// The outer picture resolves on its own (`outer`), so the only thing the first input
+    /// cannot resolve is the picture inside its caption.
+    fn nest_picture_in_picture_caption(doc: &mut Document) {
+        let mut picture = sample_picture("outer");
+        picture.caption = Some(caption_with_para(unresolved_picture_paragraph("logo")));
+        doc.bin_streams.push(hwp_model::BinStream {
+            name: "BinData/outer.png".into(),
+            data: b"A-OUTER".to_vec(),
+        });
+        doc.hwpx_bin_manifest = vec![("outer".into(), "BinData/outer.png".into())];
+        push_paragraph(
+            doc,
+            Paragraph {
+                controls: vec![Control::Picture(picture)],
+                ..Default::default()
+            },
+        );
+    }
+
+    fn nest_picture_in_generic_list(doc: &mut Document) {
+        push_paragraph(
+            doc,
+            Paragraph {
+                controls: vec![Control::Generic(hwp_model::GenericControl {
+                    ctrl_id: *b"cont",
+                    data: Vec::new(),
+                    paragraph_lists: vec![hwp_model::ParagraphList {
+                        header_data: Vec::new(),
+                        paragraphs: vec![unresolved_picture_paragraph("logo")],
+                    }],
+                    extras: Vec::new(),
+                    raw_children: Vec::new(),
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: None,
+                    caption: None,
+                    hwpx_raw_xml: None,
+                    container_box: None,
+                })],
+                ..Default::default()
+            },
+        );
+    }
+
+    /// #463 review round: the reservation must reach every nested site the collector walks,
+    /// not just section-level paragraphs. Each case parks the first input's unresolved picture
+    /// ONLY inside a nested container (text-extraction walk order: table cell, then the
+    /// captions of a table, a picture and a Generic control), so a collector that stopped at
+    /// `section.paragraphs` would leave the later input's `BinData/logo.png` answering it.
+    #[test]
+    fn 병합_뒤_중첩_위치의_미해결_id도_뒤_입력의_스트림으로_해석되지_않는다() {
+        // One nested site: a label for the failure message, and the builder that parks the
+        // first input's unresolved picture inside it.
+        type NestedSite = (&'static str, fn(&mut Document));
+        let sites: [NestedSite; 4] = [
+            ("table cell", nest_picture_in_table_cell),
+            ("table caption", nest_picture_in_table_caption),
+            ("picture caption", nest_picture_in_picture_caption),
+            ("generic paragraph list", nest_picture_in_generic_list),
+        ];
+        for (label, nest) in sites {
+            for general in [false, true] {
+                let mut a = from_markdown("문서 A\n");
+                nest(&mut a);
+                assert!(
+                    a.bin_stream_index(&BinRef::ItemRef("logo".into()))
+                        .is_none(),
+                    "{label} general={general}: the first input must not carry the id it names"
+                );
+                let mut b = document_with_item("logo", "BinData/logo.png", b"B-IMAGE");
+                if general {
+                    b = non_palette_compatible(b);
+                    b.hwpx_bin_manifest = vec![("logo".into(), "BinData/logo.png".into())];
+                }
+                let a_sections = a.sections.len();
+                let doc = merge_documents(&[a, b]).unwrap().document;
+                assert_eq!(
+                    doc.bin_stream_index(&BinRef::ItemRef("logo".into())),
+                    None,
+                    "{label} general={general}: a later input's stream must not answer the first \
+                     input's nested unresolved id"
+                );
+                assert!(
+                    doc.bin_streams.iter().any(|s| s.data == b"B-IMAGE"),
+                    "{label} general={general}: the later payload survives the merge"
+                );
+                assert_eq!(
+                    picture_bytes(&doc, a_sections, 0).as_deref(),
+                    Some(b"B-IMAGE".as_slice()),
+                    "{label} general={general}: the second input's picture keeps its own bytes"
+                );
+            }
+        }
+    }
+
+    /// The canonical `BIN####` name a native payload takes is a later stream name too: the
+    /// storage id is reminted rather than letting it answer the first input's unresolved id.
+    #[test]
+    fn 병합_뒤_원본_bin_이름도_첫_입력의_미해결_id를_대신하지_않는다() {
+        let mut a = from_markdown("문서 A\n");
+        a.sections[0].paragraphs.insert(
+            0,
+            hwp_model::Paragraph {
+                controls: vec![Control::Picture(sample_picture("BIN0001.png"))],
+                ..Default::default()
+            },
+        );
+        assert!(
+            picture_bytes(&a, 0, 0).is_none(),
+            "the first input must not carry the canonical name it names"
+        );
+        let mut b = from_markdown("문서 B\n");
+        push_hwp5_bin(&mut b, 1, b"B-IMAGE");
+        insert_id_picture(&mut b, 1);
+        let a_sections = a.sections.len();
+        let doc = merge_documents(&[a, b]).unwrap().document;
+        assert!(
+            !doc.bin_streams.iter().any(|s| s.name == "BIN0001.png"),
+            "the native payload must be reminted away from the reserved canonical name"
+        );
+        assert_eq!(
+            picture_bytes(&doc, 0, 0),
+            None,
+            "a later input's native payload must not answer the first input's unresolved id"
+        );
+        assert_eq!(
+            picture_bytes(&doc, a_sections, 0).as_deref(),
+            Some(b"B-IMAGE".as_slice()),
+            "the later input's numeric reference still resolves to its own payload"
         );
     }
 
