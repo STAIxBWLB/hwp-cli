@@ -38,6 +38,8 @@ body_width      = (paper_w - margin_left - margin_right) / 100
 body_bottom     = h - (margin_bottom + margin_footer) / 100
 ```
 
+상단 합과 하단 합은 lineseg 합성이 페이지 나누기에 쓰는 `lineseg::body_box`에서 온다. 그래서 그려지는 본문과 합성 캐시가 본문 끝 위치에서 어긋나지 않는다([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+
 상태 변수: `prev_v_pos=-1`(페이지 리셋 감지), `content_bottom=body_top`(흐름 커서), `paras_on_page=0`, `page_notes: Vec<&Note>`, `list_state: ListState`.
 
 ### 1.2 페이지 나누기 규칙 (네 가지 트리거)
@@ -142,14 +144,16 @@ md/hwpx 출신 합성 문서는 PARA_LINE_SEG 캐시가 없어 한글이 “손�
 `doc.clone()` 스냅샷(snap)으로 불변 참조, doc는 가변 갱신. 섹션마다:
 ```
 body_width = pg.width - margin_left - margin_right
-content_h  = max(pg.height - margin_top - margin_bottom, 1)
+content_h  = max(pg.height - margin_top - margin_bottom - margin_header - margin_footer, 1)
 v_pos      = 0   // 페이지 상대 누적
 ```
+`content_h`는 `lineseg::body_box`의 높이이며, `layout_document_pages`가 빼는 네 여백과 같다. 따라서 머리말·꼬리말 밴드는 두 경로 모두에서 줄 공간이 아니다([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+
 문단마다 `spacing_top`(첫 문단 제외)을 v_pos에 더하고, `fill_nested`로 셀/글상자 내부 줄배치를 먼저 채운 뒤, 표 총높이 계산. **표가 잔여 공간에 안 들어가면**(`v_pos + table_total > content_h`) `v_pos=0`으로 다음 페이지. 표 앵커 문단은 진입 v_pos에 놓고, 표 있는 문단은 `v_pos = anchor_v + table_total`로 커서를 덮어쓴다(겹침 방지). 마지막에 `spacing_bottom` 가산.
 
 ### 2.2.1 본문 흐름 표가 있는 섹션의 사전 앵커
 
-본문 흐름 표(`placement.treat_as_char == false`)를 가진 섹션은 위 커서를 쓸 수 없다. 렌더러가 그 표의 행/셀 조각을 나눠 배치하므로 문단 위치도 같은 레이아웃 패스에서 나와야 한다. `layout::synthesized_body_anchors`가 본문 캐시를 모두 비운 복사본에 레이아웃을 한 번 돌려 문단마다 확정된 첫 줄 상단(`BodyAnchor::v_pos`)과 그 줄이 페이지를 열었는지(`starts_page`)를 기록한다. `synthesize_linesegs`는 그런 섹션의 각 문단을 앵커에서 시작하고, 앵커가 페이지를 연 경우 `LineSeg.flags` bit0을 세운다(한글문서파일형식 5.0 §4.3.4). HWP5 원본은 기존 커서 경로를 그대로 쓰므로 정품 캐시와 HWP5 동일성은 건드리지 않는다.
+본문 흐름 표(`placement.treat_as_char == false`)를 가진 섹션은 위 커서를 쓸 수 없다. 렌더러가 그 표의 행/셀 조각을 나눠 배치하므로 문단 위치도 같은 레이아웃 패스에서 나와야 한다. `layout::synthesized_body_anchors`가 본문 캐시를 모두 비운 복사본에 레이아웃을 한 번 돌려 문단마다 확정된 첫 줄 상단(`BodyAnchor::v_pos`)과 그 줄이 페이지를 열었는지(`starts_page`)를 기록한다. `synthesize_linesegs`는 그런 섹션의 각 문단을 앵커에서 시작하고, 앵커가 페이지를 연 경우 `LineSeg.flags` bit0을 세운다(한글문서파일형식 5.0 §4.3.4). HWP5 원본은 기존 커서 경로를 그대로 쓰므로 정품 캐시와 HWP5 동일성은 건드리지 않는다. 앵커는 그 문단의 *첫 줄*만 담으므로, 여러 줄 문단의 이후 줄은 `compute_linesegs` 단독으로 페이지를 나누며 그 자체 적합 판정이 결정한다(§2.3). 앵커를 만든 패스와는 독립적이다([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
 
 사전 패스 결과는 문단마다 `Option<BodyAnchor>` 슬롯을 갖는 `BodyAnchors`와 `completed` 플래그다(#426). 슬롯이 `None`이면 그 문단을 방문하기 전에 패스가 멈춘 것이므로, 채워지지 않은 항목을 정상적인 페이지 상단 앵커(`v_pos = 0`, `starts_page = false`)로 읽을 수 없다. `completed`는 페이지나 표시 항목 예산이 페이지 전환을 거부하면 거짓이 된다. 모든 앵커를 이미 기록한 뒤에 멈춘 경우도 포함하며, 다음 페이지가 필요한 본문 흐름 표가 정확히 그 경우다.
 
@@ -171,6 +175,8 @@ line_spacing  = max(line_advance - base, 0)
 baseline_gap  = base * 85 / 100
 seg_width     = max(body_width, 1)
 ```
+
+페이지 리셋은 줄 자체의 블록 `line_height`를 예약한다. 정품 저장 캐시는 기준선을 `baseline_gap`에 두고 descent가 `line_height`에서 끝나므로, 그것이 한글이 그 줄에 기록한 블록이다. `layout.rs` 폴백 플래너는 다른 블록을 예약한다. 흐름 커서 위 `1.2 x size`에 기준선을 두고 `0.4 x size` descent를 `body_bottom`과 비교하므로, 두 패스는 페이지의 마지막 줄을 다르게 옮길 수 있다. 로컬 정품 표본 중 본문 하단에서 문단을 끊는 것은 없다(로컬 코퍼스의 문단 중간 페이지 리셋은 모두 하단보다 훨씬 위에서 일어난다). 따라서 어느 비율도 저장 바이트로 확립되지 않았고, 캐시는 자기 저장 필드가 말하는 규칙을 유지하며 남은 불일치는 한글 주장이 아닌 알려진 격차로 남는다([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
 
 셰이핑(`shape_range`)으로 글리프 x_advance를 pt로 재고 `seg_width/100`에서 렌더러가 줄상자 안에서 줄 들여쓰기(`layout::line_indents`)를 뺀 폭 기준 그리디 줄바꿈: 들여쓰기(양수)는 첫 줄, 내어쓰기는 둘째 줄부터 좁힌다. 이를 빼지 않으면 합성한 줄이 렌더 시 문단 우변을 넘는다. 목록 마커 폭은 셰이핑이 필요해 반영하지 않으므로, 마커가 내어쓰기 폭보다 넓은 문단의 첫 줄은 그만큼 길 수 있다. NB_SPACE 양옆은 줄바꿈 금지. 줄 시작점은 glyph index가 아니라 shaping-cluster source의 UTF-16 길이로 계산해 보조평면 문자·합자·결합문자의 WCHAR offset 보존. 각 줄 방출은 클로저 `place`:
 ```

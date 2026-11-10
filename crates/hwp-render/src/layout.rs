@@ -1053,12 +1053,16 @@ fn layout_document_pages(
             (page_def.width.0, page_def.height.0)
         };
         let (w, h) = (paper_w_hu as f32 / 100.0, paper_h_hu as f32 / 100.0);
+        // The body box comes from the same margin sums the line cache paginates on
+        // (`lineseg::body_box`), so a synthesized line the cache keeps inside its box is inside
+        // the drawn body too (#423).
+        let body_box = crate::lineseg::body_box(&page_def, paper_h_hu);
         let body_left = page_def.margin_left.to_pt() as f32;
-        let body_top = (page_def.margin_top.0 + page_def.margin_header.0) as f32 / 100.0;
+        let body_top = body_box.top_hu as f32 / 100.0;
         let body_width =
             (paper_w_hu - page_def.margin_left.0 - page_def.margin_right.0) as f32 / 100.0;
         // Bottom of the body area, used as the overflow boundary.
-        let body_bottom = h - (page_def.margin_bottom.0 + page_def.margin_footer.0) as f32 / 100.0;
+        let body_bottom = h - body_box.bottom_hu as f32 / 100.0;
 
         // Resolve PAGE_BORDER_FILL BOTH once, then prepend it to every section page.
         let page_border = section_page_border_fill(section).and_then(|pbf| {
