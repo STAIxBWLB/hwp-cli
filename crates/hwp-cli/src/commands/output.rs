@@ -2741,6 +2741,12 @@ mod tests {
                 "helper errors must not expose output/staging paths: {message}"
             );
         }
+        // The helper contract discards original I/O sources, including future path-bearing detail.
+        assert_eq!(
+            error.chain().count(),
+            1,
+            "helper refusals must discard their original I/O error chains"
+        );
     }
 
     #[test]
