@@ -23,10 +23,12 @@ pub fn attr(e: &BytesStart<'_>, name: &str) -> Option<String> {
     })
 }
 
-/// 엔티티 참조(`&amp;` `&#x2264;`)를 문자로 되돌린다. quick-xml은 참조를 텍스트에
-/// 합치지 않고 `Event::GeneralRef`로 따로 주므로, 요소 텍스트를 모으는 쪽마다 이
-/// 해석이 필요하다. DTD 없이는 외부 엔티티를 풀 수 없어 미리 정의된 5종 + 숫자
-/// 참조만 푼다(모르는 참조는 `None` — 호출자가 그대로 흘리지 않고 버린다).
+/// Turns an entity reference (`&amp;`, `&#x2264;`) back into the character it names.
+/// quick-xml does not fold a reference into the surrounding text; it delivers each one as its
+/// own `Event::GeneralRef`, so every site that collects element text has to decode them. Without
+/// a DTD an external entity cannot be resolved, so only the five predefined names and numeric
+/// character references are decoded; an unknown reference yields `None` and the caller drops it
+/// instead of passing it through.
 pub(crate) fn resolve_entity(r: &BytesRef<'_>) -> Option<char> {
     r.resolve_char_ref()
         .ok()

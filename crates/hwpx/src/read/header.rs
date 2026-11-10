@@ -783,9 +783,10 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                     nl.template.push_str(&s);
                 }
             }
-            // `<{n}>` → paraHead `&lt;^2&gt;`: quick-xml은 참조를 Text에 합치지 않고
-            // GeneralRef로 따로 준다. 풀지 않으면 템플릿에서 `<`·`>`·`&`가 사라지고
-            // compose의 의미 검증이 재읽기 불일치로 실패한다(#487).
+            // A `<{n}>` marker reaches the file as the paraHead `&lt;^2&gt;`: quick-xml
+            // delivers a reference as its own GeneralRef event rather than inside Text.
+            // Undecoded, `<`, `>` and `&` vanish from the template and compose then fails its
+            // semantic verification on the reread mismatch (#487).
             Event::GeneralRef(ref r) => {
                 if let Some(level) = current_para_head
                     && let Some(levels) = &mut current_numbering
