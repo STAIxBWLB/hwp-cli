@@ -13,7 +13,7 @@
 
 사용자 범위 `hwpx` 스킬(바이너리를 외부에서 구동하던 Python 패키지)은 단일 번들 스킬
 `skills/hwp`로 흡수된다. 스킬의 산문, 규정 레퍼런스, 템플릿이 바이너리에 임베드되어
-`hwp skill export`로 디렉터리 트리 형태로 풀린다. 이 문서는 조용히 잃거나 조용히 주장해서는
+`ahwp skill export`로 디렉터리 트리 형태로 풀린다. 이 문서는 조용히 잃거나 조용히 주장해서는
 안 되는 두 가지를 기록한다.
 
 1. **패리티** — 기존 `./hwpx` 서브커맨드 전부와 스크립트 수준 엔진 보장 전부를 네이티브
@@ -21,7 +21,7 @@
 2. **여백 기록** — 검증된 공문서 프로필 기본값과 그 규정상 경계(§3).
 
 Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 번호 매기기, 프리셋 패밀리,
-검증된 여백 교정(GONG-01/02). **2.3** `hwp lint`(GONG-03의 표기법 절반). **2.4**
+검증된 여백 교정(GONG-01/02). **2.3** `ahwp lint`(GONG-03의 표기법 절반). **2.4**
 문서 프레임, `--template`, 표 스타일링(GN-4, GN-5, GN-6). **2.5** 편집 패리티 증명 + 구
 스킬 폐기(EDIT-01, RET-01).
 
@@ -40,45 +40,45 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 
 | 기존 서브커맨드 | 네이티브 대응 | Phase | 상태 |
 |---|---|---|---|
-| read | `hwp cat` (구조는 `--format json`) | 2.1 | verified |
-| summary | `hwp info` + `hwp cat --format json` | 2.5 | composed — v0.12.0 릴리스, §3.1 및 편집 레시피 참조 |
-| to-md | `hwp convert --to md --media-dir` | 2.1 | verified |
+| read | `ahwp cat` (구조는 `--format json`) | 2.1 | verified |
+| summary | `ahwp info` + `ahwp cat --format json` | 2.5 | composed — v0.12.0 릴리스, §3.1 및 편집 레시피 참조 |
+| to-md | `ahwp convert --to md --media-dir` | 2.1 | verified |
 | unpack | 없음 | 2.5 | intentionally retired — v0.12.0은 네이티브 편집 경로를 문서화하며 raw-ZIP 대체는 없음 |
 | repack | 없음 (네이티브 writer가 패키지 레이아웃을 보장) | 2.5 | intentionally retired — v0.12.0은 네이티브 편집 경로를 문서화하며 raw-ZIP 대체는 없음 |
-| fill | `hwp fill` | 2.1 | verified — 기본 경로 한정. run-spanning 채우기는 §2.2의 갭 행이며 여기서 커버하지 않음 |
-| slots | `hwp slots` | 2.1 | verified |
-| edit | `hwp edit --replace` (run-spanning 아님) | 2.5 | limited — v0.12.0이 안전한 네이티브 경로를 문서화하며 임의 split-run replace는 계약 밖 |
-| add-rows | `hwp edit --add-row` | 2.1 | verified |
-| add-col | `hwp edit --add-col` | 2.1 | verified |
-| fill-table | `hwp fill --data tables.json` | 2.1 | verified (데이터 구동 행 채우기 존재) |
-| create | `hwp new --from` | 2.1 | verified |
-| styled | `hwp new --preset official|report|plan|notice|minutes|press` | 2.2 | 프로필·번호·레이아웃은 verified, style pass는 계속 없음 |
+| fill | `ahwp fill` | 2.1 | verified — 기본 경로 한정. run-spanning 채우기는 §2.2의 갭 행이며 여기서 커버하지 않음 |
+| slots | `ahwp slots` | 2.1 | verified |
+| edit | `ahwp edit --replace` (run-spanning 아님) | 2.5 | limited — v0.12.0이 안전한 네이티브 경로를 문서화하며 임의 split-run replace는 계약 밖 |
+| add-rows | `ahwp edit --add-row` | 2.1 | verified |
+| add-col | `ahwp edit --add-col` | 2.1 | verified |
+| fill-table | `ahwp fill --data tables.json` | 2.1 | verified (데이터 구동 행 채우기 존재) |
+| create | `ahwp new --from` | 2.1 | verified |
+| styled | `ahwp new --preset official|report|plan|notice|minutes|press` | 2.2 | 프로필·번호·레이아웃은 verified, style pass는 계속 없음 |
 | beautify | 없음 | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
-| validate | `hwp validate` | 2.1 | verified |
-| analyze | `hwp info` + `hwp cat --with-segments` + `hwp fields`/`hwp slots` | 2.5 | verified — SKILL.md 레시피를 `fixtures/samples/report-tables.hwpx`에 그대로 실행 (hwp 0.12.1, 2026-08-29): markdown 11,853자에 세그먼트 43개, fields/slots는 정당하게 `[]` |
-| guard | `hwp validate` + `hwp render --report` | 2.5 | verified — 같은 픽스처·날짜: 전후 보고서 비교 (IR 왕복 편집 후 `total_pages` 6→5. 편집 없는 `convert` 왕복만으로도 6→5로 리플로우, 바이트 보존 `--replace`는 6 유지). raw structural-drift metric은 여전히 아님 |
-| edit-section | `hwp cat --with-segments` + 텍스트 anchor 기반 `hwp edit` | 2.5 | verified — 같은 픽스처·날짜: 세그먼트(section 0, para 0)에서 "3-2-1. 예시 과제 제목 1"을 찾아 `--insert-para`/`--delete-para` 왕복, 재읽기 52→51문단, `hwp validate` 통과. raw section-index 계약 없음 |
-| fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.1 릴리스 바이너리의 인접 양식 우선순위, header/data-row, scope, 원자적 거부 영수증. §3.1은 역사적 v0.12.0 기록으로 유지 |
-| to-pdf | `hwp convert --to pdf` / `hwp render` | 2.1 | verified — 기존 soffice 폴백은 **의도적으로 폐기** (네이티브 엔진만) |
+| validate | `ahwp validate` | 2.1 | verified |
+| analyze | `ahwp info` + `ahwp cat --with-segments` + `ahwp fields`/`ahwp slots` | 2.5 | verified — SKILL.md 레시피를 `fixtures/samples/report-tables.hwpx`에 그대로 실행 (hwp 0.12.1, 2026-08-29): markdown 11,853자에 세그먼트 43개, fields/slots는 정당하게 `[]` |
+| guard | `ahwp validate` + `ahwp render --report` | 2.5 | verified — 같은 픽스처·날짜: 전후 보고서 비교 (IR 왕복 편집 후 `total_pages` 6→5. 편집 없는 `convert` 왕복만으로도 6→5로 리플로우, 바이트 보존 `--replace`는 6 유지). raw structural-drift metric은 여전히 아님 |
+| edit-section | `ahwp cat --with-segments` + 텍스트 anchor 기반 `ahwp edit` | 2.5 | verified — 같은 픽스처·날짜: 세그먼트(section 0, para 0)에서 "3-2-1. 예시 과제 제목 1"을 찾아 `--insert-para`/`--delete-para` 왕복, 재읽기 52→51문단, `hwp validate` 통과. raw section-index 계약 없음 |
+| fill-form | `ahwp edit --set-cell-by-label` | 2.5 | limited — v0.12.1 릴리스 바이너리의 인접 양식 우선순위, header/data-row, scope, 원자적 거부 영수증. §3.1은 역사적 v0.12.0 기록으로 유지 |
+| to-pdf | `ahwp convert --to pdf` / `ahwp render` | 2.1 | verified — 기존 soffice 폴백은 **의도적으로 폐기** (네이티브 엔진만) |
 | render-pdf | to-pdf와 동일 | 2.1 | verified (`to-pdf --engine hwp`의 **별칭**) |
-| to-html | `hwp cat --format html` | 2.1 | verified |
-| info | `hwp info` | 2.1 | verified |
-| fields | `hwp fields` | 2.1 | verified |
-| bookmarks | `hwp bookmarks` | 2.1 | verified |
-| render | `hwp render` | 2.1 | verified |
-| convert | `hwp convert` | 2.1 | verified |
-| write-java | `hwp new --from` | 2.1 | verified (**별칭**, 레거시 이름) |
+| to-html | `ahwp cat --format html` | 2.1 | verified |
+| info | `ahwp info` | 2.1 | verified |
+| fields | `ahwp fields` | 2.1 | verified |
+| bookmarks | `ahwp bookmarks` | 2.1 | verified |
+| render | `ahwp render` | 2.1 | verified |
+| convert | `ahwp convert` | 2.1 | verified |
+| write-java | `ahwp new --from` | 2.1 | verified (**별칭**, 레거시 이름) |
 
 ### 2.2 스크립트 수준 보장 (7)
 
 | 기존 스크립트 보장 | 네이티브 대응 | Phase | 상태 |
 |---|---|---|---|
-| run-spanning `{{slot}}` 채우기 | `hwp slots` + 하나의 fail-closed `hwp fill` | 2.5 | verified — v0.12.0 릴리스 바이너리가 transient split-run control을 채웠고 여섯 템플릿 영수증은 §3.1에 기록 |
+| run-spanning `{{slot}}` 채우기 | `ahwp slots` + 하나의 fail-closed `ahwp fill` | 2.5 | verified — v0.12.0 릴리스 바이너리가 transient split-run control을 채웠고 여섯 템플릿 영수증은 §3.1에 기록 |
 | 편집 시 `linesegarray` 지우기 | 엔진 내재: 네이티브 IR 왕복은 낡은 본문 문단 줄 배치를 제거해 한글이 재계산하게 하고(셀·글상자 문단은 정품 실측대로 항상 다시 방출), 바이트 보존 `--replace` 패치 경로는 텍스트 바이트만 고치고 레이아웃 레코드는 그대로 가져감 | 2.5 | verified (정정) — 2026-08-29, `report-tables.hwpx`: `--insert-para` 출력은 셀 subList의 `linesegarray` 182개만 남기고(본문 문단 53개 제거), `--replace` 출력은 470개를 모두 바이트 보존. 정정: 이 행은 원래 패치 경로가 "텍스트를 건드리지 않는다"고 했으나, 그 경로가 바로 텍스트 편집 고속 경로이며 건드리지 않는 것은 레이아웃 레코드임 |
-| sec 인덱스 섹션 편집 | 세그먼트 어드레싱(`hwp cat --with-segments`) + 텍스트 anchor 기반 `hwp edit` | 2.5 | verified — EDIT-01 레시피가 SKILL.md에 문서화되고 `report-tables.hwpx`에서 실행됨 (2026-08-29). raw 인덱스 수술은 의도적으로 없음 |
+| sec 인덱스 섹션 편집 | 세그먼트 어드레싱(`ahwp cat --with-segments`) + 텍스트 anchor 기반 `ahwp edit` | 2.5 | verified — EDIT-01 레시피가 SKILL.md에 문서화되고 `report-tables.hwpx`에서 실행됨 (2026-08-29). raw 인덱스 수술은 의도적으로 없음 |
 | mimetype-first STORED repack | 네이티브 writer는 `mimetype`을 첫 엔트리·무압축(STORED)으로 방출하고(`crates/hwpx/src/write/mod.rs`), 패치 경로는 원본 엔트리 순서·압축을 raw 복사함 | 2.5 | verified — raw-zip 레시피 불필요: `edit`/`edit --replace`/`convert` 출력의 `zipinfo`(2026-08-29)가 모두 `mimetype`을 첫 엔트리·`stor`로 보여주고, `hwp validate`는 잘못된 mimetype을 open 시점에 거부 |
 | style_pass 표 규칙 | 없음 | 2.4 | gap → GONG-03 (inferred) — **verified 패리티 아님** |
-| page_guard 구조 드리프트 검사 | `hwp validate` + `hwp render --report` 전후 페이지 수 비교 | 2.5 | verified — EDIT-01 guard 레시피가 SKILL.md에 문서화되고 `report-tables.hwpx`에서 실행됨 (2026-08-29). **verified 패리티 아님** — 검토 신호이지 기존 XML 드리프트 임계값이 아님 |
+| page_guard 구조 드리프트 검사 | `ahwp validate` + `ahwp render --report` 전후 페이지 수 비교 | 2.5 | verified — EDIT-01 guard 레시피가 SKILL.md에 문서화되고 `report-tables.hwpx`에서 실행됨 (2026-08-29). **verified 패리티 아님** — 검토 신호이지 기존 XML 드리프트 임계값이 아님 |
 | 바이너리 탐색 (`$HWP_CLI`, 최고 버전 선택) | 폐기 — 스킬이 자신이 구동하는 바이너리 안에 들어감 | 2.1 | resolved by absorption |
 
 ## 3. 릴리스 증거와 여백 기록
@@ -99,7 +99,7 @@ retired입니다.
 **현재 엔진 동작 (verified):** 모든 표준 프로필은 **위 20 / 아래 10 / 왼쪽 20 / 오른쪽
 20 mm**로 시작한다. `official`은 머리말/꼬리말 여백과 쪽 번호가 없고, `report`, `plan`은
 머리말/꼬리말 15 mm와 `- N -`, `notice`, `press`는 10 mm와 `- N -`를 쓴다.
-`minutes`는 둘 다 없다. 호출자는 네 개의 `hwp new` `--margin-*` 플래그 또는 대응 MCP
+`minutes`는 둘 다 없다. 호출자는 네 개의 `ahwp new` `--margin-*` 플래그 또는 대응 MCP
 `margin_*_mm` 입력으로 한 변만 override할 수 있다.
 
 **근거 (2차 출처):** kordoc의 법규 편집본은 폐기된 위 30 mm 값을 반증한다 —
@@ -111,7 +111,7 @@ retired입니다.
 **판정 (2026-08-22 해소):** 위 30 mm는 근거가 없었고, Phase 2.2는 모든 표준 프로필을
 20/10/20/20으로 바꾼 뒤 정품 한컴 HWP/HWPX 14건 관찰에서 프로필 레이아웃을 검증했다.
 GN-9는 이 검증 경계에서 해소된다. 이 해소는 프로필 여백과 번호/레이아웃 동작만 닫는다.
-`hwp lint`, 문서 프레임, `--template`, 표 스타일링, 편집 패리티는 각 배정 phase에 계속 이연된다.
+`ahwp lint`, 문서 프레임, `--template`, 표 스타일링, 편집 패리티는 각 배정 phase에 계속 이연된다.
 
 ## 4. 기록된 결정
 

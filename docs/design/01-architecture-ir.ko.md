@@ -424,7 +424,7 @@ hwp 저장 시 1쪽을 48dpi로 렌더해 PrvImage로 동봉한다. `--strict`�
 - `render_document_svg` → `svg::render_svg` → `SvgOutput{ pages: Vec<String>, report }`.
 - `render_document_pdf(doc, opts, pages)` → 페이지 선택(1-기반) → `pdf::render_pdf`(폰트 임베드+검색 가능 텍스트) → `PdfOutput{ data, report }`.
 - `RenderOptions{ dpi: f32(기본 96), font_dirs }`. 폰트 미지정 시 `resolve_font_dirs`가 `HWP_FONT_DIR`(없으면 `fonts/`)로 함초롬 글꼴 로드 — 안 하면 시스템 폰트로 대체돼 충실도 급락.
-- `layout`이 `line_segs`가 있으면 한글이 저장한 줄 배치를 1급 입력으로 신뢰하고, 비어 있으면 폴백 경로로 셰이핑. `diff::compare`가 한글 기준 PNG와 픽셀/오프셋 오차를 측정(`hwp diff`).
+- `layout`이 `line_segs`가 있으면 한글이 저장한 줄 배치를 1급 입력으로 신뢰하고, 비어 있으면 폴백 경로로 셰이핑. `diff::compare`가 한글 기준 PNG와 픽셀/오프셋 오차를 측정(`ahwp diff`).
 
 ### 5.6 전체 파이프라인 요약
 
@@ -441,7 +441,7 @@ hwp 저장 시 1쪽을 48dpi로 렌더해 PrvImage로 동봉한다. `--strict`�
  .hwp                     .hwpx            odt/json         → png/svg/pdf
 ```
 
-편집 흐름(`hwp edit`)은 L1을 로드 → `hwp_convert`의 편집 프리미티브(`replace_text`, `set_cell`, `set_field`, `create_bookmark/hyperlink`, `insert_image`, `insert_paragraph`, `add/delete_table_row`, `set_char_format`, `set_para_align`, `apply_meta`)로 L1을 변형 → `write_hwp_edited`(외과적)/`write_hwp_structural`(합성 강제)로 저장. hwpx 템플릿 채우기(`hwp fill`)는 L1을 우회해 `hwpx::patch`로 XML 텍스트만 치환(최대 충실도).
+편집 흐름(`ahwp edit`)은 L1을 로드 → `hwp_convert`의 편집 프리미티브(`replace_text`, `set_cell`, `set_field`, `create_bookmark/hyperlink`, `insert_image`, `insert_paragraph`, `add/delete_table_row`, `set_char_format`, `set_para_align`, `apply_meta`)로 L1을 변형 → `write_hwp_edited`(외과적)/`write_hwp_structural`(합성 강제)로 저장. hwpx 템플릿 채우기(`ahwp fill`)는 L1을 우회해 `hwpx::patch`로 XML 텍스트만 치환(최대 충실도).
 
 ---
 

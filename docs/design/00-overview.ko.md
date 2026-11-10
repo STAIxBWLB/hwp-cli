@@ -81,16 +81,16 @@
 | 10 | [hwp5-structure-map](10-hwp5-structure-map.ko.md) | **HWP5 전수 지도** — CFB 스트림 트리, 레코드 카탈로그(태그 전수+구현 상태), 컨트롤 문자·ctrl ID |
 | 11 | [hwpx-structure-map](11-hwpx-structure-map.ko.md) | **HWPX 전수 지도** — OPC 트리, 네임스페이스, 요소 카탈로그, read/write 대칭성 감사 |
 | 12 | [feature-gaps](12-feature-gaps.ko.md) | 기능 격차 카탈로그 + 난이도·의존성 로드맵 (07§F 승계, 10§8·11§5가 근거 데이터) |
-| 13 | [document-spec-v1](13-document-spec-v1.ko.md) | **DocumentSpec v1 계약** — `hwp compose`가 컴파일하는 typed 저작 명세 |
-| 14 | [template-spec-v1](14-template-spec-v1.ko.md) | **TemplateSpec / TemplateData v1 계약** — `hwp template`이 확장하는 typed `value`/`if`/`each` AST. 문자열 보간은 허용하지 않는다 |
+| 13 | [document-spec-v1](13-document-spec-v1.ko.md) | **DocumentSpec v1 계약** — `ahwp compose`가 컴파일하는 typed 저작 명세 |
+| 14 | [template-spec-v1](14-template-spec-v1.ko.md) | **TemplateSpec / TemplateData v1 계약** — `ahwp template`이 확장하는 typed `value`/`if`/`each` AST. 문자열 보간은 허용하지 않는다 |
 | 15 | [document-spec-v2](15-document-spec-v2.ko.md) | **DocumentSpec v2 계약** — v1에 접근성 설명이 포함된 이미지, 닫힌 SVG→PNG fallback, 네이티브 글상자를 더한 것 |
-| 16 | [certification-v1](16-certification-v1.ko.md) | **Certification v1 계약** — `hwp certify`가 강제하는 고정 정책과 원자적으로 게시하는 리포트 |
-| 17 | [structured-corpus-v1](17-structured-corpus-v1.ko.md) | **구조 코퍼스 v1 계약** — `hwp corpus`가 2회 생성하는 고정 코퍼스와 일치해야 하는 해시 집합 |
+| 16 | [certification-v1](16-certification-v1.ko.md) | **Certification v1 계약** — `ahwp certify`가 강제하는 고정 정책과 원자적으로 게시하는 리포트 |
+| 17 | [structured-corpus-v1](17-structured-corpus-v1.ko.md) | **구조 코퍼스 v1 계약** — `ahwp corpus`가 2회 생성하는 고정 코퍼스와 일치해야 하는 해시 집합 |
 | 18 | [html-fragment-contract](18-html-fragment-contract.ko.md) | **HTML fragment 계약** — Maru 부분(part) 작성·조합용 XHTML 부분집합, 표/그림/각주 왕복 규약 |
 | 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.ko.md) | **HWP 5.0 명세 보완 색인** — 정오표·버전-레이아웃 매트릭스·적합성 체크리스트·소비 의미론 (07·03·05·10·08이 근거 데이터) |
 | 20 | [remote-mcp](20-remote-mcp.ko.md) | **Remote MCP transport 설계** - Web client용 향후 Streamable HTTP, OAuth resource server, tenant 격리, artifact 전송, limit 및 security gate |
 | 21 | [pdf-parity](21-pdf-parity.ko.md) | **PDF 동등성 계약 (한컴오피스 2024)** — parity 하네스가 읽는 오라클, 다섯 지표 집합, 임계값, 글꼴 게이트, 데이터 정책, 비목표 (issue #79) |
-| 22 | [remote-mcp-deployment](22-remote-mcp-deployment.ko.md) | **Remote MCP deployment 설계** — doc 20을 무엇으로 만들고 어디에 올리는지: 공유 `hwp serve` HTTP adapter, `httparse` dependency 결정(doc 20 §8 gate), 두 tier(Cloudflare Workers + Containers, Amazon Quick connector 뒤의 AgentCore) |
+| 22 | [remote-mcp-deployment](22-remote-mcp-deployment.ko.md) | **Remote MCP deployment 설계** — doc 20을 무엇으로 만들고 어디에 올리는지: 공유 `ahwp serve` HTTP adapter, `httparse` dependency 결정(doc 20 §8 gate), 두 tier(Cloudflare Workers + Containers, Amazon Quick connector 뒤의 AgentCore) |
 | 23 | [hwpx-skill-absorption](23-hwpx-skill-absorption.ko.md) | **hwpx 스킬 흡수** — 서브커맨드 단위 패리티 매트릭스(구 서브커맨드 28개 + 스크립트 수준 보장, verified/inferred 표기), D-14 여백 기록, Phase 2.2~2.5가 제자리에서 갱신하는 살아있는 체크리스트 (issue #121, skills#35) |
 | 24 | [original-form-contract](24-original-form-contract.ko.md) | **원본 서식 보존 계약** - 합성 P0 fixture, 셀·격자·서식·자원 투영, 명시적 변경, 상대 앵커와 별도의 글꼴·실기 근거 (#411, #416) |
 | 25 | [form-binding-plan](25-form-binding-plan.ko.md) | **원본 결속 양식 바인딩 계획** - 검토된 개별 위치, 명시적 프로필 복제, 유계 정수 제약, 원자적 적용과 별도 레이아웃·실기 증거 (#411, #418) |
@@ -114,7 +114,7 @@
 **정상 동작(한글 실기 확인):** HWP5/HWPX 읽기·쓰기·변환·렌더링, 단일/다문단·긴문단·표(단순/긴셀/
 1행/다열/빈셀)·본문+표혼합·멀티페이지·복합 보고서, 하이퍼링크·책갈피, 서식·구조 편집, annual 디자인
 문서의 도넛·중앙원·숫자·호(arc). 이후 추가된 것으로는 한컴 배포용문서 읽기(GA-2), 공문서 저작
-계층(프로파일·템플릿·두문/결문 틀·표 서식·`hwp lint`, GN 계열), 그리고 아래에서 U2·U4로 부르던
+계층(프로파일·템플릿·두문/결문 틀·표 서식·`ahwp lint`, GN 계열), 그리고 아래에서 U2·U4로 부르던
 양쪽정렬과 자간이 있다. 후자는 현재 GG-3·GG-4이며 2026-08-14에 해소했다.
 
 **미해결/조사 중:** annual 5·6쪽 **글상자 드롭 + 페이지 오버플로**. 원인은 구조(도형-문단 배치)가

@@ -2,7 +2,7 @@
 
 # Amazon Quick Desktop: HWP MCP setup and troubleshooting
 
-This runbook is for a person or an AI assistant configuring `hwp` as a local MCP connector in
+This runbook is for a person or an AI assistant configuring `ahwp` as a local MCP connector in
 Amazon Quick Desktop. It covers the complete Windows path that was verified in practice: install
 one current binary, install the HWP skill, register the connector, prove an actual file write, and
 recover the connector when Quick disables or loses it.
@@ -22,8 +22,8 @@ v0.8.2 or later` floor stated below still holds.
 
 | Component | Purpose | Known-good Windows value |
 |---|---|---|
-| `hwp.exe` | Runs the MCP stdio server | One current binary at a stable absolute path |
-| HWP MCP connector | Exposes the 20 HWP tools | `hwp.exe mcp ...` |
+| `ahwp.exe` | Runs the MCP stdio server | One current binary at a stable absolute path |
+| HWP MCP connector | Exposes the 20 HWP tools | `ahwp.exe mcp ...` |
 | HWP skill | Tells the Quick agent when and how to use the tools | `skills/hwp/SKILL.md` in the active Quick profile |
 | Exchange root | Low-integrity file boundary shared with the MCP child | `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | Font directory | Supplies Windows fonts for rendering | `C:\Windows\Fonts` |
@@ -32,30 +32,30 @@ The connector and the skill are separate. Installing the skill does not install 
 create the connector. A connector can also show 23 tools while later file writes fail, so a real
 create-and-validate smoke test is required.
 
-## 1. Install and verify one current `hwp.exe`
+## 1. Install and verify one current `ahwp.exe`
 
 Download the Windows x86_64 archive and its `.sha256` file from the
 [latest release](https://github.com/STAIxBWLB/hwp-cli/releases). Amazon Quick Windows path
 normalization requires hwp-cli v0.8.2 or later:
 
-- `hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip`
-- `hwp-vX.Y.Z-x86_64-pc-windows-msvc.sha256`
+- `ahwp-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+- `ahwp-vX.Y.Z-x86_64-pc-windows-msvc.sha256`
 
 Verify the archive before extracting it. Replace the example paths with the downloaded version:
 
 ```powershell
-$Archive = "C:\path\to\hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip"
+$Archive = "C:\path\to\ahwp-vX.Y.Z-x86_64-pc-windows-msvc.zip"
 $Checksum = [IO.Path]::ChangeExtension($Archive, ".sha256")
 $Expected = ((Get-Content -LiteralPath $Checksum) -split '\s+')[0].ToLowerInvariant()
 $Actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($Actual -ne $Expected) { throw "hwp archive checksum mismatch" }
+if ($Actual -ne $Expected) { throw "ahwp archive checksum mismatch" }
 ```
 
-Extract `hwp.exe` to a stable location that Quick can execute and do not move it after registering
+Extract `ahwp.exe` to a stable location that Quick can execute and do not move it after registering
 the connector. A layout verified with Quick on Windows is:
 
 ```text
-%USERPROFILE%\.quickwork\profiles\PROFILE_ID\skills\hwp\bin\hwp.exe
+%USERPROFILE%\.quickwork\profiles\PROFILE_ID\skills\hwp\bin\ahwp.exe
 ```
 
 `PROFILE_ID` is the active entry in `%USERPROFILE%\.quickwork\profiles.json`. Another stable,
@@ -63,18 +63,18 @@ Quick-accessible location is also valid. Record the exact absolute path and veri
 PowerShell:
 
 ```powershell
-$Hwp = "C:\absolute\path\to\hwp.exe"
+$Hwp = "C:\absolute\path\to\ahwp.exe"
 & $Hwp --version
 ```
 
 Use this same path in Quick. Do not rely on the PATH seen by a different terminal, because Quick
 can otherwise start an older duplicate installation. If the first file write still fails with a
-Windows verbatim path such as `\\?\C:\...`, confirm that `hwp --version` reports v0.8.2 or later.
+Windows verbatim path such as `\\?\C:\...`, confirm that `ahwp --version` reports v0.8.2 or later.
 
 ## 2. Create the Windows exchange root
 
 Quick's built-in file tools and its local MCP child do not receive the same filesystem permissions.
-On the tested Windows build, Quick starts `hwp.exe` at Low mandatory integrity
+On the tested Windows build, Quick starts `ahwp.exe` at Low mandatory integrity
 (`S-1-16-4096`). Ordinary folders such as `C:\TEMP` and `%LOCALAPPDATA%\Temp` are normally Medium
 integrity: the MCP connector can start and expose 23 tools there, but the first write can fail with
 `Access is denied (os error 5)` when `hwp_new` creates its private staging directory.
@@ -116,7 +116,7 @@ The command reads `%USERPROFILE%\.quickwork\profiles.json`, selects its valid `l
 or the only valid profile, and writes only `skills\hwp\SKILL.md` inside it. The official-document
 files (`SKILL.ko.md`, `official-documents(.ko).md`, `references/`, `templates/`) are **not**
 installed on the Quick path; the command prints a note saying so, in Korean regardless of the
-display language. It does not copy `hwp.exe`, register the MCP connector, create an agent, or
+display language. It does not copy `ahwp.exe`, register the MCP connector, create an agent, or
 publish anything. The export refuses a symlinked destination and restores the previous tree if the
 publish fails, so re-installing over an existing skill directory is safe.
 
@@ -143,7 +143,7 @@ argument boundaries exactly:
 {
   "mcpServers": {
     "hwp": {
-      "command": "C:\\absolute\\path\\to\\hwp.exe",
+      "command": "C:\\absolute\\path\\to\\ahwp.exe",
       "args": [
         "mcp",
         "--font-dir",
@@ -166,7 +166,7 @@ For manual entry, use:
 | Field | Value |
 |---|---|
 | Name | `hwp` |
-| Command | the exact absolute `hwp.exe` path verified above |
+| Command | the exact absolute `ahwp.exe` path verified above |
 | Arguments | `mcp --font-dir C:\Windows\Fonts --root C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | Description | `Read, write, edit, render, validate, lint, convert, merge, split, and compare HWP/HWPX documents.` |
 | Timeout | `30` seconds |
@@ -178,7 +178,7 @@ For example, this is wrong:
 mcp --font-dir 'C:\Windows\Fonts' --root 'C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace'
 ```
 
-Quick can pass those quote characters literally, causing `hwp` to look for a directory whose name
+Quick can pass those quote characters literally, causing `ahwp` to look for a directory whose name
 contains quotes. The root then fails fast and the MCP handshake closes. The JSON form avoids this
 failure by keeping every token as a separate array item.
 
@@ -221,7 +221,7 @@ Use one HWP-focused agent rather than several agents with duplicate names or sta
 instructions. Enable the HWP connector and installed HWP skill, then add instructions like these:
 
 ```text
-Use the installed hwp skill and HWP MCP tools for every .hwp or .hwpx task.
+Use the installed ahwp skill and HWP MCP tools for every .hwp or .hwpx task.
 On Windows Quick Desktop, use only the absolute LocalLow root configured in the MCP connector.
 The known-good root is C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace; replace YOUR_NAME before tool calls.
 Copy inputs into that root before an HWP operation and return the final artifact path under it.
@@ -283,14 +283,14 @@ assuming a lossless run.
 
 | Symptom | Likely cause | Recovery |
 |---|---|---|
-| `hwp.exe` does not start or `--version` fails | Wrong binary, wrong architecture, blocked or incomplete extraction | Re-download, verify SHA-256, extract the Windows x86_64 archive, and test the exact absolute command path |
-| Test connection shows no tools or the server exits immediately | Missing/unreadable `--root`, literal `YOUR_NAME`, quote characters in Arguments, typo, or stale command path | Create the `LocalLow` child, substitute the absolute account path, import the JSON above, remove shell quotes, and verify `hwp.exe --version` |
+| `ahwp.exe` does not start or `--version` fails | Wrong binary, wrong architecture, blocked or incomplete extraction | Re-download, verify SHA-256, extract the Windows x86_64 archive, and test the exact absolute command path |
+| Test connection shows no tools or the server exits immediately | Missing/unreadable `--root`, literal `YOUR_NAME`, quote characters in Arguments, typo, or stale command path | Create the `LocalLow` child, substitute the absolute account path, import the JSON above, remove shell quotes, and verify `ahwp.exe --version` |
 | **Connected, 23 tools** but `hwp_new` returns `Access is denied (os error 5)` | Discovery only needed read access; the requested destination is Medium integrity (commonly `C:\TEMP` or `%LOCALAPPDATA%\Temp`), or an older binary still passes `\\?\...` | Point `--root` and every tool path at the dedicated `LocalLow` child; verify its Low label with `icacls`; use hwp-cli v0.8.2 or later; restart and run the smoke test |
 | A path added to **Local folders and access permissions** still fails | That setting controls Quick's built-in read/search tools; it does not make a Medium-integrity folder writable by the Low-integrity MCP child | Use the built-in tool or Explorer to copy the file into the configured `LocalLow` exchange root, then call HWP tools there |
 | `os error 2` | The path does not exist, `YOUR_NAME` was not replaced, or Desktop moved the file to OneDrive | Check the real absolute path, create the intended directory, or stage the file under the configured exchange root |
 | Connector becomes disabled after repeated failures | Quick auto-disabled a connector whose startup/handshake repeatedly failed | Correct the command/root, save, explicitly enable the connector, refresh, and restart Quick if needed |
 | `Unknown tool` after editing or re-importing the connector | Quick generated a new internal connector/tool prefix while the conversation retained old tool names | Refresh connections and start a new chat; reload the HWP skill/tools instead of reusing the old generated name |
-| `assetDescriptor contains prohibited HTML/script content` while publishing an agent | An old exported skill contains angle-bracket placeholders that Quick classifies as markup | Reinstall the skill from a current `hwp` binary, refresh Quick, and publish again |
+| `assetDescriptor contains prohibited HTML/script content` while publishing an agent | An old exported skill contains angle-bracket placeholders that Quick classifies as markup | Reinstall the skill from a current `ahwp` binary, refresh Quick, and publish again |
 | Creation works but rendering fails | Font directory is missing or inaccessible | First test without `--font-dir`; then add `C:\Windows\Fonts` and retry `hwp_render` |
 | Path is outside allowed roots | The MCP root policy is correctly rejecting it | Copy the asset into the configured `LocalLow` root or add a genuinely supported Low-integrity root; do not disable all roots |
 
@@ -333,7 +333,7 @@ servers (0 failed), 23 total tools.” Log wording and location are not stable A
 
 ## Completion checklist
 
-- The connector command is one verified absolute `hwp.exe` path.
+- The connector command is one verified absolute `ahwp.exe` path.
 - The connector uses separate JSON arguments and has no embedded shell quotes.
 - `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace` exists, inherits the Low label, and is the Windows MCP root.
 - The current HWP skill is installed in the active Quick profile.

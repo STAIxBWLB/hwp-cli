@@ -6,7 +6,7 @@
 > 이 문서는 parity 하네스가 읽는 지속 계약이다 — 지표 집합, 임계값, 데이터 정책, 비목표를
 > 정의한다. 작업 순서(PR 1–9)는 이슈 본문이 정하고, 이 문서는 "동등"의 뜻을 정의한다.
 
-목표: `hwp convert --to pdf`와 `hwp render --format pdf`가 일반 문서(공문, 보고서, 표, 양식,
+목표: `ahwp convert --to pdf`와 `ahwp render --format pdf`가 일반 문서(공문, 보고서, 표, 양식,
 이미지, 도형, 수식)에 대해 한국 사무실 사용자가 한컴오피스 2024 한글의 **파일 → PDF로
 저장하기** 출력과 상호 교환 가능하다고 받아들이는 PDF를 낸다 — 시각적으로 충실하고 텍스트
 선택·검색·복사가 가능해야 한다.
@@ -96,7 +96,7 @@ FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바�
 | 2 | 페이지 수 차이 | `pdfinfo` | 표 분할, 넘침, 장식 회귀 |
 | 3 | 페이지별 추출 텍스트 일치 | `pdftotext -layout`, 정규화 | 누락 콘텐츠, 잘못된 페이지네이션, 깨진 ToUnicode |
 | 4 | 잉크 bbox 차이 (`dx`, `dy`) | 150 DPI에서 한 번 래스터 | 체계적 여백/베이스라인 오프셋 |
-| 5 | `bad_pixel_pct` / `MAE` | `hwp diff` | 타이브레이커 전용 |
+| 5 | `bad_pixel_pct` / `MAE` | `ahwp diff` | 타이브레이커 전용 |
 
 지표 4–5의 래스터화는 Hancom PDF와 자체 PDF 모두 같은 고정 Poppler(`pdftoppm -png -r 150`)를
 쓴다.
@@ -104,7 +104,7 @@ FILETIME 메타데이터 변환(현재 시각 사용 금지 — 2회 실행 바�
 **구현 상태 2026-08-14 (PR 4):** 배치 러너가 있다 — `scripts/pdf-parity.sh run`이 manifest의
 모든 케이스를 채점해 커밋 가능한 수치 점수판(`fixtures/pdf-parity/public/scoreboard/`,
 스키마 검증, 이름+SHA-256+수치뿐)을 만들고, `selftest`는 기준 없이 하네스를 검증하며,
-`hwp diff --format json` / `--ours-png`가 쪽별 래스터 지표 원천이다. manifest, Poppler
+`ahwp diff --format json` / `--ours-png`가 쪽별 래스터 지표 원천이다. manifest, Poppler
 버전, 폰트 파일, source/oracle digest가 pin과 일치해야 채점하며, 검증된 산출물 집합만
 rollback 보호 방식으로 게시한다. 공개 코퍼스에는 소유자가 작성하고 익명화한 한 쪽 오라클이
 있으며, 고정 `ubuntu-24.04` CI 작업이 OFL 글꼴을 받고 `hwp`를 빌드한 뒤 HWP/HWPX 두 입력을

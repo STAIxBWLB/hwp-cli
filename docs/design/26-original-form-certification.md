@@ -2,7 +2,7 @@
 
 # Original-form certification
 
-`hwp certify` can check a delivered HWP/HWPX artifact against a reviewed expectation plan for a
+`ahwp certify` can check a delivered HWP/HWPX artifact against a reviewed expectation plan for a
 supplied native form (#419, part of #411). It binds the source, plan, output, font and render
 identities in one report, and every refusal names a cause and a next step without carrying
 document text.

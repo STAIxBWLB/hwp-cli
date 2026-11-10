@@ -1,6 +1,6 @@
 [한국어](README.ko.md) · [English](README.md)
 
-# hwp-cli
+# agent-hwp
 
 > 한컴오피스나 COM 자동화 없이 HWP 5.0 / HWPX 문서를 읽고·변환하고·렌더하고·쓰고·AI로 편집하는 클린룸 Rust 툴킷. Linux / macOS / CI에서 그대로 동작한다.
 
@@ -18,7 +18,7 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 - **읽기·텍스트 추출** hwp/hwpx에서 plain / markdown / HTML / JSON(전체 IR) / CSV로 추출한다.
   표·이미지·머리말/꼬리말·미해석 레코드까지 보존하며 파싱하고, 한컴 배포용문서도 복호화하여
   일반 문서와 동일하게 읽는다.
-- **암호 보호 문서 입력** `hwp cat`, `convert`, `render`는 실증된 HWP5/HWPX 암호 프로파일에
+- **암호 보호 문서 입력** `ahwp cat`, `convert`, `render`는 실증된 HWP5/HWPX 암호 프로파일에
   `--password` 또는 더 안전한 `--password-stdin`을 지원한다. 대응 MCP 도구는 호출별 암호 필드만
   사용하고 세션에 저장하지 않는다. 암호가 없거나 틀리면 동일한 비노출 거부를 반환한다.
 - **포맷 변환** hwp ↔ hwpx, hwp/hwpx ↔ markdown, hwp/hwpx ↔ HTML, hwp/hwpx ↔ JSON(IR)을 공용 문서
@@ -35,11 +35,11 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 - **AI 편집** IR을 JSON으로 내보내 고치고 되쓰는 read → edit → rewrite 왕복. 텍스트 치환, 표 셀 설정,
   누름틀/필드 채우기를 이미지·서식·미해석 레코드를 보존한 채 적용한다.
 - **공문서 저작** 표준 프로파일 6종(`official`, `report`, `plan`, `notice`, `minutes`, `press`),
-  내장 문서 템플릿 8종(`hwp new --template`), 네이티브 두문·결문 틀, 법정 8단계 항목 부호,
-  프리셋 표 서식(`hwp edit --style-tables`), 표기법·구조 린터(`hwp lint`, 10개 규칙)를 제공한다.
-- **문서 단위 작업** 여러 문서를 하나로 합치고(`hwp merge`, 입력 하나가 Section 하나), 하나를
+  내장 문서 템플릿 8종(`ahwp new --template`), 네이티브 두문·결문 틀, 법정 8단계 항목 부호,
+  프리셋 표 서식(`ahwp edit --style-tables`), 표기법·구조 린터(`ahwp lint`, 10개 규칙)를 제공한다.
+- **문서 단위 작업** 여러 문서를 하나로 합치고(`ahwp merge`, 입력 하나가 Section 하나), 하나를
   구역별·쪽 범위별 조각으로 나누거나 서식 하나 같은 형식 있는 범위를 쓰는 바이너리와 함께
-  잘라내며(`hwp split`), 문서 두 개의 문단·구조 차이를 보고한다 (`hwp compare`).
+  잘라내며(`ahwp split`), 문서 두 개의 문단·구조 차이를 보고한다 (`ahwp compare`).
 - **MCP 서버** 의존성 없는(serde_json만) stdio MCP 서버로 Amazon Quick Desktop을 포함한
   데스크톱 클라이언트에 23개 도구를 노출한다.
 
@@ -99,9 +99,11 @@ Windows는 로드맵 항목이 아니다. 현재 ubuntu, macOS, Windows가 모�
 
 ## 설치
 
+새 명령은 `ahwp`를 사용한다. `hwp` 호환 이름은 1.x 동안 유지되며 2.0에서 제거된다.
+
 ### 한 줄 스크립트 (macOS / Linux)
 
-Rust 툴체인 없이 릴리스 바이너리를 설치한다. 설치 후에는 `hwp update`로 자체 갱신된다.
+Rust 툴체인 없이 릴리스 바이너리를 설치한다. 설치 후에는 `ahwp update`로 자체 갱신된다.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
@@ -110,7 +112,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 기본 위치는 `~/.local/bin`이다(PATH에 없으면 안내를 출력한다). 위치·버전은 인자나 환경변수로 바꾼다:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v1.3.1
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v1.6.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -122,11 +124,11 @@ HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 
 ```sh
 brew tap staixbwlb/hwp https://github.com/STAIxBWLB/hwp-cli
-brew install hwp
-hwp --version
+brew install ahwp
+ahwp --version
 ```
 
-업그레이드는 `brew update && brew upgrade hwp`. 지원 플랫폼은 macOS(Apple Silicon·Intel)와 Linux x86_64다.
+업그레이드는 `brew update && brew upgrade ahwp`. 지원 플랫폼은 macOS(Apple Silicon·Intel)와 Linux x86_64다.
 
 ### 사전 빌드 바이너리
 
@@ -134,13 +136,13 @@ hwp --version
 
 | 플랫폼 | 아카이브 |
 |---|---|
-| Linux x86_64 | `hwp-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux arm64 | `hwp-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Apple Silicon | `hwp-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `hwp-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
-| Windows x86_64 | `hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
+| Linux x86_64 | `ahwp-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `ahwp-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `ahwp-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `ahwp-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
+| Windows x86_64 | `ahwp-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
 
-압축을 풀어 `hwp`를 PATH에 둔다(검증: `shasum -a 256 -c hwp-*.sha256`).
+압축을 풀어 `ahwp`를 PATH에 둔다(검증: `shasum -a 256 -c ahwp-*.sha256`).
 
 ### 서버리스·컨테이너 (Vercel, AWS Lambda, Docker)
 
@@ -152,7 +154,7 @@ RHEL/CentOS 7+ 및 그 이후 배포판에서 그대로 돌아간다. 빌드 러
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v1.3.1 --dir ./bin
+  | sh -s -- --tag v1.6.0 --dir ./bin
 ```
 
 플랫폼이 배포 번들을 수집하기 전에 바이너리가 있어야 하므로(Vercel `includeFiles`, Next.js
@@ -165,7 +167,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 ```sh
 git clone git@github.com:STAIxBWLB/hwp-cli.git && cd hwp-cli
 cargo build --release
-cargo install --path crates/hwp-cli   # `hwp` 바이너리 설치
+cargo install --path crates/hwp-cli   # `ahwp` 바이너리 설치
 ```
 
 Rust edition 2024, `rust-version = 1.93` 이상이 필요하다.
@@ -186,72 +188,72 @@ Rust edition 2024, `rust-version = 1.93` 이상이 필요하다.
 ### 업데이트
 
 ```sh
-hwp update            # 최신 릴리스로 자체 교체 (체크섬 대조 후 원자적 교체)
-hwp update --check    # 교체 없이 현재/최신 버전만 확인
-hwp update --tag v0.9.0   # 특정 버전으로 되돌리기
+ahwp update            # 최신 릴리스로 자체 교체 (체크섬 대조 후 원자적 교체)
+ahwp update --check    # 교체 없이 현재/최신 버전만 확인
+ahwp update --tag v0.9.0   # 특정 버전으로 되돌리기
 ```
 
 설치 방식을 스스로 판별한다. 한 줄 스크립트·릴리스 아카이브·`cargo install`로 설치했으면 실행 중인
 바이너리를 제자리 교체하고(sha256 대조 → 같은 디렉터리 임시 파일 → rename, 실패 시 원본 복원),
-Homebrew(Cellar) 설치본은 `brew upgrade hwp`에 위임한다(brew는 버전 고정이 안 되므로 `--tag`는 거부).
+Homebrew(Cellar) 설치본은 `brew upgrade ahwp`에 위임한다(brew는 버전 고정이 안 되므로 `--tag`는 거부).
 
 ## 빠른 시작
 
 ```sh
 # 진단: 포맷/버전/속성/스트림
-hwp info report.hwp
+ahwp info report.hwp
 
 # 본문 추출
-hwp cat report.hwp                       # plain text
-hwp cat report.hwp --format markdown     # markdown
-hwp cat report.hwp --format json         # 전체 IR(JSON)
-hwp cat report.hwp --format csv          # 표를 CSV로
+ahwp cat report.hwp                       # plain text
+ahwp cat report.hwp --format markdown     # markdown
+ahwp cat report.hwp --format json         # 전체 IR(JSON)
+ahwp cat report.hwp --format csv          # 표를 CSV로
 
 # 본문 검색 (grep 방식. 일치하는 것이 없으면 1로 종료)
-hwp grep "예산" report.hwp
+ahwp grep "예산" report.hwp
 
 # 변환 (출력 확장자로 포맷 추론)
-hwp convert report.hwp   -o report.hwpx  # hwp → hwpx (표·이미지·머리말 보존)
-hwp convert report.hwpx  -o report.hwp   # hwpx → hwp 바이너리
-hwp convert report.hwp   -o report.md    # 이미지는 report.media/에 추출
-hwp convert report.hwp   -o doc.json --embed-bin   # 이미지까지 임베드한 자급식 JSON
+ahwp convert report.hwp   -o report.hwpx  # hwp → hwpx (표·이미지·머리말 보존)
+ahwp convert report.hwpx  -o report.hwp   # hwpx → hwp 바이너리
+ahwp convert report.hwp   -o report.md    # 이미지는 report.media/에 추출
+ahwp convert report.hwp   -o doc.json --embed-bin   # 이미지까지 임베드한 자급식 JSON
 
 # 렌더링
-hwp render report.hwp -o page.png --dpi 150
-hwp render report.hwp -o report.pdf --font-dir ./fonts   # 단일 멀티페이지 PDF(검색 가능)
+ahwp render report.hwp -o page.png --dpi 150
+ahwp render report.hwp -o report.pdf --font-dir ./fonts   # 단일 멀티페이지 PDF(검색 가능)
 
 # 새 문서 생성
-hwp new -o out.hwpx --from notes.md
-hwp new -o out.hwp  --from doc.json
+ahwp new -o out.hwpx --from notes.md
+ahwp new -o out.hwp  --from doc.json
 
 # 구조 문서 합성
-hwp compose spec.yaml -o report.hwpx --report
-hwp template report-template.yaml --data report-data.json -o report.hwpx
+ahwp compose spec.yaml -o report.hwpx --report
+ahwp template report-template.yaml --data report-data.json -o report.hwpx
 
 # 공문서
-hwp new --list-templates                              # 내장 템플릿 8종
-hwp new -o gian.hwpx --template gian-internal         # 기안문. 두문·결문 포함
-hwp slots gian.hwpx                                   # 아직 채우지 않은 {{슬롯}} 확인
-hwp fill gian.hwpx -o final.hwpx --set "제목=예산 집행 계획"
-hwp lint final.hwpx --strict                          # 표기법·구조 규칙 검사
+ahwp new --list-templates                              # 내장 템플릿 8종
+ahwp new -o gian.hwpx --template gian-internal         # 기안문. 두문·결문 포함
+ahwp slots gian.hwpx                                   # 아직 채우지 않은 {{슬롯}} 확인
+ahwp fill gian.hwpx -o final.hwpx --set "제목=예산 집행 계획"
+ahwp lint final.hwpx --strict                          # 표기법·구조 규칙 검사
 
 # 편집 (이미지·서식·미해석 레코드 보존)
-hwp fields form.hwp                        # 채울 수 있는 필드/누름틀 이름 확인
-hwp edit form.hwp -o filled.hwp \
+ahwp fields form.hwp                        # 채울 수 있는 필드/누름틀 이름 확인
+ahwp edit form.hwp -o filled.hwp \
     --replace "초안=>최종" \
     --set-cell "0:1:2=12,300원" \
     --set-field "수신처=홍길동" --verify
 
 # 구조 편집 (문단 삽입/삭제·표 행/열·셀 병합/분할)
-hwp edit report.hwp -o out.hwp \
+ahwp edit report.hwp -o out.hwp \
     --insert-para "개요=>추가 설명 문단입니다." \
     --add-row "0" --add-col "1" --merge-cells "0:1:1:2:2" --verify
 
 # 렌더 충실도 비교 (한글 기준 PNG와 잉크/오프셋/픽셀 오차)
-hwp diff report.hwp --ref hancom_p1.png --page 1 --dpi 150 --font-dir ./fonts
+ahwp diff report.hwp --ref hancom_p1.png --page 1 --dpi 150 --font-dir ./fonts
 
 # MCP stdio 서버
-hwp mcp --font-dir ./fonts
+ahwp mcp --font-dir ./fonts
 ```
 
 ## 명령 레퍼런스
@@ -294,12 +296,12 @@ hwp mcp --font-dir ./fonts
 
 ## Markdown 내보내기
 
-hwp/hwpx를 GFM으로 변환한다. `hwp cat --format markdown`은 stdout 전용이라 이미지를 추출하지 않는다.
+hwp/hwpx를 GFM으로 변환한다. `ahwp cat --format markdown`은 stdout 전용이라 이미지를 추출하지 않는다.
 
 ```sh
-hwp convert report.hwp -o report.md                    # 이미지는 report.media/에 추출
-hwp convert report.hwp -o report.md --media-dir figs   # figs/에 추출하고 figs/... 로 링크
-hwp convert report.hwp -o full.md --with-header-footer --with-hidden
+ahwp convert report.hwp -o report.md                    # 이미지는 report.media/에 추출
+ahwp convert report.hwp -o report.md --media-dir figs   # figs/에 추출하고 figs/... 로 링크
+ahwp convert report.hwp -o full.md --with-header-footer --with-hidden
 ```
 
 | HWP 요소 | markdown |
@@ -324,7 +326,7 @@ hwp convert report.hwp -o full.md --with-header-footer --with-hidden
 
 ### `--with-segments` (추출 근거 좌표)
 
-`hwp cat <file> --format markdown --with-segments`는 markdown과 함께 각 출력 문자 범위가 어느 원본
+`ahwp cat <file> --format markdown --with-segments`는 markdown과 함께 각 출력 문자 범위가 어느 원본
 문단에서 왔는지를 한 줄 JSON 봉투로 낸다.
 
 ```json
@@ -347,10 +349,10 @@ hwp convert report.hwp -o full.md --with-header-footer --with-hidden
 
 ```sh
 # 쓰지 않고 스키마·참조·표 span·자산·네이티브 지원 여부 확인
-hwp compose examples/document-spec-v1/basic.json -o /tmp/basic.hwpx --dry-run --report
+ahwp compose examples/document-spec-v1/basic.json -o /tmp/basic.hwpx --dry-run --report
 
 # 검증된 파일을 원자적으로 게시
-hwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/report.hwpx --report
+ahwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/report.hwpx --report
 ```
 
 `template`은 문자열 보간이나 표현식 실행 없이 typed `value`/`if`/`each` AST만 허용한다. `reference_hwpx`는
@@ -387,33 +389,33 @@ hwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/report.hwpx --r
 `--doc-foot 발신명의=…`, `--notice-head`, `--notice-foot`, `--press-head`가 여기에 해당한다.
 v0.10.0부터 `--preset`과 문서 틀 플래그는 거부되지 않고 템플릿 자체 기본값을 **덮어쓴다**.
 
-**채우기** 생성된 문서 자체가 템플릿이다. `hwp slots`는 아직 채우지 않은 항목을 나열하고,
-`hwp fill`은 `{{name}}`을 치환하면서 hwpx 패키지의 나머지 부분을 바이트 단위로 보존한다. 두 명령은
+**채우기** 생성된 문서 자체가 템플릿이다. `ahwp slots`는 아직 채우지 않은 항목을 나열하고,
+`ahwp fill`은 `{{name}}`을 치환하면서 hwpx 패키지의 나머지 부분을 바이트 단위로 보존한다. 두 명령은
 슬롯을 같은 방식으로 읽는다. 이름은 중괄호·제어문자를 뺀 임의 텍스트이고(`{{성 명}}`,
 `{{사업명(국문)}}`), 중괄호 안 공백(`{{ name }}`)과 요청한 이름의 앞뒤 공백은 제거한다. 값은 한 번에
 그대로 삽입하므로, 슬롯처럼 생긴 값이 다시 채워지지 않는다. 일치하지 않는 슬롯이 있으면 오류로
 처리하며, `--allow-partial`을 주지 않는 한 아무것도 쓰지 않는다. `--allow-partial`이면 하나도
 일치하지 않아도 입력을 그대로 게시하고 건수 0을 보고한다.
 
-**양식 필드** 한국 공문서 양식에는 슬롯이 거의 없다. `hwp slots --forms`는 레이블 셀(성명, 연락처
-등), 본문의 `라벨: 값`, 슬롯을 키·레이블·출처·신뢰도·등장 횟수와 함께 나열한다. `hwp fill --forms`는
+**양식 필드** 한국 공문서 양식에는 슬롯이 거의 없다. `ahwp slots --forms`는 레이블 셀(성명, 연락처
+등), 본문의 `라벨: 값`, 슬롯을 키·레이블·출처·신뢰도·등장 횟수와 함께 나열한다. `ahwp fill --forms`는
 같은 `--data`/`--set` 값으로 이들을 한 번에 채운다. 레이블 셀 옆이나 아래 칸, 본문 라벨 뒤 텍스트,
 `학년(  )반` 빈칸, `□동의` 확인란, `(비고:   )` 빈칸이 대상이다. 비어 있지 않은 값 칸과 `라벨:` 뒤
 본문 텍스트(쉼표, 세미콜론, 다음 `라벨:`, 줄 끝까지. `(한문:   )`처럼 라벨을 감싼 괄호와 `(서명/인)`
 같은 괄호 메모는 남김)는 kordoc처럼 덮어쓰며, 덮어쓸 때마다 보고서에
 경고를 남긴다. 누름틀·그림·표가 든 칸은 쓰지 않고, 값은 적힌 그대로 넣는다. 키는 공백·쌍점·괄호를 무시하고 비교하며,
 `--json`에 `unmatched` 키가 추가된다. 규칙은 [kordoc](https://github.com/chrisryugj/kordoc)(MIT)에서
-이식했다. 이 경로는 IR을 거치며 `.hwpx`만 쓴다. 바뀐 구역만 `hwp edit`와 같은 방식으로 다시 쓰고,
+이식했다. 이 경로는 IR을 거치며 `.hwpx`만 쓴다. 바뀐 구역만 `ahwp edit`와 같은 방식으로 다시 쓰고,
 나머지 구역과 패키지 엔트리는 바이트 단위로 복사한다.
 
-**린트** `hwp lint`는 `.md`, `.hwp`, `.hwpx` 파일에(또는 `-`로 표준 입력의 markdown에) 10개 규칙을
+**린트** `ahwp lint`는 `.md`, `.hwp`, `.hwpx` 파일에(또는 `-`로 표준 입력의 markdown에) 10개 규칙을
 적용한다. 표기법 규칙 7개(날짜 `2026. 8. 20.`, 시각, 금액, `붙임:`의 쌍점과 번호, 마무리 `끝.`,
 문장부호), 장식 기호(`■ ▶ ▲ ◆ ● ※`. 공문서에서는 `□ ○`나 중첩 목록으로 써야 한다)를 잡는 규칙
 1개, 그리고 법정 항목 부호와 로마자 제목을 검사하는 구조 규칙 2개로 이루어진다. 오류 등급은 구조
 규칙 2개뿐이고 표기법 지적은 모두 경고다. 이 명령은 권고 성격이라 `--strict`를 주지 않으면 항상 0으로
 종료한다.
 
-**표 서식** `hwp edit --style-tables <preset>`은 해당 프로파일의 표 모양을 적용한다. 단일 열 표는
+**표 서식** `ahwp edit --style-tables <preset>`은 해당 프로파일의 표 모양을 적용한다. 단일 열 표는
 건너뛰며, 두 번 적용해도 바이트가 동일한 결과가 나온다.
 
 ## 인증과 구조 코퍼스
@@ -430,7 +432,7 @@ reference 금지, bounds/collision/unresolved-field 실패를 강제한다. 정�
 
 ```sh
 bash scripts/fetch-corpus-fonts.sh    # 고정 OFL 폰트를 받아 SHA-256 검증 (최초 1회)
-hwp corpus --manifest corpus/structured-v1/manifest.json --report /new/path/corpus-report
+ahwp corpus --manifest corpus/structured-v1/manifest.json --report /new/path/corpus-report
 ```
 
 `scripts/check-structured-corpus.sh`(CI 게이트)가 이 fetch를 먼저 실행하므로 별도 준비는 필요 없다.
@@ -442,23 +444,23 @@ hwp corpus --manifest corpus/structured-v1/manifest.json --report /new/path/corp
 기존 문서를 편집하지 않고 처음부터 똑같이 신규 생성할 수 있다.
 
 ```sh
-hwp convert report.hwpx -o report.json   # hwp/hwpx → JSON IR (--embed-bin: 이미지까지)
-hwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
+ahwp convert report.hwpx -o report.json   # hwp/hwpx → JSON IR (--embed-bin: 이미지까지)
+ahwp new --from report.json -o regen.hwpx # JSON IR → 신규 문서
 ```
 
-재생성 검증(`crates/hwp-cli/tests/regen.rs`)은 validate 통과, `hwp cat` 출력 전문 동일, 표 지도
+재생성 검증(`crates/hwp-cli/tests/regen.rs`)은 validate 통과, `ahwp cat` 출력 전문 동일, 표 지도
 (개수·행/열·병합·셀 폭) 동일, secPr·tabProperties 슬라이스 바이트 동일을 확인한다. 차이가 남는 것은
 설계상 재생성 대상인 줄 배치 캐시(한글이 열 때 재계산), 미리보기 이미지, settings.xml뿐이다.
 
 ## MCP 서버 (AI 에이전트 연동)
 
-`hwp mcp`는 tokio나 SDK 없이 `serde_json`만으로 동기 JSON-RPC 2.0(stdio, 줄 단위)을 구현한 MCP
+`ahwp mcp`는 tokio나 SDK 없이 `serde_json`만으로 동기 JSON-RPC 2.0(stdio, 줄 단위)을 구현한 MCP
 서버다. 프로토콜 버전은 `initialize`에서 협상한다: 클라이언트의 `protocolVersion`이
 `2025-06-18`·`2025-03-26`·`2024-11-05` 중 하나면 그대로 돌려주고, 아니면 최신 지원 버전으로
 응답한다. stdout은 프로토콜 전용이고 로그는 stderr로 나간다.
 
 클라이언트별 설정(Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai 스킬 업로드,
-Amazon Quick Desktop)과 번들 에이전트 스킬(`hwp skill export`):
+Amazon Quick Desktop)과 번들 에이전트 스킬(`ahwp skill export`):
 [docs/manual/ai-integrations.ko.md](docs/manual/ai-integrations.ko.md).
 Windows 복사·실행 설정, 생성·검증 acceptance test, 재사용 가능한 에이전트 지침, 증상별 복구는 전용
 [Amazon Quick Desktop 가이드](docs/manual/amazon-quick-desktop.ko.md)에 정리했다.
@@ -467,7 +469,7 @@ Amazon Quick Desktop은 로컬 stdio 서버를 실행해 23개 도구를 모두 
 스킬은 활성 프로필에 다음과 같이 설치한다.
 
 ```sh
-hwp skill export --install amazon-quick
+ahwp skill export --install amazon-quick
 ```
 
 Windows에서는 `%USERPROFILE%\AppData\LocalLow` 아래에 전용 교환 root(예: `hwp-quick-workspace`)를
@@ -476,7 +478,7 @@ Windows에서는 `%USERPROFILE%\AppData\LocalLow` 아래에 전용 교환 root(�
 거부될 수 있다. Quick의 로컬 폴더 권한은 이 쓰기 무결성을 바꾸지 않으므로 전용 가이드의
 생성·import JSON·복구 절차를 따른다.
 
-Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 이제 `hwp serve`가 같은 도구를
+Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 이제 `ahwp serve`가 같은 도구를
 컨테이너 배포용 HTTP로 제공한다(`POST /mcp`,
 [배포 설계](docs/design/22-remote-mcp-deployment.ko.md) 참고). 다만 이 서버는 앞단에 신뢰된
 edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, tenant 격리, artifact 전송은
@@ -516,7 +518,7 @@ edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, ten
 {
   "mcpServers": {
     "hwp": {
-      "command": "hwp",
+      "command": "ahwp",
       "args": ["mcp", "--font-dir", "<repo>/fonts", "--root", "<repo>"]
     }
   }
@@ -549,7 +551,7 @@ edge가 있다고 전제하는 private hop이다. 인증된 Streamable HTTP, ten
 | `hwpx` | HWPX reader/writer (ZIP 패키지 + OWPML XML) |
 | `hwp-convert` | IR ↔ markdown / HTML / JSON, 인메모리 편집, 필드 스캔 |
 | `hwp-render` | IR → PNG / SVG / PDF / JPEG / WebP 렌더러와 배치 좌표, 줄 배치 합성, 셰이핑, 폰트 서브셋·임베드, 렌더 diff |
-| `hwp-cli` | `hwp` 바이너리 (CLI + MCP 서버) |
+| `agent-hwp` | `ahwp` 바이너리 (CLI + MCP 서버) |
 
 이 크레이트들과 MCP 배포 경로를 담은 대화형 아키텍처 지도는
 [docs/architecture/](docs/architecture/)에 있다. `hwp-cli-rendered.html`을 브라우저로 연다.
@@ -580,8 +582,8 @@ ubuntu `lint` 잡에서 한 번만 실행하고, `cargo test --workspace`는 **u
 hwp-cli는 1.0.0부터 [유의적 버전](https://semver.org/lang/ko/)을 따른다. 다음 중 하나라도
 호환되지 않게 바뀌면 주 버전을 올린다.
 
-- `hwp` CLI의 명령, 플래그, 종료 코드
-- stdio와 `hwp serve`로 노출하는 MCP 도구의 이름과 인자
+- `ahwp` CLI의 명령, 플래그, 종료 코드
+- stdio와 `ahwp serve`로 노출하는 MCP 도구의 이름과 인자
 - [`schemas/`](schemas)에 게시한 JSON 스키마. 스키마마다 파일 이름에 자체 버전이 있어
   (`edit-ops-v1`, `segment-envelope-v2`) 호환되지 않는 변경은 새 파일로 나온다.
 
@@ -612,7 +614,7 @@ hwp-cli는 1.0.0부터 [유의적 버전](https://semver.org/lang/ko/)을 따른
 파생물)를 동봉하지 않고 공식 배포처 링크만 제공한다([docs/README.ko.md](docs/README.ko.md) 참고).
 
 테스트 픽스처 일부는 [hahnlee/hwp-rs](https://github.com/hahnlee/hwp-rs)(Apache-2.0)에서 가져왔다.
-`fixtures/README.md`와 루트 `NOTICE` 참고. `hwp slots --forms`·`hwp fill --forms`의 양식 필드 규칙은
+`fixtures/README.md`와 루트 `NOTICE` 참고. `ahwp slots --forms`·`ahwp fill --forms`의 양식 필드 규칙은
 [chrisryugj/kordoc](https://github.com/chrisryugj/kordoc)(MIT)에서 이식했다. 루트 `NOTICE` 참고.
 
 ## 라이선스

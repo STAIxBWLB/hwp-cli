@@ -27,10 +27,10 @@ bookmark(hwp5), minimal(hwpx).
 
 | 검사 | 내용 | 잡는 문제 |
 |---|---|---|
-| 생성 | `hwp new --from md` 성공 | markdown→문서 생성 크래시 |
+| 생성 | `ahwp new --from md` 성공 | markdown→문서 생성 크래시 |
 | 구조 | hwpx=`validate`(mimetype/엔트리/XML), hwp5=CFB/olefile | 구조 손상 |
 | 외부파서 | hwpx=zip+ET 파싱, hwp5=olefile 스트림 | 외부 도구 호환 |
-| 렌더 | `hwp render` 크래시 없음 | 렌더 파이프라인 오류 |
+| 렌더 | `ahwp render` 크래시 없음 | 렌더 파이프라인 오류 |
 | strict변환 | `convert --strict`(opaque 손실 시 실패) | DROP·미보존 |
 | 텍스트보존 | 원본 md 텍스트가 생성 파일 cat에 포함(≥90%) | 텍스트 유실 |
 | 교차변환 | hwp5→hwpx(또는 역) 변환 후 결과의 구조·렌더·strict 검사(행렬에서 4개 열을 차지한다) | 변환 파이프라인 |

@@ -22,8 +22,8 @@ the procedure. The destination must be outside this repository: the script refus
 root and any path under it, including a symlink or relative alias of it, and the run writes nothing
 into the working tree.
 
-Every artifact is gated on self-reread (`hwp cat` with no warning) and structural validation
-(`hwp validate --json` reporting valid with no warnings) before it is published, and the run writes
+Every artifact is gated on self-reread (`ahwp cat` with no warning) and structural validation
+(`ahwp validate --json` reporting valid with no warnings) before it is published, and the run writes
 a `hancom-regression-index-v1` JSON index last. An index file in the destination therefore means
 the whole set passed. Each index row carries the file name, its checklist series item, the exact
 command that produced it, its SHA-256 and the two gate columns, so an artifact can always be mapped
@@ -73,15 +73,15 @@ Every exclusion is carried forward into the release verification block (phase 4,
 with exclusions is not a clean pass**, and the milestone is not clean until those issues close and
 the variable is unset.
 
-`HWP_CERT_FONT_DIR=/path/to/fonts` names the font files `hwp certify` may render the set with.
-`hwp certify` resolves fonts only from the files its policy pins, so the script copies every
+`HWP_CERT_FONT_DIR=/path/to/fonts` names the font files `ahwp certify` may render the set with.
+`ahwp certify` resolves fonts only from the files its policy pins, so the script copies every
 `.ttf`/`.otf`/`.ttc` in that directory into `gen-<timestamp>/fonts/` and writes the same sorted list
 of paths and SHA-256 hashes into each policy's `document.fonts.manifest` and into the index as
 `font_manifest`. Substitution stays allowed (`forbid_substitution: false`). A directory with no
 font file, with the same font bytes twice, or past certify's limits (128 fonts, 32 MiB each,
 128 MiB total) is refused before generation starts. Without the
 variable the run still publishes, but warns on stderr and records `"font_manifest": "none"`: its
-policies pin no fonts, so `hwp certify` reports every face `missing` and the fonts rule fails. Such
+policies pin no fonts, so `ahwp certify` reports every face `missing` and the fonts rule fails. Such
 a set is not evidence of certification against real fonts. `HWP_FONT_DIR`, which the script sets
 for hwp5 line-segment computation, is unrelated.
 
@@ -108,7 +108,7 @@ diagnostic outputs were removed from the folder to prevent false readings.
 The run creates no Hancom observation and no receipt. It writes, beside each artifact in the
 generation, an `<artifact>.policy.json` naming the one receipt that will bind to that artifact, and
 a fresh empty `receipts/` directory for those receipts to land in, so that once a real observation
-exists `hwp certify current/<artifact> --policy current/<artifact>.policy.json --report <directory>`
+exists `ahwp certify current/<artifact> --policy current/<artifact>.policy.json --report <directory>`
 is a single command with no hand editing. The emitted policy sets
 `hancom_open.require_artifact_sha256`, so a receipt without an `artifact_sha256`, or with one that
 does not equal the certified artifact, is refused: a receipt cannot be replayed from one artifact
@@ -370,7 +370,7 @@ on macOS.
 | Paragraph insertion | The same, with the inserted paragraph visible and the surrounding layout stable |
 | Table-cell edit | The same, with only the target cell content changed |
 | Image insertion | The same plus one new BinData item (media 24→25); opens without a warning |
-| Non-strict hwpx→hwp convert | The typed loss report lists the removed HWPX package entries; opens without a warning |
+| Non-strict hwpx→ahwp convert | The typed loss report lists the removed HWPX package entries; opens without a warning |
 | Non-strict hwp→hwpx convert | All 24 media preserved (previously 9); opens without a warning |
 | HWP edit (the source-preserving writer) | The container round-trips; opens without a warning |
 

@@ -29,12 +29,12 @@ patching package XML. Use typed `split`, source-bound bindings and native edits.
 The complete workflow below needs v1.5.0 or later, including `document.original_form`. The
 [versioned capability record](original-form-capabilities-v1.json) records its reference run on a
 **pre-release source build** at its recorded commit (which reported package version 1.4.0) and
-checked that released v1.4.0 lacks the workflow. Check `hwp --version` and the record exported
+checked that released v1.4.0 lacks the workflow. Check `ahwp --version` and the record exported
 by your binary before using it.
 
 ```sh
-hwp --version
-hwp skill export -o ./hwp-guide
+ahwp --version
+ahwp skill export -o ./hwp-guide
 ```
 
 Use an isolated working directory. Keep discovery text, reviewed plans, exact previews and local
@@ -59,7 +59,7 @@ instruction to change the fonts of someone else's supplied native form.
 
 ```sh
 cd ./target/original-form-workflow
-hwp compose "$PWD/p0-nanum.spec.json" -o ./source.hwpx
+ahwp compose "$PWD/p0-nanum.spec.json" -o ./source.hwpx
 ```
 
 The capability asset contains complete, reviewed JSON values under `reference_inputs`. Copy each
@@ -72,9 +72,9 @@ binding or certification plan.
 ### Discover and extract the native range
 
 ```sh
-hwp info ./source.hwpx --json
-hwp slots ./source.hwpx --forms --occurrences --json > ./source-catalog.json
-hwp cat ./source.hwpx --format json --with-segments --segments v2 > ./source-map.json
+ahwp info ./source.hwpx --json
+ahwp slots ./source.hwpx --forms --occurrences --json > ./source-catalog.json
+ahwp cat ./source.hwpx --format json --with-segments --segments v2 > ./source-map.json
 ```
 
 Review labels, old values, `bindable`, paragraph/table IDs and body coordinates. Repeated labels
@@ -86,11 +86,11 @@ coordinates in the actual map and generator manifest; they are not general docum
 Set `SOURCE_SHA256` to the actual `source_sha256` in `source-catalog.json`, then run:
 
 ```sh
-hwp split ./source.hwpx --out-dir ./extracted \
+ahwp split ./source.hwpx --out-dir ./extracted \
   --from heading:FORM_START_APPLICATION --to at:0.11 \
   --source-sha256 "$SOURCE_SHA256" --strict \
   --range-report ./extraction.json --loss-report ./extraction-preservation.json
-hwp validate ./extracted/source-001.hwpx
+ahwp validate ./extracted/source-001.hwpx
 ```
 
 Keep the real range report and source-to-output map. The recorded run kept `BinData/image2.png`
@@ -106,12 +106,12 @@ Prepare a unique insertion heading after the extracted profile's table, then app
 inline `insert_para.style`/`char` fields, which MCP does not expose.
 
 ```sh
-hwp cat ./extracted/source-001.hwpx --format json --with-segments --segments v2 > ./extracted-map.json
-hwp edit ./extracted/source-001.hwpx -o ./inserted.hwpx --ops "$PWD/prepare-headings.json" --verify
-hwp styles ./inserted.hwpx --format json
-hwp edit ./inserted.hwpx -o ./prepared.hwpx --ops "$PWD/prepare-style.json" --verify
-hwp slots ./prepared.hwpx --forms --occurrences --json > ./prepared-catalog.json
-hwp cat ./prepared.hwpx --format json --with-segments --segments v2 > ./prepared-map.json
+ahwp cat ./extracted/source-001.hwpx --format json --with-segments --segments v2 > ./extracted-map.json
+ahwp edit ./extracted/source-001.hwpx -o ./inserted.hwpx --ops "$PWD/prepare-headings.json" --verify
+ahwp styles ./inserted.hwpx --format json
+ahwp edit ./inserted.hwpx -o ./prepared.hwpx --ops "$PWD/prepare-style.json" --verify
+ahwp slots ./prepared.hwpx --forms --occurrences --json > ./prepared-catalog.json
+ahwp cat ./prepared.hwpx --format json --with-segments --segments v2 > ./prepared-map.json
 ```
 
 For the P0 map the selected table moves from source paragraph 11 to extracted paragraph 8.
@@ -159,7 +159,7 @@ Copy `binding.ops.json` to `dry.ops.json` and change only `receipt` to `dry-rece
 with existing parent directories for asset-bearing inputs and atomic report destinations.
 
 ```sh
-hwp edit ./prepared.hwpx -o ./dry.hwpx --ops "$PWD/dry.ops.json" --dry-run
+ahwp edit ./prepared.hwpx -o ./dry.hwpx --ops "$PWD/dry.ops.json" --dry-run
 ```
 
 Review the exact local preview, selected claims, numeric values and source-to-copy maps. A dry-run
@@ -167,8 +167,8 @@ still writes/verifies a private candidate, but its receipt has `published: false
 no native output. Apply against the same reviewed `prepared.hwpx` bytes:
 
 ```sh
-hwp edit ./prepared.hwpx -o ./bound.hwpx --ops "$PWD/binding.ops.json" --verify
-hwp validate ./bound.hwpx
+ahwp edit ./prepared.hwpx -o ./bound.hwpx --ops "$PWD/binding.ops.json" --verify
+ahwp validate ./bound.hwpx
 ```
 
 `apply_form_bindings` is the only operation in its batch. Do not combine it with `--allow-partial`,
@@ -189,14 +189,14 @@ request snapshot; after both insertions, the new headings are 11 and 13. Apply `
 new paragraphs in a second request. Keep the original form labels and signature areas unchanged.
 
 ```sh
-hwp cat ./bound.hwpx --format json --with-segments --segments v2 > ./bound-map.json
-hwp edit ./bound.hwpx -o ./headings-inserted.hwpx --ops "$PWD/remaining-headings.json" --verify
-hwp edit ./headings-inserted.hwpx -o ./headed.hwpx --ops "$PWD/remaining-style.json" --verify
-hwp slots ./headed.hwpx --forms --occurrences --json > ./headed-catalog.json
-hwp edit ./headed.hwpx -o ./paged.hwpx --ops "$PWD/pagination.ops.json" --verify --report ./pagination-report.json
-hwp slots ./paged.hwpx --forms --occurrences --json > ./paged-catalog.json
-hwp edit ./paged.hwpx -o ./final.hwpx --ops "$PWD/indent-repeat.ops.json" --verify --report ./indent-repeat-report.json
-hwp compare ./paged.hwpx ./final.hwpx --format json > ./indent-compare.json
+ahwp cat ./bound.hwpx --format json --with-segments --segments v2 > ./bound-map.json
+ahwp edit ./bound.hwpx -o ./headings-inserted.hwpx --ops "$PWD/remaining-headings.json" --verify
+ahwp edit ./headings-inserted.hwpx -o ./headed.hwpx --ops "$PWD/remaining-style.json" --verify
+ahwp slots ./headed.hwpx --forms --occurrences --json > ./headed-catalog.json
+ahwp edit ./headed.hwpx -o ./paged.hwpx --ops "$PWD/pagination.ops.json" --verify --report ./pagination-report.json
+ahwp slots ./paged.hwpx --forms --occurrences --json > ./paged-catalog.json
+ahwp edit ./paged.hwpx -o ./final.hwpx --ops "$PWD/indent-repeat.ops.json" --verify --report ./indent-repeat-report.json
+ahwp compare ./paged.hwpx ./final.hwpx --format json > ./indent-compare.json
 ```
 
 `pagination.ops.json` sets break-before on the new profile headings (paragraphs 9, 11 and 13 in
@@ -221,13 +221,13 @@ and native bytes also match. Do not reuse a stale run address after text length 
 ### Render and certify the exact delivered artifacts
 
 ```sh
-hwp validate ./final.hwpx
-hwp convert ./final.hwpx -o ./final.hwp --strict --loss-report ./conversion-preservation.json
-hwp validate ./final.hwp
-hwp slots ./final.hwpx --forms --occurrences --json > ./final-hwpx-catalog.json
-hwp slots ./final.hwp --forms --occurrences --json > ./final-hwp-catalog.json
-hwp render ./final.hwpx -o ./hwpx.pdf --font-dir ./fonts --report ./hwpx-render.json --layout-json ./hwpx-layout.json
-hwp render ./final.hwp -o ./hwp.pdf --font-dir ./fonts --report ./hwp-render.json --layout-json ./hwp-layout.json
+ahwp validate ./final.hwpx
+ahwp convert ./final.hwpx -o ./final.hwp --strict --loss-report ./conversion-preservation.json
+ahwp validate ./final.hwp
+ahwp slots ./final.hwpx --forms --occurrences --json > ./final-hwpx-catalog.json
+ahwp slots ./final.hwp --forms --occurrences --json > ./final-hwp-catalog.json
+ahwp render ./final.hwpx -o ./hwpx.pdf --font-dir ./fonts --report ./hwpx-render.json --layout-json ./hwpx-layout.json
+ahwp render ./final.hwp -o ./hwp.pdf --font-dir ./fonts --report ./hwp-render.json --layout-json ./hwp-layout.json
 ```
 
 This reference run binds/edits HWPX, then converts the delivered artifact to HWP. Same-format HWP
@@ -248,8 +248,8 @@ Both policies pin the exact regular and bold font files, forbid substitution, ch
 and keep the outside-page-bounds and potential-collision failure gates enabled.
 
 ```sh
-hwp certify ./final.hwpx --policy "$PWD/certify-hwpx.json" --report "$PWD/certificate-hwpx"
-hwp certify ./final.hwp --policy "$PWD/certify-hwp.json" --report "$PWD/certificate-hwp"
+ahwp certify ./final.hwpx --policy "$PWD/certify-hwpx.json" --report "$PWD/certificate-hwpx"
+ahwp certify ./final.hwp --policy "$PWD/certify-hwp.json" --report "$PWD/certificate-hwp"
 ```
 
 Use a new report directory for each run: publication is atomic and existing report directories
@@ -275,7 +275,7 @@ PDF coverage, portable pixel equality or Hancom parity.
 Start the stdio server in an isolated workspace, or let a configured MCP host start it:
 
 ```sh
-hwp mcp --root "$PWD" --font-dir "$PWD/fonts"
+ahwp mcp --root "$PWD" --font-dir "$PWD/fonts"
 ```
 
 Use the same reviewed data and stage boundaries:
@@ -317,19 +317,19 @@ array, for example `{"chars":[{"Text":"가"},{"Text":"나"},{"CharCtrl":13}]}`, 
 `"가나"`. Native controls have their own widths and payloads; do not use string indexing or raw
 array slicing as an alternative editing engine.
 
-`hwp cat --format json` (including the document beside CLI v2 segments) is an inspection export,
+`ahwp cat --format json` (including the document beside CLI v2 segments) is an inspection export,
 not a self-contained binary-resource package. If JSON must make a complete round trip, use:
 
 ```sh
-hwp convert ./final.hwpx --to json --embed-bin -o ./final.self-contained.json
-hwp new --from ./final.self-contained.json -o ./json-roundtrip.hwpx
-hwp validate ./json-roundtrip.hwpx
-hwp compare ./final.hwpx ./json-roundtrip.hwpx --format json
+ahwp convert ./final.hwpx --to json --embed-bin -o ./final.self-contained.json
+ahwp new --from ./final.self-contained.json -o ./json-roundtrip.hwpx
+ahwp validate ./json-roundtrip.hwpx
+ahwp compare ./final.hwpx ./json-roundtrip.hwpx --format json
 ```
 
 For export, MCP uses `hwp_convert` with `input`, `output`, `to: "json"`, `embed_bin: true`.
 For re-entry, use `hwp_new` with `output` and `json` containing the complete IR JSON **string**,
-not its filename. `hwp convert` does not accept that JSON as a native input. The recorded JSON
+not its filename. `ahwp convert` does not accept that JSON as a native input. The recorded JSON
 re-entry retains six tables and the image control and compares semantically identical.
 This is the recorded semantic/resource check, not byte identity of every native format or
 opaque record.
@@ -362,19 +362,19 @@ The reference run has **no** Hancom open/export evidence; that sign-off remains 
 
 | Old inferred operation | Native command sequence | Status | Known limitation | Runnable verification |
 |---|---|---|---|---|
-| `summary` | `hwp info form.hwpx --json` then `hwp cat form.hwpx --format json > form.json` | composed | No legacy pretty summary or XML section-index map. | `test -s form.json && hwp validate form.hwpx` |
-| `unpack` | Do not unpack; use `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify`. | intentionally retired | No supported raw-ZIP extraction workflow. | `hwp validate edited.hwpx` |
-| `repack` | Do not repack; use `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify`. | intentionally retired | Native writers own package layout; manual manifest changes are unsupported. | `hwp validate edited.hwpx` |
-| `edit` run-spanning find/replace | `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | limited | Does not promise matching a find string split across arbitrary XML text runs. | `hwp validate edited.hwpx && hwp cat edited.hwpx --format plain` |
-| `fill` run-spanning `{{slot}}` | `hwp slots template.hwpx --json` then `hwp fill template.hwpx -o filled.hwpx --set "name=value" --json` | limited | A slot may span formatting runs, but never a line break or paragraph boundary. | `hwp slots template.hwpx --json && hwp validate filled.hwpx` |
-| `fill-table` | `hwp fill template.hwpx -o filled.hwpx --data tables.json --json` | exact | `tables.json` must follow the native `tables` data contract and target an existing table. | `hwp validate filled.hwpx` |
-| `fill-form` | `hwp edit form.hwpx -o filled.hwpx --set-cell-by-label "성명=홍길동" --set-cell-by-label "소속=AI센터" --verify` | limited | Each normalized label must resolve to exactly one adjacent or header-row value cell; ambiguity and duplicate targets refuse publication. Use `--label-table N` to scope recursive tables. | `hwp validate filled.hwpx && hwp cat filled.hwpx --format plain` |
-| `analyze` | `hwp info form.hwpx --json` then `hwp cat form.hwpx --format json > form.json` | composed | JSON IR is useful for text, tables, and anchors, but exposes no old raw `sec` child indices or XML style IDs. | `test -s form.json && hwp validate form.hwpx` |
-| `edit-section` | `hwp cat form.hwpx --format json > form.json`, then `hwp edit form.hwpx -o edited.hwpx --delete-para "old paragraph" --insert-para "anchor=>replacement paragraph" --verify` | limited | Anchor and paragraph operations are not raw `[start:end)` section-index surgery and do not clone an XML paragraph style by index. | `hwp validate edited.hwpx && hwp cat edited.hwpx --format json > edited.json` |
-| `linesegarray` clearing on edit | `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | composed | The writer manages layout records internally; there is no user-visible `linesegarray` switch or XML-level report. | `hwp validate edited.hwpx` |
-| sec-index section edits | `hwp cat form.hwpx --format json > form.json`, then `hwp edit ... --delete-para ... --insert-para ... --verify` | limited | The native surface deliberately has no stable `sec` child index contract. | `hwp validate edited.hwpx` |
-| mimetype-first STORED repack | `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | intentionally retired | The writer preserves valid package construction but exposes no general raw-ZIP repack API. | `hwp validate edited.hwpx` |
-| `guard` / `page_guard` structural drift metric | `hwp validate edited.hwpx`, then `hwp render reference.hwpx -o reference.png --report reference.render.json` and `hwp render edited.hwpx -o edited.png --report edited.render.json` | composed | Validation and render reports do not reproduce XML paragraph/table/text-delta thresholds. Compare report page counts and review rendered output when layout matters. | `hwp validate edited.hwpx && test -s reference.render.json && test -s edited.render.json` |
+| `summary` | `ahwp info form.hwpx --json` then `ahwp cat form.hwpx --format json > form.json` | composed | No legacy pretty summary or XML section-index map. | `test -s form.json && ahwp validate form.hwpx` |
+| `unpack` | Do not unpack; use `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify`. | intentionally retired | No supported raw-ZIP extraction workflow. | `ahwp validate edited.hwpx` |
+| `repack` | Do not repack; use `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify`. | intentionally retired | Native writers own package layout; manual manifest changes are unsupported. | `ahwp validate edited.hwpx` |
+| `edit` run-spanning find/replace | `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | limited | Does not promise matching a find string split across arbitrary XML text runs. | `ahwp validate edited.hwpx && ahwp cat edited.hwpx --format plain` |
+| `fill` run-spanning `{{slot}}` | `ahwp slots template.hwpx --json` then `ahwp fill template.hwpx -o filled.hwpx --set "name=value" --json` | limited | A slot may span formatting runs, but never a line break or paragraph boundary. | `ahwp slots template.hwpx --json && ahwp validate filled.hwpx` |
+| `fill-table` | `ahwp fill template.hwpx -o filled.hwpx --data tables.json --json` | exact | `tables.json` must follow the native `tables` data contract and target an existing table. | `ahwp validate filled.hwpx` |
+| `fill-form` | `ahwp edit form.hwpx -o filled.hwpx --set-cell-by-label "성명=홍길동" --set-cell-by-label "소속=AI센터" --verify` | limited | Each normalized label must resolve to exactly one adjacent or header-row value cell; ambiguity and duplicate targets refuse publication. Use `--label-table N` to scope recursive tables. | `ahwp validate filled.hwpx && ahwp cat filled.hwpx --format plain` |
+| `analyze` | `ahwp info form.hwpx --json` then `ahwp cat form.hwpx --format json > form.json` | composed | JSON IR is useful for text, tables, and anchors, but exposes no old raw `sec` child indices or XML style IDs. | `test -s form.json && ahwp validate form.hwpx` |
+| `edit-section` | `ahwp cat form.hwpx --format json > form.json`, then `ahwp edit form.hwpx -o edited.hwpx --delete-para "old paragraph" --insert-para "anchor=>replacement paragraph" --verify` | limited | Anchor and paragraph operations are not raw `[start:end)` section-index surgery and do not clone an XML paragraph style by index. | `ahwp validate edited.hwpx && ahwp cat edited.hwpx --format json > edited.json` |
+| `linesegarray` clearing on edit | `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | composed | The writer manages layout records internally; there is no user-visible `linesegarray` switch or XML-level report. | `ahwp validate edited.hwpx` |
+| sec-index section edits | `ahwp cat form.hwpx --format json > form.json`, then `ahwp edit ... --delete-para ... --insert-para ... --verify` | limited | The native surface deliberately has no stable `sec` child index contract. | `ahwp validate edited.hwpx` |
+| mimetype-first STORED repack | `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | intentionally retired | The writer preserves valid package construction but exposes no general raw-ZIP repack API. | `ahwp validate edited.hwpx` |
+| `guard` / `page_guard` structural drift metric | `ahwp validate edited.hwpx`, then `ahwp render reference.hwpx -o reference.png --report reference.render.json` and `ahwp render edited.hwpx -o edited.png --report edited.render.json` | composed | Validation and render reports do not reproduce XML paragraph/table/text-delta thresholds. Compare report page counts and review rendered output when layout matters. | `ahwp validate edited.hwpx && test -s reference.render.json && test -s edited.render.json` |
 
 ## Inspect before editing
 
@@ -384,32 +384,32 @@ Start with native metadata and IR output. Search the JSON for stable visible tex
 or a field/bookmark name that can serve as an anchor; do not infer an old XML index from it.
 
 ```bash
-hwp info form.hwpx --json
-hwp cat form.hwpx --format json > form.json
-hwp fields form.hwpx --json
-hwp bookmarks form.hwpx --json
+ahwp info form.hwpx --json
+ahwp cat form.hwpx --format json > form.json
+ahwp fields form.hwpx --json
+ahwp bookmarks form.hwpx --json
 ```
 
 ### Verify the inspection
 
 ```bash
 test -s form.json
-hwp validate form.hwpx
+ahwp validate form.hwpx
 ```
 
 ## Fill native placeholders and forms
 
 ### Fill a template or table
 
-Use `hwp slots` before `hwp fill` for placeholders. Use `--data` for data-driven table rows; it
+Use `ahwp slots` before `ahwp fill` for placeholders. Use `--data` for data-driven table rows; it
 is the native `fill-table` replacement.
 
 ```bash
-hwp slots template.hwpx --json
-hwp fill template.hwpx -o filled.hwpx --set "title=2026 Plan" --json
-hwp fill table-template.hwpx -o table-filled.hwpx --data tables.json --json
-hwp validate filled.hwpx
-hwp validate table-filled.hwpx
+ahwp slots template.hwpx --json
+ahwp fill template.hwpx -o filled.hwpx --set "title=2026 Plan" --json
+ahwp fill table-template.hwpx -o table-filled.hwpx --data tables.json --json
+ahwp validate filled.hwpx
+ahwp validate table-filled.hwpx
 ```
 
 ### Fill a label-value form
@@ -419,11 +419,11 @@ layouts, and is atomic by default. Do not use `--allow-partial` to bypass an amb
 label.
 
 ```bash
-hwp edit form.hwpx -o form-filled.hwpx \
+ahwp edit form.hwpx -o form-filled.hwpx \
   --set-cell-by-label "성명=홍길동" \
   --set-cell-by-label "소속=AI센터" \
   --verify
-hwp validate form-filled.hwpx
+ahwp validate form-filled.hwpx
 ```
 
 ## Edit content through anchors
@@ -435,12 +435,12 @@ anchor with paragraph operations. Keep the source unchanged and write to a new o
 result has passed validation and review.
 
 ```bash
-hwp edit form.hwpx -o revised.hwpx \
+ahwp edit form.hwpx -o revised.hwpx \
   --replace "2025 Plan=>2026 Plan" \
   --delete-para "old body paragraph" \
   --insert-para "body heading=>replacement paragraph" \
   --verify
-hwp validate revised.hwpx
+ahwp validate revised.hwpx
 ```
 
 ### Understand the boundary
@@ -457,9 +457,9 @@ Validation confirms package structure. Render reports give page counts and rende
 they are not a replacement for the old structural XML-drift thresholds.
 
 ```bash
-hwp validate revised.hwpx
-hwp render form.hwpx -o reference.png --report reference.render.json
-hwp render revised.hwpx -o revised.png --report revised.render.json
+ahwp validate revised.hwpx
+ahwp render form.hwpx -o reference.png --report reference.render.json
+ahwp render revised.hwpx -o revised.png --report revised.render.json
 ```
 
 ### Review the evidence
@@ -469,6 +469,6 @@ count or visible overflow is a reason to revise the content, not to weaken valid
 
 ## Safety and non-goals
 
-Every writing command above ends with `hwp validate`. Native edits and fills publish atomically;
+Every writing command above ends with `ahwp validate`. Native edits and fills publish atomically;
 failed required changes leave the existing output untouched. These recipes intentionally do not
 restore the retired wrapper, a Python XML helper, executable recipe files, or old binary templates.

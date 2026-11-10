@@ -30,7 +30,7 @@
 - [ ] 준비 점검 실행 자체가 커밋·푸시·태그·패키지 업로드·릴리스를 수행하지 않음
 - [ ] `README.md`·`README.ko.md`의 버전 고정 예시(`install.sh --tag` 스니펫)를 이번 릴리스
       버전으로 갱신
-- [ ] 도구 개수 표기가 서버와 일치: `hwp mcp`의 `tools/list` 길이가 `README*.md`,
+- [ ] 도구 개수 표기가 서버와 일치: `ahwp mcp`의 `tools/list` 길이가 `README*.md`,
       `docs/manual/*.md`, `skills/hwp/SKILL*.md`의 모든 "N개 도구" 표기와 같은지 확인
 - [ ] 번들 `skills/hwp/SKILL.md`·`SKILL.ko.md`가 이번 릴리스가 추가한 명령과 MCP 도구를 모두
       담고 있는지 확인 — 에이전트가 실제로 읽는 것은 export된 스킬이며 그 내용을 검사하는

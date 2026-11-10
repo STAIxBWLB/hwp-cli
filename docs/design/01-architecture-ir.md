@@ -589,7 +589,7 @@ DisplayList.
   fonts substitute and fidelity drops sharply.
 - `layout` trusts the line layout Hancom saved as a first-class input when `line_segs` is present and
   shapes through the fallback path when it is empty. `diff::compare` measures pixel and offset error
-  against a Hancom reference PNG (`hwp diff`).
+  against a Hancom reference PNG (`ahwp diff`).
 
 ### 5.6 The whole pipeline in brief
 
@@ -606,11 +606,11 @@ file (hwp5/hwpx/json)
  .hwp                     .hwpx            odt/json         → png/svg/pdf
 ```
 
-The editing flow (`hwp edit`) loads L1, transforms it with hwp-convert's editing primitives
+The editing flow (`ahwp edit`) loads L1, transforms it with hwp-convert's editing primitives
 (`replace_text`, `set_cell`, `set_field`, `create_bookmark`/`hyperlink`, `insert_image`,
 `insert_paragraph`, `add`/`delete_table_row`, `set_char_format`, `set_para_align`, `apply_meta`) and
 saves with `write_hwp_edited` (surgical) or `write_hwp_structural` (synthesis forced). Filling an hwpx
-template (`hwp fill`) bypasses L1 entirely and replaces only XML text through `hwpx::patch` (maximum
+template (`ahwp fill`) bypasses L1 entirely and replaces only XML text through `hwpx::patch` (maximum
 fidelity).
 
 ---

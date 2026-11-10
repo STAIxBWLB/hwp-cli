@@ -19,7 +19,7 @@ CLI는 두 리소스를 내장·등록하므로 검증에 네트워크 요청이
 다른 스트림은 거부한다.
 
 보고와 전송. 편집 보고서는 삽입된 세그먼트를 나열한다. 삽입된 최상위 문단 안에서
-`hwp cat --segments v2`가 발행하는 세그먼트마다 생성 쌍(`before`는 null) 하나를, 해당 연산 직후의
+`ahwp cat --segments v2`가 발행하는 세그먼트마다 생성 쌍(`before`는 null) 하나를, 해당 연산 직후의
 문서에서 읽어 담는다. 따라서 id는 새로 실행한 `cat`의 값과 같고 런 id는 `set_format`이 바로 받는다.
 `edit-report-v1`은 `changed`를 10,000개로 제한하는데 유효한 요청도 그보다 많이 발행할 수 있다
 (100 x 50 표 하나가 15,002개). 그래서 보고서는 문서 순서로 앞 10,000쌍만 담고 실제 개수를
@@ -92,7 +92,7 @@ PNG·JPEG·GIF·BMP만 허용한다. `height_mm`을 생략하면 컴파일러가
 
 ## 네이티브 우선 실행 계약
 
-`hwp compose SPEC -o OUTPUT`은 CLI와 MCP가 같은 파이프라인을 따른다.
+`ahwp compose SPEC -o OUTPUT`은 CLI와 MCP가 같은 파이프라인을 따른다.
 
 1. JSON/YAML을 bound 안에서 파싱한다.
 2. 닫힌 v1 계약과 모든 상호 참조를 검증한다.

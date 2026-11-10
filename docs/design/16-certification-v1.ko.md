@@ -2,7 +2,7 @@
 
 # Certification v1
 
-`hwp certify INPUT --policy POLICY --report REPORT_DIR`는 버전 고정된 기계 판독 문서 인증 계약을
+`ahwp certify INPUT --policy POLICY --report REPORT_DIR`는 버전 고정된 기계 판독 문서 인증 계약을
 제공한다. CLI와 MCP(`hwp_certify`)는 같은 구현을 호출한다.
 
 ## 신뢰 경계
@@ -76,7 +76,7 @@ Dockerfile은 의도적으로 없다. 베이스 이미지와 LibreOffice 런타�
 섹션이 실패하면 `overall=failed`(및 미실행 오라클)가 된다. 리포트 스키마는 이를 전용
 `localPassed + evidenceFailed` 분기로 표현한다.
 
-- `document.preservation`: `preservation-report-v1` 산출물(예: `hwp convert --loss-report`
+- `document.preservation`: `preservation-report-v1` 산출물(예: `ahwp convert --loss-report`
   결과)을 읽는다. 집계 손실 합계(event count의 총합)가 `max_loss_codes`(기본 0) 이하이면
   통과한다. 리포트는 코드별 집계 수만 `checks.preservation`으로 반영한다. 손실 초과 실패는
   `preservation_loss_detected`, 산출물 누락·무효는 `preservation_report_invalid`를 쓴다.

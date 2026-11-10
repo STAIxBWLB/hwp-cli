@@ -191,7 +191,7 @@ writer warnings, but it is not a proof that arbitrary future HWPX extensions are
 CLI:
 
 ```text
-hwp template TEMPLATE --data DATA -o OUTPUT
+ahwp template TEMPLATE --data DATA -o OUTPUT
   [--template-format json|yaml] [--data-format json|yaml]
   [--dry-run] [--report]
 ```

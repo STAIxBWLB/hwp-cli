@@ -77,7 +77,7 @@ raw DEFLATE(zlib 헤더/Adler32 없음)를 뜻한다.
 | `/FileHeader` | 3.2.1 | 의미파싱 | 방출 | 아니오 | `file_header.rs:91`, `container.rs:35` |
 | `/DocInfo` | 3.2.2 | 의미파싱 | 방출 | 예 | `doc_info.rs:18`, `write.rs:170` |
 | `/BodyText/SectionN` | 3.2.3 | 의미파싱 | 방출 | 예 | `body_text.rs:23`, `write.rs:173` |
-| `/ViewText/SectionN` | 3.2.3 | 의미파싱, 복호화 경유 (`cat`/`convert`/`render`); `hwp dump`·인증 bounded-read 경로는 여전히 거부 | — | 예(복호화 후) | `distdoc.rs`, `read.rs` (GATE-01) |
+| `/ViewText/SectionN` | 3.2.3 | 의미파싱, 복호화 경유 (`cat`/`convert`/`render`); `ahwp dump`·인증 bounded-read 경로는 여전히 거부 | — | 예(복호화 후) | `distdoc.rs`, `read.rs` (GATE-01) |
 | `/BinData/*` | 3.2.5 | 시도-폴백 | 참조분만 동봉 | 헤더 플래그 | `read.rs`, `write.rs:190` |
 | `/\x05HwpSummaryInformation` | 3.2.4 | 부분파싱+raw | 합성 | 아니오 | `summary.rs`, `write.rs:223` |
 | `/PrvText` | 3.2.6 | 미해석 | 본문 발췌 생성 | 아니오 | `write.rs:225` |

@@ -79,7 +79,7 @@ the read/write support matrix. "Compressed" means raw DEFLATE (no zlib header, n
 | `/FileHeader` | 3.2.1 | semantic | emitted | no | `file_header.rs:91`, `container.rs:35` |
 | `/DocInfo` | 3.2.2 | semantic | emitted | yes | `doc_info.rs:18`, `write.rs:170` |
 | `/BodyText/SectionN` | 3.2.3 | semantic | emitted | yes | `body_text.rs:23`, `write.rs:173` |
-| `/ViewText/SectionN` | 3.2.3 | semantic, via decrypt (`cat`/`convert`/`render`); `hwp dump` and the certification bounded-read path still refuse | - | yes (post-decrypt) | `distdoc.rs`, `read.rs` (GATE-01) |
+| `/ViewText/SectionN` | 3.2.3 | semantic, via decrypt (`cat`/`convert`/`render`); `ahwp dump` and the certification bounded-read path still refuse | - | yes (post-decrypt) | `distdoc.rs`, `read.rs` (GATE-01) |
 | `/BinData/*` | 3.2.5 | try and fall back | only referenced items included | per header flag | `read.rs`, `write.rs:190` |
 | `/\x05HwpSummaryInformation` | 3.2.4 | partial + raw | synthesized | no | `summary.rs`, `write.rs:223` |
 | `/PrvText` | 3.2.6 | unparsed | generated from the body | no | `write.rs:225` |

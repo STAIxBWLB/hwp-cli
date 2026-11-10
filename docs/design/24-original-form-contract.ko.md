@@ -11,7 +11,7 @@
 ## 범위와 제공 경계
 
 P0의 산출물은 결정적 저작 명세, 기대값, 공유 테스트 헬퍼와 부정 자체 점검이다. 범위 추출(#417)은
-`hwp split --from`으로 따로 구현되었고 그 테스트가 이 헬퍼를 정답지로 쓴다. P0는 운영용 바인딩
+`ahwp split --from`으로 따로 구현되었고 그 테스트가 이 헬퍼를 정답지로 쓴다. P0는 운영용 바인딩
 계획(#418), 원본 서식 인증(#419), 페이지·서식 연산(#420), 전체
 CLI/MCP 작업 흐름(#421)은 구현하지 않는다. 실행은 기존 edit, compose, compare, render
 연산을 사용한다. 헬퍼의 메모리상 기대 문서는 테스트 정답지이며, 새로운 공개 편집·인증 API가
@@ -46,7 +46,7 @@ CharCtrl과 InlineCtrl은 서로 다른 atom 종류로 유지한다. ExtCtrl ato
 
 ```sh
 python3 tools/generate_original_form_fixture.py target/original-form-fixture
-hwp compose target/original-form-fixture/original-form.spec.json \
+ahwp compose target/original-form-fixture/original-form.spec.json \
   -o target/original-form-fixture/original-form.hwpx
 ```
 

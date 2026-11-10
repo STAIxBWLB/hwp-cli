@@ -13,7 +13,7 @@
 
 The user-scope `hwpx` skill (a Python package driving this binary from outside) is absorbed into
 the single bundled skill `skills/hwp`: its prose, regulation reference and templates are embedded
-in the binary and exported as a directory tree by `hwp skill export`. This document records the
+in the binary and exported as a directory tree by `ahwp skill export`. This document records the
 two things that must not be silently lost or silently claimed:
 
 1. **Parity** — every old `./hwpx` subcommand and every script-level engine guarantee mapped to a
@@ -22,7 +22,7 @@ two things that must not be silently lost or silently claimed:
    (§3).
 
 Phase map: **2.1** scaffold + this matrix; **2.2** statutory 8-level numbering, preset family and
-verified margin correction (GONG-01/02); **2.3** `hwp lint` (GONG-03's notation half);
+verified margin correction (GONG-01/02); **2.3** `ahwp lint` (GONG-03's notation half);
 **2.4** document frames, `--template`, table styling (GN-4, GN-5, GN-6); **2.5** editing parity
 proof + old-skill retirement (EDIT-01, RET-01).
 
@@ -41,45 +41,45 @@ the concern disappears because the skill now ships inside the binary.
 
 | Old subcommand | Native equivalent | Phase | Status |
 |---|---|---|---|
-| read | `hwp cat` (+ `--format json` for structure) | 2.1 | verified |
-| summary | `hwp info` + `hwp cat --format json` | 2.5 | composed — released in v0.12.0; see §3.1 and the editing recipe |
-| to-md | `hwp convert --to md --media-dir` | 2.1 | verified |
+| read | `ahwp cat` (+ `--format json` for structure) | 2.1 | verified |
+| summary | `ahwp info` + `ahwp cat --format json` | 2.5 | composed — released in v0.12.0; see §3.1 and the editing recipe |
+| to-md | `ahwp convert --to md --media-dir` | 2.1 | verified |
 | unpack | none | 2.5 | intentionally retired — v0.12.0 documents the native edit path; no raw-ZIP replacement |
 | repack | none (native writers guarantee the package layout) | 2.5 | intentionally retired — v0.12.0 documents the native edit path; no raw-ZIP replacement |
-| fill | `hwp fill` | 2.1 | verified — default path only; run-spanning fill is the §2.2 gap row, NOT covered here |
-| slots | `hwp slots` | 2.1 | verified |
-| edit | `hwp edit --replace` (not run-spanning) | 2.5 | limited — released v0.12.0 documents the safe native path; arbitrary split-run replacement remains outside the contract |
-| add-rows | `hwp edit --add-row` | 2.1 | verified |
-| add-col | `hwp edit --add-col` | 2.1 | verified |
-| fill-table | `hwp fill --data tables.json` | 2.1 | verified (data-driven row fill exists) |
-| create | `hwp new --from` | 2.1 | verified |
-| styled | `hwp new --preset official|report|plan|notice|minutes|press` | 2.2 | verified for profiles, numbering and layout; style pass remains absent |
+| fill | `ahwp fill` | 2.1 | verified — default path only; run-spanning fill is the §2.2 gap row, NOT covered here |
+| slots | `ahwp slots` | 2.1 | verified |
+| edit | `ahwp edit --replace` (not run-spanning) | 2.5 | limited — released v0.12.0 documents the safe native path; arbitrary split-run replacement remains outside the contract |
+| add-rows | `ahwp edit --add-row` | 2.1 | verified |
+| add-col | `ahwp edit --add-col` | 2.1 | verified |
+| fill-table | `ahwp fill --data tables.json` | 2.1 | verified (data-driven row fill exists) |
+| create | `ahwp new --from` | 2.1 | verified |
+| styled | `ahwp new --preset official|report|plan|notice|minutes|press` | 2.2 | verified for profiles, numbering and layout; style pass remains absent |
 | beautify | none | 2.4 | gap → `--style-tables` (GONG-03, inferred) |
-| validate | `hwp validate` | 2.1 | verified |
-| analyze | `hwp info` + `hwp cat --with-segments` + `hwp fields`/`hwp slots` | 2.5 | verified — SKILL.md recipe run verbatim on `fixtures/samples/report-tables.hwpx` (hwp 0.12.1, 2026-08-29): 43 segments over 11,853 markdown chars, fields/slots legitimately `[]` |
-| guard | `hwp validate` + `hwp render --report` | 2.5 | verified — same fixture and date: before/after reports compared (`total_pages` 6→5 after an IR-round-trip edit; a plain `convert` round-trip alone reflows 6→5, byte-preserving `--replace` keeps 6); still not a raw structural-drift metric |
-| edit-section | `hwp cat --with-segments` + text-anchored `hwp edit` | 2.5 | verified — same fixture and date: segment (section 0, para 0) located "3-2-1. 예시 과제 제목 1", `--insert-para`/`--delete-para` round-trip re-read 52→51 paragraphs, `hwp validate` OK; no raw section-index contract |
-| fill-form | `hwp edit --set-cell-by-label` | 2.5 | limited — v0.12.1 released-binary adjacent-form precedence, header/data-row, scoped and atomic-refusal receipt; §3.1 remains the historical v0.12.0 record |
-| to-pdf | `hwp convert --to pdf` / `hwp render` | 2.1 | verified — the old soffice fallback is **intentionally dropped** (native engine only) |
+| validate | `ahwp validate` | 2.1 | verified |
+| analyze | `ahwp info` + `ahwp cat --with-segments` + `ahwp fields`/`ahwp slots` | 2.5 | verified — SKILL.md recipe run verbatim on `fixtures/samples/report-tables.hwpx` (hwp 0.12.1, 2026-08-29): 43 segments over 11,853 markdown chars, fields/slots legitimately `[]` |
+| guard | `ahwp validate` + `ahwp render --report` | 2.5 | verified — same fixture and date: before/after reports compared (`total_pages` 6→5 after an IR-round-trip edit; a plain `convert` round-trip alone reflows 6→5, byte-preserving `--replace` keeps 6); still not a raw structural-drift metric |
+| edit-section | `ahwp cat --with-segments` + text-anchored `ahwp edit` | 2.5 | verified — same fixture and date: segment (section 0, para 0) located "3-2-1. 예시 과제 제목 1", `--insert-para`/`--delete-para` round-trip re-read 52→51 paragraphs, `hwp validate` OK; no raw section-index contract |
+| fill-form | `ahwp edit --set-cell-by-label` | 2.5 | limited — v0.12.1 released-binary adjacent-form precedence, header/data-row, scoped and atomic-refusal receipt; §3.1 remains the historical v0.12.0 record |
+| to-pdf | `ahwp convert --to pdf` / `ahwp render` | 2.1 | verified — the old soffice fallback is **intentionally dropped** (native engine only) |
 | render-pdf | same as to-pdf | 2.1 | verified (**alias** of `to-pdf --engine hwp`) |
-| to-html | `hwp cat --format html` | 2.1 | verified |
-| info | `hwp info` | 2.1 | verified |
-| fields | `hwp fields` | 2.1 | verified |
-| bookmarks | `hwp bookmarks` | 2.1 | verified |
-| render | `hwp render` | 2.1 | verified |
-| convert | `hwp convert` | 2.1 | verified |
-| write-java | `hwp new --from` | 2.1 | verified (**alias**, legacy name) |
+| to-html | `ahwp cat --format html` | 2.1 | verified |
+| info | `ahwp info` | 2.1 | verified |
+| fields | `ahwp fields` | 2.1 | verified |
+| bookmarks | `ahwp bookmarks` | 2.1 | verified |
+| render | `ahwp render` | 2.1 | verified |
+| convert | `ahwp convert` | 2.1 | verified |
+| write-java | `ahwp new --from` | 2.1 | verified (**alias**, legacy name) |
 
 ### 2.2 Script-level guarantees (7)
 
 | Old script guarantee | Native equivalent | Phase | Status |
 |---|---|---|---|
-| run-spanning `{{slot}}` fill | `hwp slots` + one fail-closed `hwp fill` | 2.5 | verified — v0.12.0 released binary fills the transient split-run control; the six-template receipt is recorded in §3.1 |
+| run-spanning `{{slot}}` fill | `ahwp slots` + one fail-closed `ahwp fill` | 2.5 | verified — v0.12.0 released binary fills the transient split-run control; the six-template receipt is recorded in §3.1 |
 | `linesegarray` clearing on edit | engine-inherent: the native IR round-trip drops stale body-paragraph line segments for Hangul to recompute (cell/text-box paragraphs always re-emit them, matching genuine files); the byte-preserving `--replace` patch path edits only text bytes and carries layout records over untouched | 2.5 | verified (corrected) — 2026-08-29, `report-tables.hwpx`: `--insert-para` output kept only the 182 cell-subList `linesegarray` elements (53 body-paragraph ones dropped), `--replace` output carried all 470 occurrences byte-preserved. Correction: this row previously said the patch path "never edits text" — it is exactly the text-editing fast path; what it never touches is layout records |
-| sec-index section edits | segment addressing (`hwp cat --with-segments`) + text-anchored `hwp edit` | 2.5 | verified — EDIT-01 recipe documented in SKILL.md and run on `report-tables.hwpx` (2026-08-29); raw index surgery intentionally absent |
+| sec-index section edits | segment addressing (`ahwp cat --with-segments`) + text-anchored `ahwp edit` | 2.5 | verified — EDIT-01 recipe documented in SKILL.md and run on `report-tables.hwpx` (2026-08-29); raw index surgery intentionally absent |
 | mimetype-first STORED repack | native writers emit `mimetype` first and STORED (`crates/hwpx/src/write/mod.rs`), and the patch paths raw-copy the original entry order/compression | 2.5 | verified — raw-zip recipe unnecessary: `zipinfo` on `edit`/`edit --replace`/`convert` outputs (2026-08-29) all show `mimetype` as the first entry, `stor`; `hwp validate` rejects a bad mimetype on open |
 | style_pass table rules | none | 2.4 | gap → GONG-03 (inferred) — **not verified parity** |
-| page_guard structural drift checks | `hwp validate` + `hwp render --report` before/after page-count comparison | 2.5 | verified — EDIT-01 guard recipe documented in SKILL.md and run on `report-tables.hwpx` (2026-08-29); **not verified parity** — a review signal, not the old XML drift thresholds |
+| page_guard structural drift checks | `ahwp validate` + `ahwp render --report` before/after page-count comparison | 2.5 | verified — EDIT-01 guard recipe documented in SKILL.md and run on `report-tables.hwpx` (2026-08-29); **not verified parity** — a review signal, not the old XML drift thresholds |
 | binary discovery (`$HWP_CLI`, highest-version selection) | obsolete — the skill ships inside the binary it drives | 2.1 | resolved by absorption |
 
 ## 3. Release evidence and margin record
@@ -100,7 +100,7 @@ editing are limited native workflows; raw unpack/repack is intentionally retired
 **Current engine behavior (verified):** each canonical profile starts with **top 20 / bottom 10 /
 left 20 / right 20 mm**. `official` has no header/footer margin or page number; `report` and `plan`
 use 15 mm header/footer margins and `- N -`; `notice` and `press` use 10 mm and
-`- N -`; `minutes` has neither. A caller may override one side through the four `hwp new`
+`- N -`; `minutes` has neither. A caller may override one side through the four `ahwp new`
 `--margin-*` flags or the matching MCP `margin_*_mm` inputs.
 
 **Evidence (secondary source):** kordoc's statute compilation refutes the retired top-30 value —
@@ -113,7 +113,7 @@ preset's values trace to.
 **Verdict (closed 2026-08-22):** top 30 mm was unsourced; Phase 2.2 changed every canonical
 profile to 20/10/20/20 and verified the resulting profile layout in 14 of 14 genuine Hancom
 HWP/HWPX observations. GN-9 is resolved at that verified boundary. This closes only profile
-margins and numbering/layout behavior; `hwp lint`, document frames, `--template`, table styling
+margins and numbering/layout behavior; `ahwp lint`, document frames, `--template`, table styling
 and editing parity remain deferred to their named phases.
 
 ## 4. Decisions recorded

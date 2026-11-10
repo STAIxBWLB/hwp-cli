@@ -2,7 +2,7 @@
 
 # Amazon Quick Desktop: HWP MCP 설정과 문제 해결
 
-이 문서는 Amazon Quick Desktop에 `hwp`를 로컬 MCP 커넥터로 설정하는 사람과 AI 에이전트를 위한
+이 문서는 Amazon Quick Desktop에 `ahwp`를 로컬 MCP 커넥터로 설정하는 사람과 AI 에이전트를 위한
 실행 절차다. Windows에서 실제로 확인한 전체 흐름 — 최신 바이너리 하나 설치, HWP 스킬 설치,
 커넥터 등록, 실제 파일 쓰기 검증, Quick이 커넥터를 비활성화하거나 잃어버렸을 때의 복구 — 을
 순서대로 다룬다.
@@ -21,8 +21,8 @@ Windows 절차 자체를 다시 실행하지는 않았다. 아래에 적은 `hwp
 
 | 구성요소 | 역할 | Windows 확인값 |
 |---|---|---|
-| `hwp.exe` | MCP stdio 서버 실행 | 안정된 절대 경로의 최신 바이너리 하나 |
-| HWP MCP 커넥터 | HWP 도구 23개 노출 | `hwp.exe mcp ...` |
+| `ahwp.exe` | MCP stdio 서버 실행 | 안정된 절대 경로의 최신 바이너리 하나 |
+| HWP MCP 커넥터 | HWP 도구 23개 노출 | `ahwp.exe mcp ...` |
 | HWP 스킬 | Quick 에이전트에게 도구 사용 시점과 방법 안내 | 활성 Quick 프로필의 `skills/hwp/SKILL.md` |
 | 교환 root | Low 무결성 MCP 자식과 파일을 주고받는 경계 | `C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | 폰트 디렉터리 | Windows 렌더링 폰트 공급 | `C:\Windows\Fonts` |
@@ -30,47 +30,47 @@ Windows 절차 자체를 다시 실행하지는 않았다. 아래에 적은 `hwp
 커넥터와 스킬은 서로 별개다. 스킬 설치는 바이너리를 설치하거나 커넥터를 만들지 않는다. 커넥터에
 도구 22개가 표시된 뒤에도 파일 쓰기는 실패할 수 있으므로, 실제 생성·검증 smoke test까지 해야 한다.
 
-## 1. 최신 `hwp.exe` 하나 설치하고 확인
+## 1. 최신 `ahwp.exe` 하나 설치하고 확인
 
 [최신 릴리스](https://github.com/STAIxBWLB/hwp-cli/releases)에서 Windows x86_64 아카이브와
 `.sha256` 파일을 받는다. Amazon Quick Windows 경로 정규화에는 hwp-cli v0.8.2 이상이 필요하다.
 
-- `hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip`
-- `hwp-vX.Y.Z-x86_64-pc-windows-msvc.sha256`
+- `ahwp-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+- `ahwp-vX.Y.Z-x86_64-pc-windows-msvc.sha256`
 
 압축을 풀기 전에 체크섬을 대조한다. 아래 예시 경로는 실제로 받은 버전에 맞게 바꾼다.
 
 ```powershell
-$Archive = "C:\path\to\hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip"
+$Archive = "C:\path\to\ahwp-vX.Y.Z-x86_64-pc-windows-msvc.zip"
 $Checksum = [IO.Path]::ChangeExtension($Archive, ".sha256")
 $Expected = ((Get-Content -LiteralPath $Checksum) -split '\s+')[0].ToLowerInvariant()
 $Actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($Actual -ne $Expected) { throw "hwp archive checksum mismatch" }
+if ($Actual -ne $Expected) { throw "ahwp archive checksum mismatch" }
 ```
 
-`hwp.exe`를 Quick이 실행할 수 있는 안정된 위치에 압축 해제하고, 커넥터 등록 뒤에는 옮기지 않는다.
+`ahwp.exe`를 Quick이 실행할 수 있는 안정된 위치에 압축 해제하고, 커넥터 등록 뒤에는 옮기지 않는다.
 Windows Quick에서 확인한 배치 예시는 다음과 같다.
 
 ```text
-%USERPROFILE%\.quickwork\profiles\PROFILE_ID\skills\hwp\bin\hwp.exe
+%USERPROFILE%\.quickwork\profiles\PROFILE_ID\skills\hwp\bin\ahwp.exe
 ```
 
 `PROFILE_ID`는 `%USERPROFILE%\.quickwork\profiles.json`의 활성 항목이다. Quick이 접근할 수 있는 다른
 안정된 위치도 사용할 수 있다. 정확한 절대 경로를 기록하고 PowerShell에서 바이너리를 확인한다.
 
 ```powershell
-$Hwp = "C:\absolute\path\to\hwp.exe"
+$Hwp = "C:\absolute\path\to\ahwp.exe"
 & $Hwp --version
 ```
 
 Quick에도 이 경로를 그대로 입력한다. 다른 터미널의 PATH에 의존하면 Quick이 남아 있는 구버전을
 실행할 수 있다. 첫 파일 쓰기가 `\\?\C:\...` 같은 Windows verbatim 경로와 함께 계속 실패하면
-`hwp --version`이 v0.8.2 이상인지 확인한다.
+`ahwp --version`이 v0.8.2 이상인지 확인한다.
 
 ## 2. Windows 교환 root 만들기
 
 Quick 내장 파일 도구와 로컬 MCP 자식 프로세스는 같은 파일 권한을 받지 않는다. 확인한 Windows
-빌드에서 Quick은 `hwp.exe`를 Low mandatory integrity(`S-1-16-4096`)로 시작한다. `C:\TEMP`와
+빌드에서 Quick은 `ahwp.exe`를 Low mandatory integrity(`S-1-16-4096`)로 시작한다. `C:\TEMP`와
 `%LOCALAPPDATA%\Temp` 같은 일반 폴더는 보통 Medium 무결성이다. 이 경로에서는 MCP 커넥터가
 시작하고 도구 22개를 노출해도, `hwp_new`가 private staging 디렉터리를 만드는 첫 쓰기에서
 `Access is denied (os error 5)`가 발생할 수 있다.
@@ -108,7 +108,7 @@ Markdown, JSON, 이미지, 템플릿을 교환 root로 복사한다. 모든 MCP 
 이 명령은 `%USERPROFILE%\.quickwork\profiles.json`을 읽어 유효한 `last_active` 프로필 또는 유일한
 유효 프로필을 고르고, 그 안의 `skills\hwp\SKILL.md`만 쓴다. 공문서 파일(`SKILL.ko.md`,
 `official-documents(.ko).md`, `references/`, `templates/`)은 Quick 경로에 설치되지
-**않으며**, 명령이 그 사실을 알리는 문구를 표시 언어와 무관하게 한국어로 출력한다. `hwp.exe`를
+**않으며**, 명령이 그 사실을 알리는 문구를 표시 언어와 무관하게 한국어로 출력한다. `ahwp.exe`를
 복사하거나 MCP 커넥터·에이전트를 만들거나 publish하지 않는다. export는 심볼릭 링크 대상을
 거부하고 발행이 실패하면 이전 트리를 복원하므로, 기존 스킬 디렉터리 위에 다시 설치해도 안전하다.
 
@@ -134,7 +134,7 @@ Quick Desktop에서 **Settings → Capabilities → Connectors → + Create → 
 {
   "mcpServers": {
     "hwp": {
-      "command": "C:\\absolute\\path\\to\\hwp.exe",
+      "command": "C:\\absolute\\path\\to\\ahwp.exe",
       "args": [
         "mcp",
         "--font-dir",
@@ -156,7 +156,7 @@ Quick Desktop에서 **Settings → Capabilities → Connectors → + Create → 
 | 항목 | 값 |
 |---|---|
 | Name | `hwp` |
-| Command | 앞에서 검증한 정확한 `hwp.exe` 절대 경로 |
+| Command | 앞에서 검증한 정확한 `ahwp.exe` 절대 경로 |
 | Arguments | `mcp --font-dir C:\Windows\Fonts --root C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace` |
 | Description | `Read, write, edit, render, validate, lint, convert, merge, split, and compare HWP/HWPX documents.` |
 | Timeout | `30`초 |
@@ -168,7 +168,7 @@ Arguments 입력란은 셸이 아니다. 경로 앞뒤에 작은따옴표나 큰
 mcp --font-dir 'C:\Windows\Fonts' --root 'C:\Users\YOUR_NAME\AppData\LocalLow\hwp-quick-workspace'
 ```
 
-Quick은 이 따옴표를 제거하지 않고 그대로 넘길 수 있다. 그러면 `hwp`는 따옴표가 이름에 포함된 폴더를
+Quick은 이 따옴표를 제거하지 않고 그대로 넘길 수 있다. 그러면 `ahwp`는 따옴표가 이름에 포함된 폴더를
 찾고, root 확인에 실패해 즉시 종료하며 MCP handshake가 닫힌다. JSON 형식은 각 token을 배열의 별도
 항목으로 유지해 이 문제를 피한다.
 
@@ -270,14 +270,14 @@ passthrough를 항상 버리므로, 무손실이라고 가정하지 말고 응�
 
 | 증상 | 예상 원인 | 복구 |
 |---|---|---|
-| `hwp.exe`가 시작하지 않거나 `--version`이 실패함 | 잘못된 바이너리·아키텍처, 차단되거나 불완전한 압축 해제 | 다시 다운로드하고 SHA-256을 확인한 뒤 Windows x86_64 아카이브를 풀고 정확한 절대 command를 테스트한다 |
-| Test connection에 도구가 없거나 서버가 즉시 종료함 | 없거나 읽을 수 없는 `--root`, 바꾸지 않은 `YOUR_NAME`, Arguments 안의 따옴표 문자, 오타, 오래된 command 경로 | `LocalLow` 자식 생성, 실제 계정 절대 경로 치환, 위 JSON import, 셸 따옴표 제거, `hwp.exe --version` 검증 |
+| `ahwp.exe`가 시작하지 않거나 `--version`이 실패함 | 잘못된 바이너리·아키텍처, 차단되거나 불완전한 압축 해제 | 다시 다운로드하고 SHA-256을 확인한 뒤 Windows x86_64 아카이브를 풀고 정확한 절대 command를 테스트한다 |
+| Test connection에 도구가 없거나 서버가 즉시 종료함 | 없거나 읽을 수 없는 `--root`, 바꾸지 않은 `YOUR_NAME`, Arguments 안의 따옴표 문자, 오타, 오래된 command 경로 | `LocalLow` 자식 생성, 실제 계정 절대 경로 치환, 위 JSON import, 셸 따옴표 제거, `ahwp.exe --version` 검증 |
 | **Connected, 23 tools**인데 `hwp_new`가 `Access is denied (os error 5)`를 반환함 | 탐색에는 읽기 권한만 필요했다. 요청 목적지가 Medium 무결성(대표적으로 `C:\TEMP`, `%LOCALAPPDATA%\Temp`)이거나 구버전이 `\\?\...`를 전달함 | `--root`와 모든 도구 경로를 전용 `LocalLow` 자식으로 지정, `icacls`로 Low 레이블 확인, hwp-cli v0.8.2 이상 사용, 재시작 뒤 smoke test |
 | **Local folders and access permissions**에 추가한 경로도 실패함 | 이 설정은 Quick 내장 읽기·검색 도구를 제어하며 Medium 폴더를 Low 무결성 MCP 자식이 쓸 수 있게 만들지 않음 | 내장 도구나 Explorer로 파일을 설정된 `LocalLow` 교환 root에 복사한 뒤 HWP 도구 호출 |
 | `os error 2` | 경로가 실제로 없거나 `YOUR_NAME`을 바꾸지 않았거나 Desktop이 OneDrive로 파일을 이동함 | 실제 절대 경로 확인, 목적 디렉터리 생성, 또는 설정된 교환 root에 staging |
 | 반복 실패 뒤 커넥터가 비활성화됨 | 시작·handshake 실패가 반복되어 Quick이 자동 비활성화함 | command/root 수정·저장, 커넥터를 명시적으로 다시 활성화, 새로고침, 필요하면 Quick 재시작 |
 | 커넥터 수정·재import 뒤 `Unknown tool` | Quick이 새 내부 커넥터/tool prefix를 만들었으나 대화는 예전 이름을 보유함 | 연결 새로고침과 새 대화 시작, 예전 생성 이름 대신 HWP 스킬·도구 다시 로드 |
-| 에이전트 publish 때 `assetDescriptor contains prohibited HTML/script content` | 구버전 스킬의 angle-bracket placeholder를 Quick이 markup으로 분류함 | 최신 `hwp`에서 스킬 재설치, Quick 새로고침, 다시 publish |
+| 에이전트 publish 때 `assetDescriptor contains prohibited HTML/script content` | 구버전 스킬의 angle-bracket placeholder를 Quick이 markup으로 분류함 | 최신 `ahwp`에서 스킬 재설치, Quick 새로고침, 다시 publish |
 | 생성은 되지만 렌더링 실패 | 폰트 디렉터리가 없거나 접근 불가 | 먼저 `--font-dir` 없이 생성 검증, 그다음 `C:\Windows\Fonts`를 추가하고 `hwp_render` 재시도 |
 | Path is outside allowed roots | MCP root 정책이 정상적으로 경로를 거부함 | asset을 설정된 `LocalLow` root로 복사하거나 실제 지원되는 Low 무결성 root 추가. 모든 root를 제거하지 않는다 |
 
@@ -320,7 +320,7 @@ Get-Content "$env:LOCALAPPDATA\Temp\quickwork-backend.log" -Tail 300 |
 
 ## 완료 체크리스트
 
-- 커넥터 command가 검증한 `hwp.exe` 절대 경로 하나를 사용함
+- 커넥터 command가 검증한 `ahwp.exe` 절대 경로 하나를 사용함
 - 커넥터가 분리된 JSON 인자를 사용하며 셸 따옴표가 들어 있지 않음
 - `%USERPROFILE%\AppData\LocalLow\hwp-quick-workspace`가 존재하고 Low 레이블을 상속하며 Windows MCP root로 설정됨
 - 현재 HWP 스킬이 활성 Quick 프로필에 설치됨

@@ -1,6 +1,6 @@
 [한국어](official-documents.ko.md) · [English](official-documents.md)
 
-# Korean official documents with hwp-cli
+# Korean official documents with agent-hwp
 
 This sub-guide is the self-contained reference for writing Korean official documents (공문)
 with `hwp`: the markdown contract, per-document recipes for the six document types, the
@@ -63,17 +63,17 @@ it as an unmarked paragraph instead.
 on, which places each table as one character — it cannot split across a page boundary, so a
 long table or one landing near the bottom of a page overflows instead of continuing on the
 next page. When the recipient requires splitting (심의요청서-type forms with long tables),
-generate with `hwp new --from <md> --table-placement floating`, or flip an existing file with
-`hwp edit in.hwpx -o out.hwpx --table-placement floating` (`--table <n>` targets one table).
-`hwp info <file> --body-stats` reports the current inline/floating counts.
+generate with `ahwp new --from <md> --table-placement floating`, or flip an existing file with
+`ahwp edit in.hwpx -o out.hwpx --table-placement floating` (`--table <n>` targets one table).
+`ahwp info <file> --body-stats` reports the current inline/floating counts.
 
 ## 2. Per-document recipes
 
 All six types share the same markdown skeleton under `templates/` (exported next to this
-file). Two authoring paths reach it: `hwp new --template <slug-or-alias> -o out.hwpx` loads
-the skeleton directly (§4 has the full alias table), or `hwp new --from <skeleton> --preset
-<preset>` followed by `hwp fill` fills in slots one at a time. The recipes below use the
-`--from` + `hwp fill` path since that is what needs the per-document notes; `--template` is
+file). Two authoring paths reach it: `ahwp new --template <slug-or-alias> -o out.hwpx` loads
+the skeleton directly (§4 has the full alias table), or `ahwp new --from <skeleton> --preset
+<preset>` followed by `ahwp fill` fills in slots one at a time. The recipes below use the
+`--from` + `ahwp fill` path since that is what needs the per-document notes; `--template` is
 the shortcut when the defaults suit.
 
 | Document type | Preset today | Template skeleton | Notes |
@@ -101,11 +101,11 @@ Conventions every recipe shares:
   after the `붙임  … 1부.` attachment list when one exists; a single attachment carries no
   item number, two or more are numbered `1.`, `2.` — §6 of the regulation reference).
 - **발신명의 via `--doc-foot`.** The centered 22pt bold 발신명의 line (e.g. `예시대학교총장`)
-  is a native document-footer frame, built by `hwp new` itself — no HTML-fragment splicing
+  is a native document-footer frame, built by `ahwp new` itself — no HTML-fragment splicing
   needed. Pass it as a repeatable `key=value` frame argument at generation time:
 
   ```bash
-  hwp new --from templates/gian-external.md --preset official \
+  ahwp new --from templates/gian-external.md --preset official \
     --doc-foot "발신명의=예시대학교총장" -o draft.hwpx
   ```
 
@@ -121,9 +121,9 @@ Conventions every recipe shares:
 
 ## 3. Slot tables
 
-Slot lists per template, verbatim from `hwp slots` run on a `hwp new --template <slug>` output
+Slot lists per template, verbatim from `ahwp slots` run on a `ahwp new --template <slug>` output
 — do not re-derive. A slot lives either in the body markdown or in one of the template's native
-frames, and `hwp slots`/`hwp fill` reach both, so the list below is the whole fillable surface. **A slot the template does not contain is an error**: `hwp fill`
+frames, and `ahwp slots`/`ahwp fill` reach both, so the list below is the whole fillable surface. **A slot the template does not contain is an error**: `ahwp fill`
 fails closed and publishes nothing unless `--allow-partial` is given, so a shared `--set` list
 needs `--allow-partial` to be reused across templates. Failing closed is deliberate — a typo'd
 slot name that was silently ignored would dispatch a document with an empty field.
@@ -145,18 +145,18 @@ Authoring rules that keep slots fillable:
   (`--set "본문=@body.md"`) block-replaces only when the anchor paragraph contains exactly
   `{{본문}}` and nothing else.
 - **Keep a slot out of bold/italic spans anyway.** Formatting inside a slot name splits it
-  across text runs. `hwp fill` handles that — it pulls the pieces back into the first run
+  across text runs. `ahwp fill` handles that — it pulls the pieces back into the first run
   before replacing — but the value then inherits that first run's shape, which is rarely the
   shape you meant. Write `*{{name}}*`, never `{{na*me*}}`.
 - **A slot may not cross a line break or a paragraph boundary.** Those genuinely end it:
-  `{{` on one side and `}}` on the other is not a slot, and neither `hwp slots` nor
-  `hwp fill` treats it as one.
+  `{{` on one side and `}}` on the other is not a slot, and neither `ahwp slots` nor
+  `ahwp fill` treats it as one.
 
 ## 4. Korean alias table
 
-Template files use English slugs; `hwp new --template` accepts either the slug or the
-Korean alias below (D-11), e.g. `hwp new --template 기안문-내부결재 -o draft.hwpx` or
-`hwp new --template gian-internal -o draft.hwpx`. `--template` and `--from` are mutually
+Template files use English slugs; `ahwp new --template` accepts either the slug or the
+Korean alias below (D-11), e.g. `ahwp new --template 기안문-내부결재 -o draft.hwpx` or
+`ahwp new --template gian-internal -o draft.hwpx`. `--template` and `--from` are mutually
 exclusive because both name the document content. The frame flags are a different axis and
 do combine with `--template`: a skeleton is plain markdown carrying no native 두문/결문
 table, so `--doc-head`/`--doc-foot` are what add them.
@@ -179,13 +179,13 @@ needed):
 
 ```bash
 # 1. Create the document from a template skeleton
-hwp new --from templates/gian-internal.md --preset official -o draft.hwpx
+ahwp new --from templates/gian-internal.md --preset official -o draft.hwpx
 
 # 2. List the slots the document actually contains
-hwp slots draft.hwpx
+ahwp slots draft.hwpx
 
 # 3. Fill plain values and splice the body part
-hwp fill draft.hwpx -o out.hwpx \
+ahwp fill draft.hwpx -o out.hwpx \
   --set "기관명=예시대학교" \
   --set "제목=AI 교육센터 운영계획(안)" \
   --set "본문=@body.md" \
@@ -193,27 +193,27 @@ hwp fill draft.hwpx -o out.hwpx \
   --set "발신명의=AI학과장"
 
 # 4. Validate before handing the file on (exit code 0 required)
-hwp validate out.hwpx
+ahwp validate out.hwpx
 
 # Optional: render pages to eyeball layout (needs CJK fonts)
-hwp render out.hwpx -o page1.png --pages 1 --font-dir fonts/
+ahwp render out.hwpx -o page1.png --pages 1 --font-dir fonts/
 ```
 
 `body.md` is markdown under the §1 contract (plus HTML table blocks when needed); `@@`
 escapes a literal `@` in a value. Bulk filling from one JSON file uses
-`hwp fill --data data.json` (`"parts": {...}` for splicing, `"tables": [...]` for row
+`ahwp fill --data data.json` (`"parts": {...}` for splicing, `"tables": [...]` for row
 fill). Remember: mutations are fail-closed — a `DROP:` warning means nothing is published,
 and an unmatched slot fails the whole command unless `--allow-partial` is given.
 
-`hwp slots` and `hwp fill` agree about what a document contains: every name `slots` lists is
+`ahwp slots` and `ahwp fill` agree about what a document contains: every name `slots` lists is
 one `fill` can fill, formatting-split names included. A slot split across text runs is
 coalesced into its first run before replacement, so the value takes that run's character shape.
 
 ## 6. MCP
 
 Every recipe above maps one-to-one onto the MCP tools when `hwp` runs as an MCP stdio
-server: `hwp new` → `hwp_new`, `hwp fill` → `hwp_fill`, `hwp render` → `hwp_render`,
-`hwp validate` → `hwp_validate`, and `hwp lint` → `hwp_lint`. Always start the server
+server: `ahwp new` → `hwp_new`, `ahwp fill` → `hwp_fill`, `ahwp render` → `hwp_render`,
+`ahwp validate` → `hwp_validate`, and `ahwp lint` → `hwp_lint`. Always start the server
 with at least one `--root` so the tools can only touch the sandboxed workspace; tool
 details, sandbox semantics and client setup stay in SKILL.md's MCP section.
 
@@ -222,16 +222,16 @@ details, sandbox semantics and client setup stay in SKILL.md's MCP section.
 `hwp_lint` takes a markdown file `path` only (no inline text), honors the server's
 `--root` sandbox, and returns the advisory hwp-lint-report-v1 findings JSON —
 `rule_id`/`severity`/`line`/`col`/`message` per finding, with no source-text excerpts.
-The CLI twin is `hwp lint <file.md> [--profile gongmun|report] [--json] [--strict]`.
+The CLI twin is `ahwp lint <file.md> [--profile gongmun|report] [--json] [--strict]`.
 
-Lint the markdown skeleton before `hwp new --from`. Fix error-severity structure
+Lint the markdown skeleton before `ahwp new --from`. Fix error-severity structure
 findings (`struct-item-mark`, `struct-roman-heading`) first — under `--strict` they
 fail the command — and treat the notation warnings as advisory guidance to apply by
 hand; lint never rewrites the file.
 
 ## 7. Final check in Hancom Office
 
-Self-verification (`hwp validate`, `hwp render`) catches regressions, but the final verdict
+Self-verification (`ahwp validate`, `ahwp render`) catches regressions, but the final verdict
 is whether **Hancom Office opens the file** without a corruption, tampering or repair
 dialog — and whether what it shows matches the intent. Open the output in Hancom Office
 before delivering it whenever the document leaves the tooling loop.

@@ -2,7 +2,7 @@
 
 # Certification v1
 
-`hwp certify INPUT --policy POLICY --report REPORT_DIR` provides a versioned, machine-readable
+`ahwp certify INPUT --policy POLICY --report REPORT_DIR` provides a versioned, machine-readable
 document certification contract. CLI and MCP (`hwp_certify`) call the same implementation.
 
 ## Trust boundary
@@ -84,7 +84,7 @@ report shape; a failed section forces `overall=failed` (and an un-run oracle), w
 schema expresses through dedicated `localPassed + evidenceFailed` branches.
 
 - `document.preservation`: loads a `preservation-report-v1` artifact (for example from
-  `hwp convert --loss-report`). The check passes when the aggregated loss total — the sum of
+  `ahwp convert --loss-report`). The check passes when the aggregated loss total — the sum of
   event counts — is at most `max_loss_codes` (default 0). The report echoes only the aggregated
   per-code counts as `checks.preservation`. Failures use `preservation_loss_detected`;
   missing/invalid artifacts use `preservation_report_invalid`.

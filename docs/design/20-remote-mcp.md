@@ -2,7 +2,7 @@
 
 # Remote MCP transport design
 
-> **Status:** design only. The current release implements only `hwp mcp` over stdio. It does not
+> **Status:** design only. The current release implements only `ahwp mcp` over stdio. It does not
 > contain an HTTP listener, OAuth resource server, hosted workspace, or artifact service.
 
 This document defines a future Remote MCP service for web clients that cannot launch a local
@@ -13,7 +13,7 @@ process. Amazon Quick Web is the first concrete consumer. Implementation remains
 
 ### 1.1 Scope
 
-- Preserve `hwp mcp` stdio as the default local transport and keep its 20-tool behavior compatible.
+- Preserve `ahwp mcp` stdio as the default local transport and keep its 20-tool behavior compatible.
 - Add an explicit, separately configured Streamable HTTP mode for hosted deployments.
 - Reuse one transport-independent JSON-RPC and tool-dispatch core from both adapters.
 - Authenticate every remote request and isolate workspaces by tenant, principal, and session.
@@ -250,7 +250,7 @@ security tests pass without recreating an unsafe framework.
    backups if any, and cost controls before production enablement.
 
 **Deployment tiers.** [Doc 22](22-remote-mcp-deployment.md) specifies how items 1, 3, and 4 above
-are built and hosted: a shared `hwp serve` HTTP adapter over the extracted protocol core, the
+are built and hosted: a shared `ahwp serve` HTTP adapter over the extracted protocol core, the
 dependency decision this document's §8 requires, and two hosting tiers (Cloudflare Workers plus
 Containers, and AgentCore behind an Amazon Quick connector). It records two amendments to this
 document: §3.1's "library-visible module" becomes a binary-internal module shared by both adapters,
@@ -278,5 +278,5 @@ A Remote MCP implementation is acceptable only when all of the following are dem
   upload-to-download edit workflow in a tenant-isolated test environment.
 
 The implementation fails the release gate if any criterion is unverified, if HTTP merely shells out
-to unrestricted `hwp mcp`, if local path schemas remain remotely writable, or if authentication is
+to unrestricted `ahwp mcp`, if local path schemas remain remotely writable, or if authentication is
 optional in a public deployment.

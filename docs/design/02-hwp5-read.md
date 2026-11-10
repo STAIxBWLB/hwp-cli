@@ -131,7 +131,7 @@ The `/FileHeader` stream must be exactly 256 bytes (`FILE_HEADER_SIZE`); otherwi
 `COMPRESSED` (bit0), `ENCRYPTED` (bit1), `DISTRIBUTION` (bit2), `DRM` (bit4), `HAS_SIGNATURE`
 (bit7), `CERT_ENCRYPTED` (bit8) and `CERT_DRM` (bit10) drive read-time branches. The signature-spare
 bit9 remains metadata-only because its real-world semantics were not established. All names are also
-shown by `attribute_names()` for `hwp info`.
+shown by `attribute_names()` for `ahwp info`.
 
 ---
 
