@@ -79,6 +79,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   how to use equal-width text or remove the marks in Hangul; reader and identity paths are
   unchanged ([#470](https://github.com/STAIxBWLB/hwp-cli/issues/470)).
 
+- `merge` reserves the first input's unresolved picture and shape-caption `ItemRef` spellings
+  before grafting later inputs, so a later input's stream can no longer answer one by exact
+  name, path suffix or filename stem. The colliding stream is renamed (a native payload by
+  reminting its storage id) instead of the reference being rewritten: the first input's
+  reference stays unresolved and both writers report `BinaryAssetRemoved` for it
+  ([#463](https://github.com/STAIxBWLB/hwp-cli/issues/463)).
+
 ## [1.5.0]
 
 **Compatibility**

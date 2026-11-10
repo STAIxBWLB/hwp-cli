@@ -369,3 +369,146 @@ fn hwp_native_canonical_remint_keeps_missing_primary_and_valid_numeric_payload_d
 fn hwpx_native_canonical_remint_keeps_missing_primary_and_valid_numeric_payload_distinct() {
     native_canonical_remint_case("hwpx");
 }
+
+// #463: the primary names a picture id the package does not list, so nothing in the primary
+// answers it. A later input carries `BinData/logo.png`, and the resolver's filename-stem rule
+// would hand its bytes to the primary's picture unless the graft renames that stream.
+fn drop_manifest_item(path: &Path, id: &str, href: &str) {
+    let bytes = std::fs::read(path).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let mut dropped_payload = false;
+    let mut dropped_item = false;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().unwrap().into_owned();
+        let method = entry.compression();
+        // The payload goes too: an orphan stream would keep the id resolvable by name.
+        if name == href {
+            dropped_payload = true;
+            continue;
+        }
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).unwrap();
+        if name == "Contents/content.hpf" {
+            let xml = String::from_utf8(data).unwrap();
+            let listed = format!("id=\"{id}\"");
+            let kept: Vec<&str> = xml
+                .lines()
+                .filter(|line| {
+                    let item = line.contains("<opf:item ") && line.contains(&listed);
+                    if item {
+                        dropped_item = true;
+                    }
+                    !item
+                })
+                .collect();
+            data = format!("{}\n", kept.join("\n")).into_bytes();
+        }
+        writer
+            .start_file(
+                name,
+                zip::write::SimpleFileOptions::default().compression_method(method),
+            )
+            .unwrap();
+        writer.write_all(&data).unwrap();
+    }
+    writer.finish().unwrap();
+    assert!(
+        dropped_item && dropped_payload,
+        "authored source must list the manifest item and payload being removed"
+    );
+}
+
+/// Writes A as a package whose picture names the unlisted id `logo` with no manifest entry and
+/// no payload, and B as a package carrying `BinData/logo.png`. The graft tier is covered by
+/// `document_merge`'s unit test; what this case pins is the published output of both formats.
+fn unlisted_primary_case(extension: &str) {
+    let dir = temp_path::TempPath::new("hwp463-merge-unlisted", &format!("unlisted-{extension}"));
+    std::fs::create_dir_all(&*dir).unwrap();
+    hwpx::write_document(&input("BinData/p1.png", false), &dir.join("a.hwpx")).unwrap();
+    drop_manifest_item(&dir.join("a.hwpx"), "logo", "BinData/p1.png");
+    hwpx::write_document(&input("BinData/logo.png", false), &dir.join("b.hwpx")).unwrap();
+
+    let a = hwpx::read_document(&dir.join("a.hwpx")).unwrap().document;
+    assert!(
+        a.hwpx_bin_manifest.is_empty() && a.bin_streams.is_empty(),
+        "the primary must carry nothing that answers its own picture id"
+    );
+    assert!(
+        a.resolve_bin(&picture(&a).bin_ref).is_none(),
+        "the primary's unlisted id must be unresolved before the merge"
+    );
+    let b = hwpx::read_document(&dir.join("b.hwpx")).unwrap().document;
+    assert_eq!(
+        b.resolve_bin(&picture(&b).bin_ref),
+        Some(authored_png().as_slice()),
+        "the later input must resolve the id against its own payload"
+    );
+
+    let output = format!("merged.{extension}");
+    let run = Command::new(env!("CARGO_BIN_EXE_hwp"))
+        .current_dir(&*dir)
+        .args([
+            "merge",
+            "a.hwpx",
+            "b.hwpx",
+            "-o",
+            &output,
+            "--loss-report",
+            "unlisted-loss.json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "permissive merge must publish with loss evidence: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_binary_loss(&dir.join("unlisted-loss.json"));
+
+    let merged = if extension == "hwp" {
+        hwp5::read_document(&dir.join(&output)).unwrap().document
+    } else {
+        hwpx::read_document(&dir.join(&output)).unwrap().document
+    };
+    assert_eq!(merged.sections.len(), 2);
+    for picture in merged.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .filter_map(|control| match control {
+            Control::Picture(picture) => Some(picture),
+            _ => None,
+        })
+    {
+        assert!(
+            merged.resolve_bin(&picture.bin_ref).is_none(),
+            "the primary's unresolved picture must never resolve to the later input's bytes"
+        );
+    }
+    let b_picture = merged.sections[1]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            Control::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .expect("the later input's valid picture must survive publication");
+    assert_eq!(
+        merged.resolve_bin(&b_picture.bin_ref),
+        Some(authored_png().as_slice()),
+        "the later input's picture must keep its own bytes under its renamed stream"
+    );
+}
+
+#[test]
+fn hwp_merge_unlisted_primary_id_reports_binary_asset_removed() {
+    unlisted_primary_case("hwp");
+}
+
+#[test]
+fn hwpx_merge_unlisted_primary_id_reports_binary_asset_removed() {
+    unlisted_primary_case("hwpx");
+}
