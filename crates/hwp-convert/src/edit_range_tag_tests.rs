@@ -599,3 +599,37 @@ fn range_tags_no_match_and_same_text_requests_are_allowed() {
         before.sections[0].paragraphs[0].extras
     );
 }
+
+#[test]
+fn field_tab_growth_refuses_tagged_named_field_edit() {
+    let mut doc = field_document(false);
+    tag(&mut doc.sections[0].paragraphs[0]);
+    assert_document_refusal(doc, |doc| crate::set_field(doc, "entry", "\t"));
+}
+
+#[test]
+fn field_tab_guard_keeps_same_width_non_tab_controls_available() {
+    for value in ["B", "\n"] {
+        let mut doc = field_document(false);
+        tag(&mut doc.sections[0].paragraphs[0]);
+        let extras = doc.sections[0].paragraphs[0].extras.clone();
+        assert_eq!(crate::set_field(&mut doc, "entry", value).unwrap(), 1);
+        assert_eq!(crate::list_fields(&doc)[0].value, value);
+        assert_eq!(doc.sections[0].paragraphs[0].extras, extras);
+    }
+}
+
+#[test]
+fn field_tab_guard_allows_eight_wchar_replacement() {
+    let mut doc = field_document(false);
+    crate::set_field(&mut doc, "entry", "12345678").unwrap();
+    tag(&mut doc.sections[0].paragraphs[0]);
+    let extras = doc.sections[0].paragraphs[0].extras.clone();
+    let result = crate::set_field(&mut doc, "entry", "\t");
+    assert!(
+        result.is_ok(),
+        "equal serialized WCHAR widths must remain allowed: {result:?}"
+    );
+    assert_eq!(crate::list_fields(&doc)[0].value, "\t");
+    assert_eq!(doc.sections[0].paragraphs[0].extras, extras);
+}

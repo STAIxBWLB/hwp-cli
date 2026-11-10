@@ -1107,6 +1107,71 @@ mod tests {
     }
 
     #[test]
+    fn field_tab_creation_tracks_serialized_width_and_value() {
+        let mut doc = crate::from_markdown("anchor tail");
+        let before: u32 = doc.sections[0].paragraphs[0]
+            .chars
+            .iter()
+            .map(HwpChar::wchar_width)
+            .sum();
+        assert!(create_field(&mut doc, "anchor", "entry", "\t").unwrap());
+        assert_eq!(list_fields(&doc)[0].value, "\t");
+        let after: u32 = doc.sections[0].paragraphs[0]
+            .chars
+            .iter()
+            .map(HwpChar::wchar_width)
+            .sum();
+        assert_eq!(
+            after - before,
+            24,
+            "two eight-WCHAR field controls surround an eight-WCHAR tab"
+        );
+    }
+
+    #[test]
+    fn field_tab_hyperlink_style_covers_the_complete_display_width() {
+        let mut doc = crate::from_markdown("anchor tail");
+        assert!(create_hyperlink(&mut doc, "anchor", "https://example.com", "A\tB").unwrap());
+        assert_eq!(list_fields(&doc)[0].value, "A\tB");
+        let shape = CharShapeId(
+            doc.header
+                .char_shapes
+                .iter()
+                .position(|shape| shape.text_color == 0x00FF_0000 && shape.underline_kind() == 1)
+                .unwrap() as u16,
+        );
+        let para = &doc.sections[0].paragraphs[0];
+        let start = para
+            .chars
+            .iter()
+            .position(|ch| {
+                matches!(ch,
+            HwpChar::ExtCtrl { code, .. } if *code == FIELD_START)
+            })
+            .unwrap();
+        let display_start: u32 = para.chars[..=start].iter().map(HwpChar::wchar_width).sum();
+        let display_end = display_start + 10; // A + eight-WCHAR tab + B.
+        let last_shape = para
+            .char_shape_runs
+            .iter()
+            .rev()
+            .find(|(pos, _)| *pos < display_end)
+            .map(|(_, id)| *id);
+        assert_eq!(
+            last_shape,
+            Some(shape),
+            "the final display character must retain hyperlink style"
+        );
+        assert!(
+            para.char_shape_runs
+                .iter()
+                .any(|(pos, id)| *pos == display_end && *id != shape),
+            "restore the original shape at the serialized display end: {:?}",
+            para.char_shape_runs
+        );
+    }
+
+    #[test]
     fn create_field_삽입_후_읽기_채우기() {
         let mut doc = crate::from_markdown::from_markdown("수신: 부서");
         // Insert after the anchor.

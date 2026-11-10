@@ -179,3 +179,45 @@ fn equal_wchar_width_replacement_preserves_opaque_tag_bytes() {
         b"opaque range sentinel"
     );
 }
+
+#[test]
+fn named_field_tab_refuses_to_shift_a_tagged_range_before_publication() {
+    let dir = temp_path::TempPath::new("hwp470", "field-tab-width");
+    std::fs::create_dir_all(&*dir).unwrap();
+    let mut document = hwp_convert::from_markdown("Field anchor.");
+    assert!(
+        hwp_convert::create_field(&mut document, "Field anchor.", "entry", "A").unwrap(),
+        "setup must create a named field before attaching the opaque tag"
+    );
+    document.sections[0].paragraphs[0]
+        .extras
+        .push(OpaqueRecord {
+            tag: 0x46,
+            data: b"opaque range sentinel".to_vec(),
+            children: Vec::new(),
+        });
+    let source = dir.join("source.hwp");
+    hwp5::write_document(&document, &source, &hwp5::WriteOptions::default()).unwrap();
+    let reread = hwp5::read_document(&source).unwrap().document;
+    let fields = hwp_convert::list_fields(&reread);
+    assert_eq!(fields.len(), 1, "setup must retain exactly one field");
+    assert_eq!(fields[0].name.as_deref(), Some("entry"));
+    assert_eq!(fields[0].value, "A", "setup must retain a one-WCHAR value");
+    assert_eq!(
+        reread.sections[0].paragraphs[0]
+            .extras
+            .iter()
+            .find(|record| record.tag == 0x46)
+            .expect("source read-back must retain the opaque range tag")
+            .data,
+        b"opaque range sentinel"
+    );
+    let workspace = Workspace {
+        output: dir.join("out.hwp"),
+        bytes: std::fs::read(&source).unwrap(),
+        source,
+        dir,
+    };
+    // A serialized HWP tab occupies eight WCHARs, so this changes the value width.
+    workspace.assert_refusal(workspace.edit(&["--set-field", "entry=	"]));
+}
