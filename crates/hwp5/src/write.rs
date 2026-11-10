@@ -1984,10 +1984,8 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     let mut new_items: Vec<hwp_model::BinDataItem> = Vec::new();
     // Pairs of bin_stream index and new name.
     let mut renames: Vec<(usize, String)> = Vec::new();
-    // Unique instance_id per gso object; Hangul may treat equal IDs as one object and ignore
-    // duplicates.
-    // A document that already carries synthesized pictures (a re-read output of this writer)
-    // holds ids from this same range, so start past the highest one instead of reusing it.
+    // Reserve both common and raw picture-record ids before choosing new id pairs.
+    // Merge can renumber a common id while preserving its separate raw picture id.
     let mut inst = InstanceIds::new(doc);
 
     // Fill empty HWPX-origin header/footer LIST_HEADER values from section PageDef dimensions:
@@ -2032,15 +2030,32 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     }
 }
 
+fn collect_raw_picture_ids(records: &[OpaqueRecord], used: &mut BTreeSet<u32>) {
+    for record in records {
+        if record.tag == tag::SHAPE_COMPONENT_PICTURE {
+            // Field source: build_picture_extras writes 12 border bytes + 32 corners
+            // + 16 clip + 8 margins + 3 adjustments + 2 BinItem id + 1 transparency,
+            // then this little-endian u32 at 74..78 (also docs/design/03-hwp5-write.md §7).
+            // Read only that writer-authored field; short records have no complete id.
+            if let Some(bytes) = record.data.get(74..78) {
+                used.insert(u32::from_le_bytes(
+                    bytes.try_into().expect("slice len checked"),
+                ));
+            }
+        }
+        collect_raw_picture_ids(&record.children, used);
+    }
+}
+
 /// Allocator for the gso instance ids this writer synthesizes for pictures.
 ///
 /// Ids come from `0x3000_0000..0x3010_0000`. An id is handed out only when neither it nor the
 /// id derived from it for the picture record (`id ^ 0x0010_0000`, which lands in
 /// `0x3010_0000..0x3020_0000`) is already held by a picture, table or gso container of the
-/// document, wherever that id sits. A re-read output of this writer holds ids from this same
-/// range, so a plain counter would repeat them. The counter only moves forward and every
-/// candidate has bit 20 clear, so an id handed out is never a later candidate and never the
-/// derived value of one: only ids the document already holds need avoiding. When the range is
+/// document, including separate ids in preserved raw picture records. Merge can change a
+/// common id while retaining its raw picture id, so reserving only common ids is insufficient.
+/// The counter only moves forward and every candidate has bit 20 clear, so an id handed out
+/// is never a later candidate and never the derived value of one: only ids the document already holds need avoiding. When the range is
 /// used up the allocator returns `None` instead of stepping past the range edge into another
 /// object's id; the caller leaves that picture unsynthesized and the existing strip step
 /// reports it as removed.
@@ -2066,16 +2081,19 @@ impl InstanceIds {
                 .map(|b| u32::from_le_bytes(b.try_into().expect("slice len checked")))
         }
         fn walk(para: &Paragraph, used: &mut BTreeSet<u32>) {
+            collect_raw_picture_ids(&para.extras, used);
             for control in &para.controls {
                 match control {
                     Control::Picture(p) => {
                         used.extend(common_id(&p.common_data));
+                        collect_raw_picture_ids(&p.extras, used);
                         if let Some(caption) = &p.caption {
                             caption.paragraphs.iter().for_each(|q| walk(q, used));
                         }
                     }
                     Control::Table(t) => {
                         used.extend(common_id(&t.common_data));
+                        collect_raw_picture_ids(&t.extras, used);
                         if let Some(caption) = &t.caption {
                             caption.paragraphs.iter().for_each(|q| walk(q, used));
                         }
@@ -2084,6 +2102,8 @@ impl InstanceIds {
                         }
                     }
                     Control::Generic(g) => {
+                        collect_raw_picture_ids(&g.extras, used);
+                        collect_raw_picture_ids(&g.raw_children, used);
                         if g.ctrl_id == *b"gso " {
                             used.extend(common_id(&g.data));
                         }
@@ -2095,12 +2115,15 @@ impl InstanceIds {
                             caption.paragraphs.iter().for_each(|q| walk(q, used));
                         }
                     }
-                    _ => {}
+                    Control::SectionDef(definition) => {
+                        collect_raw_picture_ids(&definition.extras, used)
+                    }
                 }
             }
         }
         let mut used = BTreeSet::new();
         for section in &doc.sections {
+            collect_raw_picture_ids(&section.extras, &mut used);
             section.paragraphs.iter().for_each(|p| walk(p, &mut used));
         }
         Self {
@@ -5755,6 +5778,152 @@ mod tests {
             extras: Vec::new(),
         });
         doc
+    }
+
+    fn picture_holding_raw_id(common: u32, raw: u32) -> Control {
+        let Control::Picture(mut picture) = picture_with_instance_id(common) else {
+            unreachable!()
+        };
+        picture.extras = build_picture_extras(100, 100, (100, 100), 1, raw);
+        Control::Picture(picture)
+    }
+
+    #[test]
+    fn raw_picture_ids_reserve_both_common_and_derived_candidates() {
+        for raw in [0x3000_0000, 0x3010_0000] {
+            let mut doc = doc_with_picture_ids(&[]);
+            doc.sections[0].paragraphs[0].controls = vec![picture_holding_raw_id(0x5000_0000, raw)];
+            let next = InstanceIds::new(&doc).next().unwrap();
+            assert_ne!(
+                next, raw,
+                "new common id repeats a preserved picture record id"
+            );
+            assert_ne!(
+                next ^ 0x0010_0000,
+                raw,
+                "new picture record id repeats a preserved raw id"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_picture_ids_inside_preserved_generic_trees_are_reserved() {
+        let Control::Generic(mut generic) = shape_caption_holding(Vec::new()) else {
+            unreachable!()
+        };
+        generic.caption = None;
+        // build_picture_extras writes the id at payload bytes74..78, beneath SHAPE_COMPONENT.
+        generic.raw_children = build_picture_extras(100, 100, (100, 100), 1, 0x3010_0000);
+        let mut doc = doc_with_picture_ids(&[]);
+        doc.sections[0].paragraphs[0].controls = vec![Control::Generic(generic)];
+        let next = InstanceIds::new(&doc).next().unwrap();
+        assert_ne!(
+            next ^ 0x0010_0000,
+            0x3010_0000,
+            "a raw Generic subtree already owns this picture id"
+        );
+    }
+
+    #[test]
+    fn raw_picture_id_reservation_reaches_caption_paragraphs() {
+        let mut doc = doc_with_picture_ids(&[]);
+        doc.sections[0].paragraphs[0].controls =
+            vec![shape_caption_holding(vec![picture_holding_raw_id(
+                0x5000_0000,
+                0x3010_0000,
+            )])];
+        let next = InstanceIds::new(&doc).next().unwrap();
+        assert_ne!(
+            next ^ 0x0010_0000,
+            0x3010_0000,
+            "the shape caption owns this raw picture id"
+        );
+    }
+
+    #[test]
+    fn raw_picture_ids_in_other_preserved_opaque_owners_are_reserved() {
+        // Opaque preservation can retain a known picture record beneath unknown parents.
+        // These are allocator fixtures, not a claim that each hierarchy opens in Hangul.
+        let mut collisions = Vec::new();
+        for owner in [
+            "section",
+            "paragraph",
+            "table",
+            "section-definition",
+            "generic-extras",
+        ] {
+            let mut doc = hwp_convert::from_markdown("anchor");
+            let records = build_picture_extras(100, 100, (100, 100), 1, 0x3010_0000);
+            match owner {
+                "section" => doc.sections[0].extras = records,
+                "paragraph" => doc.sections[0].paragraphs[0].extras = records,
+                "table" => {
+                    let mut table = synth_table(None);
+                    table.extras = records;
+                    doc.sections[0].paragraphs[0]
+                        .controls
+                        .push(Control::Table(table));
+                }
+                "section-definition" => {
+                    let definition = doc.sections[0].paragraphs[0]
+                        .controls
+                        .iter_mut()
+                        .find_map(|control| match control {
+                            Control::SectionDef(definition) => Some(definition),
+                            _ => None,
+                        })
+                        .expect("markdown creates a section definition");
+                    definition.extras = records;
+                }
+                "generic-extras" => {
+                    let Control::Generic(mut generic) = shape_caption_holding(Vec::new()) else {
+                        unreachable!()
+                    };
+                    generic.caption = None;
+                    generic.extras = records;
+                    doc.sections[0].paragraphs[0]
+                        .controls
+                        .push(Control::Generic(generic));
+                }
+                _ => unreachable!(),
+            }
+            if InstanceIds::new(&doc).next().unwrap() ^ 0x0010_0000 == 0x3010_0000 {
+                collisions.push(owner);
+            }
+        }
+        assert!(
+            collisions.is_empty(),
+            "raw picture ids were reused from opaque owners: {collisions:?}"
+        );
+    }
+
+    #[test]
+    fn raw_picture_id_requires_its_complete_field_and_can_exhaust_the_range() {
+        // The current writer appends the four-byte instance id after 74 prefix bytes.
+        // A short opaque record must stay unread rather than manufacturing an id from its tail.
+        for len in [0, 73, 74, 75, 76, 77, 78] {
+            let mut doc = doc_with_picture_ids(&[]);
+            let Control::Picture(mut picture) = picture_holding_raw_id(0x5000_0000, 0x3010_0000)
+            else {
+                unreachable!()
+            };
+            picture.extras[0].children[0].data.truncate(len);
+            doc.sections[0].paragraphs[0].controls = vec![Control::Picture(picture)];
+            let mut ids = InstanceIds::with_range(&doc, 0x3000_0000, 0x3000_0001);
+            if len < 78 {
+                assert_eq!(
+                    ids.next(),
+                    Some(0x3000_0000),
+                    "a {len}-byte record lacks the full id"
+                );
+            } else {
+                assert_eq!(
+                    ids.next(),
+                    None,
+                    "the one available id derives a preserved raw picture id"
+                );
+            }
+        }
     }
 
     /// An id handed out must be inside the synthesized range and not already used by any
