@@ -5943,6 +5943,162 @@ mod tests {
         std::fs::remove_file(output).unwrap();
     }
 
+    #[derive(Clone, Copy)]
+    enum PartialItemRefSite {
+        Body,
+        Cell,
+        GenericList,
+    }
+
+    fn partial_itemref_doc(site: PartialItemRefSite) -> Document {
+        let mut doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef("image1".into()));
+        doc.meta.source_format = "hwpx".into();
+        doc.bin_streams[0].name = "BinData/image10.png".into();
+        doc.bin_streams[1].name = "BinData/unrelated.png".into();
+        if matches!(site, PartialItemRefSite::Body) {
+            return doc;
+        }
+        let picture = doc.sections[0].paragraphs[0].controls.pop().unwrap();
+        let control = match site {
+            PartialItemRefSite::Body => unreachable!(),
+            PartialItemRefSite::Cell => {
+                let table_doc = hwp_convert::from_markdown("| value |\n| --- |\n| nested |\n");
+                let mut table = table_doc.sections[0]
+                    .paragraphs
+                    .iter()
+                    .flat_map(|paragraph| &paragraph.controls)
+                    .find_map(|control| match control {
+                        Control::Table(table) => Some(table.clone()),
+                        _ => None,
+                    })
+                    .unwrap();
+                table.cells[0].paragraphs[0].controls.push(picture);
+                Control::Table(table)
+            }
+            PartialItemRefSite::GenericList => Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"head",
+                data: vec![0; 8],
+                paragraph_lists: vec![hwp_model::ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs: vec![Paragraph {
+                        controls: vec![picture],
+                        ..Paragraph::default()
+                    }],
+                }],
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                container_box: None,
+            }),
+        };
+        doc.sections[0].paragraphs[0].controls.push(control);
+        doc
+    }
+
+    fn assert_partial_itemref_is_a_loss(site: PartialItemRefSite, label: &str) {
+        let doc = partial_itemref_doc(site);
+        let output = picture_report_path(label);
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        let synthesized = synthesized_bin_stream_bytes(&output);
+        std::fs::remove_file(output).unwrap();
+        assert!(
+            report.preservation.events.iter().any(|event| {
+                event.code == PreservationCode::BinaryAssetRemoved
+                    && event.resource == PreservationResourceKind::BinaryAsset
+                    && event.disposition == PreservationDisposition::Removed
+                    && event.count == 1
+            }),
+            "an unlisted partial stem must report BinaryAssetRemoved instead of another picture: {:?}",
+            report.preservation.events
+        );
+        assert_eq!(synthesized, None, "image1 must not select image10.png");
+    }
+
+    #[test]
+    fn partial_itemref_in_body_is_reported_as_removed() {
+        assert_partial_itemref_is_a_loss(PartialItemRefSite::Body, "partial-itemref-body");
+    }
+
+    #[test]
+    fn partial_itemref_in_cell_is_reported_as_removed() {
+        assert_partial_itemref_is_a_loss(PartialItemRefSite::Cell, "partial-itemref-cell");
+    }
+
+    #[test]
+    fn partial_itemref_in_generic_list_is_reported_as_removed() {
+        assert_partial_itemref_is_a_loss(PartialItemRefSite::GenericList, "partial-itemref-list");
+    }
+
+    #[test]
+    fn exact_itemref_stem_wins_over_an_earlier_partial_stem() {
+        let mut doc = partial_itemref_doc(PartialItemRefSite::Body);
+        doc.bin_streams[1].name = "BinData/image1.png".into();
+        let output = picture_report_path("itemref-exact-stem");
+        let report = write_document_with_report(&doc, &output, &WriteOptions::default()).unwrap();
+        let synthesized = synthesized_bin_stream_bytes(&output);
+        std::fs::remove_file(output).unwrap();
+        assert_eq!(
+            synthesized,
+            Some(vec![4, 5, 6]),
+            "the model's exact filename stem must select the second stream, not image10.png"
+        );
+        assert!(
+            report
+                .preservation
+                .events
+                .iter()
+                .all(|event| { event.code != PreservationCode::BinaryAssetRemoved })
+        );
+    }
+
+    #[test]
+    fn itemref_name_resolution_agrees_with_the_model() {
+        let names = ["BinData/image10.png", "BinData/image1.png", "plain.png"];
+        let mut doc = Document {
+            bin_streams: names
+                .iter()
+                .map(|name| hwp_model::BinStream {
+                    name: (*name).into(),
+                    data: Vec::new(),
+                })
+                .collect(),
+            ..Document::default()
+        };
+        let bin_names: Vec<String> = names.iter().map(|name| (*name).into()).collect();
+        for item in [
+            "image10.png",
+            "BinData/image1.png",
+            "plain.png",
+            "image10",
+            "image1",
+            "plain",
+            "image",
+            "IMAGE1.PNG",
+            "",
+            "missing",
+        ] {
+            let reference = hwp_model::BinRef::ItemRef(item.into());
+            assert_eq!(
+                bin_stream_index(&bin_names, &[], &doc.hwpx_bin_manifest, &reference),
+                doc.bin_stream_index(&reference),
+                "unlisted reference {item:?} must use the same stream as the model"
+            );
+        }
+        for (item, href) in [("image1", "plain.png"), ("image1", "BinData/missing.png")] {
+            doc.hwpx_bin_manifest = vec![(item.into(), href.into())];
+            let reference = hwp_model::BinRef::ItemRef(item.into());
+            assert_eq!(
+                bin_stream_index(&bin_names, &[], &doc.hwpx_bin_manifest, &reference),
+                doc.bin_stream_index(&reference),
+                "a listed id must follow its manifest href"
+            );
+        }
+    }
+
     #[test]
     fn picture_with_unresolvable_reference_reports_binary_asset_removed() {
         // S2: BinRef::ItemRef names no existing stream. Today this silently falls back to
