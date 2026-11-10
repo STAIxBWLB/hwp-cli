@@ -1,7 +1,7 @@
-//! 렌더 진단의 고정 코드, 심각도, 단계 및 source-bounded 집계기.
+//! Fixed codes, severities, stages and the source-bounded aggregator for render diagnostics.
 //!
-//! 문서 텍스트나 경로를 보관하지 않는다. 호출자가 제공한 detail은 즉시 SHA-256으로
-//! 바뀌며, 코드별로 제한된 수의 sample hash만 남는다.
+//! Neither document text nor paths are stored: a caller-provided detail becomes its SHA-256 at
+//! once, and only a bounded number of sample hashes remain per code.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -100,11 +100,13 @@ pub enum RenderIssueCode {
     ShapeGeometryInvalidOmitted,
     FontSubsetFallback,
     LayoutBudgetExceeded,
-    /// WMF 스트림이 손상/절단되어 해석을 중단하고 자홍색 placeholder로 대체.
+    /// The WMF stream was corrupt or truncated, so parsing stopped and a magenta placeholder
+    /// took its place.
     WmfParseInvalidPlaceholder,
-    /// WMF 부분집합 밖 레코드 계열을 bounded-skip (detail은 함수 코드뿐).
+    /// A record family outside the supported WMF subset was skipped in a bounded way (the detail
+    /// is the function code only).
     WmfUnsupportedRecordOmitted,
-    /// WMF 해석의 레코드/객체/픽셀 상한 초과 → placeholder.
+    /// A record, object or pixel ceiling of WMF parsing was exceeded -> placeholder.
     WmfBudgetExceeded,
     /// The body-anchor prepass for a floating-table section stopped before it collected every
     /// paragraph's anchor (a page or display-item budget stop, or an unvisited paragraph). The
@@ -398,8 +400,8 @@ impl RenderIssueAccumulator {
         }
     }
 
-    /// 같은 문서 바이너리 slice는 렌더 전체에서 한 번만 복사하고 모든 이미지 Item이
-    /// 같은 Arc를 공유한다. 인증 경로의 byte quota는 layout preflight가 적용한다.
+    /// One document binary slice is copied once per render and every image item shares that Arc.
+    /// The certification path's byte quota is applied by the layout preflight.
     pub fn cached_binary(&mut self, bytes: &[u8]) -> Arc<Vec<u8>> {
         let identity = (bytes.as_ptr() as usize, bytes.len());
         self.binary_cache
@@ -412,8 +414,8 @@ impl RenderIssueAccumulator {
         self.display_item_limit = Some(limit);
     }
 
-    /// Display Item을 Vec에 넣기 전에 호출한다. false면 caller는 push/insert를 하지
-    /// 않아야 하며 bounded layout은 즉시 실패 상태로 전환된다.
+    /// Call before putting a display item into a Vec. On false the caller must not push or
+    /// insert, and the bounded layout switches to its failed state at once.
     pub fn charge_display_items(&mut self, count: usize) -> bool {
         let Some(next) = self.display_item_count.checked_add(count) else {
             self.display_item_budget_exceeded = true;
