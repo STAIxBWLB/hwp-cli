@@ -181,6 +181,59 @@ fn wholly_uncached_cells_keep_prior_nested_cache_convention() {
     );
 }
 
+/// An empty paragraph inside a wholly cacheless cell list advances the renderer's flow by the
+/// one line synthesis writes for it, not by a fixed height of its own (#422): the row the two
+/// passes measure must agree, so following cell content does not move once the cache exists.
+#[test]
+fn cacheless_empty_cell_paragraph_advances_like_its_synthesized_line() {
+    let mut source = hwp_convert::from_markdown("Anchor\n");
+    let fill_color = 0x0034_5679;
+    let fill = add_fill(&mut source, fill_color);
+    let mut text = paragraph(&source);
+    text.line_segs.clear();
+    let mut empty = text.clone();
+    empty.chars.clear();
+    let cell = table(vec![text.clone(), empty, text], fill, 1);
+    source.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(cell));
+
+    let uncached = rectangles(&layout(&source), fill_color);
+    let mut cached = source.clone();
+    synthesize(&mut cached);
+    let cell = cached.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => Some(&table.cells[0]),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        cell.paragraphs[1].line_segs.len(),
+        1,
+        "synthesis writes one line for the empty paragraph, so the flow cannot skip it"
+    );
+    let after_first = cell.paragraphs[0].line_segs[0]
+        .v_pos
+        .saturating_add(cell.paragraphs[0].line_segs[0].line_height);
+    assert!(
+        cell.paragraphs[1].line_segs[0].v_pos >= after_first,
+        "the empty paragraph's line starts at the previous line's advance, not a fixed height"
+    );
+    let synthesized = rectangles(&layout(&cached), fill_color);
+    assert_eq!(uncached.len(), 1);
+    assert_eq!(synthesized.len(), 1);
+    assert!(
+        uncached[0].3 > 28.0,
+        "the empty paragraph adds its own line to the two text lines: {uncached:?}"
+    );
+    assert!(
+        (uncached[0].3 - synthesized[0].3).abs() < 0.01,
+        "cacheless and synthesized cell geometry must agree: cacheless {uncached:?}, synthesized {synthesized:?}"
+    );
+}
+
 #[test]
 fn successive_uncached_nested_tables_keep_distinct_measured_heights() {
     let mut doc = hwp_convert::from_markdown("Anchor\n");

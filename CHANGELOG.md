@@ -104,6 +104,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   reference stays unresolved and both writers report `BinaryAssetRemoved` for it
   ([#463](https://github.com/STAIxBWLB/hwp-cli/issues/463)).
 
+- An empty cache-less body paragraph now consumes the position its own flow anchor records: its
+  space-before plus the one line synthesis writes for it, instead of a fixed 16 pt that skipped
+  that space-before and ignored non-default base sizes and line spacing. A wholly cache-less cell
+  or text-box list draws its empty paragraphs through the same ephemeral synthesis as their
+  neighbours instead of adding a fixed 12 pt, so the row the flow measures equals the cache the
+  writer stores and following cell content no longer moves once that cache exists. Default
+  documents keep their 16 pt step; the empty paragraph's space-after and the raw-vs-half spacing
+  unit stay with #415, and no native geometry value is introduced
+  ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
+
 ## [1.5.0]
 
 **Compatibility**

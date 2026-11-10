@@ -51,7 +51,7 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 
 문단별로 `footnote::para_marks/para_notes`(각주 마커/노트 수집), `tab::tab_stops`, `para_geometry`, `hyperlink_ranges`, `list_state.marker_for_render`를 준비한 뒤:
 
-- **`line_segs`가 비었을 때(폴백)**: 빈 문단이면 `content_bottom += 16.0`. 아니면 `shape_range_notes`로 전체 셰이핑 → `place_wrapped`로 `body_width` 기준 그리디 줄바꿈. `baseline_y = content_bottom + spacing_top + max_size*1.2`, `content_bottom = last_y + max_size*0.4 + spacing_bottom`. 정렬(가운데/오른쪽)은 한 줄에 들어갈 때만 보정. 줄바꿈은 스크래치 페이지에서 수행하며 줄마다 `(item 인덱스, baseline)`을 함께 모으고, 위 트리거 4에 따라 줄 단위로 실제 페이지에 옮긴다. 모든 나누기는 `push_page_checked`를 거쳐 세그먼트 기록기의 페이지 서수가 유도 가능하게 유지된다. 본문 상자보다 큰 줄은 어떤 나누기로도 담을 수 없다 — 그대로 그리고 편차만 `paragraph_line_content_overflow`로 보고한다(표 셀의 `table_cell_content_overflow`와 같은 계약).
+- **`line_segs`가 비었을 때(폴백)**: 빈 문단이면 `content_bottom`을 자신의 space-before와 합성이 쓰는 줄 하나(`lineseg::paragraph_metrics`의 advance)만큼 전진시킨다 — 흐름이 기록한 앵커를 흐름 자신이 소비한다는 뜻이라, 기본 문단의 16pt 전진은 그대로다([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)). space-after와 raw/반값 간격 단위는 이 전진에 넣지 않는다(#415). 아니면 `shape_range_notes`로 전체 셰이핑 → `place_wrapped`로 `body_width` 기준 그리디 줄바꿈. `baseline_y = content_bottom + spacing_top + max_size*1.2`, `content_bottom = last_y + max_size*0.4 + spacing_bottom`. 정렬(가운데/오른쪽)은 한 줄에 들어갈 때만 보정. 줄바꿈은 스크래치 페이지에서 수행하며 줄마다 `(item 인덱스, baseline)`을 함께 모으고, 위 트리거 4에 따라 줄 단위로 실제 페이지에 옮긴다. 모든 나누기는 `push_page_checked`를 거쳐 세그먼트 기록기의 페이지 서수가 유도 가능하게 유지된다. 본문 상자보다 큰 줄은 어떤 나누기로도 담을 수 없다 — 그대로 그리고 편차만 `paragraph_line_content_overflow`로 보고한다(표 셀의 `table_cell_content_overflow`와 같은 계약).
 - **`line_segs`가 있을 때(캐시 존중)**: 각 seg마다 `[text_start, next.text_start)` 구간을 `shape_range_notes`로 셰이핑. 핵심 좌표:
   ```
   stored_baseline = body_top + (seg.v_pos + seg.baseline_gap) / 100
@@ -183,7 +183,7 @@ v_pos += line_advance
 
 ### 2.4 표 높이 (`table_height`, `fill_nested`, `para_line_block`)
 
-`fill_nested`가 먼저 셀/글상자 내부 문단의 줄배치를 채운다(셀 폭 = `cell.width - margins[0] - margins[1]`, 셀마다 v_pos 리셋, `content_h=i32::MAX`로 페이지 분할 없음. 글상자는 폭 `gso_shapes[0].w - 566`).
+`fill_nested`가 먼저 셀/글상자 내부 문단의 줄배치를 채운다(셀 폭 = `cell.width - margins[0] - margins[1]`, 셀마다 v_pos 리셋, `content_h=i32::MAX`로 페이지 분할 없음. 글상자는 폭 `gso_shapes[0].w - 566`). 캐시가 전혀 없는 목록은 빈 문단까지 같은 임시 합성으로 그리므로, 빈 셀 문단도 자기만의 높이가 아니라 합성이 쓰는 줄 하나만큼 흐름이 재는 행에 기여한다([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
 
 표 높이 공식(정품 실측 도출):
 ```
