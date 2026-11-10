@@ -310,18 +310,156 @@ fn retained_taller_table_puts_the_following_body_below_it() {
         "the untouched cell keeps the saved cache the input carried"
     );
 
+    assert_body_after_the_table("tall", &edited);
+}
+
+/// The paragraph after the table starts at the flow the caches the output keeps actually produce:
+/// the table paragraph's own entry, the table height measured from its output caches, and the
+/// following paragraph's space-before. 0 is the one other legal value, a page start.
+fn assert_body_after_the_table(label: &str, edited: &Document) {
+    let table_paragraph = &body(edited)[TABLE_PARAGRAPH];
     let table_bottom = hwp_render::lineseg::saved_body_cursor(
-        &body(&edited)[TABLE_PARAGRAPH],
-        space_bottom(&edited, &body(&edited)[TABLE_PARAGRAPH]),
+        table_paragraph,
+        space_bottom(edited, table_paragraph),
     )
     .expect("table anchor cache");
-    let expected = table_bottom + space_top(&edited, &body(&edited)[TABLE_PARAGRAPH + 1]);
-    let following_top = body(&edited)[TABLE_PARAGRAPH + 1].line_segs[0].v_pos;
+    let following = &body(edited)[TABLE_PARAGRAPH + 1];
+    let expected = table_bottom + space_top(edited, following);
+    let following_top = following.line_segs[0].v_pos;
     assert!(
         following_top == expected || following_top == 0,
-        "the paragraph after the table starts at {following_top}, but the retained table ends at \
-         {table_bottom} — it was placed against the table's ephemeral height (#509)"
+        "{label}: the paragraph after the table starts at {following_top}, but the table's own \
+         caches end at {table_bottom} — the body was placed from a measurement the output does not \
+         keep (#509)"
     );
+}
+
+/// The fixture's cell 8 with a second paragraph, so a change to the first can strand a retained
+/// sibling: the second paragraph's saved `v_pos` was measured against the block the first one had.
+fn two_paragraph_cell_source(name: &str) -> (PathBuf, Document) {
+    let (path, document) = edit(
+        name,
+        &["--insert-para", "대피 경로와 안전지점 통합 표시=>둘째 문단"],
+    );
+    let paragraphs = &table(&body(&document)[TABLE_PARAGRAPH], 0).cells[8].paragraphs;
+    assert_eq!(
+        paragraphs.len(),
+        2,
+        "fixture: the cell gained one paragraph"
+    );
+    let first = &paragraphs[0].line_segs[0];
+    assert!(
+        paragraphs[1].line_segs[0].v_pos >= first.v_pos.saturating_add(first.line_height),
+        "fixture: the two-paragraph source is non-overlapping"
+    );
+    (path, document)
+}
+
+/// Consecutive paragraphs inside one kept list never overlap, and the paragraph named by
+/// `sibling_index` carries a re-synthesized cache rather than the stale saved one it arrived with.
+fn assert_sibling_resynthesized(
+    label: &str,
+    paragraphs: &[Paragraph],
+    saved_sibling: &[hwp_model::LineSeg],
+    sibling_index: usize,
+) {
+    for pair in paragraphs.windows(2) {
+        let bottom = pair[0]
+            .line_segs
+            .last()
+            .map_or(0, |seg| seg.v_pos.saturating_add(seg.line_height));
+        assert!(
+            pair[1].line_segs[0].v_pos >= bottom,
+            "{label}: a cell paragraph starts at {} inside the paragraph above (bottom {bottom})",
+            pair[1].line_segs[0].v_pos
+        );
+    }
+    assert_ne!(
+        paragraphs[sibling_index].line_segs, saved_sibling,
+        "{label}: the cell paragraph below the edit keeps a saved v_pos measured against the block \
+         the edit changed (#509)"
+    );
+}
+
+/// #509 finding: a kept cache stops being valid once an earlier paragraph in the same list moves.
+/// The saved sibling sat below an unchanged first paragraph; the edit grows that paragraph to
+/// several lines, so both the sibling and the body after the table have to follow the new block.
+#[test]
+fn cell_growth_resynthesizes_the_sibling_below_it() {
+    let (source, original) = two_paragraph_cell_source("sibling-grow-source.hwp");
+    let saved = table(&body(&original)[TABLE_PARAGRAPH], 0).cells[8].paragraphs[1]
+        .line_segs
+        .clone();
+    let (_, edited) = edit_path(
+        &source,
+        "sibling-grow.hwp",
+        &[
+            "--replace",
+            "대피 경로와 안전지점 통합 표시=>첫 줄\n둘째 줄\n셋째 줄",
+        ],
+    );
+
+    let paragraphs = &table(&body(&edited)[TABLE_PARAGRAPH], 0).cells[8].paragraphs;
+    assert_eq!(paragraphs.len(), 2);
+    assert!(
+        paragraphs[0].line_segs.len() >= 3,
+        "fixture: the edited paragraph grew to several lines, got {}",
+        paragraphs[0].line_segs.len()
+    );
+    assert_sibling_resynthesized("sibling-grow", paragraphs, &saved, 1);
+    assert_body_after_the_table("sibling-grow", &edited);
+}
+
+/// The same staleness reached by inserting a paragraph before the retained sibling: the insertion
+/// is cacheless, so everything from it on is re-synthesized, the untouched sibling included.
+#[test]
+fn cell_insertion_before_a_retained_sibling_takes_the_seam() {
+    let (source, original) = two_paragraph_cell_source("sibling-insert-source.hwp");
+    let saved = table(&body(&original)[TABLE_PARAGRAPH], 0).cells[8].paragraphs[1]
+        .line_segs
+        .clone();
+    let (_, edited) = edit_path(
+        &source,
+        "sibling-insert.hwp",
+        &["--insert-para", "대피 경로와 안전지점 통합 표시=>삽입 문단"],
+    );
+
+    let paragraphs = &table(&body(&edited)[TABLE_PARAGRAPH], 0).cells[8].paragraphs;
+    assert_eq!(
+        paragraphs.len(),
+        3,
+        "the cell keeps both saved paragraphs and gains the insertion"
+    );
+    assert_sibling_resynthesized("sibling-insert", paragraphs, &saved, 2);
+    assert_body_after_the_table("sibling-insert", &edited);
+}
+
+/// And by deleting the paragraph above it: the sibling becomes the list's first paragraph, so its
+/// saved `v_pos` (measured below the deleted one) has to be replaced too.
+#[test]
+fn cell_deletion_before_a_retained_sibling_takes_the_seam() {
+    let (source, original) = two_paragraph_cell_source("sibling-delete-source.hwp");
+    let saved = table(&body(&original)[TABLE_PARAGRAPH], 0).cells[8].paragraphs[1]
+        .line_segs
+        .clone();
+    let (_, edited) = edit_path(
+        &source,
+        "sibling-delete.hwp",
+        &["--delete-para", "대피 경로와 안전지점 통합 표시"],
+    );
+
+    let paragraphs = &table(&body(&edited)[TABLE_PARAGRAPH], 0).cells[8].paragraphs;
+    assert_eq!(
+        paragraphs.len(),
+        1,
+        "the list keeps its remaining paragraph"
+    );
+    assert_ne!(
+        paragraphs[0].line_segs, saved,
+        "sibling-delete: the paragraph left in the cell keeps a saved v_pos measured below the \
+         paragraph the edit removed (#509)"
+    );
+    assert_body_after_the_table("sibling-delete", &edited);
 }
 
 /// #509 finding 3: a saved cursor outside the page comes from untrusted bytes; it must degrade to a

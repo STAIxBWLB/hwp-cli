@@ -26,12 +26,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   outside the body box degrades to a page start instead of overflowing. The walk also carries the
   exact cursor the line synthesizer committed rather than re-deriving it from the committed line,
   where `line_spacing` is floored at zero: unseeded synthesis (HWPX or markdown to HWP) is
-  unchanged, including FIXED spacing below the base line and FIXED 0. An edited table therefore
-  stays on its page and the content after it flows below the table again, instead of the edited
-  paragraph sitting above its kept predecessor and opening a new page. Unedited documents never
-  enter this path, so HWP5 identity stays byte-identical; the seed continues the synthesizer's own
-  spacing rule, so the seam can still sit half a paragraph spacing from Hangul's saved gap until
-  the unit calibration in [#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) lands, and a
+  unchanged, including FIXED spacing below the base line and FIXED 0. A nested list now states
+  separately which paragraphs keep their own cache, what a descendant table cell does and whether a
+  kept cache moves the list cursor, so a document that is not being edited keeps synthesizing
+  captions, generic lists and the table cells inside them exactly as before. An edited list keeps
+  only the part before its first moved paragraph, a shifted index included, because a cache left
+  below an earlier insertion, deletion or growth holds a `v_pos` measured against a block the edit
+  changed, and a paragraph added under a retained table anchor resumes no higher than the bottom of
+  the line the anchor keeps. An edited table therefore stays on its page and the content after it
+  flows below the table again, instead of the edited paragraph sitting above its kept predecessor
+  and opening a new page. Unedited documents never enter this path, so HWP5 identity stays
+  byte-identical; the seed continues the synthesizer's own spacing rule, so the seam can still sit
+  half a paragraph spacing from Hangul's saved gap until the unit calibration
+  in [#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) lands, and a
   floating-table section reads its prepass anchors instead
   ([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
 

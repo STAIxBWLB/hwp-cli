@@ -820,3 +820,187 @@ fn unseeded_synthesis_keeps_its_anchors_under_a_floating_prepass() {
     synthesize(&mut doc);
     assert_eq!(body_v_pos(&doc), vec![0, 1600]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// #509 finding 5 (round 3): the three cache switches must not leak into default synthesis.
+//
+// Which paragraphs keep their own cache, what a descendant table cell does, and whether a kept
+// cache moves the list cursor are separate decisions. Unedited synthesis keeps a caption or
+// generic-list paragraph's cache **without** moving the cursor, and always recomputes the cells of
+// a table nested inside either. The source-aware edit path is the only caller that measures a
+// retained prefix.
+// ---------------------------------------------------------------------------------------------
+
+/// A saved list line at `v_pos` with 1000 of line height and `line_spacing` serialized beside it.
+fn saved_line(v_pos: i32, line_spacing: i32) -> hwp_model::LineSeg {
+    hwp_model::LineSeg {
+        text_start: 0,
+        v_pos,
+        line_height: 1000,
+        text_height: 1000,
+        baseline_gap: 850,
+        line_spacing,
+        col_start: 0,
+        seg_width: 20000,
+        flags: 0x0006_0000,
+    }
+}
+
+/// A caption holding one paragraph that already carries a saved line and one that does not.
+fn mixed_caption(doc: &Document) -> hwp_model::Caption {
+    let mut cached = paragraph(doc);
+    cached.line_segs = vec![saved_line(0, 600)];
+    let cacheless = paragraph(doc);
+    hwp_model::Caption {
+        side: hwp_model::CaptionSide::Bottom,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 200,
+        width: Some(15000),
+        last_width: 15000,
+        paragraphs: vec![cached, cacheless],
+    }
+}
+
+/// A generic paragraph list holding the same pair.
+fn generic_list(doc: &Document) -> hwp_model::GenericControl {
+    let mut cached = paragraph(doc);
+    cached.line_segs = vec![saved_line(0, 600)];
+    let cacheless = paragraph(doc);
+    hwp_model::GenericControl {
+        ctrl_id: *b"gso ",
+        data: Vec::new(),
+        paragraph_lists: vec![hwp_model::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: vec![cached, cacheless],
+        }],
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: None,
+        column_def: None,
+        caption: None,
+        hwpx_raw_xml: None,
+        container_box: None,
+    }
+}
+
+/// A cached caption paragraph followed by a cacheless one: the unedited convention publishes the
+/// second at 0, because a kept cache does not move the list cursor. Reading the cursor back out of
+/// the kept line (`v_pos + line_height + line_spacing`) would publish 1600 instead.
+#[test]
+fn unseeded_synthesis_does_not_advance_past_a_kept_caption_cache() {
+    let mut doc = hwp_convert::from_markdown("Anchor\n");
+    fix_line_spacing(&mut doc, 600);
+    let caption = mixed_caption(&doc);
+    let fill = add_fill(&mut doc, 0x0006_789A);
+    let mut host = table(vec![paragraph(&doc)], fill, 1200);
+    host.caption = Some(caption);
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(host));
+    synthesize(&mut doc);
+
+    let caption = doc.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => table.caption.as_ref(),
+            _ => None,
+        })
+        .expect("table caption");
+    assert_eq!(
+        caption.paragraphs[0].line_segs,
+        vec![saved_line(0, 600)],
+        "the caption paragraph with a cache keeps it unchanged"
+    );
+    assert_eq!(
+        caption.paragraphs[1].line_segs[0].v_pos, 0,
+        "the cacheless caption paragraph starts where the list cursor still is"
+    );
+}
+
+/// The same pair in a generic paragraph list.
+#[test]
+fn unseeded_synthesis_does_not_advance_past_a_kept_generic_list_cache() {
+    let mut doc = hwp_convert::from_markdown("Anchor\n");
+    fix_line_spacing(&mut doc, 600);
+    let list = generic_list(&doc);
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Generic(list));
+    synthesize(&mut doc);
+
+    let list = doc.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Generic(generic) => generic.paragraph_lists.first(),
+            _ => None,
+        })
+        .expect("generic paragraph list");
+    assert_eq!(
+        list.paragraphs[0].line_segs,
+        vec![saved_line(0, 600)],
+        "the list paragraph with a cache keeps it unchanged"
+    );
+    assert_eq!(
+        list.paragraphs[1].line_segs[0].v_pos, 0,
+        "the cacheless list paragraph starts where the list cursor still is"
+    );
+}
+
+/// A table nested inside a caption: unedited synthesis always recomputes its cells, so a cell cache
+/// carrying an outsized line height is replaced rather than measured.
+#[test]
+fn unseeded_synthesis_recomputes_a_cell_of_a_table_nested_in_a_caption() {
+    let mut doc = hwp_convert::from_markdown("Anchor\n");
+    fix_line_spacing(&mut doc, 600);
+    let fill = add_fill(&mut doc, 0x0006_789B);
+
+    let mut tall = paragraph(&doc);
+    tall.line_segs = vec![hwp_model::LineSeg {
+        line_height: 12000,
+        text_height: 12000,
+        ..saved_line(0, 0)
+    }];
+    let inner = table(vec![tall], fill, 1200);
+
+    let mut host_paragraph = paragraph(&doc);
+    host_paragraph.controls.push(Control::Table(inner));
+    let mut host = table(vec![paragraph(&doc)], fill, 1200);
+    host.caption = Some(hwp_model::Caption {
+        side: hwp_model::CaptionSide::Bottom,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 200,
+        width: Some(15000),
+        last_width: 15000,
+        paragraphs: vec![host_paragraph],
+    });
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(host));
+    synthesize(&mut doc);
+
+    let cell = doc.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => table.caption.as_ref(),
+            _ => None,
+        })
+        .and_then(|caption| caption.paragraphs.first())
+        .and_then(|caption_paragraph| {
+            caption_paragraph
+                .controls
+                .iter()
+                .find_map(|control| match control {
+                    Control::Table(inner) => inner.cells.first(),
+                    _ => None,
+                })
+        })
+        .expect("table nested in the caption");
+    assert_eq!(
+        cell.paragraphs[0].line_segs[0].line_height, 1000,
+        "a nested table's cell is recomputed, not measured from the cache it arrived with"
+    );
+}

@@ -1193,13 +1193,13 @@ fn write_hwp_impl(
         // first changed paragraph a v_pos *above* its kept predecessor, which the renderer reads
         // as a page start and draws the change mid-page (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
-        // Put the caches the output will keep in place first: an edited paragraph is cacheless in
-        // this document, so a cache that is present is one the writer restores unchanged, and the
-        // walk below must measure those rather than its own ephemeral synthesis of them. Otherwise
-        // a kept table whose saved cell caches are taller grows again after the paragraphs below it
-        // were already placed (#509).
+        // Put the caches the output will keep in place first, and drop the saved ones behind the
+        // seam: a cache that is present is then one the writer keeps, so the walk measures it
+        // instead of its own ephemeral synthesis of it. Otherwise a kept table whose saved cell
+        // caches are taller grows again after the paragraphs below it were already placed, and a
+        // retained sibling behind a moved paragraph is measured where it no longer sits (#509).
         if let Some((_, original)) = source {
-            restore_unchanged_native_paragraphs(original, doc, &mut d);
+            restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Drop);
         }
         hwp_render::lineseg::synthesize_linesegs_seeded(
             &mut d,
@@ -1210,9 +1210,10 @@ fn write_hwp_impl(
                 preserve_nested: source.is_some(),
             },
         );
-        // The walk re-synthesized every body cache; hand the kept prefix its saved records back.
+        // The walk re-synthesized every body cache; hand the kept prefix its saved records back and
+        // keep what it synthesized behind the seam.
         if let Some((_, original)) = source {
-            restore_unchanged_native_paragraphs(original, doc, &mut d);
+            restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Keep);
         }
         warns.absorb(store.issues.finish());
         report
@@ -1304,14 +1305,24 @@ fn write_hwp_impl(
     Ok(report)
 }
 
-/// After renderer layout synthesis, put every semantically unchanged native
-/// paragraph back exactly as it appeared in the immutable input snapshot.
-/// This limits new PARA_LINE_SEG records to edited and inserted paragraphs,
-/// including paragraphs nested in table cells and generic controls.
+/// What the restore leaves in a paragraph at or after the edit's seam (#509).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SuffixCache {
+    /// Before the walk runs. A saved line cache behind the seam is measured against a flow the edit
+    /// moved (a taller neighbour, a shifted index), so it is dropped and the walk re-synthesizes it.
+    Drop,
+    /// After the walk. The cache the renderer synthesized is the flow the output keeps.
+    Keep,
+}
+
+/// Put the saved records the output keeps back into the document, before and after the renderer's
+/// synthesis. This limits new PARA_LINE_SEG records to what the edit moved, including paragraphs
+/// nested in table cells and generic controls.
 fn restore_unchanged_native_paragraphs(
     original: &hwp_model::Document,
     edited: &hwp_model::Document,
     synthesized: &mut hwp_model::Document,
+    suffix: SuffixCache,
 ) {
     for (section_index, synthesized_section) in synthesized.sections.iter_mut().enumerate() {
         let (Some(original_section), Some(edited_section)) = (
@@ -1324,53 +1335,54 @@ fn restore_unchanged_native_paragraphs(
             &original_section.paragraphs,
             &edited_section.paragraphs,
             &mut synthesized_section.paragraphs,
+            suffix,
         );
     }
 }
 
 /// Restore one section's body list. Paragraphs before the edit keep their saved records; from the
-/// first edited body paragraph on, the body cache the renderer synthesized stays, because a saved
-/// `v_pos` there measures the flow the edit invalidated: kept after a taller table it sits above
-/// the table's drawn bottom and the renderer reads the step back as a new page (#462). The nested
-/// lists this pass recurses into (table cells and generic paragraph lists, captions included only
-/// where a whole unchanged paragraph brings them) are restored on both sides of the seam: their
-/// caches are local to their own box and do not depend on the body cursor.
+/// first moved body paragraph on, the body cache belongs to the re-synthesized flow, because a
+/// saved `v_pos` there measures the flow the edit invalidated: kept after a taller table it sits
+/// above the table's drawn bottom and the renderer reads the step back as a new page (#462). The
+/// nested lists this pass recurses into (table cells and generic paragraph lists, captions included
+/// only where a whole unchanged paragraph brings them) apply the same rule at their own seam.
 fn restore_unchanged_body_paragraphs(
     original: &[hwp_model::Paragraph],
     edited: &[hwp_model::Paragraph],
     synthesized: &mut [hwp_model::Paragraph],
+    suffix: SuffixCache,
 ) {
     if edited.len() != synthesized.len() {
         return;
     }
     let matches = match_unchanged_paragraphs(original, edited);
-    let first_changed = first_changed_body_paragraph(original, edited, &matches);
+    let first_moved = first_moved_paragraph(original, edited, &matches);
     for (edited_index, matched) in matches.iter().enumerate() {
         let Some(original_index) = *matched else {
             continue;
         };
         let paragraph = &original[original_index];
         let edited_paragraph = &edited[edited_index];
-        if edited_index < first_changed {
-            restore_unchanged_paragraph(
-                paragraph,
-                edited_paragraph,
-                &mut synthesized[edited_index],
-            );
+        if edited_index < first_moved {
+            // Cache included: `first_moved` already said this paragraph's own lines are the ones the
+            // saved record holds.
+            synthesized[edited_index] = paragraph.clone();
         } else {
-            restore_unchanged_paragraph_keeping_body(
+            restore_after_the_seam(
                 paragraph,
                 edited_paragraph,
                 &mut synthesized[edited_index],
+                suffix,
             );
         }
     }
 }
 
-/// First body paragraph whose flow the edit moved: the first paragraph that no longer matches an
-/// original paragraph, or matches one but is not equal to it. `edited.len()` means the edit did not
-/// touch this section's body flow.
-fn first_changed_body_paragraph(
+/// First paragraph whose saved position the edit moved. A list is positional and cumulative: a
+/// paragraph is still where it was only when it matches the original at its own index, because an
+/// insertion or deletion before it shifts every later saved `v_pos` by a block the list no longer
+/// has. `edited.len()` means the edit did not touch this list's flow.
+fn first_moved_paragraph(
     original: &[hwp_model::Paragraph],
     edited: &[hwp_model::Paragraph],
     matches: &[Option<usize>],
@@ -1379,10 +1391,29 @@ fn first_changed_body_paragraph(
         .iter()
         .enumerate()
         .find(|(index, matched)| match matched {
-            Some(original_index) => original[*original_index] != edited[*index],
+            Some(original_index) => {
+                *original_index != *index
+                    || !unchanged_content(&original[*original_index], &edited[*index])
+            }
             None => true,
         })
         .map_or(edited.len(), |(index, _)| index)
+}
+
+/// Whether the edit left a paragraph at its own place with its own content: every field that
+/// decides its lines, compared through the two the editor rewrites rather than edits.
+///
+/// The line cache is the answer this pass computes, so it cannot be part of the question; and
+/// PARA_TEXT's "last paragraph in the list" bit follows the list, not the paragraph, so inserting
+/// or deleting a sibling flips it on a paragraph nobody touched (#509).
+fn unchanged_content(original: &hwp_model::Paragraph, edited: &hwp_model::Paragraph) -> bool {
+    fn strip(paragraph: &hwp_model::Paragraph) -> hwp_model::Paragraph {
+        let mut stripped = paragraph.clone();
+        stripped.line_segs.clear();
+        stripped.header.chars_flags &= !0x80;
+        stripped
+    }
+    strip(original) == strip(edited)
 }
 
 /// Original index for every edited paragraph that still names a paragraph of the immutable
@@ -1453,7 +1484,7 @@ fn body_flow_seeds(
         };
         let matches = match_unchanged_paragraphs(&section.paragraphs, &edited_section.paragraphs);
         let first_changed =
-            first_changed_body_paragraph(&section.paragraphs, &edited_section.paragraphs, &matches);
+            first_moved_paragraph(&section.paragraphs, &edited_section.paragraphs, &matches);
         // An edit in the first paragraph restarts at the section top anyway, and a section the
         // edit did not reach keeps its saved flow.
         if first_changed == 0 || first_changed >= edited_section.paragraphs.len() {
@@ -1482,65 +1513,68 @@ fn body_flow_seeds(
     seeds
 }
 
+/// Restore one nested paragraph list. A list is cumulative: every paragraph's saved `v_pos` is
+/// measured from the block before it, so only the part of the list before its first moved paragraph
+/// is still valid. From that paragraph on the list follows the same rule as the body list at its
+/// own seam, its unchanged neighbours included, because their saved positions were measured against
+/// a block the edit moved (#509).
 fn restore_unchanged_paragraph_list(
     original: &[hwp_model::Paragraph],
     edited: &[hwp_model::Paragraph],
     synthesized: &mut [hwp_model::Paragraph],
+    suffix: SuffixCache,
 ) {
     if edited.len() != synthesized.len() {
         return;
     }
-    for (edited_index, original_index) in match_unchanged_paragraphs(original, edited)
-        .into_iter()
-        .enumerate()
-    {
+    let matches = match_unchanged_paragraphs(original, edited);
+    let first_moved = first_moved_paragraph(original, edited, &matches);
+    for (edited_index, original_index) in matches.into_iter().enumerate() {
         let Some(original_index) = original_index else {
             continue;
         };
-        restore_unchanged_paragraph(
-            &original[original_index],
-            &edited[edited_index],
-            &mut synthesized[edited_index],
-        );
+        if edited_index < first_moved {
+            // Cache included: `first_moved` already said this paragraph's own lines are the ones the
+            // saved record holds.
+            synthesized[edited_index] = original[original_index].clone();
+        } else {
+            restore_after_the_seam(
+                &original[original_index],
+                &edited[edited_index],
+                &mut synthesized[edited_index],
+                suffix,
+            );
+        }
     }
 }
 
-fn restore_unchanged_paragraph(
+/// Handle a paragraph at or after the edit's seam: its own line cache is not the saved one any
+/// more. Before the walk the saved cache is dropped so it cannot be measured; after the walk the
+/// synthesized cache is the answer and stays. Its unchanged controls are still restored below.
+fn restore_after_the_seam(
     original: &hwp_model::Paragraph,
     edited: &hwp_model::Paragraph,
     synthesized: &mut hwp_model::Paragraph,
+    suffix: SuffixCache,
 ) {
-    if original == edited {
-        *synthesized = original.clone();
-        return;
+    match suffix {
+        SuffixCache::Drop => {
+            synthesized.line_segs.clear();
+            restore_unchanged_controls(original, edited, synthesized, suffix);
+        }
+        SuffixCache::Keep => {}
     }
-    restore_unchanged_controls(original, edited, synthesized);
-}
-
-/// Restore a paragraph the edit did not change, except for the body cache: from the edit onward the
-/// paragraph's vertical position belongs to the re-synthesized flow, not to the saved snapshot.
-fn restore_unchanged_paragraph_keeping_body(
-    original: &hwp_model::Paragraph,
-    edited: &hwp_model::Paragraph,
-    synthesized: &mut hwp_model::Paragraph,
-) {
-    if original == edited {
-        let mut restored = original.clone();
-        restored.line_segs = std::mem::take(&mut synthesized.line_segs);
-        *synthesized = restored;
-        return;
-    }
-    restore_unchanged_controls(original, edited, synthesized);
 }
 
 /// Restore everything except the paragraph's own body cache: unchanged controls keep their saved
-/// records, and the unchanged paragraphs inside their table cells and generic paragraph lists are
-/// restored recursively. A body paragraph the edit moved keeps the lines the renderer synthesized
-/// for it. A caption inside a control the edit changed is not restored here.
+/// records, and the paragraphs before their own seam inside table cells and generic paragraph lists
+/// are restored recursively (applying `suffix` at each list's seam). A caption inside a control the
+/// edit changed is not restored here.
 fn restore_unchanged_controls(
     original: &hwp_model::Paragraph,
     edited: &hwp_model::Paragraph,
     synthesized: &mut hwp_model::Paragraph,
+    suffix: SuffixCache,
 ) {
     for ((original_control, edited_control), synthesized_control) in original
         .controls
@@ -1568,6 +1602,7 @@ fn restore_unchanged_controls(
                         &original_cell.paragraphs,
                         &edited_cell.paragraphs,
                         &mut synthesized_cell.paragraphs,
+                        suffix,
                     );
                 }
             }
@@ -1586,6 +1621,7 @@ fn restore_unchanged_controls(
                         &original_list.paragraphs,
                         &edited_list.paragraphs,
                         &mut synthesized_list.paragraphs,
+                        suffix,
                     );
                 }
             }
@@ -2253,7 +2289,12 @@ mod tests {
     fn native_layout_restore_keeps_the_prefix_and_resynthesizes_the_suffix() {
         let (original, edited, mut synthesized) = restore_fixture();
 
-        restore_unchanged_native_paragraphs(&original, &edited, &mut synthesized);
+        restore_unchanged_native_paragraphs(
+            &original,
+            &edited,
+            &mut synthesized,
+            SuffixCache::Keep,
+        );
 
         assert_eq!(
             synthesized.sections[0].paragraphs[0], original.sections[0].paragraphs[0],

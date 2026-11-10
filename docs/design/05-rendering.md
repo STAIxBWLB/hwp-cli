@@ -393,12 +393,38 @@ re-synthesizing it, and a preserved list paragraph still advances the list curso
 An edited paragraph is cacheless in that document, so a cache present there is one the writer
 restores; measuring it is what keeps a kept table's height the height the paragraphs below it are
 placed against. After the synthesis the same restore runs again for the body caches alone: the prefix
-before the first changed paragraph gets its saved `v_pos` back, and from that paragraph on the body
-cache the synthesizer produced is what gets written. Unchanged table cells and the paragraphs of
-generic lists are restored on both sides of the seam, matched by `instance_id`, then by full
-equality, and only then by index when the list length is unchanged, so an insertion or deletion
-inside a list keeps the untouched siblings' caches. Captions are restored only where a whole
-unchanged paragraph brings them: a caption inside a control the edit changed is not rewritten here.
+before the first moved paragraph gets its saved `v_pos` back, and from that paragraph on the body
+cache the synthesizer produced is what gets written. A paragraph behind the seam is cacheless in the
+document the walk sees (`SuffixCache::Drop`), and the synthesized cache stays after it
+(`SuffixCache::Keep`). Unchanged table cells and the paragraphs of generic lists are restored on both
+sides of the seam, matched by `instance_id`, then by full equality, and only then by index when the
+list length is unchanged. Captions are restored only where a whole unchanged paragraph brings them: a
+caption inside a control the edit changed is not rewritten here.
+
+A nested list decides for itself, and there are three answers (`lineseg::ListCaches`), because three
+different questions are folded into "keep the cache": which paragraphs keep their own cache, what a
+descendant table cell does, and whether a kept cache moves the list cursor. `Recompute`
+re-synthesizes every paragraph of the list, `KeepInPlace` keeps a paragraph's own cache and leaves the
+cursor where it is, and `KeepMeasured` keeps the cached prefix, advances the cursor by each kept block
+and re-synthesizes from the first cacheless paragraph. An unedited document runs `Recompute` at the
+top, which maps to `KeepInPlace` for a caption and a generic list and to `Recompute` for a table cell:
+that is base behaviour, so a caption, a generic list and a table nested inside either are synthesized
+exactly as before ([#509](https://github.com/STAIxBWLB/hwp-cli/pull/509)). Only an edited document's
+body runs `KeepMeasured`, and it keeps it through captions and cells on that path.
+
+Inside one list the seam is positional, not per paragraph. A list's saved `v_pos` values are
+cumulative, so only the part before its first *moved* paragraph still describes it:
+`first_moved_paragraph` marks a paragraph moved when its match is not at its own index, when its
+content differs, or when nothing matches — the shift an insertion or deletion above it causes is
+included, which is what stops a retained sibling from keeping a `v_pos` measured below a block the
+edit changed. "Content" is the fields that decide the paragraph's lines: the line cache is the answer
+being computed, and PARA_TEXT's "last paragraph in the list" bit follows the list rather than the
+paragraph, so inserting a sibling flips it on a paragraph nobody edited.
+
+A kept table anchor keeps the table inside its own line block, so `saved_body_cursor` is floored at
+the last kept line's bottom: the anchor line's height can exceed the summed cell heights (a 4412 HU
+table under a 5100 HU line in the public fixture), and the paragraph after it must not resume inside
+a line the output keeps.
 
 Consequences worth keeping. An unedited document never enters this path, so HWP5 identity stays
 byte-identical, and an unseeded synthesis (HWPX or markdown to HWP) runs the same cursor rule it ran

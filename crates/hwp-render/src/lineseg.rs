@@ -124,12 +124,15 @@ pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32>
         .v_pos
         .saturating_add(last.line_height)
         .saturating_add(last.line_spacing);
-    Some(body_cursor(
-        entry.v_pos,
-        line_cursor,
-        table_total,
-        space_after,
-    ))
+    // A kept table anchor keeps the table inside its own line block: genuine records store the
+    // extent in the anchor line's height, which can end below the summed cell heights (a 4412 HU
+    // table under a 5100 HU line in the #462 fixture). Resuming at the smaller of the two would
+    // start the next paragraph inside the line the output keeps (#509).
+    let line_bottom = last.v_pos.saturating_add(last.line_height);
+    Some(
+        body_cursor(entry.v_pos, line_cursor, table_total, space_after)
+            .max(line_bottom.saturating_add(space_after)),
+    )
 }
 
 /// [`synthesize_linesegs`] with body-flow seeds, so an edited document can re-synthesize only the
@@ -180,7 +183,7 @@ fn synthesize_linesegs_inner(
     let snap = doc.clone();
     let seeds = flow.seeds;
     let nested_caches = if flow.preserve_nested {
-        ListCaches::Keep
+        ListCaches::KeepMeasured
     } else {
         ListCaches::Recompute
     };
@@ -353,15 +356,43 @@ fn synthesize_linesegs_inner(
     flow_anchors
 }
 
-/// What a nested paragraph list does with the line caches it already carries (#509).
+/// What a nested paragraph list does with the line caches it already carries (#509). The three
+/// readings are separate switches: which paragraphs keep their own cache, what a descendant table
+/// cell does, and whether a kept cache moves the list cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ListCaches {
     /// Re-synthesize every paragraph. Table cells default to this because their line counts decide
     /// the table height, and a stale pre-edit cache would misalign the table.
     Recompute,
-    /// Measure a paragraph that already carries a cache and keep it: an edited document whose
-    /// retained caches were restored first measures the height the output will actually draw.
-    Keep,
+    /// Keep a paragraph's own cache and leave the list cursor where it was, which is the unedited
+    /// convention for captions and generic paragraph lists. A kept cache does not move the cursor
+    /// here, so unseeded synthesis publishes the same positions it always did (#509).
+    KeepInPlace,
+    /// Keep the cached prefix of the list, advancing the cursor by each kept paragraph's block, and
+    /// re-synthesize from the first paragraph without a cache (#509). Only an edited document whose
+    /// retained caches were restored first uses this: the prefix is what the output keeps, so it is
+    /// what the table height must be measured from, and a cache after the seam is stale because an
+    /// earlier paragraph in the same list moved.
+    KeepMeasured,
+}
+
+impl ListCaches {
+    /// What a caption or a generic control's paragraph list nested under this policy does: both are
+    /// text containers the base synthesis keeps in place.
+    fn text_list(self) -> Self {
+        match self {
+            Self::KeepMeasured => Self::KeepMeasured,
+            Self::Recompute | Self::KeepInPlace => Self::KeepInPlace,
+        }
+    }
+
+    /// What a table cell list nested under this policy does.
+    fn cell(self) -> Self {
+        match self {
+            Self::KeepMeasured => Self::KeepMeasured,
+            Self::Recompute | Self::KeepInPlace => Self::Recompute,
+        }
+    }
 }
 
 /// Synthesize every nested paragraph list: table captions/cells, controls within cells
@@ -388,7 +419,7 @@ fn fill_nested(
                     fill_list(
                         &mut cap.paragraphs,
                         w,
-                        ListCaches::Keep,
+                        caches.text_list(),
                         body_width,
                         snap,
                         store,
@@ -405,7 +436,7 @@ fn fill_nested(
                     fill_list(
                         &mut cell.paragraphs,
                         w,
-                        caches,
+                        caches.cell(),
                         body_width,
                         snap,
                         store,
@@ -419,7 +450,7 @@ fn fill_nested(
                     fill_list(
                         &mut cap.paragraphs,
                         w,
-                        ListCaches::Keep,
+                        caches.text_list(),
                         body_width,
                         snap,
                         store,
@@ -437,7 +468,7 @@ fn fill_nested(
                     fill_list(
                         &mut list.paragraphs,
                         bw,
-                        ListCaches::Keep,
+                        caches.text_list(),
                         body_width,
                         snap,
                         store,
@@ -449,7 +480,7 @@ fn fill_nested(
                     fill_list(
                         &mut cap.paragraphs,
                         w,
-                        ListCaches::Keep,
+                        caches.text_list(),
                         body_width,
                         snap,
                         store,
@@ -472,7 +503,9 @@ fn caption_width(width: Option<u32>, body_width: i32) -> i32 {
 
 /// Fill one paragraph list. Accumulate v_pos per list rather than resetting each paragraph;
 /// table_height reads the last paragraph's v_pos as the whole cell's height on that basis.
-/// [`ListCaches::Keep`] measures a paragraph that already carries line layout and preserves it.
+/// [`ListCaches::KeepInPlace`] keeps a paragraph's own cache without moving the cursor, and
+/// [`ListCaches::KeepMeasured`] keeps the cached prefix while advancing by it and re-synthesizes
+/// from the first paragraph without a cache.
 fn fill_list(
     paras: &mut [Paragraph],
     width: i32,
@@ -483,16 +516,27 @@ fn fill_list(
     warnings: &mut RenderIssueAccumulator,
 ) {
     let mut v = 0i32;
+    // Set once KeepMeasured re-synthesized a paragraph: an earlier paragraph in this list moved, so
+    // every later cache was measured against a position that no longer holds (#509).
+    let mut past_seam = false;
     for para in paras.iter_mut() {
         fill_nested(para, body_width, snap, store, warnings, caches);
-        if caches == ListCaches::Keep && !para.line_segs.is_empty() {
-            // A preserved cache still moves the list cursor: a paragraph the edit touched after it
-            // in the same list has to start below the retained one (#509).
-            if let Some(bottom) = saved_body_cursor(para, 0) {
-                v = bottom;
+        let keep = match caches {
+            ListCaches::Recompute => false,
+            ListCaches::KeepInPlace => !para.line_segs.is_empty(),
+            ListCaches::KeepMeasured => !past_seam && !para.line_segs.is_empty(),
+        };
+        if keep {
+            if caches == ListCaches::KeepMeasured {
+                // The retained prefix moves the cursor: the paragraph after it has to start below
+                // it, and that is the height the table is measured from.
+                if let Some(bottom) = saved_body_cursor(para, 0) {
+                    v = bottom;
+                }
             }
             continue;
         }
+        past_seam = true;
         // Do not paginate inside lists (content_h=MAX); synthesize_linesegs handles overflow
         // at the table/object level.
         let segs = compute_box_linesegs(store, snap, para, width, &mut v, warnings);
