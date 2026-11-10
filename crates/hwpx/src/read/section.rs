@@ -21,7 +21,9 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
 
 use crate::error::{HwpxError, Result};
-use crate::read::xml::{attr, attr_i32, attr_offset_i32, attr_u16, attr_u32, parse_color};
+use crate::read::xml::{
+    attr, attr_i32, attr_offset_i32, attr_u16, attr_u32, parse_color, resolve_entity,
+};
 
 type XmlReader<'a> = Reader<&'a [u8]>;
 
@@ -1704,23 +1706,6 @@ fn raw_attrs_except(start: &BytesStart<'_>, skip: &[u8]) -> Option<String> {
         out.push_str(&format!("{key}=\"{val}\""));
     }
     (!out.is_empty()).then_some(out)
-}
-
-/// 엔티티 참조(`&amp;` `&#x2264;`)를 문자로 되돌린다. quick-xml은 참조를 텍스트에
-/// 합치지 않고 `Event::GeneralRef`로 따로 주므로, 텍스트를 모으는 쪽마다 이 해석이
-/// 필요하다. DTD 없이는 외부 엔티티를 풀 수 없어 미리 정의된 5종 + 숫자 참조만 푼다.
-fn resolve_entity(r: &quick_xml::events::BytesRef<'_>) -> Option<char> {
-    r.resolve_char_ref()
-        .ok()
-        .flatten()
-        .or_else(|| match &r[..] {
-            b"amp" => Some('&'),
-            b"lt" => Some('<'),
-            b"gt" => Some('>'),
-            b"quot" => Some('"'),
-            b"apos" => Some('\''),
-            _ => None,
-        })
 }
 
 /// 주어진 요소가 닫힐 때까지 텍스트를 모은다.

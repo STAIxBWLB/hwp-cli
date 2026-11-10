@@ -1,6 +1,6 @@
 //! quick-xml 보조 유틸.
 
-use quick_xml::events::BytesStart;
+use quick_xml::events::{BytesRef, BytesStart};
 
 /// 로컬 이름(네임스페이스 접두사 제거) 기준 속성 조회.
 /// 속성값을 **엔티티 해석까지 마친** 문자열로 돌려준다. quick-xml은 속성값을 파일에 있던
@@ -21,6 +21,26 @@ pub fn attr(e: &BytesStart<'_>, name: &str) -> Option<String> {
             None
         }
     })
+}
+
+/// Turns an entity reference (`&amp;`, `&#x2264;`) back into the character it names.
+/// quick-xml does not fold a reference into the surrounding text; it delivers each one as its
+/// own `Event::GeneralRef`, so every site that collects element text has to decode them. Without
+/// a DTD an external entity cannot be resolved, so only the five predefined names and numeric
+/// character references are decoded; an unknown reference yields `None` and the caller drops it
+/// instead of passing it through.
+pub(crate) fn resolve_entity(r: &BytesRef<'_>) -> Option<char> {
+    r.resolve_char_ref()
+        .ok()
+        .flatten()
+        .or_else(|| match &r[..] {
+            b"amp" => Some('&'),
+            b"lt" => Some('<'),
+            b"gt" => Some('>'),
+            b"quot" => Some('"'),
+            b"apos" => Some('\''),
+            _ => None,
+        })
 }
 
 pub fn attr_u32(e: &BytesStart<'_>, name: &str) -> Option<u32> {

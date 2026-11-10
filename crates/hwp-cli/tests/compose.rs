@@ -757,6 +757,12 @@ const ORDERED_472_SPEC: &str = r#"{"version":"1.0","styles":{"body":{"font_size_
 {"type":"paragraph","style":"body","list":{"name":"o","level":0},"runs":[{"type":"text","text":"top"}]},
 {"type":"paragraph","style":"body","list":{"name":"o","level":2},"runs":[{"type":"text","text":"deep"}]}]}]}"#;
 
+const ANGLE_MARKER_487_SPEC: &str = r#"{"version":"1.0","styles":{"body":{"font_size_pt":10}},
+"lists":{"o":{"kind":"ordered","levels":[{"marker":"{n}.","start":1},{"marker":"<{n}>","start":1}]}},
+"sections":[{"blocks":[
+{"type":"paragraph","style":"body","list":{"name":"o","level":0},"runs":[{"type":"text","text":"top"}]},
+{"type":"paragraph","style":"body","list":{"name":"o","level":1},"runs":[{"type":"text","text":"deep"}]}]}]}"#;
+
 fn assert_472_levels(path: &Path, label: &str) {
     let levels = hwp_numbered_raw_levels(path);
     let find = |text: &str| {
@@ -782,6 +788,47 @@ fn assert_472_levels(path: &Path, label: &str) {
             "{label}: {text} draws its own level's slot"
         );
     }
+}
+
+/// #487: a numbering template is format content, and OWPML carries `<`, `>` and `&` escaped.
+/// The HWPX reader dropped those entity references, so `compose` to `.hwpx` refused a marker
+/// the other shapes accept (`<{n}>` was re-read as `{n}`, failing semantic verification).
+#[test]
+fn compose_angle_bracket_marker_round_trips_through_hwpx() {
+    let spec = temp("angle-marker-487.json");
+    std::fs::write(&spec, ANGLE_MARKER_487_SPEC).unwrap();
+    let hwpx = temp("angle-marker-487.hwpx");
+    let _ = std::fs::remove_file(&hwpx);
+    let run = hwp()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&hwpx)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "compose `<{{n}}>` marker to HWPX: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_no_staging_debris(&hwpx);
+
+    let doc = hwpx::read_document(&hwpx).unwrap().document;
+    assert_eq!(
+        doc.header.numbering_levels[0][1].template, "<^2>",
+        "the marker's template must read back identically"
+    );
+    let mut state = hwp_model::list::ListState::default();
+    let markers = doc.sections[0]
+        .paragraphs
+        .iter()
+        .filter_map(|paragraph| state.marker(&doc, paragraph))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        markers,
+        ["1.", "<1>"],
+        "each paragraph must draw its own level's marker"
+    );
 }
 
 /// #472: `compose` to `.hwp` must store an ordered list's levels zero-based. Before the fix

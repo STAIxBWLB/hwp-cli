@@ -13,7 +13,7 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
 use crate::error::{HwpxError, Result};
-use crate::read::xml::{attr, attr_i32, attr_u16, attr_u32, parse_color};
+use crate::read::xml::{attr, attr_i32, attr_u16, attr_u32, parse_color, resolve_entity};
 
 /// OWPML 테두리선 종류 → hwp5 코드.
 pub(crate) fn line_type_code(s: &str) -> u8 {
@@ -758,7 +758,19 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         header.numbering_levels.push(levels);
                     }
                 }
-                b"paraHead" => current_para_head = None,
+                b"paraHead" => {
+                    // Trim once, here: the template is captured in Text/GeneralRef chunks, so
+                    // trimming per chunk would eat whitespace next to an entity.
+                    if let Some(level) = current_para_head.take()
+                        && let Some(levels) = &mut current_numbering
+                        && let Some(nl) = levels.get_mut(level - 1)
+                    {
+                        let trimmed = nl.template.trim();
+                        if trimmed.len() != nl.template.len() {
+                            nl.template = trimmed.to_string();
+                        }
+                    }
+                }
                 _ => {}
             },
             Event::Text(ref t) => {
@@ -768,7 +780,20 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                     && let Some(nl) = levels.get_mut(level - 1)
                     && let Ok(s) = t.xml10_content()
                 {
-                    nl.template.push_str(s.trim());
+                    nl.template.push_str(&s);
+                }
+            }
+            // A `<{n}>` marker reaches the file as the paraHead `&lt;^2&gt;`: quick-xml
+            // delivers a reference as its own GeneralRef event rather than inside Text.
+            // Undecoded, `<`, `>` and `&` vanish from the template and compose then fails its
+            // semantic verification on the reread mismatch (#487).
+            Event::GeneralRef(ref r) => {
+                if let Some(level) = current_para_head
+                    && let Some(levels) = &mut current_numbering
+                    && let Some(nl) = levels.get_mut(level - 1)
+                    && let Some(c) = resolve_entity(r)
+                {
+                    nl.template.push(c);
                 }
             }
             Event::Eof => break,

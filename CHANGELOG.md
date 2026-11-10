@@ -10,6 +10,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- A numbering template containing `<`, `>` or `&` now survives HWPX output. The HWPX reader
+  resolves the XML entity references (`&lt;`, `&gt;`, `&amp;`) inside `paraHead` text instead of
+  dropping them, so `hwp compose` writes an ordered-list marker such as `<{n}>` escaped and
+  reads the template back identically instead of refusing at semantic verification
+  ([#487](https://github.com/STAIxBWLB/hwp-cli/issues/487)).
+
 ## [1.5.0]
 
 **Compatibility**
