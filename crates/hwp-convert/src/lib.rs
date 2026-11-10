@@ -1,4 +1,4 @@
-//! IR ↔ markdown/JSON 변환.
+//! IR <-> markdown/JSON conversion.
 
 pub mod address;
 pub mod base64;
@@ -84,17 +84,18 @@ pub use segment_id::{
     table_id,
 };
 pub use structure::{
-    delete_paragraph, delete_paragraph_at, insert_paragraph, insert_paragraph_at, move_paragraph,
-    text_in_unwritable_object,
+    delete_paragraph, delete_paragraph_at, insert_paragraph, insert_paragraph_at,
+    insert_paragraph_checked, move_paragraph, text_in_unwritable_object,
 };
 pub use style::{display_width, style_table, style_tables};
 pub use styles::{NamedStyle, StyleKind, StyleTableTooLarge, list_named_styles};
 
-/// IR 전체를 JSON으로 직렬화 (구조 검사·디버깅·기계 소비용).
+/// Serialize the whole IR as JSON (for structural inspection, debugging and machine consumers).
 ///
-/// `embed_bin`이 참이면 첨부 바이너리(`bin_streams[].data`, 기본 JSON 제외)를
-/// `data_b64` 필드에 base64로 실어 **자급식 JSON**을 만든다 — [`from_json`]이
-/// 다시 읽어 이미지까지 무손실 왕복한다. 거짓이면 이미지 바이트는 빠진다.
+/// With `embed_bin`, attached binaries (`bin_streams[].data`, excluded from the default JSON) are
+/// carried as base64 in the `data_b64` field, producing a **self-contained JSON** that
+/// [`from_json`] reads back for a lossless round trip including images. Without it the image bytes
+/// are omitted.
 pub fn to_json(doc: &Document, pretty: bool, embed_bin: bool) -> serde_json::Result<String> {
     if !embed_bin {
         return if pretty {
@@ -124,14 +125,14 @@ pub fn to_json(doc: &Document, pretty: bool, embed_bin: bool) -> serde_json::Res
     }
 }
 
-/// JSON IR을 문서로 역직렬화 ([`to_json`]의 짝).
+/// Deserialize a JSON IR into a document (the counterpart of [`to_json`]).
 ///
-/// `bin_streams[].data_b64`(있을 때)를 디코드해 첨부 바이너리를 복원한다.
-/// `data`는 `#[serde(skip)]`이라 base64 필드가 없으면 이미지 바이트는 비어 있다.
+/// Decodes `bin_streams[].data_b64` (when present) to restore the attached binaries. `data` is
+/// `#[serde(skip)]`, so without the base64 field the image bytes stay empty.
 pub fn from_json(json: &str) -> Result<Document, String> {
     let mut value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
 
-    // 역직렬화 전에 data_b64를 분리해 둔다 (Document에는 없는 필드).
+    // Detach data_b64 before deserializing (Document has no such field).
     let mut decoded: Vec<(usize, Vec<u8>)> = Vec::new();
     if let Some(arr) = value.get_mut("bin_streams").and_then(|v| v.as_array_mut()) {
         for (i, item) in arr.iter_mut().enumerate() {
@@ -168,7 +169,7 @@ mod tests {
         let doc = 표본_문서();
         let json = to_json(&doc, true, false).unwrap();
         let back = from_json(&json).unwrap();
-        // 이미지 바이트 외 IR 전체가 동일해야 한다.
+        // The whole IR except the image bytes must be identical.
         assert_eq!(doc, back);
     }
 
@@ -180,12 +181,12 @@ mod tests {
             data: vec![0x89, b'P', b'N', b'G', 1, 2, 3, 255, 0, 42],
         });
 
-        // embed 없이는 이미지 바이트가 빠진다.
+        // Without embed the image bytes are dropped.
         let lean = from_json(&to_json(&doc, false, false).unwrap()).unwrap();
         assert_eq!(lean.bin_streams[0].name, "BIN0001.png");
         assert!(lean.bin_streams[0].data.is_empty());
 
-        // embed면 바이트까지 무손실 왕복.
+        // With embed the round trip is lossless down to the bytes.
         let full = from_json(&to_json(&doc, false, true).unwrap()).unwrap();
         assert_eq!(full, doc);
     }

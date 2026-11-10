@@ -13,7 +13,7 @@
   },
   {
     "op": "insert_para",
-    "anchor": "generated edit ops tracer fixture",
+    "anchor": "tracer tail paragraph",
     "text": "inserted before the anchor: tracer",
     "before": true
   }
