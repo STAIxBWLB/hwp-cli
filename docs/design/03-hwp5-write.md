@@ -395,6 +395,12 @@ size.** Using the display size crops to a small top-left fraction of the origina
 After synthesis, `bin_ref = BinRef::Id(storage_id)`. `emit_picture` (write.rs:1941) writes
 `common_data` (or a minimal 40B treated-as-character when absent) and emits `extras` as children.
 
+Picture discovery, synthesis and cleanup also visit table, picture and semantic Generic captions,
+including nested captions. They share the body's binary resolver, storage IDs and instance-ID
+allocator. Raw-backed Generic captions and paragraph lists remain extraction mirrors and are not
+materialized. No genuine caption-picture sample was available for comparison; native caption-picture
+parity remains unverified.
+
 An empty LIST_HEADER for a header or footer (head/foot) is filled by `fill_head_foot_list_header` with
 the section PageDef dimensions (textWidth = the body width, textHeight = the header or footer margin)
 (the 34B `HEADER_LIST_HEADER_TEMPLATE`, patching only paraCount with the real paragraph count).
@@ -432,8 +438,11 @@ approach switched to **safe degradation** (`degrade_hwpx_gso`, write.rs:467):
 
 - **A text box (with text)**: its paragraphs are hoisted into the body after the host paragraph
   (preserving the text), and the shape wrapper is omitted.
-- **Purely decorative (no text)**: left untouched so `strip_unwritable_pictures` drops it
-  (guaranteeing validity).
+- **An unsupported wrapper with caption content**: its caption paragraphs, including synthesized
+  pictures, are hoisted after the host paragraph along with any text-box paragraphs. The original
+  wrapper and caption placement are lost; `OpaqueControlUnrepresentable` remains in the typed loss
+  report, so `--strict` refuses publication.
+- **Purely decorative (no body or caption content)**: left for `strip_unwritable_pictures` to drop.
 
 When hoisting, the ExtCtrl character of the removed control is deleted with `chars.retain` and the
 remaining `ctrl_index` values are remapped (the same logic as strip).
