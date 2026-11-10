@@ -1140,7 +1140,7 @@ mod tests {
             match reader.read_event().unwrap() {
                 Event::Eof => break,
                 Event::Text(t) => {
-                    let raw = String::from_utf8_lossy(&t).to_string();
+                    let raw = t.to_string();
                     if !raw.trim().is_empty() {
                         assert_eq!(
                             stack.last().map(String::as_str),
@@ -1242,26 +1242,17 @@ mod tests {
     }
 
     fn local_name(e: &quick_xml::events::BytesStart) -> String {
-        String::from_utf8_lossy(e.name().as_ref())
-            .rsplit(':')
-            .next()
-            .unwrap()
-            .to_string()
+        e.name().as_ref().rsplit(':').next().unwrap().to_string()
     }
 
     fn local_name_end(e: &quick_xml::events::BytesEnd) -> String {
-        String::from_utf8_lossy(e.name().as_ref())
-            .rsplit(':')
-            .next()
-            .unwrap()
-            .to_string()
+        e.name().as_ref().rsplit(':').next().unwrap().to_string()
     }
 
     fn attr(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
-        e.attributes().flatten().find_map(|a| {
-            (a.key.as_ref() == key.as_bytes())
-                .then(|| String::from_utf8_lossy(&a.value).to_string())
-        })
+        e.attributes()
+            .flatten()
+            .find_map(|a| (a.key.as_ref() == key).then(|| a.value.into_owned()))
     }
 
     fn all_parts_well_formed(bytes: &[u8]) -> bool {

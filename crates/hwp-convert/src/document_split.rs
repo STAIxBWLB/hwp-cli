@@ -1078,7 +1078,7 @@ impl ReferenceScan {
                             self.unverified("raw_xml_unparsed", at);
                             return;
                         };
-                        if attribute.value.contains(&b'<') {
+                        if attribute.value.contains('<') {
                             self.unverified("raw_xml_unparsed", at);
                             return;
                         }
@@ -1090,7 +1090,7 @@ impl ReferenceScan {
                             self.unverified("raw_xml_unparsed", at);
                             return;
                         };
-                        if attribute.key.local_name().as_ref() == b"binaryItemIDRef" {
+                        if attribute.key.local_name().as_ref() == "binaryItemIDRef" {
                             found.push(BinRef::ItemRef(value.into_owned()));
                         }
                     }
@@ -1113,7 +1113,7 @@ impl ReferenceScan {
                         self.unverified("raw_xml_unparsed", at);
                         return;
                     }
-                    if !matches!(&reference[..], b"amp" | b"lt" | b"gt" | b"apos" | b"quot")
+                    if !matches!(&reference[..], "amp" | "lt" | "gt" | "apos" | "quot")
                         && !matches!(reference.resolve_char_ref(), Ok(Some(_)))
                     {
                         self.unverified("raw_xml_unparsed", at);
@@ -1121,7 +1121,7 @@ impl ReferenceScan {
                     }
                 }
                 Ok(Event::Text(text))
-                    if depth == 0 && !text.iter().all(u8::is_ascii_whitespace) =>
+                    if depth == 0 && !text.as_bytes().iter().all(u8::is_ascii_whitespace) =>
                 {
                     self.unverified("raw_xml_unparsed", at);
                     return;

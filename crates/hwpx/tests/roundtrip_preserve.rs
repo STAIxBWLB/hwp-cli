@@ -5,7 +5,6 @@
 //! - Original XML of unparsed run-level objects (hp:container and hp:chartex).
 //! - Unreferenced and byte-duplicate BinData/* entries.
 //! - Package entries outside the writer's fixed list (original META-INF/*, DocOptions, etc.).
-
 use std::io::{Read, Write};
 
 use zip::CompressionMethod;
@@ -700,11 +699,11 @@ fn 전체_재작성은_루트의_확장_xmlns_선언을_보존한다() {
                 assert!(
                     !matches!(ns, ResolveResult::Unknown(_)),
                     "미바인딩 접두어: {:?}",
-                    String::from_utf8_lossy(e.name().as_ref())
+                    e.name().as_ref()
                 );
-                if e.local_name().as_ref() == b"mark" {
+                if e.local_name().as_ref().as_bytes() == b"mark" {
                     mark_bound =
-                        matches!(ns, ResolveResult::Bound(ns) if ns.as_ref() == b"urn:example");
+                        matches!(ns, ResolveResult::Bound(ns) if ns.as_ref() == "urn:example");
                 }
             }
             Ok((_, Event::Eof)) => break,

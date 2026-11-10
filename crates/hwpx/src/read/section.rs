@@ -1,15 +1,14 @@
 //! `Contents/sectionN.xml` → [`Section`].
 //!
-//! 재귀 하강 파서: `hp:p`는 표 셀(`hp:subList`) 안에 다시 나타나므로
-//! 각 파서 함수가 자신의 닫는 태그까지 소비한다.
+//! Recursive-descent parser: hp:p recurs inside table cells (hp:subList), so each parser consumes
+//! through its own closing tag.
 //!
-//! IR 일치 규칙 (hwp5와 동일 의미):
+//! IR consistency rules, sharing semantics with hwp5:
 //! - `hp:secPr` → ExtCtrl(2, "secd") + Control::SectionDef
 //! - `hp:ctrl > hp:colPr` → ExtCtrl(2, "cold") + Control::Generic
 //! - `hp:tbl` → ExtCtrl(11, "tbl ") + Control::Table
-//! - 기타 개체(pic/rect/...) → ExtCtrl(11) + Control::Generic
-//!   (`hp:subList` 문단은 텍스트 추출을 위해 재귀 수집)
-
+//! - Other objects (pic/rect/...) -> ExtCtrl(11) + Control::Generic; hp:subList paragraphs are
+//!   recursively collected for text extraction.
 use hwp_model::opaque::OpaqueRecord;
 use hwp_model::{
     Caption, CaptionDirection, CaptionSide, Cell, CharShapeId, ColumnDef, ContainerBox, Control,
@@ -34,13 +33,13 @@ fn next_event<'a>(reader: &mut XmlReader<'a>) -> Result<Event<'a>> {
     })
 }
 
-/// 자신의 닫는 태그까지 서브트리를 소비한다 (관심 없는 요소 건너뛰기).
+/// Consumes a subtree through its closing tag to skip unneeded elements.
 fn skip_subtree(reader: &mut XmlReader<'_>, name: &[u8]) -> Result<()> {
     let mut depth = 1u32;
     loop {
         match next_event(reader)? {
-            Event::Start(e) if e.local_name().as_ref() == name => depth += 1,
-            Event::End(e) if e.local_name().as_ref() == name => {
+            Event::Start(e) if e.local_name().as_ref().as_bytes() == name => depth += 1,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == name => {
                 depth -= 1;
                 if depth == 0 {
                     return Ok(());
@@ -52,13 +51,12 @@ fn skip_subtree(reader: &mut XmlReader<'_>, name: &[u8]) -> Result<()> {
     }
 }
 
-/// 섹션 루트 요소의 xmlns 선언 중 writer 표준 셋(hs/hp/hc) 외의 것을 원문 속성
-/// 문자열(`xmlns:foo="uri"`)로 수집한다(첫 시작 태그만 본다). 원문 캡처 개체가
-/// 루트에만 선언된 확장 접두어(hp10:, 벤더 접두어 등)를 쓸 수 있어, writer가
-/// 재직렬화 루트에 이 선언들을 그대로 실어야 namespace-well-formed하다.
-/// 속성값은 원문(이스케이프 상태) 그대로 보존한다.
+/// Collects section-root xmlns declarations outside the writer's standard hs/hp/hc set as raw attributes
+/// (`xmlns:foo="uri"`), inspecting only the first start tag. Raw-captured objects may use root-only
+/// extension prefixes (hp10:, vendor prefixes, etc.); preserve these declarations on the reserialized
+/// root for namespace-well-formed output. Keep attribute values escaped exactly as in the source.
 pub fn extract_section_root_xmlns(xml: &str) -> Vec<String> {
-    // writer 표준 선언 — 이 접두어들은 루트 상수가 이미 방출한다.
+    // The writer's root constants already emit these standard namespace declarations.
     const STANDARD: &[&str] = &["hs", "hp", "hc"];
     let mut reader = Reader::from_str(xml);
     let mut out = Vec::new();
@@ -66,7 +64,7 @@ pub fn extract_section_root_xmlns(xml: &str) -> Vec<String> {
         match reader.read_event() {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 for attr in e.attributes().flatten() {
-                    let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                    let key = attr.key.as_ref().to_owned();
                     let keep = if key == "xmlns" {
                         true
                     } else if let Some(prefix) = key.strip_prefix("xmlns:") {
@@ -77,10 +75,10 @@ pub fn extract_section_root_xmlns(xml: &str) -> Vec<String> {
                     if !keep {
                         continue;
                     }
-                    let value = String::from_utf8_lossy(&attr.value).into_owned();
+                    let value = attr.value.into_owned();
                     out.push(format!("{key}=\"{value}\""));
                 }
-                break; // 루트 요소만 본다
+                break; // Inspect only the root element.
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
@@ -130,7 +128,7 @@ pub fn parse_section(xml: &str) -> Result<(Section, Vec<String>)> {
 
     loop {
         match next_event(&mut reader)? {
-            Event::Start(e) if e.local_name().as_ref() == b"p" => {
+            Event::Start(e) if e.local_name().as_ref().as_bytes() == b"p" => {
                 section
                     .paragraphs
                     .push(parse_paragraph(&mut reader, &e, &mut warnings)?);
@@ -142,7 +140,7 @@ pub fn parse_section(xml: &str) -> Result<(Section, Vec<String>)> {
     Ok((section, warnings))
 }
 
-/// `<hp:p>` 하나를 소비한다.
+/// Consumes one hp:p element.
 fn parse_paragraph(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
@@ -153,7 +151,7 @@ fn parse_paragraph(
         style: StyleId(attr_u16(start, "styleIDRef").unwrap_or(0)),
         ..Paragraph::default()
     };
-    // hwp5 break_type 비트와 동일 인코딩 (bit2 쪽, bit3 단)
+    // Same encoding as hwp5 break_type bits (bit2=page, bit3=column).
     if attr(start, "pageBreak").as_deref() == Some("1") {
         para.header.break_type |= 0x04;
     }
@@ -168,16 +166,17 @@ fn parse_paragraph(
         match &event {
             Event::Start(e) | Event::Empty(e) => {
                 let empty = matches!(event, Event::Empty(_));
-                let name = e.local_name().as_ref().to_vec();
+                let name = e.local_name().as_ref().as_bytes().to_vec();
                 match name.as_slice() {
                     b"run" => {
                         let id = attr_u16(e, "charPrIDRef").unwrap_or(0);
                         if last_shape != Some(id) {
-                            // 직전 run이 글자를 안 더했으면(빈 <hp:t/>) 같은 위치에
-                            // 두 글자모양이 겹친다. HWP5 PARA_CHAR_SHAPE는 위치당 1개
-                            // (마지막이 유효)이므로 같은 위치면 마지막 run으로 덮어쓴다.
-                            // (빈 문단의 빈 run 2개 → 첫 run의 큰 글자로 줄이 높아져
-                            // 페이지가 밀리는 문제 방지.)
+                            // If the previous run added no characters (empty hp:t), two character shapes
+                            // share a position. HWP5 PARA_CHAR_SHAPE allows one shape per position, with
+                            // the last winning, so overwrite with the last run. This prevents two empty
+                            // runs in an empty paragraph from using the first run's large font to raise
+                            // the line and shift pages.
+
                             if let Some(last) = para.char_shape_runs.last_mut()
                                 && last.0 == wchar_pos
                             {
@@ -262,13 +261,14 @@ fn parse_paragraph(
                         } else {
                             parse_picture(reader, warnings)?
                         };
-                        // z-순서는 <hp:pic> 시작 태그 속성(자식 <hp:pos>가 아님).
-                        // 누락하면 머리말/본문 로고 겹침 순서가 어긋난다.
+                        // z-order belongs to the hp:pic start tag, not its hp:pos child. Omitting it
+                        // changes header/body logo stacking.
+
                         picture.z_order = attr_i32(e, "zOrder").unwrap_or(0).max(0) as u32;
                         push_ext_ctrl(&mut para, &mut wchar_pos, 11, *b"gso ");
                         para.controls.push(Control::Picture(picture));
                     }
-                    // 그 외 개체 (rect, ellipse, line, polygon, curve, equation, container...)
+                    // Other objects (rect, ellipse, line, polygon, curve, equation, container, etc.).
                     _ => {
                         let mut ctrl_id = [b' '; 4];
                         for (i, b) in name.iter().take(4).enumerate() {
@@ -288,9 +288,9 @@ fn parse_paragraph(
                             container_box: None,
                         };
                         if let Some(kind) = shape_kind(&name) {
-                            // 도형은 의미 파싱(gso_shapes) 경로를 유지한다(원문 캡처 없음).
+                            // Shapes keep the semantic gso_shapes parsing path without raw capture.
                             if !empty {
-                                // 둥근 사각형: <hp:rect ratio="N"> (모서리 곡률 %).
+                                // Rounded rectangle: hp:rect ratio="N" (corner curvature percentage).
                                 let round_ratio = if kind == ShapeKind::Rect {
                                     attr_i32(e, "ratio").unwrap_or(0).clamp(0, 100) as u8
                                 } else {
@@ -306,14 +306,15 @@ fn parse_paragraph(
                                 )?;
                             }
                         } else {
-                            // 미해석 개체(hp:container 등)는 원문 XML을 통째로 캡처해
-                            // 무손실 재직렬화에 쓰고, subList/caption은 텍스트 추출·
-                            // 렌더용으로 캡처본 위에서 다시 수집한다(capture_element가
-                            // 원본 reader의 서브트리를 소비하므로 순서가 바뀌면 안 된다).
+                            // Capture complete raw XML for unmodeled objects (e.g. hp:container) for
+                            // lossless reserialization, then collect subList/caption from that capture
+                            // for text extraction/rendering. Keep this order: capture_element consumes
+                            // the original reader's subtree.
+
                             let raw = capture_element(reader, e, empty)?;
                             if !empty {
                                 let mut raw_reader = Reader::from_str(&raw);
-                                // 캡처본의 첫 이벤트(container 여는 태그)를 소비한다.
+                                // Consume the capture's first event, the container start tag.
                                 let _ = next_event(&mut raw_reader)?;
                                 if name == b"container" {
                                     let mut skipped = 0u32;
@@ -343,7 +344,7 @@ fn parse_paragraph(
                     }
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"p" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"p" => break,
             Event::Eof => {
                 warnings.push("hp:p가 닫히지 않은 채 EOF".to_string());
                 break;
@@ -354,12 +355,12 @@ fn parse_paragraph(
     Ok(para)
 }
 
-/// `<hp:t>` 텍스트 문자 하나를 IR로 적재한다.
+/// Loads one hp:t character into the IR.
 ///
-/// raw 탭(0x09)은 과거 오염 파일(탭이 Text로 잘못 저장된 hwpx) 하위호환을 위해
-/// `InlineCtrl(9)`로 정규화한다(§3.2.3 표 6: 탭 = 8 WCHAR 인라인 컨트롤 — IR 불변식).
-/// 그 외 C0 제어문자는 제거한다(문서 손상 방지; 강제 줄바꿈은 `<hp:lineBreak/>` 요소로
-/// 별도 도착한다). 일반 문자는 `Text`로 적재한다.
+/// Normalize raw tabs (0x09) to InlineCtrl(9) for legacy malformed HWPX that stored tabs as Text
+/// (section 3.2.3 table 6: a tab is an 8-WCHAR inline control, an IR invariant). Drop other C0 controls
+/// to prevent document corruption; forced breaks arrive separately as hp:lineBreak. Load ordinary
+/// characters as Text.
 fn push_text_char(para: &mut Paragraph, wchar_pos: &mut u32, c: char) {
     match c {
         '\t' => {
@@ -377,7 +378,7 @@ fn push_text_char(para: &mut Paragraph, wchar_pos: &mut u32, c: char) {
     }
 }
 
-/// `<hp:t>` 내부의 텍스트를 수집한다 (중첩 마크업은 무시).
+/// Collects text inside hp:t, ignoring nested markup.
 fn parse_text(
     reader: &mut XmlReader<'_>,
     para: &mut Paragraph,
@@ -387,37 +388,37 @@ fn parse_text(
     loop {
         match next_event(reader)? {
             Event::Text(t) => {
-                let s = t.xml10_content().map_err(|e| HwpxError::Xml {
-                    entry: "section".to_string(),
-                    message: e.to_string(),
-                })?;
+                let s = t.xml10_content();
                 for c in s.chars() {
                     push_text_char(para, wchar_pos, c);
                 }
             }
-            // 엔티티 참조(&amp; &#x...;)는 별도 이벤트로 온다
+            // Entity references (&amp;, &#x...;) arrive as separate events.
             Event::GeneralRef(r) => {
                 if let Some(c) = resolve_entity(&r) {
                     push_text_char(para, wchar_pos, c);
                 }
             }
-            // <hp:t> 안의 강제 줄바꿈(정품 한글 구조: `앞<hp:lineBreak/>뒤`).
-            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"lineBreak" => {
+            // Forced line break inside hp:t, as in genuine Hangul mixed content:
+            // text<hp:lineBreak/>text.
+            Event::Empty(e) | Event::Start(e)
+                if e.local_name().as_ref().as_bytes() == b"lineBreak" =>
+            {
                 *wchar_pos += 1;
                 para.chars.push(HwpChar::CharCtrl(10));
             }
-            // <hp:t> 안의 중첩 탭(정품 mixed content: `앞<hp:tab width leader type/>뒤`)
-            // → InlineCtrl(9). 속성값은 한글이 재계산·재유도하므로 보존하지 않고 payload는
-            // 0으로 둔다(왕복 시 writer가 문단 탭 정의에서 종류/채움을 다시 뽑는다). 구형
-            // bare 탭(hp:run 직속 <hp:tab/>)은 parse_paragraph의 b"tab" arm이 처리(하위호환).
-            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"tab" => {
+            // Nested tabs inside hp:t (genuine mixed content: text<hp:tab width leader type/>text)
+            // become InlineCtrl(9). Hangul recalculates these attributes, so leave the payload zero; on
+            // round-trip the writer derives kind/leader from paragraph tab definitions. Legacy bare tabs
+            // directly under hp:run are handled by parse_paragraph's tab arm.
+            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref().as_bytes() == b"tab" => {
                 para.chars.push(HwpChar::InlineCtrl {
                     code: 9,
                     payload: vec![0; 12],
                 });
                 *wchar_pos += 8;
             }
-            Event::End(e) if e.local_name().as_ref() == b"t" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"t" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -426,7 +427,7 @@ fn parse_text(
 }
 
 fn push_ext_ctrl(para: &mut Paragraph, wchar_pos: &mut u32, code: u16, ctrl_id: [u8; 4]) {
-    // payload 선두 4바이트 = 역순 ctrl_id (hwp5 저장 형식과 동일하게 구성)
+    // The payload's first four bytes contain the reversed ctrl_id, matching hwp5 storage.
     let mut payload = vec![0u8; 12];
     payload[..4].copy_from_slice(&{
         let mut rev = ctrl_id;
@@ -443,10 +444,10 @@ fn push_ext_ctrl(para: &mut Paragraph, wchar_pos: &mut u32, code: u16, ctrl_id: 
     *wchar_pos += 8;
 }
 
-/// `<hp:secPr>` — pagePr/margin은 의미 파싱하고, 그 외 자식(grid/startNum/visibility/
-/// lineNumberShape/footNotePr/endNotePr/pageBorderFill 등)은 **원문 XML을 등장 순서대로**
-/// 보존한다(저비용 pass-through). pagePr 자리는 [`SECPR_PAGEPR_SLOT`] 마커로 표시해
-/// writer가 페이지 정의에서 재생성한 pagePr을 같은 위치에 방출하게 한다.
+/// Semantically parses pagePr/margin within hp:secPr and preserves other children
+/// (grid/startNum/visibility/lineNumberShape/footNotePr/endNotePr/pageBorderFill, etc.) as raw XML in
+/// source order for inexpensive passthrough. Mark pagePr's position with SECPR_PAGEPR_SLOT so the writer
+/// regenerates it from the page definition at the same position.
 fn parse_sec_pr(reader: &mut XmlReader<'_>) -> Result<SectionDef> {
     let mut def = SectionDef {
         data: Vec::new(),
@@ -476,14 +477,16 @@ fn parse_sec_pr(reader: &mut XmlReader<'_>) -> Result<SectionDef> {
         match &event {
             Event::Start(e) | Event::Empty(e) => {
                 let empty = matches!(event, Event::Empty(_));
-                match e.local_name().as_ref() {
+                match e.local_name().as_ref().as_bytes() {
                     b"pagePr" => {
-                        // pagePr은 의미 파싱(페이지 정의). 자식 margin은 pagePr 서브트리
-                        // 안에서 읽고, 순서 표시용 마커를 원문 목록에 남긴다.
+                        // Parse pagePr semantically as the page definition, read margin within its
+                        // subtree, and leave a positional marker in the raw list.
+
                         has_page = true;
                         page.width = HwpUnit(attr_i32(e, "width").unwrap_or(0));
                         page.height = HwpUnit(attr_i32(e, "height").unwrap_or(0));
-                        // OWPML landscape="NARROWLY"(세로)/"WIDELY"(가로) — 가로면 bit0
+                        // OWPML landscape="NARROWLY" means portrait; "WIDELY" means landscape and sets
+                        // bit0.
                         if attr(e, "landscape").as_deref() == Some("NARROWLY") {
                             page.attr |= 1;
                         }
@@ -492,14 +495,15 @@ fn parse_sec_pr(reader: &mut XmlReader<'_>) -> Result<SectionDef> {
                         }
                         def.secpr_raw_children.push(SECPR_PAGEPR_SLOT.to_string());
                     }
-                    // 그 외 자식은 서브트리 원문을 그대로 캡처(의미 미해석 — 무손실 왕복).
+                    // Capture other child subtrees as raw XML without semantic interpretation for
+                    // lossless round-trips.
                     _ => {
                         def.secpr_raw_children
                             .push(capture_element(reader, e, empty)?);
                     }
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"secPr" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"secPr" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -510,11 +514,13 @@ fn parse_sec_pr(reader: &mut XmlReader<'_>) -> Result<SectionDef> {
     Ok(def)
 }
 
-/// `<hp:pagePr>` 내부의 `<hp:margin>`을 읽어 페이지 여백을 채운다(pagePr 닫힐 때까지).
+/// Reads hp:margin inside hp:pagePr through its closing tag to fill page margins.
 fn parse_page_pr_children(reader: &mut XmlReader<'_>, page: &mut PageDef) -> Result<()> {
     loop {
         match next_event(reader)? {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"margin" => {
+            Event::Start(e) | Event::Empty(e)
+                if e.local_name().as_ref().as_bytes() == b"margin" =>
+            {
                 page.margin_left = HwpUnit(attr_i32(&e, "left").unwrap_or(0));
                 page.margin_right = HwpUnit(attr_i32(&e, "right").unwrap_or(0));
                 page.margin_top = HwpUnit(attr_i32(&e, "top").unwrap_or(0));
@@ -523,7 +529,7 @@ fn parse_page_pr_children(reader: &mut XmlReader<'_>, page: &mut PageDef) -> Res
                 page.margin_footer = HwpUnit(attr_i32(&e, "footer").unwrap_or(0));
                 page.gutter = HwpUnit(attr_i32(&e, "gutter").unwrap_or(0));
             }
-            Event::End(e) if e.local_name().as_ref() == b"pagePr" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"pagePr" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -531,8 +537,8 @@ fn parse_page_pr_children(reader: &mut XmlReader<'_>, page: &mut PageDef) -> Res
     Ok(())
 }
 
-/// 시작(또는 빈) 요소 하나의 서브트리를 quick-xml 이벤트 재직렬화로 원문 XML 문자열로
-/// 캡처한다. Empty면 단일 요소, Start면 짝 닫는 태그까지 포함한다(중첩 임의 깊이).
+/// Captures one start or empty element subtree as raw XML by reserializing quick-xml events. Empty
+/// captures one element; Start includes its matching closing tag at arbitrary nesting depth.
 fn capture_element(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
@@ -604,7 +610,9 @@ fn parse_col_pr(
         // Parse colLine semantically; per-column colSz widths remain uncollected.
         loop {
             match next_event(reader)? {
-                Event::Start(c) | Event::Empty(c) if c.local_name().as_ref() == b"colLine" => {
+                Event::Start(c) | Event::Empty(c)
+                    if c.local_name().as_ref().as_bytes() == b"colLine" =>
+                {
                     def.divider = Some(hwp_model::BorderLine {
                         line_type: attr(&c, "type")
                             .map_or(1, |t| crate::read::header::line_type_code(&t)),
@@ -613,7 +621,7 @@ fn parse_col_pr(
                         color: attr(&c, "color").map_or(0, |v| parse_color(&v)),
                     });
                 }
-                Event::End(c) if c.local_name().as_ref() == b"colPr" => break,
+                Event::End(c) if c.local_name().as_ref().as_bytes() == b"colPr" => break,
                 Event::Eof => break,
                 _ => {}
             }
@@ -635,8 +643,8 @@ fn head_foot_data(e: &BytesStart<'_>) -> Vec<u8> {
     v
 }
 
-/// hwpx `<hp:pageNum pos formatType sideChar>` → hwp5 pgnp(쪽 번호 위치) 12B.
-/// `properties(u32: 서식 | 위치<<8)` + 예약(6B) + sideChar WCHAR. 정품 실측:
+/// HWPX hp:pageNum pos/formatType/sideChar -> hwp5 pgnp page-number positioning (12 bytes): properties
+/// (u32: format | position<<8), six reserved bytes, and sideChar WCHAR. Genuine measurements:
 /// pos=BOTTOM_CENTER(5), sideChar='-' → `000500000000000000002d00`.
 fn build_pgnp(e: &BytesStart<'_>) -> Vec<u8> {
     let position: u32 = match attr(e, "pos").as_deref() {
@@ -652,7 +660,7 @@ fn build_pgnp(e: &BytesStart<'_>) -> Vec<u8> {
         Some("INSIDE_BOTTOM") => 10,
         _ => 0, // NONE
     };
-    // 서식은 아라비아 숫자(DIGIT=0)만 매핑, 그 외는 0으로 대체.
+    // Only Arabic-number formatting (DIGIT=0) is mapped; substitute zero for other formats.
     let format: u32 = 0;
     let side_char: u16 = attr(e, "sideChar")
         .and_then(|s| s.chars().next())
@@ -666,9 +674,9 @@ fn build_pgnp(e: &BytesStart<'_>) -> Vec<u8> {
     v
 }
 
-/// hwpx `<hp:pageHiding hide.../>` → hwp5 pghd(쪽 감추기) 4B 비트맵.
-/// bit0=머리말, 1=꼬리말, 2=바탕쪽, 3=테두리, 4=배경, 5=쪽번호.
-/// 정품 실측: 표지=0x21(머리말+쪽번호), 목차=0x20(쪽번호).
+/// HWPX hp:pageHiding hide... -> hwp5 pghd page-hiding bitmap (4 bytes): bit0=header, 1=footer, 2=master
+/// page, 3=border, 4=background, 5=page number. Genuine measurements: cover=0x21 (header+page number),
+/// contents=0x20 (page number).
 fn build_pghd(e: &BytesStart<'_>) -> Vec<u8> {
     let bit = |name: &str, b: u32| {
         if attr(e, name).as_deref() == Some("1") {
@@ -686,8 +694,9 @@ fn build_pghd(e: &BytesStart<'_>) -> Vec<u8> {
     mask.to_le_bytes().to_vec()
 }
 
-/// hwpx `<hp:autoNum/>` → hwp5 atno(자동 번호) 12B. 실측 표준값(사업계획서.hwp 전수
-/// `0u32, 4u32, 0u32` — 쪽 번호 자동): 종류/모양 세부 해석은 정답지 확보 후 정밀화.
+/// HWPX hp:autoNum -> hwp5 atno automatic numbering (12 bytes). Measured standard payload throughout the
+/// business-plan sample: 0u32, 4u32, 0u32 (automatic page number). Refine kind/shape details only after
+/// ground truth is available.
 fn build_atno() -> Vec<u8> {
     let mut v = Vec::with_capacity(12);
     v.extend_from_slice(&0u32.to_le_bytes());
@@ -696,8 +705,8 @@ fn build_atno() -> Vec<u8> {
     v
 }
 
-/// hwpx `<hp:newNum num/>` → hwp5 nwno(새 번호 지정) 6B. `종류(u32=0,PAGE)` + `번호(u16)`.
-/// 정품 실측: num=1 → `000000000100`.
+/// HWPX hp:newNum num -> hwp5 nwno number reset (6 bytes): kind (u32=0, PAGE) and number (u16). Genuine
+/// measurement: num=1 -> 000000000100.
 fn build_nwno(e: &BytesStart<'_>) -> Vec<u8> {
     let num: u16 = attr(e, "num").and_then(|s| s.parse().ok()).unwrap_or(1);
     let mut v = Vec::with_capacity(6);
@@ -706,8 +715,8 @@ fn build_nwno(e: &BytesStart<'_>) -> Vec<u8> {
     v
 }
 
-/// para.chars에서 아직 닫히지 않은 가장 안쪽 FIELD_START(코드 3)의 ctrl_id를 찾는다(LIFO).
-/// fieldEnd는 아직 push 전이라 depth=0에서 뒤→앞 스캔(중첩 필드 대응).
+/// Finds the innermost unmatched FIELD_START (code 3) ctrl_id in para.chars, LIFO. fieldEnd is not
+/// pushed yet, so scan backward from depth=0 to support nested fields.
 fn matching_field_start(chars: &[HwpChar]) -> Option<[u8; 4]> {
     let mut depth = 0u32;
     for ch in chars.iter().rev() {
@@ -737,20 +746,23 @@ fn parse_ctrl(
         let event = next_event(reader)?;
         match &event {
             Event::Start(e) | Event::Empty(e) => {
-                let name = e.local_name().as_ref().to_vec();
-                // 필드: fieldBegin → ExtCtrl(3) + Generic %xxx(이름 CTRL_DATA), fieldEnd → InlineCtrl(4).
+                let name = e.local_name().as_ref().as_bytes().to_vec();
+                // Fields: fieldBegin -> ExtCtrl(3) + Generic %xxx (name in CTRL_DATA); fieldEnd ->
+                // InlineCtrl(4).
                 if name.as_slice() == b"fieldBegin" {
                     let ty = attr(e, "type").unwrap_or_default();
                     let ctrl_id = hwp_convert::field::field_ctrl_id_from_owpml(&ty);
                     let fname = attr(e, "name").unwrap_or_default();
-                    // Start면 자식 <hp:parameters>의 Command를 읽는다(self-closing이면 없음).
+                    // For Start, read Command from the hp:parameters child; self-closing elements have
+                    // none.
                     let command = if matches!(event, Event::Start(_)) {
                         read_field_command(reader)?
                     } else {
                         None
                     };
-                    // 필드 커맨드 data는 hwp-convert의 공용 생성기로(종류별 attr/etc +
-                    // 비영 id — 한글이 %hlk를 하이퍼링크로 인식하는 데 필수).
+                    // Build field command data through hwp-convert's shared generator (per-kind
+                    // attr/etc. and a nonzero ID, required for Hangul to recognize %hlk as a hyperlink).
+
                     let data = command
                         .as_deref()
                         .map(|c| hwp_convert::field::make_field_command_data(&ctrl_id, c))
@@ -761,7 +773,7 @@ fn parse_ctrl(
                         paragraph_lists: Vec::new(),
                         extras: Vec::new(),
                         raw_children: vec![OpaqueRecord {
-                            tag: 0x0057, // HWPTAG_CTRL_DATA — 이름 Parameter Set
+                            tag: 0x0057, // HWPTAG_CTRL_DATA: name Parameter Set.
                             data: hwp_convert::field::make_field_ctrl_data(&fname),
                             children: Vec::new(),
                         }],
@@ -777,9 +789,10 @@ fn parse_ctrl(
                     continue;
                 }
                 if name.as_slice() == b"fieldEnd" {
-                    // FIELD_END payload = 매칭 FIELD_START의 역순 ctrl_id 3B(`%` 제외).
-                    // 전부 0이면 한글이 필드 짝을 못 지어 하이퍼링크 클릭이 안 된다
-                    // (정답지 대조 확정). LIFO로 짝을 찾는다.
+                    // FIELD_END carries three reversed bytes of the matching FIELD_START ctrl_id,
+                    // excluding %. An all-zero payload prevents Hangul pairing fields and disables
+                    // hyperlink clicks (confirmed against ground truth). Match LIFO.
+
                     let payload = matching_field_start(&para.chars)
                         .map(|cid| hwp_convert::field::field_end_payload(&cid))
                         .unwrap_or_else(|| vec![0u8; 12]);
@@ -787,7 +800,8 @@ fn parse_ctrl(
                     *wchar_pos += 8;
                     continue;
                 }
-                // 책갈피(지점 표식): <hp:bookmark name="…"/> → ExtCtrl(22) + Generic bokm(이름 CTRL_DATA).
+                // Point bookmarks: hp:bookmark name="..." -> ExtCtrl(22) + Generic bokm (name in
+                // CTRL_DATA).
                 if name.as_slice() == b"bookmark" {
                     let bname = attr(e, "name").unwrap_or_default();
                     let generic = GenericControl {
@@ -796,7 +810,7 @@ fn parse_ctrl(
                         paragraph_lists: Vec::new(),
                         extras: Vec::new(),
                         raw_children: vec![OpaqueRecord {
-                            tag: 0x0057, // HWPTAG_CTRL_DATA — 이름 Parameter Set
+                            tag: 0x0057, // HWPTAG_CTRL_DATA: name Parameter Set.
                             data: hwp_convert::bookmark::make_bokm_ctrl_data(&bname),
                             children: Vec::new(),
                         }],
@@ -811,17 +825,19 @@ fn parse_ctrl(
                     para.controls.push(Control::Generic(generic));
                     continue;
                 }
-                // hwp5와 동일한 ctrl_id/컨트롤 문자 코드 매핑. 쪽번호·감추기·새번호는
-                // 코드 21(페이지 컨트롤)이며, hwp5 페이로드를 여기서 합성해 둔다(빈
-                // GenericControl이면 writer가 드롭). head/foot는 적용쪽+id를 8B로.
+                // Match hwp5 ctrl_id/control-character codes. Page numbering/hiding/reset use code 21
+                // (page control); synthesize hwp5 payloads here because the writer drops empty
+                // GenericControl values. Header/footer use 8 bytes for page scope plus ID.
+
                 let (ctrl_id, code, data): ([u8; 4], u16, Vec<u8>) = match name.as_slice() {
                     b"colPr" => (*b"cold", 2, Vec::new()),
                     b"header" => (*b"head", 16, head_foot_data(e)),
                     b"footer" => (*b"foot", 16, head_foot_data(e)),
                     b"footNote" => (*b"fn  ", 17, Vec::new()),
                     b"endNote" => (*b"en  ", 17, Vec::new()),
-                    // 자동 번호(쪽): 실측 표준 페이로드 12B(사업계획서.hwp 전수 동일) 복원.
-                    // 빈 페이로드면 hwp5 writer의 strip이 드롭한다(왕복 갭 방지).
+                    // Restore the measured standard 12-byte automatic page-number payload, identical
+                    // throughout the business-plan sample. hwp5 writer stripping drops empty payloads,
+                    // so populate it to prevent a round-trip gap.
                     b"autoNum" => (*b"atno", 18, build_atno()),
                     b"pageNum" => (*b"pgnp", 21, build_pgnp(e)),
                     b"pageHiding" => (*b"pghd", 21, build_pghd(e)),
@@ -861,7 +877,7 @@ fn parse_ctrl(
                 push_ext_ctrl(para, wchar_pos, code, ctrl_id);
                 para.controls.push(Control::Generic(generic));
             }
-            Event::End(e) if e.local_name().as_ref() == b"ctrl" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"ctrl" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -869,26 +885,25 @@ fn parse_ctrl(
     Ok(())
 }
 
-/// fieldBegin의 자식 `<hp:parameters>`에서 Command stringParam 텍스트를 읽는다
-/// (`</hp:fieldBegin>`까지). 없으면 None.
+/// Reads Command stringParam text from fieldBegin's hp:parameters child through /hp:fieldBegin. Returns
+/// None when absent.
 fn read_field_command(reader: &mut XmlReader<'_>) -> Result<Option<String>> {
     let mut in_command = false;
     let mut command: Option<String> = None;
     loop {
         let event = next_event(reader)?;
         match &event {
-            Event::Start(e) if e.local_name().as_ref() == b"stringParam" => {
+            Event::Start(e) if e.local_name().as_ref().as_bytes() == b"stringParam" => {
                 in_command = attr(e, "name").as_deref() == Some("Command");
             }
             Event::Text(t) if in_command => {
-                let s = t.xml10_content().map_err(|e| HwpxError::Xml {
-                    entry: "fieldBegin/parameters".to_string(),
-                    message: e.to_string(),
-                })?;
+                let s = t.xml10_content();
                 command.get_or_insert_with(String::new).push_str(&s);
             }
-            Event::End(e) if e.local_name().as_ref() == b"stringParam" => in_command = false,
-            Event::End(e) if e.local_name().as_ref() == b"fieldBegin" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"stringParam" => {
+                in_command = false
+            }
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"fieldBegin" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -896,7 +911,7 @@ fn read_field_command(reader: &mut XmlReader<'_>) -> Result<Option<String>> {
     Ok(command)
 }
 
-/// hwpx vertRelTo → hwp5 코드 (PAPER=0, PAGE=1, PARA=2).
+/// HWPX vertRelTo -> hwp5 code (PAPER=0, PAGE=1, PARA=2).
 fn vert_rel_to_code(s: Option<&str>) -> u8 {
     match s {
         Some("PAGE") => 1,
@@ -905,7 +920,7 @@ fn vert_rel_to_code(s: Option<&str>) -> u8 {
     }
 }
 
-/// hwpx horzRelTo → hwp5 코드 (PAPER=0, PAGE=1, COLUMN=2, PARA=3).
+/// HWPX horzRelTo -> hwp5 code (PAPER=0, PAGE=1, COLUMN=2, PARA=3).
 fn horz_rel_to_code(s: Option<&str>) -> u8 {
     match s {
         Some("PAGE") => 1,
@@ -915,7 +930,7 @@ fn horz_rel_to_code(s: Option<&str>) -> u8 {
     }
 }
 
-/// hwpx vertAlign/horzAlign → hwp5 코드 (TOP/LEFT=0, CENTER=1, BOTTOM/RIGHT=2).
+/// HWPX vertAlign/horzAlign -> hwp5 code (TOP/LEFT=0, CENTER=1, BOTTOM/RIGHT=2).
 fn align_code(s: Option<&str>) -> u8 {
     match s {
         Some("CENTER") => 1,
@@ -924,16 +939,17 @@ fn align_code(s: Option<&str>) -> u8 {
     }
 }
 
-/// `<hp:tbl>` — 표.
+/// hp:tbl table.
 fn parse_table(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<Table> {
-    // 표 속성(attr): bits0-1=쪽 나눔(NONE=0/TABLE=1/CELL=2), bit2=제목줄 반복,
-    // bit3=자동 너비 조정 안 함. 정품 실측으로 검증. 0으로 두면(과거 버그) 표가
-    // "나누지 않음"이 돼, 잔여 공간에 안 들어가는 표가 통째로 다음 쪽으로 밀린다
-    // (목차 박스가 별도 쪽으로 분리되는 원인).
+    // Table attr: bits0-1=page breaking (NONE=0/TABLE=1/CELL=2), bit2=repeat heading rows, bit3=disable
+    // automatic width adjustment. Verified against genuine files. Leaving zero (a former bug) disables
+    // splitting and pushes the entire table onto the next page when it cannot fit, separating contents
+    // boxes into extra pages.
+
     let mut table_attr: u32 = match attr(start, "pageBreak").as_deref() {
         Some("TABLE") => 1,
         Some("CELL") => 2,
@@ -947,12 +963,12 @@ fn parse_table(
     }
     let mut table = Table {
         common_data: Vec::new(),
-        placement: None, // 루프 종료 후 GsoPlacement로 채운다
+        placement: None, // Filled as GsoPlacement after the loop.
         attr: table_attr,
         rows: attr_u16(start, "rowCnt").unwrap_or(0),
         cols: attr_u16(start, "colCnt").unwrap_or(0),
         cell_spacing: attr_u16(start, "cellSpacing").unwrap_or(0),
-        // 셀 안쪽 여백: hwpx <hp:inMargin>에서 읽는다(아래 루프). 기본 0.
+        // Cell inner margins come from hp:inMargin in the loop below; default zero.
         inner_margins: [0; 4],
         row_cell_counts: Vec::new(),
         border_fill: hwp_model::BorderFillId(attr_u16(start, "borderFillIDRef").unwrap_or(0)),
@@ -962,9 +978,10 @@ fn parse_table(
         extras: Vec::new(),
     };
 
-    // 개체 공통 속성(배치) — hwp5 CTRL_HEADER 40바이트로 합성한다. 읽지 않으면
-    // writer가 떠 있는(floating) 상수로 덮어써, 인라인이어야 할 표가 본문 흐름에서
-    // 빠지고 한글이 재배치해 겹침/빈 페이지가 생긴다. zOrder는 시작 태그에 있다.
+    // Object-common placement attributes become a 40-byte hwp5 CTRL_HEADER. Without them the writer
+    // applies floating defaults, removing inline tables from body flow; Hangul relayout then causes
+    // overlaps/blank pages. zOrder is on the start tag.
+
     let mut placement = hwp_model::GsoPlacement {
         z_order: attr_i32(start, "zOrder").unwrap_or(0),
         ..Default::default()
@@ -972,7 +989,7 @@ fn parse_table(
 
     loop {
         match next_event(reader)? {
-            Event::Start(e) => match e.local_name().as_ref() {
+            Event::Start(e) => match e.local_name().as_ref().as_bytes() {
                 b"tc" => {
                     let cell = parse_cell(reader, &e, warnings)?;
                     table.cells.push(cell);
@@ -980,15 +997,15 @@ fn parse_table(
                 b"caption" => {
                     table.caption = Some(parse_caption(reader, &e, warnings)?);
                 }
-                b"tr" => {} // 행은 cellAddr로 복원되므로 컨테이너로만 취급
+                b"tr" => {} // Rows are restored from cellAddr; treat this as a container only.
                 _ => {
-                    let name = e.local_name().as_ref().to_vec();
+                    let name = e.local_name().as_ref().as_bytes().to_vec();
                     skip_subtree(reader, &name)?;
                 }
             },
-            // 표 자신의 셀 안쪽 여백(self-closing). 셀(tc) 안 중첩 표는 parse_cell이
-            // 따로 소비하므로 여기서 보이는 건 이 표의 것뿐이다. 순서: left,right,top,bottom.
-            Event::Empty(e) if e.local_name().as_ref() == b"inMargin" => {
+            // This table's self-closing inner margins, ordered left/right/top/bottom. parse_cell
+            // separately consumes nested tables inside tc, so only the current table reaches this loop.
+            Event::Empty(e) if e.local_name().as_ref().as_bytes() == b"inMargin" => {
                 table.inner_margins = [
                     attr_margin_u16(&e, "left"),
                     attr_margin_u16(&e, "right"),
@@ -996,9 +1013,9 @@ fn parse_table(
                     attr_margin_u16(&e, "bottom"),
                 ];
             }
-            // 배치: <hp:pos>(글자처럼취급/위치기준/오프셋), <hp:sz>(경계 너비/높이 —
-            // 병합 셀 합산보다 정확), <hp:outMargin>(바깥 여백).
-            Event::Empty(e) if e.local_name().as_ref() == b"pos" => {
+            // Placement: hp:pos (treat-as-character, positioning reference, offsets), hp:sz (bounding
+            // width/height, more accurate than summing merged cells), and hp:outMargin (outer margins).
+            Event::Empty(e) if e.local_name().as_ref().as_bytes() == b"pos" => {
                 placement.treat_as_char = attr(&e, "treatAsChar").as_deref() == Some("1");
                 placement.affect_line_spacing = attr(&e, "affectLSpacing").as_deref() == Some("1");
                 placement.flow_with_text = attr(&e, "flowWithText").as_deref() == Some("1");
@@ -1010,11 +1027,11 @@ fn parse_table(
                 placement.vert_offset = attr_offset_i32(&e, "vertOffset").unwrap_or(0);
                 placement.horz_offset = attr_offset_i32(&e, "horzOffset").unwrap_or(0);
             }
-            Event::Empty(e) if e.local_name().as_ref() == b"sz" => {
+            Event::Empty(e) if e.local_name().as_ref().as_bytes() == b"sz" => {
                 placement.width = attr_i32(&e, "width").unwrap_or(0);
                 placement.height = attr_i32(&e, "height").unwrap_or(0);
             }
-            Event::Empty(e) if e.local_name().as_ref() == b"outMargin" => {
+            Event::Empty(e) if e.local_name().as_ref().as_bytes() == b"outMargin" => {
                 placement.out_margins = [
                     attr_u16(&e, "left").unwrap_or(0),
                     attr_u16(&e, "right").unwrap_or(0),
@@ -1022,13 +1039,13 @@ fn parse_table(
                     attr_u16(&e, "bottom").unwrap_or(0),
                 ];
             }
-            Event::End(e) if e.local_name().as_ref() == b"tbl" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"tbl" => break,
             Event::Eof => break,
             _ => {}
         }
     }
     table.placement = Some(placement);
-    // 행별 셀 수 재구성 (hwp5와 동일 의미 유지)
+    // Reconstruct cell counts per row with the same semantics as hwp5.
     let mut counts = vec![0u16; table.rows as usize];
     for cell in &table.cells {
         if let Some(c) = counts.get_mut(cell.row as usize) {
@@ -1072,7 +1089,7 @@ fn parse_caption(
     };
     loop {
         match next_event(reader)? {
-            Event::Start(e) => match e.local_name().as_ref() {
+            Event::Start(e) => match e.local_name().as_ref().as_bytes() {
                 b"subList" => match attr(&e, "textDirection").as_deref() {
                     Some("VERTICAL") => caption.direction = CaptionDirection::Vertical,
                     Some("HORIZONTAL") => caption.direction = CaptionDirection::Horizontal,
@@ -1083,7 +1100,7 @@ fn parse_caption(
                     .push(parse_paragraph(reader, &e, warnings)?),
                 _ => {}
             },
-            Event::End(e) if e.local_name().as_ref() == b"caption" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"caption" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -1104,15 +1121,15 @@ fn attr_margin_u16(e: &BytesStart<'_>, name: &str) -> u16 {
     }
 }
 
-/// `<hp:tc>` — 셀 하나.
+/// One hp:tc cell.
 fn parse_cell(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<Cell> {
     let mut cell = Cell {
-        // 제목(머리) 셀이면 bit18 — 표 헤더 행 반복 대상(정품 실측). vertAlign은
-        // 아래 subList에서 bits5-6에 더한다.
+        // Heading cells set bit18 for repeated table header rows (genuine measurement). vertAlign adds
+        // bits5-6 later in subList.
         list_attr: if attr(start, "header").as_deref() == Some("1") {
             1 << 18
         } else {
@@ -1131,7 +1148,7 @@ fn parse_cell(
     };
     loop {
         match next_event(reader)? {
-            Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref() {
+            Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref().as_bytes() {
                 b"cellAddr" => {
                     cell.col = attr_u16(&e, "colAddr").unwrap_or(0);
                     cell.row = attr_u16(&e, "rowAddr").unwrap_or(0);
@@ -1153,10 +1170,11 @@ fn parse_cell(
                     ];
                 }
                 b"subList" => {
-                    // 셀 세로 정렬(vertAlign)을 list_attr bits5-6에 인코딩:
-                    // TOP=0, CENTER=1, BOTTOM=2. 정품 셀은 CENTER(0x20)인데 안 읽으면
-                    // 0(TOP)이 돼 셀 내용이 위로 몰리고, 셀 높이가 내용보다 크면 빈
-                    // 아래 영역이 다음 쪽으로 분리된다(빈 페이지 발생).
+                    // Encode cell vertical alignment in list_attr bits5-6: TOP=0, CENTER=1, BOTTOM=2.
+                    // Genuine cells use CENTER (0x20); ignoring it yields TOP and pins text upward,
+                    // letting empty space below content split onto another page when the cell is taller
+                    // than its contents.
+
                     let va = match attr(&e, "vertAlign").as_deref() {
                         Some("CENTER") => 1u32,
                         Some("BOTTOM") => 2,
@@ -1169,7 +1187,7 @@ fn parse_cell(
                 }
                 _ => {}
             },
-            Event::End(e) if e.local_name().as_ref() == b"tc" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"tc" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -1213,16 +1231,17 @@ fn parse_picture(
         let event = next_event(reader)?;
         match &event {
             Event::Start(e) | Event::Empty(e) => {
-                match e.local_name().as_ref() {
+                match e.local_name().as_ref().as_bytes() {
                     b"sz" => {
                         pic.width = HwpUnit(attr_i32(e, "width").unwrap_or(0));
                         pic.height = HwpUnit(attr_i32(e, "height").unwrap_or(0));
                     }
                     b"pos" => {
                         pic.treat_as_char = attr(e, "treatAsChar").as_deref() == Some("1");
-                        // 떠 있는 개체 위치 오프셋(글자처럼 취급이면 무시됨). hwpx는
-                        // 음수를 unsigned 2의보수 십진수로 저장(예: -77 = 4294967219)하므로
-                        // u32로 파싱 후 i32로 재해석한다(i32 직접 파싱은 범위 초과로 실패).
+                        // Floating object offsets, ignored for treat-as-character. HWPX stores negatives
+                        // as unsigned two's-complement decimal (-77 = 4294967219), so parse as u32 then
+                        // reinterpret as i32; direct i32 parsing would overflow.
+
                         pic.vert_offset = attr_offset_i32(e, "vertOffset").unwrap_or(0);
                         pic.horz_offset = attr_offset_i32(e, "horzOffset").unwrap_or(0);
                     }
@@ -1258,12 +1277,12 @@ fn parse_picture(
                     b"caption" if matches!(event, Event::Start(_)) => {
                         pic.caption = Some(parse_caption(reader, e, warnings)?);
                     }
-                    // 중첩 pic은 여는 태그만 깊이 증가 (Empty는 닫는 태그가 없음)
+                    // Only nested pic start tags increase depth; Empty has no closing tag.
                     b"pic" if matches!(event, Event::Start(_)) => depth += 1,
                     _ => {}
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"pic" => {
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"pic" => {
                 depth -= 1;
                 if depth == 0 {
                     break;
@@ -1281,7 +1300,7 @@ fn parse_picture(
     Ok(pic)
 }
 
-/// 일반 개체에서 `hp:subList`의 문단들을 재귀 수집 (글상자 텍스트).
+/// Recursively collects hp:subList paragraphs in generic objects (text-box text).
 fn collect_sub_lists(
     reader: &mut XmlReader<'_>,
     end_name: &[u8],
@@ -1292,7 +1311,7 @@ fn collect_sub_lists(
     loop {
         match next_event(reader)? {
             Event::Start(e) => {
-                let name = e.local_name().as_ref().to_vec();
+                let name = e.local_name().as_ref().as_bytes().to_vec();
                 if name == b"caption" {
                     // Unknown/generic shape containers (for example hp:container)
                     // do not go through collect_shape, but they can still carry
@@ -1308,7 +1327,7 @@ fn collect_sub_lists(
                     depth += 1;
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == end_name => {
+            Event::End(e) if e.local_name().as_ref().as_bytes() == end_name => {
                 depth -= 1;
                 if depth == 0 {
                     break;
@@ -1321,8 +1340,8 @@ fn collect_sub_lists(
     Ok(())
 }
 
-/// `hp:subList` 안의 문단들을 모은다(여는 태그는 이미 소비된 상태에서 호출).
-/// collect_sub_lists·collect_container·collect_shape가 공유한다.
+/// Collects hp:subList paragraphs after its opening tag is consumed. Shared by collect_sub_lists,
+/// collect_container and collect_shape.
 fn read_sub_list(reader: &mut XmlReader<'_>, warnings: &mut Vec<String>) -> Result<ParagraphList> {
     let mut list = ParagraphList {
         header_data: Vec::new(),
@@ -1330,11 +1349,11 @@ fn read_sub_list(reader: &mut XmlReader<'_>, warnings: &mut Vec<String>) -> Resu
     };
     loop {
         match next_event(reader)? {
-            Event::Start(inner) if inner.local_name().as_ref() == b"p" => {
+            Event::Start(inner) if inner.local_name().as_ref().as_bytes() == b"p" => {
                 list.paragraphs
                     .push(parse_paragraph(reader, &inner, warnings)?);
             }
-            Event::End(inner) if inner.local_name().as_ref() == b"subList" => break,
+            Event::End(inner) if inner.local_name().as_ref().as_bytes() == b"subList" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -1342,14 +1361,14 @@ fn read_sub_list(reader: &mut XmlReader<'_>, warnings: &mut Vec<String>) -> Resu
     Ok(list)
 }
 
-/// hp:container 전용 수집: 최외곽 컨테이너의 상자(pos/sz/treatAsChar)를
-/// container_box에 담고, 자식 도형을 collect_shape로 파싱해 컨테이너 원점 기준
-/// 상대좌표로 gso_shapes에 담는다. 중첩 컨테이너는 자신의 pos를 오프셋에 누적해
-/// 재귀한다(깊이 상한). 원문 XML은 호출부가 hwpx_raw_xml에 별도 보존한다.
+/// For hp:container, put the outermost pos/sz/treatAsChar box in container_box, parse child shapes with
+/// collect_shape, and store them in gso_shapes relative to the container origin. Nested containers
+/// recursively add their own pos offsets with bounded depth. The caller separately preserves raw XML in
+/// hwpx_raw_xml.
 ///
-/// `base`는 부모 컨테이너들의 누적 오프셋이다. 최외곽(depth 0)은 렌더러가
-/// container_box 원점을 더하므로 자식 오프셋은 (0,0)으로 둔다.
-/// 전제: Hancom이 쓰는 대로 pos/sz가 도형 자식보다 먼저 나온다고 가정한다.
+/// base is the accumulated parent-container offset. At outermost depth 0 the renderer adds
+/// container_box's origin, so child offsets start at (0,0). Assumes pos/sz precede shape children, as
+/// Hancom writes them.
 fn collect_container(
     reader: &mut XmlReader<'_>,
     generic: &mut GenericControl,
@@ -1359,25 +1378,27 @@ fn collect_container(
     skipped: &mut u32,
     text_boxes: &mut Vec<Option<[i32; 4]>>,
 ) -> Result<()> {
-    /// 중첩 컨테이너 재귀 상한(hwp5 shape_draw MAX_DEPTH와 같은 취지).
+    /// Nested-container recursion limit, analogous to hwp5 shape_draw MAX_DEPTH.
     const MAX_CONTAINER_DEPTH: u32 = 8;
     if depth >= MAX_CONTAINER_DEPTH {
         warnings.push("container nesting depth limit; subtree skipped".to_string());
         return skip_subtree(reader, b"container");
     }
-    // 이 컨테이너 자신의 pos(부모 기준). 최외곽(depth 0)은 렌더러가 container_box
-    // 원점을 더하므로 자식 도형에 적용할 누적 오프셋은 (0,0)에서 시작한다.
+    // This container's pos is relative to its parent. At depth 0 the renderer adds container_box's
+    // origin, so accumulated child offsets start at (0,0).
+
     let mut own = (0i32, 0i32);
     let mut sz = (0i32, 0i32);
     let mut anchored = false;
-    // pos가 없는 중첩 컨테이너(정품에 존재)도 부모 누적 오프셋은 이어받는다.
+    // Nested containers without pos, observed in genuine files, still inherit accumulated parent
+    // offsets.
     let mut child_off = base;
     loop {
         let ev = next_event(reader)?;
         let is_empty = matches!(ev, Event::Empty(_));
         match ev {
             Event::Start(e) | Event::Empty(e) => {
-                let n = e.local_name().as_ref().to_vec();
+                let n = e.local_name().as_ref().as_bytes().to_vec();
                 match n.as_slice() {
                     b"pos" => {
                         own.0 = attr_offset_i32(&e, "horzOffset").unwrap_or(0);
@@ -1398,12 +1419,13 @@ fn collect_container(
                         generic
                             .paragraph_lists
                             .push(read_sub_list(reader, warnings)?);
-                        // 컨테이너 자체 소유 텍스트 — 소유 상자 없음(None).
+                        // Text owned by the container itself has no owner box (None).
                         text_boxes.push(None);
                     }
                     b"container" if !is_empty => {
-                        // 중첩 컨테이너: 현재 누적 오프셋을 base로 넘겨 재귀한다
-                        // (중첩 컨테이너가 자신의 pos를 읽으면 그 위에 더한다).
+                        // Recurse into nested containers with the current accumulated offset as base;
+                        // the nested container adds its own pos when read.
+
                         collect_container(
                             reader,
                             generic,
@@ -1416,7 +1438,7 @@ fn collect_container(
                     }
                     n if !is_empty && shape_kind(n).is_some() => {
                         let kind = shape_kind(n).expect("guard");
-                        // 둥근 사각형: <hp:rect ratio="N"> (모서리 곡률 %).
+                        // Rounded rectangle: hp:rect ratio="N" (corner curvature percentage).
                         let round_ratio = if kind == ShapeKind::Rect {
                             attr_i32(&e, "ratio").unwrap_or(0).clamp(0, 100) as u8
                         } else {
@@ -1425,13 +1447,14 @@ fn collect_container(
                         let shape_base = generic.gso_shapes.len();
                         let lists_base = generic.paragraph_lists.len();
                         collect_shape(reader, n, kind, round_ratio, generic, warnings)?;
-                        // ShapeGeom.points는 bbox 기준이라 오프셋 대상이 아니다.
+                        // ShapeGeom.points are relative to the bounding box and must not be offset.
                         for s in &mut generic.gso_shapes[shape_base..] {
                             s.x += child_off.0;
                             s.y += child_off.1;
                         }
-                        // 도형이 기여한 문단 리스트에는 오프셋 반영 후의 도형 상자를
-                        // 소유 상자로 단다(도형이 소거됐으면 컨테이너 상자로 폴).
+                        // Assign the offset-adjusted shape box to paragraphs contributed by that shape;
+                        // fall back to the container box if the shape was discarded.
+
                         let owned = generic
                             .gso_shapes
                             .get(shape_base)
@@ -1442,9 +1465,11 @@ fn collect_container(
                     }
                     _ => {
                         if !is_empty {
-                            // 메타데이터(pos/sz/outMargin/renderingInfo/shapeComment 등)는
-                            // 조용히 걸너뛰고, 가시 개체(pic/ole/chart/equation/미지 요소)만
-                            // skipped_objects로 집계해 렌더러가 typed loss를 내게 한다.
+                            // Silently skip metadata such as
+                            // pos/sz/outMargin/renderingInfo/shapeComment. Count only visible objects
+                            // (pic/ole/chart/equation/unknown elements) as skipped_objects so the
+                            // renderer reports typed loss.
+
                             if !matches!(
                                 n.as_slice(),
                                 b"outMargin"
@@ -1460,7 +1485,7 @@ fn collect_container(
                     }
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"container" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"container" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -1479,7 +1504,7 @@ fn collect_container(
     Ok(())
 }
 
-/// 그리기 개체 요소 이름 → 도형 종류.
+/// Drawing-object element name -> shape kind.
 fn shape_kind(name: &[u8]) -> Option<ShapeKind> {
     match name {
         b"rect" => Some(ShapeKind::Rect),
@@ -1492,8 +1517,8 @@ fn shape_kind(name: &[u8]) -> Option<ShapeKind> {
     }
 }
 
-/// 도형 요소를 파싱: hp:pos(오프셋)·hp:sz(크기)·hp:lineShape(테두리)·
-/// hp:fillBrush>hp:winBrush(채움)·hp:pt*(점) + subList(텍스트). gso_shapes에 담는다.
+/// Parses a shape's hp:pos offsets, hp:sz size, hp:lineShape border, hp:fillBrush/hp:winBrush fill,
+/// hp:pt* points, and subList text into gso_shapes.
 fn collect_shape(
     reader: &mut XmlReader<'_>,
     end_name: &[u8],
@@ -1513,7 +1538,7 @@ fn collect_shape(
     let mut arrow_end = 0u8;
     let mut anchored = false;
     let mut description = None;
-    let mut read_attrs = |e: &BytesStart<'_>| match e.local_name().as_ref() {
+    let mut read_attrs = |e: &BytesStart<'_>| match e.local_name().as_ref().as_bytes() {
         b"pos" => {
             x = attr_offset_i32(e, "horzOffset").unwrap_or(x);
             y = attr_offset_i32(e, "vertOffset").unwrap_or(y);
@@ -1545,15 +1570,17 @@ fn collect_shape(
                 fill = parse_color(&c);
             }
         }
-        // pt0~N은 Polygon/Curve의 기하 점만 취한다. Rect/Ellipse/Arc의 pt0~3은 bbox
-        // 모서리(정품 형식)라 sz로 왕복하므로 무시(안 그러면 도형에 헛점이 붙는다).
+        // Read pt0..N only as Polygon/Curve geometry. Rect/Ellipse/Arc pt0..3 represent bounding-box
+        // corners in genuine files and round-trip through sz; ignore them to avoid spurious geometry
+        // points.
         n if n.starts_with(b"pt") && matches!(kind, ShapeKind::Polygon | ShapeKind::Curve) => {
             if let (Some(px), Some(py)) = (attr_i32(e, "x"), attr_i32(e, "y")) {
                 points.push((px, py));
             }
         }
-        // Arc는 center/ax1/ax2(bbox 기준, 등장 순서)로 곡선 기하를 운반한다 — writer의 역.
-        // 렌더러가 이 3점(중심+켤레 두 축)으로 호를 그린다.
+        // Arc carries geometry in center/ax1/ax2 points relative to the bounding box and in encounter
+        // order, inverse to the writer. The renderer uses the center plus two conjugate axes to draw the
+        // arc.
         b"center" | b"ax1" | b"ax2" if matches!(kind, ShapeKind::Arc) => {
             if let (Some(px), Some(py)) = (attr_i32(e, "x"), attr_i32(e, "y")) {
                 points.push((px, py));
@@ -1567,7 +1594,7 @@ fn collect_shape(
         match next_event(reader)? {
             Event::Empty(e) => read_attrs(&e),
             Event::Start(e) => {
-                let n = e.local_name().as_ref().to_vec();
+                let n = e.local_name().as_ref().as_bytes().to_vec();
                 if n == b"caption" {
                     generic.caption = Some(parse_caption(reader, &e, warnings)?);
                 } else if n == b"subList" {
@@ -1577,11 +1604,17 @@ fn collect_shape(
                     };
                     loop {
                         match next_event(reader)? {
-                            Event::Start(inner) if inner.local_name().as_ref() == b"p" => {
+                            Event::Start(inner)
+                                if inner.local_name().as_ref().as_bytes() == b"p" =>
+                            {
                                 list.paragraphs
                                     .push(parse_paragraph(reader, &inner, warnings)?);
                             }
-                            Event::End(inner) if inner.local_name().as_ref() == b"subList" => break,
+                            Event::End(inner)
+                                if inner.local_name().as_ref().as_bytes() == b"subList" =>
+                            {
+                                break;
+                            }
                             Event::Eof => break,
                             _ => {}
                         }
@@ -1599,7 +1632,7 @@ fn collect_shape(
                     }
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == end_name => {
+            Event::End(e) if e.local_name().as_ref().as_bytes() == end_name => {
                 depth -= 1;
                 if depth == 0 {
                     break;
@@ -1610,7 +1643,7 @@ fn collect_shape(
         }
     }
 
-    // 가로/세로 선은 한 축이 0일 수 있으므로 w 또는 h만 있어도 받는다.
+    // Horizontal/vertical lines may have a zero extent on one axis; accept either w or h.
     if w != 0 || h != 0 || !points.is_empty() {
         generic.gso_shapes.push(ShapeGeom {
             kind,
@@ -1634,8 +1667,8 @@ fn collect_shape(
     Ok(())
 }
 
-/// `<hp:equation>` — 수식. 스크립트(`script` 속성 또는 `<hp:script>` 자식)와
-/// 크기(hp:sz)·위치(hp:pos)를 모은다. 렌더러는 상자+텍스트로 근사한다.
+/// hp:equation: collects the script attribute or hp:script child, hp:sz size and hp:pos position. The
+/// renderer approximates it with a box and text.
 fn parse_equation(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
@@ -1644,8 +1677,9 @@ fn parse_equation(
     let mut script = attr(start, "script").unwrap_or_default();
     let (mut width, mut height, mut x, mut y) = (0i32, 0i32, 0i32, 0i32);
     let mut inline = true;
-    // 의미 모델링하지 않는 속성(글자색·baseUnit·수식 글꼴·zOrder·본문배치…)은 원문으로
-    // 보존해 왕복에서 되쓴다. id 는 writer 가 문서 전역으로 다시 매기므로 제외한다.
+    // Preserve unmodeled attributes (character color, baseUnit, equation font, zOrder, body placement,
+    // etc.) raw for round-trips. Exclude id because the writer renumbers it document-wide.
+
     let raw_attrs = raw_attrs_except(start, b"id");
     let mut raw_props = Vec::new();
     if !empty {
@@ -1655,7 +1689,7 @@ fn parse_equation(
                 Event::Start(e) | Event::Empty(e) => {
                     let is_start = matches!(ev, Event::Start(_));
                     let is_empty_el = matches!(ev, Event::Empty(_));
-                    match e.local_name().as_ref() {
+                    match e.local_name().as_ref().as_bytes() {
                         b"script" if is_start => script = read_element_text(reader, b"script")?,
                         b"sz" => {
                             width = attr_i32(e, "width").unwrap_or(width);
@@ -1668,11 +1702,12 @@ fn parse_equation(
                             y = attr_offset_i32(e, "vertOffset").unwrap_or(0);
                             raw_props.push(capture_element(reader, e, is_empty_el)?);
                         }
-                        // outMargin·caption·shapeComment 등 나머지 공통 자식도 원문 보존.
+                        // Also preserve other common children such as outMargin/caption/shapeComment
+                        // raw.
                         _ => raw_props.push(capture_element(reader, e, is_empty_el)?),
                     }
                 }
-                Event::End(e) if e.local_name().as_ref() == b"equation" => break,
+                Event::End(e) if e.local_name().as_ref().as_bytes() == b"equation" => break,
                 Event::Eof => break,
                 _ => {}
             }
@@ -1690,16 +1725,16 @@ fn parse_equation(
     })
 }
 
-/// 시작 태그의 속성을 `name="value"` 원문으로 되돌린다(`skip` 이름 하나는 제외).
-/// 값은 파일에 있던 이스케이프 형태 그대로 다시 쓰므로(재이스케이프 없음) 왕복이 닫힌다.
+/// Reconstructs raw name="value" attributes from a start tag, excluding skip. Values retain their
+/// original escaped form without re-escaping, completing the round-trip.
 fn raw_attrs_except(start: &BytesStart<'_>, skip: &[u8]) -> Option<String> {
     let mut out = String::new();
     for a in start.attributes().flatten() {
-        if a.key.local_name().as_ref() == skip {
+        if a.key.local_name().as_ref().as_bytes() == skip {
             continue;
         }
-        let key = String::from_utf8_lossy(a.key.as_ref()).into_owned();
-        let val = String::from_utf8_lossy(&a.value).into_owned();
+        let key = a.key.as_ref().to_owned();
+        let val = a.value.into_owned();
         if !out.is_empty() {
             out.push(' ');
         }
@@ -1708,35 +1743,29 @@ fn raw_attrs_except(start: &BytesStart<'_>, skip: &[u8]) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
-/// 주어진 요소가 닫힐 때까지 텍스트를 모은다.
+/// Collects text through the given element's closing tag.
 fn read_element_text(reader: &mut XmlReader<'_>, end: &[u8]) -> Result<String> {
     let mut out = String::new();
     loop {
         match next_event(reader)? {
             Event::Text(t) => {
-                let s = t.xml10_content().map_err(|e| HwpxError::Xml {
-                    entry: "section".to_string(),
-                    message: e.to_string(),
-                })?;
+                let s = t.xml10_content();
                 out.push_str(&s);
             }
-            // 수식 스크립트는 `x &lt; y`처럼 XML 특수문자를 담는다 — 참조를 풀지 않으면
-            // 그 글자가 통째로 사라진다(writer의 esc()와 짝을 이루는 역변환).
+            // Equation scripts contain XML special characters such as x &lt; y. Resolve references or
+            // the characters vanish entirely; this is the inverse of the writer's esc().
             Event::GeneralRef(r) => {
                 if let Some(c) = resolve_entity(&r) {
                     out.push(c);
                 }
             }
-            // CDATA 구획(`<![CDATA[a<b]]>`)은 Text가 아닌 별도 이벤트다. 내용은 이미
-            // 문자 그대로라 참조 해석 없이 붙인다.
+            // CDATA (e.g. <![CDATA[a<b]]>) arrives separately from Text. Its content is already literal
+            // and needs no reference resolution.
             Event::CData(t) => {
-                let s = t.xml10_content().map_err(|e| HwpxError::Xml {
-                    entry: "section".to_string(),
-                    message: e.to_string(),
-                })?;
+                let s = t.xml10_content();
                 out.push_str(&s);
             }
-            Event::End(e) if e.local_name().as_ref() == end => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == end => break,
             Event::Eof => break,
             _ => {}
         }
@@ -1744,7 +1773,8 @@ fn read_element_text(reader: &mut XmlReader<'_>, end: &[u8]) -> Result<String> {
     Ok(out)
 }
 
-/// hp:lineShape `style` → 선 종류 코드(0=실선,1=파선,2=점선,3=일점쇄선,4=이점쇄선,5=긴파선).
+/// hp:lineShape style -> line-kind code (0=solid, 1=dash, 2=dot, 3=dash-dot, 4=dash-dot-dot, 5=long
+/// dash).
 fn line_style_code(s: &str) -> u8 {
     match s.to_ascii_uppercase().as_str() {
         "DASH" => 1,
@@ -1752,11 +1782,11 @@ fn line_style_code(s: &str) -> u8 {
         "DASH_DOT" | "DASHDOT" => 3,
         "DASH_DOT_DOT" | "DASHDOTDOT" => 4,
         "LONG_DASH" | "LONGDASH" => 5,
-        _ => 0, // SOLID 등
+        _ => 0, // SOLID, etc.
     }
 }
 
-/// hp:lineShape `headStyle`/`tailStyle` → 화살촉 유무(0=없음/NORMAL, 1=화살촉).
+/// hp:lineShape headStyle/tailStyle -> arrowhead presence (0=none/NORMAL, 1=arrowhead).
 fn arrow_code(s: &str) -> u8 {
     if s.is_empty() || s.eq_ignore_ascii_case("NORMAL") || s.eq_ignore_ascii_case("NONE") {
         0
@@ -1765,14 +1795,14 @@ fn arrow_code(s: &str) -> u8 {
     }
 }
 
-/// `<hp:gradation>` — 그러데이션 채움. type(LINEAR/RADIAL/...), angle, 자식
-/// `hp:color value="#.."` 들을 균등 위치로 stop화한다.
+/// hp:gradation fill: maps type (LINEAR/RADIAL/etc.), angle and hp:color value="#.." children to evenly
+/// spaced color stops.
 fn parse_gradation(
     reader: &mut XmlReader<'_>,
     start: &BytesStart<'_>,
 ) -> Result<Option<GradientSpec>> {
     let gtype = attr(start, "type").unwrap_or_default();
-    // LINEAR=선형, 그 외(RADIAL/CIRCLE/CONICAL/SQUARE)는 방사형 근사.
+    // LINEAR is linear; approximate other kinds (RADIAL/CIRCLE/CONICAL/SQUARE) as radial.
     let radial = !gtype.eq_ignore_ascii_case("LINEAR");
     let angle_deg = attr_i32(start, "angle").unwrap_or(0) as f32;
     let center_x = attr_i32(start, "centerX").unwrap_or(0);
@@ -1781,12 +1811,12 @@ fn parse_gradation(
     let mut colors: Vec<u32> = Vec::new();
     loop {
         match next_event(reader)? {
-            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"color" => {
+            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref().as_bytes() == b"color" => {
                 if let Some(v) = attr(&e, "value") {
                     colors.push(parse_color(&v));
                 }
             }
-            Event::End(e) if e.local_name().as_ref() == b"gradation" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"gradation" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -1810,11 +1840,13 @@ fn parse_gradation(
     }))
 }
 
-/// `<hp:linesegarray>` — 줄 배치 정보.
+/// hp:linesegarray line-layout information.
 fn parse_linesegs(reader: &mut XmlReader<'_>, para: &mut Paragraph) -> Result<()> {
     loop {
         match next_event(reader)? {
-            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"lineseg" => {
+            Event::Empty(e) | Event::Start(e)
+                if e.local_name().as_ref().as_bytes() == b"lineseg" =>
+            {
                 para.line_segs.push(LineSeg {
                     text_start: attr_u32(&e, "textpos").unwrap_or(0),
                     v_pos: attr_i32(&e, "vertpos").unwrap_or(0),
@@ -1827,7 +1859,7 @@ fn parse_linesegs(reader: &mut XmlReader<'_>, para: &mut Paragraph) -> Result<()
                     flags: attr_u32(&e, "flags").unwrap_or(0),
                 });
             }
-            Event::End(e) if e.local_name().as_ref() == b"linesegarray" => break,
+            Event::End(e) if e.local_name().as_ref().as_bytes() == b"linesegarray" => break,
             Event::Eof => break,
             _ => {}
         }
@@ -1870,7 +1902,7 @@ mod page_ctrl_tests {
         e
     }
 
-    /// 쪽 번호 위치(pgnp): 정품 한라대 = pos BOTTOM_CENTER + sideChar '-'.
+    /// Page-number position (pgnp): the genuine university sample uses BOTTOM_CENTER plus sideChar '-'.
     #[test]
     fn pgnp_합성() {
         let e = elem(
@@ -1881,14 +1913,14 @@ mod page_ctrl_tests {
                 ("sideChar", "-"),
             ],
         );
-        // props=위치5<<8=0x500, 예약6B, sideChar '-'(0x2d) WCHAR.
+        // props=position5<<8=0x500, six reserved bytes, sideChar '-' (0x2d) WCHAR.
         assert_eq!(
             build_pgnp(&e),
             vec![0x00, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0x2d, 0x00]
         );
     }
 
-    /// 쪽 감추기(pghd): 표지=머리말+쪽번호(0x21), 목차=쪽번호(0x20).
+    /// Page hiding (pghd): cover=header+page number (0x21), contents=page number (0x20).
     #[test]
     fn pghd_합성() {
         let cover = elem(
@@ -1903,14 +1935,14 @@ mod page_ctrl_tests {
         assert_eq!(build_pghd(&toc), vec![0x20, 0, 0, 0]);
     }
 
-    /// 새 번호 지정(nwno): num=1 → 종류(0) + 번호(1).
+    /// Number reset (nwno): num=1 -> kind(0) + number(1).
     #[test]
     fn nwno_합성() {
         let e = elem("hp:newNum", &[("num", "1"), ("numType", "PAGE")]);
         assert_eq!(build_nwno(&e), vec![0, 0, 0, 0, 0x01, 0x00]);
     }
 
-    /// 머리말/꼬리말: 적용쪽(u32) + id(u32). BOTH(0) + id=2.
+    /// Header/footer: page scope (u32) plus ID (u32); BOTH(0) and id=2.
     #[test]
     fn head_foot_8바이트() {
         let e = elem("hp:header", &[("id", "2"), ("applyPageType", "BOTH")]);
@@ -1919,7 +1951,7 @@ mod page_ctrl_tests {
         assert_eq!(head_foot_data(&odd), vec![0x02, 0, 0, 0, 0x03, 0, 0, 0]);
     }
 
-    /// 완결된 `<hp:gradation>…` 문서를 열어 시작 태그를 소비하고 parse_gradation 호출.
+    /// Opens a complete hp:gradation document, consumes its start tag, and calls parse_gradation.
     fn run_gradation(xml: &str) -> Option<GradientSpec> {
         let mut reader = Reader::from_str(xml);
         let start = match reader.read_event().unwrap() {
@@ -1929,7 +1961,7 @@ mod page_ctrl_tests {
         parse_gradation(&mut reader, &start).unwrap()
     }
 
-    /// 선형 그러데이션: type=LINEAR, 색 2개 → stop 0.0/1.0 균등.
+    /// Linear gradient: type=LINEAR with two colors -> evenly spaced stops 0.0/1.0.
     #[test]
     fn gradation_선형_2색() {
         let g = run_gradation(
@@ -1943,7 +1975,7 @@ mod page_ctrl_tests {
         assert_eq!(g.stops[1], (1.0, parse_color("#0000FF")));
     }
 
-    /// 방사형 그러데이션: type=RADIAL → radial=true, 색 3개 → 0/0.5/1.0.
+    /// Radial gradient: type=RADIAL -> radial=true; three colors -> 0/0.5/1.0.
     #[test]
     fn gradation_방사_3색() {
         let g = run_gradation(
@@ -1955,8 +1987,8 @@ mod page_ctrl_tests {
         assert!((g.stops[1].0 - 0.5).abs() < 0.001);
     }
 
-    /// 과거 오염 파일 하위호환: `<hp:t>` 안 raw 0x09를 InlineCtrl(9)로 정규화하고
-    /// 그 외 C0 제어문자는 제거한다(Text('\t')로 되읽으면 재저장 시 다시 깨진다).
+    /// Legacy malformed-file compatibility: normalize raw 0x09 inside hp:t to InlineCtrl(9), dropping
+    /// other C0 controls. Rereading as Text(tab) would corrupt the next save again.
     #[test]
     fn 오염_raw탭_읽기_인라인컨트롤_정규화() {
         let xml = concat!(
@@ -1966,7 +1998,7 @@ mod page_ctrl_tests {
         );
         let (section, _) = parse_section(xml).unwrap();
         let chars = &section.paragraphs[0].chars;
-        // raw 탭 → InlineCtrl(9), 제어문자 0x01 제거, 나머지 텍스트 보존.
+        // Raw tab -> InlineCtrl(9), drop control 0x01, preserve remaining text.
         assert!(
             chars
                 .iter()
@@ -2019,7 +2051,7 @@ mod page_ctrl_tests {
         assert_eq!(g2.step, g.step);
     }
 
-    /// 색이 1개 이하면 그러데이션 없음(None).
+    /// One or fewer colors means no gradient (None).
     #[test]
     fn gradation_단색_무시() {
         assert!(

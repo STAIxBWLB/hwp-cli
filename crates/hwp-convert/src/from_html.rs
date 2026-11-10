@@ -305,7 +305,7 @@ impl Parser<'_> {
         loop {
             match r.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                    let name = e.local_name().as_ref().to_owned();
                     match name.as_str() {
                         "p" | "figcaption" => {
                             self.para_class = class_ps(&e).and_then(|n| self.ps_shape(n));
@@ -392,21 +392,16 @@ impl Parser<'_> {
                 }
                 Ok(Event::Empty(e)) => {
                     match e.local_name().as_ref() {
-                        b"br" => self.push_line_break(),
-                        b"img" => self.embed_image(&e)?,
-                        b"hr" | b"meta" => {} // hr and head meta — no content
+                        "br" => self.push_line_break(),
+                        "img" => self.embed_image(&e)?,
+                        "hr" | "meta" => {} // hr and head meta — no content
                         other => {
-                            return Err(format!(
-                                "지원하지 않는 태그: <{}>",
-                                String::from_utf8_lossy(other)
-                            ));
+                            return Err(format!("지원하지 않는 태그: <{other}>"));
                         }
                     }
                 }
                 Ok(Event::Text(t)) => {
-                    let s = t
-                        .xml10_content()
-                        .map_err(|e| format!("텍스트 디코딩 실패: {e}"))?;
+                    let s = t.xml10_content();
                     self.push_html_text(&s);
                 }
                 Ok(Event::GeneralRef(g)) => {
@@ -415,7 +410,7 @@ impl Parser<'_> {
                     self.push_text(&c.to_string());
                 }
                 Ok(Event::End(e)) => {
-                    let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                    let name = e.local_name().as_ref().to_owned();
                     if Some(name.as_str()) == end {
                         self.flush_paragraph(false);
                         return Ok(());
@@ -440,7 +435,7 @@ impl Parser<'_> {
         loop {
             match r.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                    let name = e.local_name().as_ref().to_owned();
                     match name.as_str() {
                         "strong" | "em" | "u" | "s" | "sup" | "sub" | "a" | "span" => {
                             self.inline_tag(r, &e)?;
@@ -455,19 +450,14 @@ impl Parser<'_> {
                     }
                 }
                 Ok(Event::Empty(e)) => match e.local_name().as_ref() {
-                    b"br" => self.push_line_break(),
-                    b"img" => self.embed_image(&e)?,
+                    "br" => self.push_line_break(),
+                    "img" => self.embed_image(&e)?,
                     other => {
-                        return Err(format!(
-                            "지원하지 않는 태그: <{}>",
-                            String::from_utf8_lossy(other)
-                        ));
+                        return Err(format!("지원하지 않는 태그: <{other}>"));
                     }
                 },
                 Ok(Event::Text(t)) => {
-                    let s = t
-                        .xml10_content()
-                        .map_err(|e| format!("텍스트 디코딩 실패: {e}"))?;
+                    let s = t.xml10_content();
                     self.push_html_text(&s);
                 }
                 Ok(Event::GeneralRef(g)) => {
@@ -476,7 +466,7 @@ impl Parser<'_> {
                     self.push_text(&c.to_string());
                 }
                 Ok(Event::End(e)) => {
-                    let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                    let name = e.local_name().as_ref().to_owned();
                     if name == end {
                         return Ok(());
                     }
@@ -491,7 +481,7 @@ impl Parser<'_> {
 
     /// Handles one inline formatting tag (entered from both block and inline loops).
     fn inline_tag(&mut self, r: &mut Reader<&[u8]>, e: &BytesStart<'_>) -> Result<(), String> {
-        let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+        let name = e.local_name().as_ref().to_owned();
         match name.as_str() {
             "a" => {
                 let href = attr(e, "href").ok_or("<a>에 href가 없습니다")?;
@@ -576,29 +566,21 @@ impl Parser<'_> {
         loop {
             match r.read_event() {
                 Ok(Event::Start(e)) => match e.local_name().as_ref() {
-                    b"thead" | b"tbody" => {}
-                    b"tr" => rows.push(self.table_row(r)?),
+                    "thead" | "tbody" => {}
+                    "tr" => rows.push(self.table_row(r)?),
                     other => {
-                        return Err(format!(
-                            "<table> 안에 미지원 태그: <{}>",
-                            String::from_utf8_lossy(other)
-                        ));
+                        return Err(format!("<table> 안에 미지원 태그: <{other}>"));
                     }
                 },
                 Ok(Event::End(e)) => match e.local_name().as_ref() {
-                    b"thead" | b"tbody" => {}
-                    b"table" => break,
+                    "thead" | "tbody" => {}
+                    "table" => break,
                     other => {
-                        return Err(format!(
-                            "닫힘 태그 불일치: </{}> (in <table>)",
-                            String::from_utf8_lossy(other)
-                        ));
+                        return Err(format!("닫힘 태그 불일치: </{other}> (in <table>)"));
                     }
                 },
                 Ok(Event::Text(t)) => {
-                    let s = t
-                        .xml10_content()
-                        .map_err(|e| format!("텍스트 디코딩: {e}"))?;
+                    let s = t.xml10_content();
                     if !s.trim().is_empty() {
                         return Err("<table> 안에 텍스트가 바로 있습니다".into());
                     }
@@ -616,27 +598,19 @@ impl Parser<'_> {
         loop {
             match r.read_event() {
                 Ok(Event::Start(e)) => match e.local_name().as_ref() {
-                    b"td" | b"th" => cells.push(self.table_cell(r, &e)?),
+                    "td" | "th" => cells.push(self.table_cell(r, &e)?),
                     other => {
-                        return Err(format!(
-                            "<tr> 안에 미지원 태그: <{}>",
-                            String::from_utf8_lossy(other)
-                        ));
+                        return Err(format!("<tr> 안에 미지원 태그: <{other}>"));
                     }
                 },
                 Ok(Event::End(e)) => match e.local_name().as_ref() {
-                    b"tr" => break,
+                    "tr" => break,
                     other => {
-                        return Err(format!(
-                            "닫힘 태그 불일치: </{}> (in <tr>)",
-                            String::from_utf8_lossy(other)
-                        ));
+                        return Err(format!("닫힘 태그 불일치: </{other}> (in <tr>)"));
                     }
                 },
                 Ok(Event::Text(t)) => {
-                    let s = t
-                        .xml10_content()
-                        .map_err(|e| format!("텍스트 디코딩: {e}"))?;
+                    let s = t.xml10_content();
                     if !s.trim().is_empty() {
                         return Err("<tr> 안에 텍스트가 바로 있습니다".into());
                     }
@@ -671,7 +645,7 @@ impl Parser<'_> {
         let col_span = span("colspan")?;
         let row_span = span("rowspan")?;
         let end = match e.local_name().as_ref() {
-            b"th" => "th",
+            "th" => "th",
             _ => "td",
         };
         self.ctx_stack.push(BlockCtx::default());
@@ -1235,9 +1209,7 @@ impl Parser<'_> {
         loop {
             match r.read_event() {
                 Ok(Event::Text(t)) => {
-                    let s = t
-                        .xml10_content()
-                        .map_err(|e| format!("텍스트 디코딩 실패: {e}"))?;
+                    let s = t.xml10_content();
                     css.push_str(&s);
                 }
                 // quick-xml 0.40 emits references as separate events — restores escaped font
@@ -1246,12 +1218,12 @@ impl Parser<'_> {
                     Some(c) => css.push(c),
                     None => {
                         css.push('&');
-                        css.push_str(&String::from_utf8_lossy(&g));
+                        css.push_str(&g);
                         css.push(';');
                     }
                 },
                 Ok(Event::End(e)) => {
-                    if e.local_name().as_ref() == b"style" {
+                    if e.local_name().as_ref() == "style" {
                         return Ok(css);
                     }
                 }
@@ -1443,12 +1415,12 @@ impl Parser<'_> {
         loop {
             match r.read_event() {
                 Ok(Event::Start(e)) => {
-                    if e.local_name().as_ref() == end.as_bytes() {
+                    if e.local_name().as_ref() == end {
                         depth += 1;
                     }
                 }
                 Ok(Event::End(e)) => {
-                    if e.local_name().as_ref() == end.as_bytes() {
+                    if e.local_name().as_ref() == end {
                         depth -= 1;
                         if depth == 0 {
                             return Ok(());
@@ -1495,8 +1467,8 @@ fn parse_hex_color(s: &str) -> Option<u32> {
 fn attr(e: &BytesStart<'_>, name: &str) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         let key = a.key.local_name();
-        if key.as_ref() == name.as_bytes() {
-            let raw = String::from_utf8_lossy(&a.value).into_owned();
+        if key.as_ref() == name {
+            let raw = a.value.into_owned();
             Some(
                 quick_xml::escape::unescape(&raw)
                     .map(|s| s.into_owned())
@@ -1514,11 +1486,11 @@ fn resolve_entity(g: &quick_xml::events::BytesRef<'_>) -> Option<char> {
         .ok()
         .flatten()
         .or_else(|| match &g[..] {
-            b"amp" => Some('&'),
-            b"lt" => Some('<'),
-            b"gt" => Some('>'),
-            b"quot" => Some('"'),
-            b"apos" => Some('\''),
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
             _ => None,
         })
 }
@@ -1876,7 +1848,7 @@ mod tests {
         assert!(html.contains("letter-spacing:0.05em"), "{html}");
         assert!(html.contains("text-align:center"), "{html}");
         assert!(html.contains("line-height:1.3"), "{html}");
-        // spacing_bottom 600(IR, 2배 단위) = 300 HWPUNIT = 1.058mm — 물리 단위 정합.
+        // spacing_bottom 600 (IR, doubled units) = 300 HWPUNIT = 1.058mm; physical units agree.
         assert!(html.contains("margin-bottom:1.058mm"), "{html}");
 
         let back = from_html(&html).unwrap();

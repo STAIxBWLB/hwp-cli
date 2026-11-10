@@ -10,6 +10,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Changed**
+
+- Upgrade quick-xml to 0.42 and migrate XML consumers to its UTF-8 string API while retaining
+  existing text normalization and entity resolution ([#490](https://github.com/STAIxBWLB/hwp-cli/issues/490)).
+
 **Fixed**
 
 - A numbering template containing `<`, `>` or `&` now survives HWPX output. The HWPX reader
