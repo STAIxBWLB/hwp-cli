@@ -5742,6 +5742,159 @@ mod tests {
         })
     }
 
+    fn caption_picture_fixture(owner: &str, picture: Picture) -> Document {
+        let caption = Caption {
+            side: CaptionSide::Bottom,
+            direction: CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![Paragraph {
+                chars: vec![
+                    HwpChar::ExtCtrl {
+                        code: 11,
+                        ctrl_id: *b"gso ",
+                        payload: vec![0; 12],
+                        ctrl_index: Some(0),
+                    },
+                    HwpChar::CharCtrl(13),
+                ],
+                controls: vec![Control::Picture(picture)],
+                ..Paragraph::default()
+            }],
+        };
+        let owner = match owner {
+            "table" => {
+                let mut table = synth_table(None);
+                table.caption = Some(caption);
+                Control::Table(table)
+            }
+            "picture" => {
+                let Control::Picture(mut outer) = picture_with_instance_id(0x3000_0100) else {
+                    unreachable!()
+                };
+                outer.extras = build_picture_extras(100, 100, (100, 100), 1, 0x3010_0100);
+                outer.caption = Some(caption);
+                Control::Picture(outer)
+            }
+            "generic" => {
+                let Control::Generic(mut generic) = shape_caption_holding(Vec::new()) else {
+                    unreachable!()
+                };
+                generic.caption = Some(caption);
+                Control::Generic(generic)
+            }
+            _ => unreachable!(),
+        };
+        let mut document = Document::default();
+        document.meta.source_format = "hwp5".into();
+        document.sections.push(Section {
+            paragraphs: vec![Paragraph {
+                controls: vec![owner],
+                ..Paragraph::default()
+            }],
+            extras: Vec::new(),
+        });
+        document
+    }
+
+    #[test]
+    fn caption_picture_discovery_reaches_every_caption_owner() {
+        let mut missed = Vec::new();
+        for owner in ["table", "picture", "generic"] {
+            let Control::Picture(picture) = picture_with_instance_id(0) else {
+                unreachable!()
+            };
+            let document = caption_picture_fixture(owner, picture);
+            if !has_synthesizable_picture(&document) {
+                missed.push(owner);
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "caption-only inserted pictures must enable native-origin synthesis: {missed:?}"
+        );
+    }
+
+    #[test]
+    fn caption_picture_raw_generic_mirrors_stay_untouched() {
+        let Control::Picture(picture) = picture_with_instance_id(0) else {
+            unreachable!()
+        };
+        let mut document = caption_picture_fixture("generic", picture);
+        document.bin_streams.push(hwp_model::BinStream {
+            name: "unrelated.png".into(),
+            data: vec![1],
+        });
+        let Control::Generic(generic) = &mut document.sections[0].paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        generic.raw_children = vec![OpaqueRecord {
+            tag: tag::SHAPE_COMPONENT,
+            data: b"opaque primary tree".to_vec(),
+            children: Vec::new(),
+        }];
+        assert!(
+            !has_synthesizable_picture(&document),
+            "an extraction-only caption is not emitted"
+        );
+        let original = document.clone();
+        let mut report = WriteReport::new();
+        synthesize_pictures(&mut document, &mut report);
+        strip_unwritable_pictures(&mut document.sections[0].paragraphs[0], &mut report);
+        assert_eq!(
+            document, original,
+            "raw-backed controls must keep their semantic mirrors untouched"
+        );
+        assert!(
+            report.preservation.is_lossless(),
+            "no binary loss may be invented for an un-emitted mirror"
+        );
+    }
+
+    #[test]
+    fn caption_picture_unresolved_assets_follow_body_loss_and_cleanup_rules() {
+        let Control::Picture(picture) = picture_with_instance_id(0) else {
+            unreachable!()
+        };
+        let mut document = caption_picture_fixture("table", picture);
+        document.bin_streams.push(hwp_model::BinStream {
+            name: "unrelated.png".into(),
+            data: vec![1],
+        });
+        let mut report = WriteReport::new();
+        synthesize_pictures(&mut document, &mut report);
+        strip_unwritable_pictures(&mut document.sections[0].paragraphs[0], &mut report);
+        let Control::Table(table) = &document.sections[0].paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        let para = &table.caption.as_ref().unwrap().paragraphs[0];
+        assert!(
+            para.controls.is_empty(),
+            "unwritable caption pictures must be removed just like body pictures"
+        );
+        assert!(
+            !para
+                .chars
+                .iter()
+                .any(|ch| matches!(ch, HwpChar::ExtCtrl { .. })),
+            "removed caption pictures must leave no dangling anchor"
+        );
+        for code in [
+            PreservationCode::BinaryAssetRemoved,
+            PreservationCode::PictureControlRemoved,
+        ] {
+            assert!(
+                report
+                    .preservation
+                    .events
+                    .iter()
+                    .any(|event| event.code == code && event.count == 1),
+                "caption loss must report {code:?}"
+            );
+        }
+    }
+
     /// The HWP5 reader keeps a shape's caption apart from its paragraph lists, so a picture
     /// whose only home is a shape caption still holds an instance id from the synthesized
     /// range. The allocator must start past it, or the next synthesized picture repeats it and
