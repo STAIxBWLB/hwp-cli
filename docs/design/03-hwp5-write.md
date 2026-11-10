@@ -616,6 +616,14 @@ because records such as `CTRL_DATA`, `PAGE_DEF` and `PAGE_BORDER_FILL` can be le
 when the semantic IR represents them separately. `ParaHeaderInfo::hwp5_child_order` additionally
 retains the source order between opaque paragraph children and `CTRL_HEADER` records.
 
+For a source-backed picture caption, unchanged modeled header fields let the writer reuse the
+original `LIST_HEADER` byte-for-byte, including unmodeled listflag bits 3-6 and opaque tail bytes.
+Caption paragraphs are merged recursively so restyling still applies; a changed list length updates
+only the known leading paragraph-count field. Source child order is retained when other emitted
+picture data is unchanged, while intentional parent changes remain emitted. Modeled caption-header
+changes or record/IR mismatches fall back to regeneration. Fresh caption synthesis still needs
+genuine evidence before adding IR semantics for the currently unmodeled flag bits.
+
 Changed or inserted paragraphs get fresh `PARA_LINE_SEG` values from the renderer. After synthesis,
 all semantically unchanged native paragraphs, including table-cell and generic-control paragraphs,
 are restored from the immutable snapshot. This avoids both stale layout caches and global layout

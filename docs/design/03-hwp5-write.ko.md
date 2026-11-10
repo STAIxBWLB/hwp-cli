@@ -441,6 +441,13 @@ BodyText도 외과적으로 materialize한다. 문단은 고유한 non-zero `ins
 실제 record level과 순서가 중요한 구조를 지키기 위함이다. `ParaHeaderInfo::hwp5_child_order`도
 opaque 문단 자식과 `CTRL_HEADER` 사이의 원본 순서를 보존한다.
 
+원본이 있는 그림 캡션은 모델의 header 필드가 같으면 원본 `LIST_HEADER`를 바이트 그대로
+재사용한다. IR에 없는 listflag bits 3-6과 opaque tail도 보존한다. 캡션 문단은 재귀적으로
+병합해 restyle을 적용하고, 리스트 길이가 달라지면 알려진 앞쪽 문단 수 필드만 갱신한다.
+다른 그림 출력 데이터가 같으면 원본 자식 순서도 유지하고, 의도적인 부모 변경은 새 출력을
+사용한다. 모델의 캡션 header 변경이나 record/IR 대응 불일치는 재생성으로 fallback한다.
+새 캡션 합성에서 미해석 flag 비트를 IR에 모델링하려면 여전히 genuine 근거가 필요하다.
+
 변경·삽입 문단은 renderer로 새 `PARA_LINE_SEG`를 계산한다. 계산 후 표 셀과 generic control 내부를
 포함한 의미상 미변경 문단은 불변 snapshot 값으로 복원한다. 이 방식으로 stale layout cache와
 문서 전체 layout churn을 함께 피한다.
