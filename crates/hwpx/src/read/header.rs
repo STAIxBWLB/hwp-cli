@@ -1,8 +1,7 @@
 //! `Contents/header.xml` → [`DocHeader`].
 //!
-//! M2 범위: 글꼴(fontfaces), 문자 모양(charPr), 문단 모양(paraPr — 정렬),
-//! 스타일(style). 테두리/번호 등은 추후 마일스톤에서 채운다.
-
+//! M2 scope: fonts (fontfaces), character shapes (charPr), paragraph shapes (paraPr alignment), and
+//! styles. Borders/numbering are filled in later milestones.
 use std::collections::HashMap;
 
 use hwp_model::{
@@ -15,7 +14,7 @@ use quick_xml::events::{BytesStart, Event};
 use crate::error::{HwpxError, Result};
 use crate::read::xml::{attr, attr_i32, attr_u16, attr_u32, parse_color, resolve_entity};
 
-/// OWPML 테두리선 종류 → hwp5 코드.
+/// OWPML border-line type -> hwp5 code.
 pub(crate) fn line_type_code(s: &str) -> u8 {
     match s {
         "NONE" => 0,
@@ -65,7 +64,7 @@ pub(crate) fn sym_mark_code(s: &str) -> u8 {
     }
 }
 
-/// "0.12 mm" → 굵기 인덱스 (가장 가까운 값).
+/// "0.12 mm" -> nearest width index.
 pub(crate) fn width_index(s: &str) -> u8 {
     const TABLE: [f32; 16] = [
         0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0,
@@ -87,7 +86,7 @@ fn parse_border_line(e: &BytesStart<'_>) -> BorderLine {
     }
 }
 
-/// OWPML 언어 이름 → 7언어 슬롯 인덱스.
+/// OWPML language name -> one of seven language-slot indices.
 fn lang_slot(name: &str) -> Option<usize> {
     Some(match name {
         "HANGUL" => 0,
@@ -101,7 +100,7 @@ fn lang_slot(name: &str) -> Option<usize> {
     })
 }
 
-/// hwpx numFormat 문자열 → NumFmt(모르면 십진).
+/// HWPX numFormat string -> NumFmt, defaulting to decimal for unknown names.
 fn num_fmt(s: &str) -> hwp_model::NumFmt {
     use hwp_model::NumFmt;
     match s {
@@ -117,7 +116,7 @@ fn num_fmt(s: &str) -> hwp_model::NumFmt {
     }
 }
 
-/// OWPML tabItem type → hwp5 탭 종류 코드(§4.2.7): 왼0/오른1/가운데2/소수점3.
+/// OWPML tabItem type -> hwp5 tab-kind code (section 4.2.7): left=0, right=1, center=2, decimal=3.
 fn tab_kind_code(s: &str) -> u8 {
     match s {
         "RIGHT" => 1,
@@ -127,7 +126,7 @@ fn tab_kind_code(s: &str) -> u8 {
     }
 }
 
-/// hwp5 ParaShape::alignment()과 같은 인코딩으로 정렬 매핑.
+/// Maps alignment using the same encoding as hwp5 ParaShape::alignment().
 fn alignment_code(s: &str) -> u32 {
     match s {
         "JUSTIFY" => 0,
@@ -145,28 +144,30 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
     let mut warnings = Vec::new();
     let mut reader = Reader::from_str(xml);
 
-    // 현재 컨텍스트
+    // Current context.
     let mut current_lang: Option<usize> = None;
     let mut current_char: Option<CharShape> = None;
     let mut current_para: Option<ParaShape> = None;
     let mut current_border: Option<BorderFill> = None;
     let mut current_numbering: Option<Vec<hwp_model::NumLevel>> = None;
-    // HWPX 정의 id는 임의 값일 수 있다. IR에서는 HWP5와 동일하게 Vec의 0-based
-    // 인덱스로 정규화하므로 외부 id→내부 인덱스 맵을 별도로 유지한다.
+    // HWPX definition IDs may be arbitrary. The IR normalizes them to zero-based Vec indices, like HWP5,
+    // so retain separate external-ID -> internal-index maps.
+
     let mut numbering_ids: HashMap<u16, u16> = HashMap::new();
     let mut bullet_ids: HashMap<u16, u16> = HashMap::new();
     let mut current_tab: Option<hwp_model::TabDef> = None;
     // Active hc:gradation state inside borderFill: radial flag, angle,
     // center_x, center_y, step, colors.
     let mut current_gradation: Option<(bool, f32, i32, i32, i32, Vec<u32>)> = None;
-    // 정품 tabItem은 hp:switch로 감싸 case(HwpUnitChar, unit=HWPUNIT, pos=X)와
-    // default(unit 없음, pos=2X)를 함께 낸다. case만 취하고 default는 버리기 위해
-    // hp:default 안에 있는 동안 tabItem 수집을 막는다(중복 방지). switch 없는 naked
-    // tabItem(구형 출력·타 구현체)은 이 플래그가 꺼진 채라 그대로 읽힌다.
+    // Genuine tabItem entries are wrapped in hp:switch, with a case (HwpUnitChar, unit=HWPUNIT, pos=X)
+    // and default (no unit, pos=2X). Suppress tabItem collection inside hp:default to retain only the
+    // case and avoid duplicates. Unwrapped tabItem entries from older writers or other implementations
+    // remain readable with this flag off.
+
     let mut in_tab_default = false;
-    // paraHead 텍스트(형식 템플릿 "^1." 등)를 담을 현재 수준(1-기반).
+    // Current one-based level capturing paraHead text (format templates such as "^1.").
     let mut current_para_head: Option<usize> = None;
-    // hp:switch의 case/default 중복 — 첫 분기(신형 한글이 읽는 값)만 취한다
+    // hp:switch case/default duplication: retain only the first branch, which newer Hangul reads.
     let mut para_margin_done = false;
     let mut para_ls_done = false;
 
@@ -178,7 +179,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let empty = matches!(event, Event::Empty(_));
-                match e.local_name().as_ref() {
+                match e.local_name().as_ref().as_bytes() {
                     b"beginNum" => {
                         header.properties.start_numbers = [
                             attr_u16(e, "page").unwrap_or(1),
@@ -245,7 +246,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             current_char = Some(cs);
                         }
                     }
-                    // charPr 자식들
+                    // charPr children.
                     b"fontRef" => {
                         if let Some(cs) = &mut current_char {
                             for (i, name) in [
@@ -265,7 +266,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             ];
                             for (i, n) in names.iter().enumerate() {
                                 let Some(v) = attr_i32(e, n) else { continue };
-                                match e.local_name().as_ref() {
+                                match e.local_name().as_ref().as_bytes() {
                                     b"ratio" => cs.ratios[i] = v.clamp(1, 255) as u8,
                                     b"spacing" => cs.spacings[i] = v.clamp(-128, 127) as i8,
                                     b"relSz" => cs.rel_sizes[i] = v.clamp(1, 255) as u8,
@@ -286,7 +287,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                     }
                     b"underline" => {
                         if let Some(cs) = &mut current_char {
-                            // BOTTOM→1, TOP→3 (hwp5 bits 2~3과 동일 인코딩)
+                            // BOTTOM=1, TOP=3, matching hwp5 bits 2-3.
                             let kind = match attr(e, "type").as_deref() {
                                 Some("NONE") | None => 0u32,
                                 Some("TOP") => 3,
@@ -296,8 +297,9 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             if let Some(c) = attr(e, "color") {
                                 cs.underline_color = parse_color(&c);
                             }
-                            // 밑줄 모양(SOLID/DASH/DOT…)을 테두리선 종류 코드로 보존.
-                            // 미지정(0)이면 write가 기본 SOLID로 방출한다.
+                            // Preserve underline styles (SOLID/DASH/DOT/...) as border-line type codes.
+                            // The writer emits default SOLID when unspecified (0).
+
                             cs.underline_shape = attr(e, "shape").map_or(0, |s| line_type_code(&s));
                             // Store the normalized zero-based decoration code in bits
                             // 4..=7 only when the underline is active.
@@ -309,17 +311,19 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         }
                     }
                     b"strikeout" => {
-                        // 취소선 비트(18)는 한글이 "보이는 취소선 선"으로 렌더하는 shape에만
-                        // 켠다. shape="3D" 계열은 정품/한글에서 보이지 않게 렌더되는데(사용자
-                        // 확인), 우리가 비트18(종류=1 실선)로 매핑하면 인라인 표 폭에 걸친
-                        // 실선 취소선이 합성돼 목차에 가로선이 나타난다. NONE/3D는 비취소선
-                        // 으로 둔다(시각 결과 동일, SOLID 등 실제 취소선은 보존).
+                        // Set strikeout bit 18 only for shapes Hangul renders as visible strikeout
+                        // lines. Genuine files and owner confirmation show that "3D" shapes are
+                        // invisible; mapping them to bit 18 (kind=1, solid) synthesizes a strikeout
+                        // across inline table widths, adding horizontal lines to the contents. Keep
+                        // NONE/3D non-struck for the same visual result while preserving real strikeouts
+                        // such as SOLID.
+
                         if let Some(cs) = &mut current_char {
                             let shape = attr(e, "shape");
                             let visible = matches!(shape.as_deref(), Some(s) if s != "NONE" && !s.contains("3D"));
                             if visible {
-                                cs.attr |= 1 << 18; // 바이트 왕복 보존
-                                cs.strike = true; // 의미 플래그 (has_strike 근거)
+                                cs.attr |= 1 << 18; // Preserve byte round-trips.
+                                cs.strike = true; // Semantic flag used by has_strike.
                                 // Store the zero-based strike shape in bits 26..=29.
                                 if let Some(s) = shape.as_deref() {
                                     cs.attr |= u32::from(decor_code(s)) << 26;
@@ -327,7 +331,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             }
                         }
                     }
-                    // 위/아래 첨자(hwp5 attr bit15/16 — 스펙).
+                    // Superscript/subscript (hwp5 attr bits 15/16, per specification).
                     b"supscript" => {
                         if let Some(cs) = &mut current_char {
                             cs.attr |= 1 << 15;
@@ -338,7 +342,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             cs.attr |= 1 << 16;
                         }
                     }
-                    // 그림자(hwp5 attr bits11~12) + 색/간격.
+                    // Shadow (hwp5 attr bits 11-12), color and spacing.
                     b"shadow" => {
                         if let Some(cs) = &mut current_char
                             && attr(e, "type").as_deref() != Some("NONE")
@@ -352,7 +356,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             cs.shadow_gap = (gx, gy);
                         }
                     }
-                    // 외곽선(bit8~10) / 양각(bit13) / 음각(bit14).
+                    // Outline (bits 8-10), emboss (bit 13), engrave (bit 14).
                     b"outline" => {
                         if let Some(cs) = &mut current_char
                             && attr(e, "type").as_deref() != Some("NONE")
@@ -371,9 +375,10 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         }
                     }
                     b"paraPr" => {
-                        // paraPr 자체 속성을 attr1에 인코딩(정품 한글과 일치 — 강제
-                        // 0x180 대신 실제 값). snapToGrid=bit8(줄 격자 사용),
-                        // condense=bits9-15(공백 최소값), fontLineHeight=bit22.
+                        // Encode paraPr attributes into attr1, matching genuine Hangul values instead of
+                        // forcing 0x180: snapToGrid=bit8, condense=bits9-15 (minimum spaces),
+                        // fontLineHeight=bit22.
+
                         // tabPrIDRef → tab_def_id.
                         let mut ps = ParaShape::default();
                         if attr(e, "snapToGrid").as_deref() == Some("1") {
@@ -420,7 +425,8 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             }
                         }
                     }
-                    // 탭 정의(§4.2.7 / hh:tabPr): 자동탭 속성 + 자식 tabItem.
+                    // Tab definitions (section 4.2.7 / hh:tabPr): automatic-tab attributes and tabItem
+                    // children.
                     b"tabPr" => {
                         let mut td = hwp_model::TabDef::default();
                         if attr(e, "autoTabLeft").as_deref() == Some("1") {
@@ -435,7 +441,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             current_tab = Some(td);
                         }
                     }
-                    // hp:default 안의 tabItem은 case의 중복(pos=2X)이므로 무시.
+                    // Ignore tabItem in hp:default: it duplicates the case with pos=2X.
                     b"default" => {
                         if current_tab.is_some() {
                             in_tab_default = true;
@@ -447,12 +453,12 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         {
                             let pos = attr_i32(e, "pos").unwrap_or(0);
                             let kind = attr(e, "type").map_or(0, |t| tab_kind_code(&t));
-                            // leader(리더/채움 선): 테두리선 종류 코드로 보존.
+                            // Preserve leader/fill lines as border-line type codes.
                             let fill = attr(e, "leader").map_or(0, |l| line_type_code(&l));
                             td.items.push(hwp_model::TabItem { pos, kind, fill });
                         }
                     }
-                    // 번호 정의 시작 + 수준별 형식.
+                    // Start a numbering definition and its per-level formats.
                     b"numbering" => {
                         let index = u16::try_from(header.numbering_levels.len()).map_err(|_| {
                             HwpxError::Xml {
@@ -461,7 +467,8 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             }
                         })?;
                         let external_id = attr_u16(e, "id").unwrap_or(index.saturating_add(1));
-                        // 중복 id는 첫 정의 우선(야생 파일 관용 — 하드 에러로 읽기를 막지 않는다).
+                        // The first definition wins for duplicate IDs, tolerating in-the-wild files
+                        // instead of failing the read.
                         if let std::collections::hash_map::Entry::Vacant(slot) =
                             numbering_ids.entry(external_id)
                         {
@@ -488,11 +495,11 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                                 levels.resize(level, hwp_model::NumLevel::default());
                             }
                             levels[level - 1] = nl;
-                            // 비어 있지 않으면(텍스트 콘텐츠) 뒤따르는 Text를 템플릿으로 포착.
+                            // For nonempty elements, capture following Text events as the template.
                             current_para_head = if empty { None } else { Some(level) };
                         }
                     }
-                    // 글머리표 정의: char 속성(없으면 기본 •).
+                    // Bullet definition: char attribute, defaulting to the standard bullet.
                     b"bullet" => {
                         let index = u16::try_from(header.bullet_chars.len()).map_err(|_| {
                             HwpxError::Xml {
@@ -501,7 +508,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             }
                         })?;
                         let external_id = attr_u16(e, "id").unwrap_or(index.saturating_add(1));
-                        // 중복 id는 첫 정의 우선(야생 파일 관용).
+                        // The first definition wins for duplicate IDs in in-the-wild files.
                         if let std::collections::hash_map::Entry::Vacant(slot) =
                             bullet_ids.entry(external_id)
                         {
@@ -521,12 +528,13 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             && !para_margin_done
                             && let Some(v) = attr_i32(e, "value")
                         {
-                            // HWP5 PARA_SHAPE의 여백류 필드는 hwpx HWPUNIT의 2배 단위다
-                            // (정품 한글 변환 실측: hwpx left=1500 → hwp5 ml=3000). ×2를
-                            // 누락하면 간격이 절반이라 본문이 빽빽해지고 페이지네이션이
-                            // 어긋난다. line_spacing(아래)은 2배 아님. IR은 hwp5 단위로 통일.
+                            // HWP5 PARA_SHAPE margin fields use twice the HWPX HWPUNIT (measured in
+                            // genuine conversions: HWPX left=1500 -> HWP5 ml=3000). Missing the factor
+                            // of two halves spacing, compresses body text and shifts pagination.
+                            // line_spacing below is not doubled; the IR uses HWP5 units consistently.
+
                             let v2 = v.saturating_mul(2);
-                            match e.local_name().as_ref() {
+                            match e.local_name().as_ref().as_bytes() {
                                 b"intent" => ps.indent = v2,
                                 b"left" => ps.margin_left = v2,
                                 b"right" => ps.margin_right = v2,
@@ -548,35 +556,41 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                             };
                             ps.line_spacing_type = lstype;
                             let value = attr_i32(e, "value").unwrap_or(160);
-                            // PERCENT(0)는 비율(%) 그대로. 길이 종류(고정/여백만/최소)는
-                            // 여백류처럼 hwp5에서 HWPUNIT의 2배 단위(실측: 고정 1432→2864).
+                            // PERCENT(0) keeps its percentage. Length kinds (fixed/space-only/minimum)
+                            // use twice the HWPUNIT in HWP5, like margins (measured: fixed 1432 ->
+                            // 2864).
+
                             let stored = if lstype == 0 {
                                 value
                             } else {
                                 value.saturating_mul(2)
                             };
                             ps.line_spacing = stored;
-                            // line_spacing_old(@24)에도 넣는다 — 한글은 이 필드로 문단
-                            // 줄간격을 읽으며, 0이면 ensure_para_shape_defaults가 160으로
-                            // 덮어써 문단별 줄간격(170/130 등)을 잃고 페이지가 밀린다.
+                            // Also fill line_spacing_old (@24): Hangul reads paragraph line spacing from
+                            // it. A zero lets ensure_para_shape_defaults overwrite it with 160, losing
+                            // per-paragraph spacing such as 170/130 and shifting pages.
+
                             ps.line_spacing_old = stored;
-                            // 줄간격 종류를 attr1 bits0-1에 인코딩(PERCENT면 0).
-                            // OR가 아니라 clear-then-set이다(align_para와 같은 마스크 규율):
-                            // OR면 이미 켜진 비트를 끌 수 없어 PERCENT(0)가 앞선 값을 지우지
-                            // 못한다. 지금은 paraPr마다 attr1이 0에서 시작하고 para_ls_done이
-                            // 중복 lineSpacing을 막아 도달하지 않지만, 그 전제가 바뀌어도
-                            // XML이 선언한 종류가 그대로 남게 한다.
+                            // Encode the line-spacing kind in attr1 bits 0-1 (PERCENT=0). Clear then
+                            // set, rather than OR, following align_para's mask rule: OR cannot clear
+                            // existing bits, so PERCENT could not replace an earlier kind. Currently
+                            // attr1 starts at zero per paraPr and para_ls_done prevents duplicate
+                            // lineSpacing, but preserve the declared XML kind even if that premise
+                            // changes.
+
                             ps.attr1 = (ps.attr1 & !0x3) | (u32::from(lstype) & 0x3);
                         }
                     }
                     b"breakSetting" => {
                         if let Some(ps) = &mut current_para {
-                            // 한글 줄나눔: KEEP_WORD(어절)=bit7=1, BREAK_WORD(글자)=0.
-                            // 정품 실측: BREAK_WORD 문단은 글자 단위로 빽빽하게 줄바꿈.
+                            // Korean line breaking: KEEP_WORD=bit7=1, BREAK_WORD=0. Genuine BREAK_WORD
+                            // paragraphs wrap densely at character boundaries.
+
                             if attr(e, "breakNonLatinWord").as_deref() != Some("BREAK_WORD") {
                                 ps.attr1 |= 1 << 7;
                             }
-                            // 영어 줄나눔: bits5-6 (KEEP_WORD=0, HYPHENATION=1, BREAK_WORD=2).
+                            // English line breaking: bits 5-6 (KEEP_WORD=0, HYPHENATION=1,
+                            // BREAK_WORD=2).
                             let blat = match attr(e, "breakLatinWord").as_deref() {
                                 Some("BREAK_WORD") => 2u32,
                                 Some("HYPHENATION") => 1,
@@ -598,7 +612,8 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         }
                     }
                     b"border" => {
-                        // 문단 테두리/배경 참조(borderFillIDRef). 강제값(2) 대신 실제 ID.
+                        // Paragraph border/fill reference (borderFillIDRef): use the actual ID instead
+                        // of forcing 2.
                         if let Some(ps) = &mut current_para
                             && let Some(bf) = attr_u16(e, "borderFillIDRef")
                         {
@@ -611,9 +626,8 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         {
                             let mut attrs = String::new();
                             for a in e.attributes().flatten() {
-                                let k = String::from_utf8_lossy(a.key.local_name().as_ref())
-                                    .into_owned();
-                                let v = String::from_utf8_lossy(&a.value).into_owned();
+                                let k = a.key.local_name().as_ref().to_owned();
+                                let v = a.value.into_owned();
                                 attrs.push_str(&format!(r#" {k}="{v}""#));
                             }
                             font.type_info = Some(attrs);
@@ -627,13 +641,14 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                                 .push(current_border.take().expect("방금 생성"));
                         }
                     }
-                    // 대각선 방향: <hh:slash>/<hh:backSlash> type≠NONE이면 hwp5 attr 비트로 합성
-                    // (slash=bit2, backSlash=bit5 — 렌더러 diagonal_dirs와 동일 인코딩).
+                    // Synthesize hwp5 diagonal-direction attr bits for <hh:slash>/<hh:backSlash> when
+                    // type is not NONE (slash=bit2, backSlash=bit5), matching the renderer's
+                    // diagonal_dirs encoding.
                     b"slash" | b"backSlash" => {
                         if let Some(bf) = &mut current_border
                             && attr(e, "type").is_some_and(|t| !t.eq_ignore_ascii_case("NONE"))
                         {
-                            bf.attr |= if e.local_name().as_ref() == b"slash" {
+                            bf.attr |= if e.local_name().as_ref().as_bytes() == b"slash" {
                                 0x4
                             } else {
                                 0x20
@@ -642,7 +657,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                     }
                     b"leftBorder" | b"rightBorder" | b"topBorder" | b"bottomBorder" => {
                         if let Some(bf) = &mut current_border {
-                            let idx = match e.local_name().as_ref() {
+                            let idx = match e.local_name().as_ref().as_bytes() {
                                 b"leftBorder" => 0,
                                 b"rightBorder" => 1,
                                 b"topBorder" => 2,
@@ -702,7 +717,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                     _ => {}
                 }
             }
-            Event::End(ref e) => match e.local_name().as_ref() {
+            Event::End(ref e) => match e.local_name().as_ref().as_bytes() {
                 b"fontface" => current_lang = None,
                 b"margin" => {
                     if current_para.is_some() {
@@ -774,13 +789,12 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                 _ => {}
             },
             Event::Text(ref t) => {
-                // paraHead 안이면 텍스트를 형식 템플릿으로 포착("^1." "(^2)" "제^3조").
+                // Inside paraHead, capture text as the format template ("^1.", "(^2)", etc.).
                 if let Some(level) = current_para_head
                     && let Some(levels) = &mut current_numbering
                     && let Some(nl) = levels.get_mut(level - 1)
-                    && let Ok(s) = t.xml10_content()
                 {
-                    nl.template.push_str(&s);
+                    nl.template.push_str(&t.xml10_content());
                 }
             }
             // A `<{n}>` marker reaches the file as the paraHead `&lt;^2&gt;`: quick-xml
@@ -801,7 +815,7 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
         }
     }
 
-    // paraPr이 정의보다 먼저 등장해도 처리되도록 전체 파싱 뒤 idRef를 정규화한다.
+    // Normalize idRef after parsing so paraPr can precede the definitions it references.
     for ps in &mut header.para_shapes {
         let raw = ps.numbering_id;
         let mapped = match ps.head_type() {
@@ -809,8 +823,10 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
             3 => bullet_ids.get(&raw),
             _ => continue,
         };
-        // 미정의 idRef는 야생 파일에서 관찰될 수 있다 — 읽기를 막지 않고 첫 정의(0)로
-        // 폴백한다(렌더/마커는 기본 형식으로 근사, writer는 항상 정의 1개 이상 방출).
+        // Undefined idRef values occur in in-the-wild files. Keep reading and fall back to the first
+        // definition (0); rendering/markers approximate the default format, and the writer always emits
+        // at least one definition.
+
         ps.numbering_id = match mapped {
             Some(index) => *index,
             None => {
@@ -828,8 +844,8 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
 /// The HWP5 `STYLE.attr` value for `hh:style@type`: 0 for `PARA`, 1 for `CHAR`, and `None` when
 /// the file does not state a kind this reader knows.
 ///
-/// The IR carries the style kind the way the HWP5 reader does (low three bits of `attr`, 한글문서
-/// 파일 형식 5.0 §4.2.11 table 48), so one reader-independent rule serves both formats. Genuine
+/// The IR carries style kind like the HWP5 reader (low three bits of `attr`, HWP file format 5.0 section
+/// 4.2.11 table 48), so one reader-independent rule serves both formats. Genuine
 /// Hangul-saved HWPX states `type` on every style: `fixtures/hwpx/minimal.hwpx` (Hangul 13,
 /// Windows) has `쪽 번호` and `줄 번호` as `CHAR`, and `fixtures/hwpx/seal-groundtruth.hwpx`
 /// (Hangul 12.30, macOS) has `쪽 번호` as `CHAR`, which is the style the genuine HWP5 files carry at

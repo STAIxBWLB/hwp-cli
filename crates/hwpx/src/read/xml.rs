@@ -1,17 +1,15 @@
-//! quick-xml 보조 유틸.
-
+//! quick-xml helper utilities.
 use quick_xml::events::{BytesRef, BytesStart};
 
-/// 로컬 이름(네임스페이스 접두사 제거) 기준 속성 조회.
-/// 속성값을 **엔티티 해석까지 마친** 문자열로 돌려준다. quick-xml은 속성값을 파일에 있던
-/// 이스케이프 형태 그대로 주므로, 풀지 않으면 `name="A&amp;B"`가 IR에 `A&amp;B`로 올라가고
-/// writer의 `esc()`가 다시 감싸 `A&amp;amp;B`로 이중 이스케이프된다(책갈피·필드 이름,
-/// 수식 script 속성에서 실제로 발생). 해석 실패(잘못된 참조)면 원문을 그대로 둔다.
+/// Looks up an attribute by local name (without its namespace prefix), resolving entity references. Raw
+/// escaped values such as `A&amp;B` must be unescaped before entering the IR, or the writer's `esc()`
+/// would double-escape bookmark/field names and equation script attributes. Invalid references retain
+/// their original spelling.
 pub fn attr(e: &BytesStart<'_>, name: &str) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         let key = a.key.local_name();
-        if key.as_ref() == name.as_bytes() {
-            let raw = String::from_utf8_lossy(&a.value).into_owned();
+        if key.as_ref() == name {
+            let raw = a.value.into_owned();
             Some(
                 quick_xml::escape::unescape(&raw)
                     .map(|s| s.into_owned())
@@ -33,7 +31,7 @@ pub(crate) fn resolve_entity(r: &BytesRef<'_>) -> Option<char> {
     r.resolve_char_ref()
         .ok()
         .flatten()
-        .or_else(|| match &r[..] {
+        .or_else(|| match r.as_bytes() {
             b"amp" => Some('&'),
             b"lt" => Some('<'),
             b"gt" => Some('>'),
@@ -51,8 +49,8 @@ pub fn attr_i32(e: &BytesStart<'_>, name: &str) -> Option<i32> {
     attr(e, name)?.parse().ok()
 }
 
-/// 오프셋 등 부호 있는 32비트 속성. hwpx는 음수를 unsigned 2의보수 십진수로
-/// 저장(예: -77 = "4294967219")하므로 i64로 파싱 후 i32로 재해석한다.
+/// Reads signed 32-bit attributes such as offsets. HWPX stores negatives as unsigned two's-complement
+/// decimal (e.g. -77 = "4294967219"); parse as i64, then reinterpret as i32.
 pub fn attr_offset_i32(e: &BytesStart<'_>, name: &str) -> Option<i32> {
     attr(e, name)?.parse::<i64>().ok().map(|v| v as i32)
 }
@@ -61,7 +59,7 @@ pub fn attr_u16(e: &BytesStart<'_>, name: &str) -> Option<u16> {
     attr(e, name)?.parse().ok()
 }
 
-/// "#RRGGBB" → COLORREF(0x00BBGGRR). "none"/파싱 실패는 0xFFFF_FFFF.
+/// "#RRGGBB" -> COLORREF(0x00BBGGRR). "none" or a parse failure yields 0xFFFF_FFFF.
 pub fn parse_color(s: &str) -> u32 {
     let hex = s.strip_prefix('#').unwrap_or(s);
     if hex.len() == 6
@@ -80,14 +78,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn entity_resolution_preserves_predefined_and_numeric_references() {
+        for (reference, expected) in [
+            ("amp", Some('&')),
+            ("lt", Some('<')),
+            ("gt", Some('>')),
+            ("quot", Some('"')),
+            ("apos", Some('\'')),
+            ("#65", Some('A')),
+            ("#x41", Some('A')),
+            ("#48124", Some('민')),
+            ("#xBBFC", Some('민')),
+            ("#128512", Some('😀')),
+            ("#x1F600", Some('😀')),
+            ("unknown", None),
+            ("#invalid", None),
+            ("#xZZ", None),
+            ("#x110000", None),
+            ("#xD800", None),
+        ] {
+            assert_eq!(
+                resolve_entity(&BytesRef::new(reference)),
+                expected,
+                "{reference}"
+            );
+        }
+    }
+
+    #[test]
     fn 색_변환() {
-        assert_eq!(parse_color("#FF0000"), 0x0000_00FF); // 빨강 → BGR
+        assert_eq!(parse_color("#FF0000"), 0x0000_00FF); // Red -> BGR.
         assert_eq!(parse_color("#000000"), 0);
         assert_eq!(parse_color("none"), 0xFFFF_FFFF);
     }
 
-    /// 속성값 엔티티는 읽는 즉시 풀린다 — 안 풀면 writer의 esc()가 다시 감싸
-    /// `A&amp;B` → `A&amp;amp;B`로 왕복마다 이중 이스케이프가 쌓인다.
+    /// Attribute entities are resolved immediately so the writer's esc() does not accumulate double
+    /// escaping (`A&amp;B` -> `A&amp;amp;B`) on each round-trip.
     #[test]
     fn 속성값_엔티티_해석() {
         let el = quick_xml::events::BytesStart::from_content(
@@ -95,7 +121,7 @@ mod tests {
             12,
         );
         assert_eq!(attr(&el, "name").as_deref(), Some("A&B <중> 민")); // &#48124; = U+BBFC
-        // 해석 불가한 참조는 원문 유지(정보 손실 없이 그대로 되쓴다).
+        // Keep unresolved references verbatim so they can be written again without data loss.
         assert_eq!(attr(&el, "bad").as_deref(), Some("A&nosuch;B"));
     }
 }

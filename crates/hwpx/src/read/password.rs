@@ -3,7 +3,6 @@
 //! This module deliberately accepts one observed profile only. It has no
 //! compatibility fallbacks: changing identifiers, padding, checksum scope, or
 //! password bytes changes the outcome to a closed refusal.
-
 use std::collections::BTreeMap;
 
 use aes::Aes256;
@@ -62,28 +61,27 @@ pub fn parse_profile(manifest: &str) -> Result<EncryptionProfile> {
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(event)) => match local_name(event.name().as_ref()) {
+            Ok(Event::Start(event)) => match local_name(event.name().as_ref().as_bytes()) {
                 b"file-entry" => {
                     if current.is_some() {
                         return Err(HwpxError::UnsupportedEncryptionProfile);
                     }
                     current = Some(CurrentEntry {
-                        name: attr(&event, b"full-path", reader.decoder()),
-                        size: attr(&event, b"size", reader.decoder())
-                            .and_then(|value| value.parse().ok()),
+                        name: attr(&event, b"full-path"),
+                        size: attr(&event, b"size").and_then(|value| value.parse().ok()),
                         ..CurrentEntry::default()
                     });
                 }
-                name => apply_metadata(current.as_mut(), name, &event, reader.decoder())?,
+                name => apply_metadata(current.as_mut(), name, &event)?,
             },
-            Ok(Event::Empty(event)) => match local_name(event.name().as_ref()) {
+            Ok(Event::Empty(event)) => match local_name(event.name().as_ref().as_bytes()) {
                 b"file-entry" => {
                     if current.is_some() {
                         return Err(HwpxError::UnsupportedEncryptionProfile);
                     }
                 }
                 name => {
-                    apply_metadata(current.as_mut(), name, &event, reader.decoder())?;
+                    apply_metadata(current.as_mut(), name, &event)?;
                     if name == b"encryption-data" {
                         current
                             .as_mut()
@@ -92,13 +90,17 @@ pub fn parse_profile(manifest: &str) -> Result<EncryptionProfile> {
                     }
                 }
             },
-            Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"encryption-data" => {
+            Ok(Event::End(event))
+                if local_name(event.name().as_ref().as_bytes()) == b"encryption-data" =>
+            {
                 current
                     .as_mut()
                     .ok_or(HwpxError::UnsupportedEncryptionProfile)?
                     .in_encryption_data = false;
             }
-            Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"file-entry" => {
+            Ok(Event::End(event))
+                if local_name(event.name().as_ref().as_bytes()) == b"file-entry" =>
+            {
                 let Some(entry) = current.take() else {
                     return Err(HwpxError::UnsupportedEncryptionProfile);
                 };
@@ -132,7 +134,6 @@ fn apply_metadata(
     current: Option<&mut CurrentEntry>,
     name: &[u8],
     event: &quick_xml::events::BytesStart<'_>,
-    decoder: quick_xml::encoding::Decoder,
 ) -> Result<()> {
     let Some(entry) = current else {
         return Ok(());
@@ -144,8 +145,8 @@ fn apply_metadata(
             }
             entry.in_encryption_data = true;
             entry.checksum = Some((
-                required_attr(event, b"checksum-type", decoder)?,
-                decode_attr(event, b"checksum", decoder)?,
+                required_attr(event, b"checksum-type")?,
+                decode_attr(event, b"checksum")?,
             ));
         }
         b"algorithm" => {
@@ -153,8 +154,8 @@ fn apply_metadata(
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
             entry.encryption = Some((
-                required_attr(event, b"algorithm-name", decoder)?,
-                decode_attr(event, b"initialisation-vector", decoder)?,
+                required_attr(event, b"algorithm-name")?,
+                decode_attr(event, b"initialisation-vector")?,
             ));
         }
         b"key-derivation" => {
@@ -162,12 +163,12 @@ fn apply_metadata(
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
             entry.kdf = Some((
-                required_attr(event, b"key-derivation-name", decoder)?,
-                decode_attr(event, b"salt", decoder)?,
-                required_attr(event, b"iteration-count", decoder)?
+                required_attr(event, b"key-derivation-name")?,
+                decode_attr(event, b"salt")?,
+                required_attr(event, b"iteration-count")?
                     .parse()
                     .map_err(|_| HwpxError::UnsupportedEncryptionProfile)?,
-                required_attr(event, b"key-size", decoder)?
+                required_attr(event, b"key-size")?
                     .parse()
                     .map_err(|_| HwpxError::UnsupportedEncryptionProfile)?,
             ));
@@ -176,7 +177,7 @@ fn apply_metadata(
             if !entry.in_encryption_data || entry.start_key.is_some() {
                 return Err(HwpxError::UnsupportedEncryptionProfile);
             }
-            entry.start_key = Some(required_attr(event, b"start-key-generation-name", decoder)?);
+            entry.start_key = Some(required_attr(event, b"start-key-generation-name")?);
         }
         _ => {}
     }
@@ -376,38 +377,26 @@ fn local_name(name: &[u8]) -> &[u8] {
     name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
 
-fn attr(
-    event: &quick_xml::events::BytesStart<'_>,
-    key: &[u8],
-    decoder: quick_xml::encoding::Decoder,
-) -> Option<String> {
+fn attr(event: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Option<String> {
     event
         .attributes()
         .flatten()
-        .find(|attribute| local_name(attribute.key.as_ref()) == key)
+        .find(|attribute| local_name(attribute.key.as_ref().as_bytes()) == key)
         .and_then(|attribute| {
             attribute
-                .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .ok()
         })
         .map(|value| value.into_owned())
 }
 
-fn required_attr(
-    event: &quick_xml::events::BytesStart<'_>,
-    key: &[u8],
-    decoder: quick_xml::encoding::Decoder,
-) -> Result<String> {
-    attr(event, key, decoder).ok_or(HwpxError::UnsupportedEncryptionProfile)
+fn required_attr(event: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Result<String> {
+    attr(event, key).ok_or(HwpxError::UnsupportedEncryptionProfile)
 }
 
-fn decode_attr(
-    event: &quick_xml::events::BytesStart<'_>,
-    key: &[u8],
-    decoder: quick_xml::encoding::Decoder,
-) -> Result<Vec<u8>> {
+fn decode_attr(event: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
-        .decode(required_attr(event, key, decoder)?)
+        .decode(required_attr(event, key)?)
         .map_err(|_| HwpxError::UnsupportedEncryptionProfile)
 }
 

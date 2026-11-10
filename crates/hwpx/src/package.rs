@@ -2,7 +2,6 @@
 //!
 //! Exposes container metadata so `hwp info` and `hwp dump` work
 //! without parsing OWPML.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -493,7 +492,7 @@ impl HwpxPackage {
                     // Match the element's local name, not a substring of the raw text,
                     // so a namespace prefix change does not defeat detection and a
                     // comment/text mention of the word does not trigger a false refusal.
-                    if e.local_name().as_ref() == b"encryption-data" {
+                    if e.local_name().as_ref().as_bytes() == b"encryption-data" {
                         return Ok(true);
                     }
                 }
@@ -526,7 +525,7 @@ impl HwpxPackage {
                 Event::Start(e) | Event::Empty(e) => {
                     let mut attrs = Vec::new();
                     for attr in e.attributes().flatten() {
-                        let key = String::from_utf8_lossy(attr.key.as_ref()).into_owned();
+                        let key = attr.key.as_ref().to_owned();
                         let value = attr
                             .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                             .unwrap_or_default()
@@ -1073,7 +1072,6 @@ fn le_u64(bytes: &[u8], offset: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     //! CI-safe: synthetic in-memory-built ZIPs only, no corpus, no committed fixture.
-
     use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};

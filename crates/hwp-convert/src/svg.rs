@@ -50,7 +50,6 @@ pub fn sanitize_svg_with_stats(input: &str) -> Result<SanitizedSvg, String> {
                 depth += 1;
                 let (name, attributes) = validate_svg_element(
                     &element,
-                    reader.decoder(),
                     &mut root_seen,
                     &mut elements,
                     &mut geometry_tokens,
@@ -64,7 +63,6 @@ pub fn sanitize_svg_with_stats(input: &str) -> Result<SanitizedSvg, String> {
                 }
                 let (name, attributes) = validate_svg_element(
                     &element,
-                    reader.decoder(),
                     &mut root_seen,
                     &mut elements,
                     &mut geometry_tokens,
@@ -74,19 +72,18 @@ pub fn sanitize_svg_with_stats(input: &str) -> Result<SanitizedSvg, String> {
             }
             Ok(quick_xml::events::Event::End(element)) => {
                 let raw_name = element.name();
-                let name_bytes = element.local_name();
-                if raw_name.as_ref() != name_bytes.as_ref() {
+                let local_name = element.local_name();
+                if raw_name.as_ref() != local_name.as_ref() {
                     return Err("prefixed SVG element names are forbidden".into());
                 }
-                let name = std::str::from_utf8(name_bytes.as_ref())
-                    .map_err(|_| "SVG end name is not UTF-8".to_string())?;
+                let name = local_name.as_ref();
                 output.push_str("</");
                 output.push_str(name);
                 output.push('>');
                 depth = depth.saturating_sub(1);
             }
             Ok(quick_xml::events::Event::Text(text)) => {
-                if !text.iter().all(u8::is_ascii_whitespace) {
+                if !text.as_bytes().iter().all(u8::is_ascii_whitespace) {
                     return Err(
                         "SVG text nodes require an unavailable deterministic font renderer".into(),
                     );
@@ -116,7 +113,6 @@ pub fn sanitize_svg_with_stats(input: &str) -> Result<SanitizedSvg, String> {
 
 fn validate_svg_element(
     element: &quick_xml::events::BytesStart<'_>,
-    decoder: quick_xml::encoding::Decoder,
     root_seen: &mut bool,
     elements: &mut usize,
     geometry_tokens: &mut usize,
@@ -127,12 +123,11 @@ fn validate_svg_element(
         return Err("SVG complexity budget exceeded".into());
     }
     let raw_name = element.name();
-    let name_bytes = element.local_name();
-    if raw_name.as_ref() != name_bytes.as_ref() {
+    let local_name = element.local_name();
+    if raw_name.as_ref() != local_name.as_ref() {
         return Err("prefixed SVG element names are forbidden".into());
     }
-    let name = std::str::from_utf8(name_bytes.as_ref())
-        .map_err(|_| "SVG element name is not UTF-8".to_string())?;
+    let name = local_name.as_ref();
     const ELEMENTS: &[&str] = &[
         "svg", "g", "rect", "ellipse", "circle", "line", "polyline", "polygon",
     ];
@@ -202,8 +197,7 @@ fn validate_svg_element(
     let mut canonical_attributes = BTreeMap::new();
     for attribute in element.attributes() {
         let attribute = attribute.map_err(|error| format!("invalid SVG attribute: {error}"))?;
-        let key = std::str::from_utf8(attribute.key.as_ref())
-            .map_err(|_| "SVG attribute name is not UTF-8".to_string())?;
+        let key = attribute.key.as_ref();
         if !allowed_attributes.contains(&key)
             || key.starts_with("on")
             || key.eq_ignore_ascii_case("href")
@@ -212,7 +206,7 @@ fn validate_svg_element(
             return Err(format!("forbidden SVG attribute: {key}"));
         }
         let value = attribute
-            .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, decoder)
+            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
             .map_err(|error| format!("invalid SVG value: {error}"))?;
         if key == "xmlns" {
             if !is_root || value != "http://www.w3.org/2000/svg" {

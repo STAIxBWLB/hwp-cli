@@ -1,15 +1,14 @@
-//! 충실도 보존 텍스트 치환 (패키지 외과 수술).
+//! Fidelity-preserving text replacement by package surgery.
 //!
-//! IR을 거치는 [`write`](crate::write)는 미리보기 썸네일(`Preview/PrvImage.png`)·
-//! `hp:switch` 2016 호환 블록·미모델 엔트리(settings/DocOptions/scripts)를 잃는다.
-//! 이 모듈은 본문 `Contents/section*.xml`(과 미리보기 텍스트)의 텍스트만 외과적으로
-//! 치환하고 나머지 엔트리는 ZIP raw 복사로 **바이트 보존**한다(mimetype STORED·순서 포함).
+//! The IR-based [`write`](crate::write) loses preview thumbnails (`Preview/PrvImage.png`), `hp:switch`
+//! 2016 compatibility blocks and unmodeled entries (settings/DocOptions/scripts). This module changes
+//! only body text in `Contents/section*.xml` and preview text, preserving every other entry
+//! byte-for-byte through ZIP raw copying, including mimetype STORED and entry order.
 //!
-//! 한계: 일반 문자열 치환은 대상이 `<hp:t>` 런 경계를 가로지르면 매칭하지 못한다.
-//! `{{name}}` 자리표시자는 예외로, [`coalesce_split_placeholders`]가 치환 전에 같은 문단
-//! 안에서 쪼개진 자리표시자를 첫 런으로 모은다(#145). 문단 경계를 넘는 편집이나 XML
-//! 이벤트 단위 재구성이 필요한 편집은 IR 경로(`hwp edit`)를 쓴다.
-
+//! Limitation: plain string replacement cannot match across `<hp:t>` run boundaries. `{{name}}`
+//! placeholders are an exception: [`coalesce_split_placeholders`] moves pieces within one paragraph into
+//! the first run before replacement (#145). Use the IR path (`hwp edit`) for edits spanning paragraphs
+//! or requiring reconstruction of XML events.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -43,7 +42,7 @@ pub fn fill_placeholders(
     fill_placeholders_with_limits(input, output, values, &PackageLimits::default())
 }
 
-/// 사용자 지정 패키지 제한으로 자리표시자를 치환한다.
+/// Replaces placeholders with caller-specified package limits.
 pub fn fill_placeholders_with_limits(
     input: &Path,
     output: &Path,
@@ -760,18 +759,19 @@ fn validate_simple_field_fragment(fragment: &str) -> Result<()> {
     let mut in_text = false;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(event)) if event.name().as_ref() == b"root" => {}
-            Ok(Event::End(event)) if event.name().as_ref() == b"root" => {}
-            Ok(Event::Start(event)) if event.name().as_ref() == b"hp:t" && !in_text => {
+            Ok(Event::Start(event)) if event.name().as_ref().as_bytes() == b"root" => {}
+            Ok(Event::End(event)) if event.name().as_ref().as_bytes() == b"root" => {}
+            Ok(Event::Start(event)) if event.name().as_ref().as_bytes() == b"hp:t" && !in_text => {
                 in_text = true;
             }
-            Ok(Event::End(event)) if event.name().as_ref() == b"hp:t" && in_text => {
+            Ok(Event::End(event)) if event.name().as_ref().as_bytes() == b"hp:t" && in_text => {
                 in_text = false;
             }
-            Ok(Event::Empty(event)) if event.name().as_ref() == b"hp:t" && !in_text => {}
-            Ok(Event::Empty(event)) if event.name().as_ref() == b"hp:lineBreak" && in_text => {}
+            Ok(Event::Empty(event)) if event.name().as_ref().as_bytes() == b"hp:t" && !in_text => {}
+            Ok(Event::Empty(event))
+                if event.name().as_ref().as_bytes() == b"hp:lineBreak" && in_text => {}
             Ok(Event::Text(text)) => {
-                let raw: &[u8] = text.as_ref();
+                let raw = text.as_bytes();
                 if !in_text && !raw.iter().all(u8::is_ascii_whitespace) {
                     return Err(field_error(
                         "requested field value contains non-text or malformed XML",
@@ -808,12 +808,12 @@ fn field_error(message: &str) -> HwpxError {
     HwpxError::PackageIntegrity(format!("template field fill rejected: {message}"))
 }
 
-/// `Contents/section*.xml`에서 (from→to) 쌍을 **순서대로** 치환하고, 그 외 엔트리는
-/// 원본 그대로 복사한다. `Preview/PrvText.txt`는 평문(UTF-8, 아니면 UTF-16LE)으로 치환한다.
+/// Replaces (from, to) pairs in `Contents/section*.xml` in order, copying other entries unchanged.
+/// Replaces `Preview/PrvText.txt` as plain text (UTF-8, falling back to UTF-16LE).
 ///
-/// 치환은 순차 적용이다 — 앞 쌍의 치환 결과가 뒤 쌍의 from에 매칭될 수 있으므로
-/// 호출자는 **긴 이름을 먼저** 넣어야 한다(예: "제주한라대학교" → "제주한라대").
-/// 반환: 변환 대상 엔트리(section*.xml, PrvText.txt) → 치환 건수(0 포함).
+/// Replacements are sequential: an earlier result may match a later from value, so callers must put
+/// longer names first (for example, a full university name before its abbreviation). Returns entry name
+/// (section*.xml, PrvText.txt) -> replacement count, including zero.
 pub fn replace_texts(
     input: &Path,
     output: &Path,
@@ -822,7 +822,7 @@ pub fn replace_texts(
     replace_texts_with_limits(input, output, replacements, &PackageLimits::default())
 }
 
-/// 사용자 지정 패키지 제한으로 텍스트를 치환한다.
+/// Replaces text with caller-specified package limits.
 pub fn replace_texts_with_limits(
     input: &Path,
     output: &Path,
@@ -850,28 +850,27 @@ pub fn replace_texts_with_limits(
     Ok(counts)
 }
 
-/// UTF-8 디코드 실패를 io 오류로 변환.
+/// Converts a UTF-8 decode failure into an I/O error.
 fn invalid_data(e: std::string::FromUtf8Error) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, e)
 }
 
-/// 외과 수술 재작성에서 다시 직렬화할 콘텐츠 엔트리 집합.
-///
-/// 여기 열거되지 않은 엔트리(BinData, META-INF, Preview, DocOptions, 비대상
-/// section 등)는 모두 원본 패키지에서 raw 복사로 바이트 보존한다.
+/// Content entries to serialize again during surgical rewrites. Every entry not listed here (BinData,
+/// META-INF, Preview, DocOptions, unselected sections, etc.) is raw-copied byte-for-byte from the
+/// original package.
 #[derive(Debug, Clone)]
 pub struct DirtyEntries {
-    /// 재직렬화할 `Contents/section{i}.xml` 인덱스. `None`이면 전체 섹션.
+    /// Indices of `Contents/section{i}.xml` to reserialize; None means all sections.
     pub sections: Option<Vec<usize>>,
-    /// `Contents/header.xml` 재생성 여부.
+    /// Whether to regenerate `Contents/header.xml`.
     pub header: bool,
-    /// `Contents/content.hpf` 재생성 여부. 새 BinData 엔트리가 추가되면
-    /// 매니페스트 갱신을 위해 패치가 강제로 켠다.
+    /// Whether to regenerate `Contents/content.hpf`. Adding a BinData entry forces this on to update the
+    /// manifest.
     pub content_hpf: bool,
 }
 
 impl DirtyEntries {
-    /// 모든 콘텐츠 엔트리를 다시 직렬화한다.
+    /// Reserializes all content entries.
     pub fn all() -> Self {
         Self {
             sections: None,
@@ -881,14 +880,13 @@ impl DirtyEntries {
     }
 }
 
-/// 편집된 IR을 원본 HWPX 패키지에 외과적으로 반영한다: `dirty`로 표시된 콘텐츠
-/// 엔트리만 IR에서 재직렬화하고, 나머지 엔트리는 raw 복사로 바이트 보존한다.
-/// 편집으로 새로 들어온 바이너리는 새 `BinData/*` 엔트리로 패키지 끝에 추가하고
-/// content.hpf 매니페스트를 갱신한다(이 경우 content.hpf는 dirty 여부와 무관하게
-/// 재생성된다).
+/// Applies an edited IR surgically to the original HWPX package: reserialize only content entries marked
+/// `dirty`, preserving the remaining entries byte-for-byte via raw copy. Append newly introduced
+/// binaries as `BinData/*` entries and update content.hpf, regenerating it regardless of dirty when new
+/// binaries exist.
 ///
-/// 기존 바이너리는 원본 패키지의 OPF 매니페스트 id로 [`BinCollector`]를 seed해서
-/// 재직렬화된 섹션의 `binaryItemIDRef`가 원본 id/href를 그대로 유지하게 한다.
+/// Seed [`BinCollector`] with original OPF manifest IDs so binaryItemIDRef in reserialized sections
+/// retains the original id/href.
 pub fn rewrite_document_staged(
     input: &Path,
     output: &Path,
@@ -896,8 +894,9 @@ pub fn rewrite_document_staged(
     dirty: &DirtyEntries,
     limits: &PackageLimits,
 ) -> Result<WriteReport> {
-    // 원본 패키지의 엔트리 목록과 OPF 매니페스트 (href → id)를 읽는다.
-    // in-place 편집도 입력 파일은 게시 전까지 바뀌지 않으므로 여기서 읽어도 안전하다.
+    // Read the original package entry list and OPF manifest (href -> id). In-place edits are safe here
+    // because the input file remains unchanged until publication.
+
     let mut source = HwpxPackage::open_with_limits(input, limits)?;
     let source_entry_names: BTreeSet<String> = source
         .entries()?
@@ -912,8 +911,9 @@ pub fn rewrite_document_staged(
         .unwrap_or_default();
     drop(source);
 
-    // seed: 원본 패키지에 실제로 존재하는 BinData 엔트리만 심는다. 편집으로 새로
-    // 들어온 스트림(패키지에 없는 이름)은 seed하지 않는다 — 뒤에서 새 엔트리로 추가된다.
+    // Seed only BinData entries actually present in the original package. Streams introduced by the edit
+    // have no source entry and are appended later instead.
+
     let mut bins = BinCollector::default();
     let mut used_ids: BTreeSet<String> = BTreeSet::new();
     for stream in &doc.bin_streams {
@@ -935,7 +935,7 @@ pub fn rewrite_document_staged(
     }
     let seed_count = bins.items.len();
 
-    // dirty 섹션만 IR에서 재직렬화한다.
+    // Reserialize only dirty sections from the IR.
     let section_indices: Vec<usize> = match &dirty.sections {
         Some(indices) => indices.clone(),
         None => (0..doc.sections.len()).collect(),
@@ -951,33 +951,35 @@ pub fn rewrite_document_staged(
         let xml = crate::write::section::write_section_with_report(
             doc,
             section,
-            false, // 편집으로 낡은 줄 배치는 한글이 재계산(보안 경고 방지)
+            false, // Hangul recalculates stale line layouts after edits, avoiding security warnings.
             &mut bins,
             &mut report,
         );
         replacements.insert(format!("Contents/section{i}.xml"), xml.into_bytes());
     }
 
-    // 패키지에 없는 신규 스트림이 섹션 직렬화에서 수집되지 않았으면(참조 없는 추가)
-    // write/mod.rs의 passthrough와 같은 규칙으로 새 엔트리를 배정한다.
+    // Assign new entries to streams absent from the package and not collected during section
+    // serialization (unreferenced additions), using write/mod.rs passthrough rules.
+
     for stream in &doc.bin_streams {
         if stream.name.starts_with("BinData/") && source_entry_names.contains(&stream.name) {
-            continue; // seed 처리됨
+            continue; // Already seeded.
         }
         if bins.items.iter().any(|(.., bytes)| *bytes == stream.data) {
-            continue; // 같은 바이트가 이미 등록됨
+            continue; // Identical bytes already registered.
         }
         let (ext, mime) = crate::write::section::sniff(&stream.data);
         bins.allocate(ext, mime, stream.data.clone());
     }
-    // seed 이후로 collector에 등록된 항목이 패키지에 추가할 새 엔트리다.
+    // Items registered after seeding are new entries to append to the package.
     let appends: Vec<(String, Vec<u8>)> = bins.items[seed_count..]
         .iter()
         .map(|(_, href, _, bytes)| (href.clone(), bytes.clone()))
         .collect();
 
-    // content.hpf: dirty이거나 새 BinData가 추가되면 seed+신규 전체 매니페스트로
-    // 재생성한다. seed id는 원본 매니페스트 id라 기존 항목 나열은 원본과 같다.
+    // Regenerate content.hpf from the complete seeded/new manifest when dirty or after adding BinData.
+    // Seed IDs are original manifest IDs, retaining the original listings for existing items.
+
     if dirty.content_hpf || !appends.is_empty() {
         let bin_meta: Vec<(String, String, String)> = bins
             .items
@@ -998,7 +1000,7 @@ pub fn rewrite_document_staged(
         replacements.insert("Contents/header.xml".to_string(), xml.into_bytes());
     }
 
-    // replacements에 있는데 원본 패키지에 없는 엔트리는 조용히 유실되므로 감지한다.
+    // Detect replacements absent from the original package, which would otherwise be silently lost.
     let mut consumed: BTreeSet<String> = BTreeSet::new();
     process_package_with_appends(
         input,
@@ -1023,10 +1025,9 @@ pub fn rewrite_document_staged(
     Ok(report)
 }
 
-/// OPF(content.hpf) 매니페스트에서 `opf:item`의 (href → id) 매핑을 읽는다.
-/// seed id를 원본 매니페스트 id와 맞추는 데 쓴다 — 재직렬화된 섹션의
-/// `binaryItemIDRef`가 raw 복사된 매니페스트와 어긋나지 않게 한다.
-/// 파싱에 실패하면 빈 매핑을 돌려준다(호출자가 파일명 stem으로 폴백).
+/// Reads the OPF (content.hpf) manifest's href -> id mapping for opf:item. Match seed IDs to the
+/// original manifest, keeping reserialized binaryItemIDRef consistent with the raw-copied manifest.
+/// Parse failures yield an empty mapping and let callers fall back to filename stems.
 fn opf_item_ids(xml: &str) -> BTreeMap<String, String> {
     use quick_xml::events::Event;
 
@@ -1036,14 +1037,14 @@ fn opf_item_ids(xml: &str) -> BTreeMap<String, String> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
-                if event.name().local_name().as_ref() != b"item" {
+                if event.name().local_name().as_ref().as_bytes() != b"item" {
                     continue;
                 }
                 let mut id = None;
                 let mut href = None;
                 for attr in event.attributes().flatten() {
-                    let value = String::from_utf8_lossy(&attr.value).into_owned();
-                    match attr.key.local_name().as_ref() {
+                    let value = attr.value.into_owned();
+                    match attr.key.local_name().as_ref().as_bytes() {
                         b"id" => id = Some(value),
                         b"href" => href = Some(value),
                         _ => {}
@@ -1061,15 +1062,14 @@ fn opf_item_ids(xml: &str) -> BTreeMap<String, String> {
     map
 }
 
-/// OPF 매니페스트에 해당 항목이 없을 때 쓰는 stem 규칙: `BinData/<파일>`의
-/// 파일명 stem(확장자 앞까지)을 item id로 뽑는다.
-/// [`hwp_model::Document::resolve_bin`]의 stem 휴리스틱과 같은 규칙을 쓴다.
+/// Fallback when no OPF entry exists: derive the item ID from the filename stem in `BinData/<file>`,
+/// before its extension. Uses the same stem heuristic as [`hwp_model::Document::resolve_bin`].
 fn bin_stem_id(name: &str) -> String {
     let fname = name.rsplit('/').next().unwrap_or(name);
     fname.split('.').next().unwrap_or(fname).to_string()
 }
 
-/// 매니페스트/stem에서 얻은 id가 이미 쓰였으면 `_2`, `_3`… 접미로 유일하게 만든다.
+/// Makes an already-used manifest/stem ID unique with `_2`, `_3`, etc. suffixes.
 fn unique_bin_id(base: String, used: &mut BTreeSet<String>) -> String {
     if used.insert(base.clone()) {
         return base;
@@ -1084,17 +1084,17 @@ fn unique_bin_id(base: String, used: &mut BTreeSet<String>) -> String {
     }
 }
 
-/// 변환 대상 엔트리 판별 (본문 섹션 XML).
+/// Identifies entries to transform (body section XML).
 fn is_section_entry(name: &str) -> bool {
     name.starts_with("Contents/section") && name.ends_with(".xml")
 }
 
-/// 패키지 순회 공통 뼈대: 변환 대상만 제한 안에서 압축 해제해 다시 쓰고,
-/// 나머지는 압축 바이트를 스트리밍 raw copy한다.
+/// Shared package traversal: decompress and rewrite selected entries within limits, streaming raw
+/// compressed copies for the rest.
 ///
-/// 입력은 먼저 출력 옆의 비공개 snapshot으로 한 번만 복제한다. 이후 검증·변환은
-/// 그 snapshot의 열린 핸들만 사용하므로, 원본 경로가 교체되거나 같은 경로/하드링크로
-/// 제자리 호출해도 검증한 패키지와 실제 변환 패키지가 달라지지 않는다.
+/// First clone the input once into a private snapshot beside the output. All validation/transformation
+/// then uses only the open snapshot handle, so replacing the source path or editing in place through the
+/// same path/hardlink cannot change the package after validation.
 fn process_package(
     input: &Path,
     output: &Path,
@@ -1112,9 +1112,9 @@ fn process_package(
     )
 }
 
-/// [`process_package`] + 엔트리 루프 뒤 새 엔트리(`appends`)를 패키지 끝에
-/// 추가하는 확장. 외과 수술 재작성에서 편집으로 새로 들어온 BinData를 싣는 데 쓴다.
-/// 추가 엔트리 이름이 기존 엔트리와 겹치면 거부한다(중복 엔트리 패키지 방지).
+/// Extends [`process_package`] by appending new entries (`appends`) after the entry loop, used for
+/// BinData introduced by surgical edits. Reject names colliding with existing entries to prevent
+/// duplicate-entry packages.
 fn process_package_with_appends(
     input: &Path,
     output: &Path,
@@ -1127,8 +1127,9 @@ fn process_package_with_appends(
     let (_source_guard, snapshot) = snapshot_input(input, output, limits)?;
     let mut archive = zip::ZipArchive::new(snapshot)?;
     let entries = inspect_archive(&mut archive, limits)?;
-    // raw_copy_file은 CRC를 확인하지 않으므로, 출력 stage를 만들기 전에 snapshot의
-    // 모든 엔트리를 실제 EOF까지 읽어 선언 크기·deflate·CRC를 함께 검증한다.
+    // raw_copy_file does not check CRC. Before creating the output stage, read every snapshot entry to
+    // its actual EOF to validate declared size, deflate stream and CRC.
+
     verify_archive_integrity(&mut archive, &entries, limits)?;
     let source_layout = capture_zip_layout(_source_guard.path())?;
     let source_comment = archive.comment().to_vec();
@@ -1174,17 +1175,18 @@ fn process_package_with_appends(
                 preserve_raw[i] = true;
             }
         } else {
-            // 미리보기·compat·BinData·mimetype(STORED) 등 전부 바이트 보존.
+            // Preserve preview, compatibility parts, BinData, mimetype (STORED), etc. byte-for-byte.
             output_total = limits.add_uncompressed_total(output_total, info.size)?;
             let raw = archive.by_index_raw(i)?;
-            // 위 verify_archive_integrity가 같은 private snapshot의 이 엔트리를
-            // 실제 압축 해제 크기와 CRC까지 검증했다. raw copy는 검증된 압축
-            // 바이트와 ZIP 메타데이터를 그대로 보존한다.
+            // verify_archive_integrity checked this entry in the same private snapshot, including actual
+            // decompressed size and CRC. Raw copying preserves the validated compressed bytes and ZIP
+            // metadata.
+
             zip.raw_copy_file(raw)?;
             preserve_raw[i] = true;
         }
     }
-    // 편집으로 새로 들어온 엔트리(신규 BinData 등)를 패키지 끝에 추가한다.
+    // Append entries introduced by edits, such as new BinData, at the package end.
     for (name, data) in &appends {
         if !written_names.insert(name.clone()) {
             return Err(HwpxError::PackageIntegrity(format!(
@@ -1216,8 +1218,9 @@ fn process_package_with_appends(
 
     validate_staged_package(staged_guard.path(), limits)?;
     apply_destination_permissions(staged_guard.path(), &destination)?;
-    // Windows의 FlushFileBuffers는 쓰기 권한을 요구한다 — 읽기 전용 핸들이면
-    // ERROR_ACCESS_DENIED가 난다(유닉스는 읽기 fd로도 fsync가 된다).
+    // Windows FlushFileBuffers requires write permission; read-only handles yield ERROR_ACCESS_DENIED.
+    // Unix permits fsync on read-only descriptors.
+
     OpenOptions::new()
         .write(true)
         .open(staged_guard.path())
@@ -1352,7 +1355,7 @@ fn rebuild_with_preserved_entries(
     comment: &[u8],
 ) -> Result<()> {
     let generated = capture_zip_layout(generated_path)?;
-    // generated는 source 엔트리(같은 순서) 뒤에 0개 이상의 추가 엔트리를 붙인 형태다.
+    // generated contains the source entries in the same order, followed by zero or more additions.
     if generated.entries.len() < source.entries.len()
         || source.entries.len() != preserve_raw.len()
         || generated.entries.len() > usize::from(u16::MAX)
@@ -1368,7 +1371,8 @@ fn rebuild_with_preserved_entries(
     let mut generated_file = File::open(generated_path)?;
     let mut new_offsets = Vec::with_capacity(generated.entries.len());
     let mut source_entries = source.entries.iter();
-    // source 범위를 넘어서는 추가 엔트리는 raw 보존 대상이 아니다(항상 generated에서 복사).
+    // Additional entries beyond the source range have no raw-preservation requirement; always copy from
+    // generated.
     let mut preserved = preserve_raw.iter().copied().chain(std::iter::repeat(false));
     for generated_entry in &generated.entries {
         let offset = rebuilt.stream_position()?;
@@ -1395,8 +1399,9 @@ fn rebuild_with_preserved_entries(
     let mut source_entries = source.entries.iter();
     let mut preserved = preserve_raw.iter().copied().chain(std::iter::repeat(false));
     for (generated_entry, new_offset) in generated.entries.iter().zip(&new_offsets) {
-        // source 범위 안의 엔트리는 generated와 순서·이름이 같아야 한다(1:1 대응).
-        // 그 뒤의 엔트리는 새로 추가된 것이라 대응하는 source 레코드가 없다.
+        // Entries within the source range must match generated in order and name, one to one. Later
+        // entries are new additions with no corresponding source record.
+
         let source_entry = source_entries.next();
         if let Some(source_entry) = source_entry
             && central_name(&source_entry.central_record)?
@@ -1466,9 +1471,9 @@ fn copy_range(input: &mut File, output: &mut File, range: &Range<u64>) -> Result
     Ok(())
 }
 
-/// 원본을 한 번 연 핸들에서 제한된 크기로 snapshot하고, 이후에는 원본 경로를
-/// 다시 열지 않는다. 복제 전·후 EOCD preflight를 모두 수행하므로 복제 중
-/// truncate/append 또는 같은 크기의 패키지 교체도 snapshot 자체 검증에서 실패한다.
+/// Create a bounded snapshot from one open source handle and never reopen the source path. EOCD
+/// preflight both before and after copying detects truncation/appending or same-size package replacement
+/// during the snapshot's own validation.
 fn snapshot_input(
     input: &Path,
     output: &Path,
@@ -1497,8 +1502,8 @@ fn snapshot_input(
     Ok((guard, snapshot))
 }
 
-/// 최종 stage를 공개하기 전에 패키지 무결성과 OWPML의 핵심 의미 구조를 함께
-/// 검증한다. custom limit 호출도 같은 제한을 끝까지 유지한다.
+/// Validate package integrity and core OWPML semantics before publishing the final stage, retaining
+/// caller-specified limits throughout.
 fn validate_staged_package(path: &Path, limits: &PackageLimits) -> Result<()> {
     let mut package = HwpxPackage::open_with_limits(path, limits)?;
     package.verify_integrity()?;
@@ -1605,16 +1610,17 @@ fn apply_destination_permissions(path: &Path, snapshot: &DestinationSnapshot) ->
     Ok(())
 }
 
-/// 파일 신원. `Unknown`은 자기 자신과도 같지 않다 — 신원을 못 읽었으면 "그대로다"를
-/// 증명할 수 없으므로 recheck가 실패(fail-closed)해야 한다. 그래서 `Eq`는 구현하지
-/// 않는다(반사성이 성립하지 않음).
+/// File identity. Unknown is unequal even to itself: unreadable identity cannot prove the file stayed
+/// unchanged, so recheck must fail closed. Eq is intentionally not implemented because reflexivity does
+/// not hold.
 #[derive(Clone, Copy, Debug)]
 enum FileIdentity {
     Known {
         first: u64,
         second: u64,
     },
-    /// Windows에서 핸들을 못 열었을 때만 나온다. 다른 플랫폼은 metadata로 항상 구성된다.
+    /// Only produced when Windows cannot open a handle; other platforms always construct an identity
+    /// from metadata.
     #[cfg_attr(not(windows), allow(dead_code))]
     Unknown,
 }
@@ -1643,9 +1649,10 @@ fn file_identity(_path: &Path, metadata: &fs::Metadata) -> FileIdentity {
     }
 }
 
-// volume serial + file index는 핸들에서만 얻는다(std의 Metadata 경로는 nightly 전용
-// `windows_by_handle`). 링크는 따라가지 않고 열어, 검사 뒤 심볼릭 링크로 바뀌었으면
-// 다른 신원이 나와 recheck가 실패하도록 한다.
+// Volume serial and file index are available only through handles (std Metadata exposes them only
+// through nightly windows_by_handle). Open without following links, so replacement with a symlink after
+// validation changes identity and fails recheck.
+
 #[cfg(windows)]
 fn file_identity(path: &Path, _metadata: &fs::Metadata) -> FileIdentity {
     use std::os::windows::fs::OpenOptionsExt as _;
@@ -1692,8 +1699,9 @@ fn file_identity(path: &Path, _metadata: &fs::Metadata) -> FileIdentity {
         return FileIdentity::Unknown;
     };
     let mut information = ByHandleFileInformation::default();
-    // SAFETY: 핸들은 이 스코프에서 살아 있는 File 소유이고, 출력 구조체는 Win32
-    // BY_HANDLE_FILE_INFORMATION과 같은 repr(C) 레이아웃이다.
+    // SAFETY: the live File owns the handle for this scope, and the output structure has the same
+    // repr(C) layout as Win32 BY_HANDLE_FILE_INFORMATION.
+
     let loaded = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
     if loaded == 0 {
         return FileIdentity::Unknown;
@@ -1773,7 +1781,8 @@ impl Drop for SiblingTemp {
     }
 }
 
-/// io 오류에 연산 이름을 남긴다 — 상위(MCP 등)에서 체인이 평탄화돼도 어느 단계인지 보인다.
+/// Annotates I/O errors with the operation name so stages remain identifiable even if callers such as
+/// MCP flatten the error chain.
 fn labeled_io(operation: &str, error: std::io::Error) -> std::io::Error {
     std::io::Error::new(error.kind(), format!("{operation}: {error}"))
 }
@@ -1818,8 +1827,9 @@ fn atomic_publish(staged: &Path, destination: &Path) -> std::io::Result<()> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    // SAFETY: 두 경로는 NUL 종료 UTF-16 버퍼이며 호출 동안 살아 있다. sibling
-    // stage이므로 MoveFileExW는 같은 볼륨에서 원자적으로 교체한다.
+    // SAFETY: both paths are NUL-terminated UTF-16 buffers alive throughout the call. The sibling stage
+    // is on the same volume, so MoveFileExW replaces atomically.
+
     let result = unsafe {
         MoveFileExW(
             from.as_ptr(),
@@ -1848,8 +1858,9 @@ fn sync_parent_directory(path: &Path) {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        // 게시 성공 뒤 directory fsync 실패를 반환 오류로 바꾸면 "실패했지만
-        // 목적지는 변경됨"이 되므로, durability 보강은 최선 노력으로 수행한다.
+        // Returning directory-fsync failures after publication would report failure with an
+        // already-changed destination. Durability strengthening is therefore best effort.
+
         let _ = File::open(parent).and_then(|directory| directory.sync_all());
     }
 }
@@ -1869,8 +1880,8 @@ fn run_after_snapshot_hook() {
     });
 }
 
-/// (from→to) 쌍을 순서대로 치환한다. `escape`면 XML 텍스트 규칙으로 이스케이프 후 치환.
-/// 반환: (결과 문자열, 총 치환 건수).
+/// Replaces (from, to) pairs in order, escaping XML text first when escape is true. Returns (result
+/// string, total replacement count).
 fn replace_seq(
     mut text: String,
     replacements: &[(String, String)],
@@ -1895,14 +1906,14 @@ fn replace_seq(
     (text, total)
 }
 
-/// PrvText.txt 평문 치환. UTF-8이 우선이고, 실패 시 UTF-16LE로 디코드해 치환 후
-/// 같은 인코딩으로 되돌린다. 치환 건수 0이어도 Some을 돌려준다(엔트리 존재 보고용).
+/// Replaces plain text in PrvText.txt, preferring UTF-8; on failure decode as UTF-16LE and return the
+/// same encoding. Return Some even for zero replacements to report the entry's presence.
 fn replace_in_prvtext(data: Vec<u8>, replacements: &[(String, String)]) -> (Vec<u8>, usize) {
     if let Ok(text) = String::from_utf8(data.clone()) {
         let (text, n) = replace_seq(text, replacements, false);
         return (text.into_bytes(), n);
     }
-    // UTF-16LE 폴백: 손실 허용 디코드(치환 대상 이름은 정상 문자 영역에 있음).
+    // Lossy UTF-16LE fallback; replacement names are in the valid character range.
     let units: Vec<u16> = data
         .chunks_exact(2)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))

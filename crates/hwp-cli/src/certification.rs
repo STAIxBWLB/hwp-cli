@@ -1624,21 +1624,20 @@ fn scan_relationship_xml(bytes: &[u8]) -> Result<RelationshipScan> {
                 for attribute in element.attributes() {
                     let attribute = attribute?;
                     let key = attribute.key.local_name();
-                    let raw = String::from_utf8_lossy(&attribute.value);
+                    let raw = attribute.value;
                     let value = quick_xml::escape::unescape(&raw)
                         .map(|value| value.into_owned())
                         .unwrap_or_else(|_| raw.into_owned());
-                    if key.as_ref().eq_ignore_ascii_case(b"TargetMode")
+                    if key.as_ref().eq_ignore_ascii_case("TargetMode")
                         && value.eq_ignore_ascii_case("external")
                     {
                         scan.external = true;
                     }
-                    if matches!(key.as_ref(), b"href" | b"target" | b"src")
-                        && is_external_uri(&value)
+                    if matches!(key.as_ref(), "href" | "target" | "src") && is_external_uri(&value)
                     {
                         scan.external = true;
                     }
-                    if matches!(key.as_ref(), b"media-type" | b"mediaType")
+                    if matches!(key.as_ref(), "media-type" | "mediaType")
                         && matches!(
                             value.to_ascii_lowercase().as_str(),
                             "application/javascript"
@@ -2922,8 +2921,8 @@ impl Drop for PartialFileGuard {
     }
 }
 
-/// 열어 둔 핸들이 지금도 `path`가 가리키는 바로 그 파일인지. 신원을 못 읽으면
-/// "그대로다"를 증명할 수 없으므로 false(fail-closed)를 돌려준다.
+/// Checks whether the open handle still identifies the file at `path`.
+/// Fails closed when identity cannot be read, since sameness cannot be proved.
 #[cfg(unix)]
 fn open_file_still_matches_path(file: &File, path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
@@ -2951,8 +2950,8 @@ fn open_file_still_matches_path(file: &File, path: &Path) -> bool {
     opened.len() == current.len() && opened.modified().ok() == current.modified().ok()
 }
 
-/// Windows 파일 신원과 링크 수. std의 `Metadata` 경로(`volume_serial_number`·
-/// `file_index`·`number_of_links`)는 nightly 전용 `windows_by_handle`이라 핸들에서 읽는다.
+/// Windows file identity and link count, read from the handle because the standard
+/// `Metadata` accessors require the nightly-only `windows_by_handle` feature.
 #[cfg(windows)]
 struct WindowsFileInfo {
     volume: u32,
@@ -2968,7 +2967,7 @@ fn windows_handle_info(file: &File) -> Option<WindowsFileInfo> {
     };
 
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: 핸들은 호출 동안 살아 있는 File이 소유하고, 출력 구조체는 Win32 정의다.
+    // SAFETY: A live File owns the handle for this call; the output uses the Win32 layout.
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
         return None;
     }
@@ -2979,8 +2978,8 @@ fn windows_handle_info(file: &File) -> Option<WindowsFileInfo> {
     })
 }
 
-/// 링크를 따라가지 않고 연다 — 검사와 열기 사이에 reparse point로 바뀌었으면 링크 자신의
-/// 신원이 나와 비교가 실패한다.
+/// Opens without following links. If a reparse point replaces the file between the
+/// check and open, its own identity is returned and the comparison fails.
 #[cfg(windows)]
 fn windows_path_info(path: &Path) -> Option<WindowsFileInfo> {
     use std::os::windows::fs::OpenOptionsExt as _;
@@ -3434,8 +3433,8 @@ fn audit_published_tree(root: &Path, expected_paths: &BTreeSet<String>) -> Resul
     Ok(())
 }
 
-/// 하드링크 별칭이 있는지. Windows는 링크 수를 핸들에서만 읽을 수 있으므로 열지 못하면
-/// 판정 불가이며, 호출부가 모두 거부 조건으로 쓰므로 true(fail-closed)를 돌려준다.
+/// Checks for hard-link aliases. Windows requires a handle to read the link count.
+/// If opening fails, return true to fail closed at callers that reject aliases.
 #[cfg(unix)]
 pub fn has_multiple_links(_path: &Path, metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt as _;
@@ -3704,8 +3703,8 @@ fn run_oracle(
     let Some(trusted) = TrustedOracleConfig::from_environment() else {
         return unavailable("trusted_runner_not_configured");
     };
-    // 오라클은 process group kill에 의존한다(unix 전용). cfg! 로 두어 양쪽 플랫폼에서
-    // 같은 코드가 컴파일되게 한다 — #[cfg] 블록이면 Windows에서 이후 문장이 죽어 경고가 난다.
+    // The oracle relies on Unix process-group termination. Use cfg! so both platforms
+    // compile this code; a #[cfg] block leaves unreachable code warnings on Windows.
     if cfg!(not(unix)) {
         let _ = (&trusted, input_snapshot, input_extension, stage_root);
         return unavailable("oracle_process_group_unavailable_on_platform");
@@ -4483,7 +4482,7 @@ fn run_bounded_command(
         }
     }
     let mut child = command.spawn()?;
-    // process group kill(unix)에서만 쓴다. 다른 플랫폼은 child.kill() 경로.
+    // Used only for Unix process-group termination; other platforms use child.kill().
     #[cfg_attr(not(unix), allow(unused_variables))]
     let pid = child.id();
     let stdout = child.stdout.take().context("missing child stdout")?;
@@ -4679,8 +4678,8 @@ mod tests {
         fs::remove_dir_all(parent).unwrap();
     }
 
-    /// 하드링크 별칭 판정. Windows에서는 링크 수를 핸들에서만 읽을 수 있어 구현이 갈리므로
-    /// 두 플랫폼 모두에서 돌려 회귀를 잡는다.
+    /// Exercise hard-link alias detection on both platforms because Windows reads
+    /// the link count through a handle and uses a different implementation.
     #[test]
     fn hardlink_alias_is_detected_and_plain_file_is_not() {
         let plain = scratch("plain");
@@ -4697,7 +4696,7 @@ mod tests {
         fs::remove_file(&plain).unwrap();
     }
 
-    /// 열어 둔 핸들과 경로의 동일성. 경로가 다른 파일로 교체되면 false여야 한다(TOCTOU 게이트).
+    /// The handle/path identity check must fail if another file replaces the path (TOCTOU gate).
     #[test]
     fn open_handle_stops_matching_a_replaced_path() {
         let path = scratch("swap");

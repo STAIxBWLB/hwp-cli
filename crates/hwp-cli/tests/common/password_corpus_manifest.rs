@@ -781,8 +781,8 @@ pub fn parse_hwpx_profile(manifest: &str) -> Result<HwpxProfile, String> {
         event
             .attributes()
             .flatten()
-            .find(|attribute| local_name(attribute.key.as_ref()) == key)
-            .and_then(|attribute| String::from_utf8(attribute.value.into_owned()).ok())
+            .find(|attribute| local_name(attribute.key.as_ref().as_bytes()) == key)
+            .map(|attribute| attribute.value.into_owned())
     }
     fn base64_len(value: Option<String>) -> Result<usize, String> {
         let value = value.ok_or_else(|| "HWPX profile metadata is incomplete".to_owned())?;
@@ -798,7 +798,7 @@ pub fn parse_hwpx_profile(manifest: &str) -> Result<HwpxProfile, String> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
-                match local_name(event.name().as_ref()) {
+                match local_name(event.name().as_ref().as_bytes()) {
                     b"file-entry" => {
                         if current.is_some() || attr(&event, b"full-path").is_none() {
                             return Err("HWPX protected entry structure is ambiguous".to_owned());
@@ -840,7 +840,9 @@ pub fn parse_hwpx_profile(manifest: &str) -> Result<HwpxProfile, String> {
                     _ => {}
                 }
             }
-            Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"file-entry" => {
+            Ok(Event::End(event))
+                if local_name(event.name().as_ref().as_bytes()) == b"file-entry" =>
+            {
                 let entry = current
                     .take()
                     .ok_or_else(|| "HWPX protected entry structure is ambiguous".to_owned())?;
@@ -1717,8 +1719,8 @@ fn parse_hwpx_encrypted_entries(manifest: &str) -> Result<Vec<HwpxEncryptedEntry
         event
             .attributes()
             .flatten()
-            .find(|attribute| local_name(attribute.key.as_ref()) == key)
-            .and_then(|attribute| String::from_utf8(attribute.value.into_owned()).ok())
+            .find(|attribute| local_name(attribute.key.as_ref().as_bytes()) == key)
+            .map(|attribute| attribute.value.into_owned())
     }
     fn base64(value: Option<String>) -> Result<Vec<u8>, String> {
         base64::engine::general_purpose::STANDARD
@@ -1732,7 +1734,7 @@ fn parse_hwpx_encrypted_entries(manifest: &str) -> Result<Vec<HwpxEncryptedEntry
     loop {
         match reader.read_event() {
             Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
-                match local_name(event.name().as_ref()) {
+                match local_name(event.name().as_ref().as_bytes()) {
                     b"file-entry" => {
                         if current.is_some() {
                             return Err("HWPX protected entry structure is ambiguous".to_owned());
@@ -1778,7 +1780,9 @@ fn parse_hwpx_encrypted_entries(manifest: &str) -> Result<Vec<HwpxEncryptedEntry
                     _ => {}
                 }
             }
-            Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"file-entry" => {
+            Ok(Event::End(event))
+                if local_name(event.name().as_ref().as_bytes()) == b"file-entry" =>
+            {
                 let entry = current
                     .take()
                     .ok_or_else(|| "HWPX protected entry structure is ambiguous".to_owned())?;
