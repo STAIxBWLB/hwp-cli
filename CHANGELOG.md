@@ -10,6 +10,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- An HWP5 edit now continues the re-synthesized body flow from the saved paragraphs it keeps
+  instead of restarting the section at its top. The writer measures the kept prefix and seeds the
+  first edited body paragraph with that prefix's bottom, and the source-aware restore stops at the
+  same paragraph: from there the renderer's body cache is written out, while the prefix before the
+  edit and every nested cell, caption and text-box cache come back from the immutable snapshot. An
+  edited table therefore stays on its page and the content after it flows below the table again,
+  instead of the edited paragraph sitting above its kept predecessor and opening a new page.
+  Unedited documents never enter this path, so HWP5 identity stays byte-identical; the seed
+  continues the synthesizer's own spacing rule, so the seam can still sit half a paragraph spacing
+  from Hangul's saved gap until the unit calibration in
+  [#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) lands, and a floating-table section reads
+  its prepass anchors instead ([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
+
 ## [1.6.0]
 
 **Compatibility**

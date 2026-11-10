@@ -359,6 +359,36 @@ degrades positions instead of failing a render. The prepass keeps a private accu
 neither spends the caller's page/display-item budget nor repeats the document's other warnings; only
 the diagnostics that can invalidate an anchor are propagated.
 
+### 2.2.2 An edited HWP5 document seeds the suffix from the kept prefix
+
+`hwp edit` on an HWP5 source re-synthesizes the document and then puts every paragraph the edit did
+not change back as its saved record (`convert::restore_unchanged_native_paragraphs`), so new
+PARA_LINE_SEG records are limited to what the edit moved. Both sides of that seam carry page-relative
+`v_pos`, and a re-synthesis that restarts the section at 0 puts the first edited paragraph *above* the
+saved cache of the paragraph before it. `layout_document_pages` reads that step back as a page
+boundary (`seg.v_pos < prev_v_pos`) and draws the change on the next page
+([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
+
+The fix adds one rule and no new geometry: the writer measures the prefix it will restore and passes
+one `lineseg::BodySeed` per section (`synthesize_linesegs_seeded`). A seed names the section, the
+first body paragraph whose flow the edit moved, and the cursor that paragraph starts at —
+`lineseg::saved_body_cursor` over that prefix's last kept paragraph. It reads `lineseg::body_cursor`,
+the one rule §2.2's walk also uses: the paragraph's entry position plus its tables' height when it
+anchors any (text cannot resume at the line cursor after a table), otherwise its last saved line block
+(`v_pos + line_height + line_spacing`), plus its space-after. The restore pass stops at the same
+index: from the first changed paragraph on, the body cache the synthesizer produced is what gets
+written, while the prefix before it and every nested list (cell, caption, text box) come back from
+the snapshot. Nested caches are local to their own box, so the edit does not invalidate them. An
+explicit page break in the seeded paragraph still restarts the page.
+
+Consequences worth keeping. An unedited document never enters this path, so HWP5 identity stays
+byte-identical. An edit in a section's first paragraph needs no seed (the section starts at 0
+anyway), and a prefix paragraph without a saved cache yields no seed rather than a guessed position.
+The seed continues the synthesizer's own spacing unit, so the seam can sit half a paragraph spacing
+away from Hangul's saved gap until the unit calibration in
+[#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) lands. A floating-table section reads prepass
+anchors instead of the cursor (§2.2.1), so a seed has no effect there.
+
 ### 2.3 Line layout for one paragraph (`compute_linesegs`)
 
 Line metrics are derived from the `base_size` of the first character shape (1000 by default):

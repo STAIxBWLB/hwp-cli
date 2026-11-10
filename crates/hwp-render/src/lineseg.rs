@@ -66,7 +66,72 @@ pub fn synthesize_linesegs(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) {
-    synthesize_linesegs_inner(doc, store, warnings, None);
+    synthesize_linesegs_inner(doc, store, warnings, None, &[]);
+}
+
+/// One section's body flow continues at a caller-supplied cursor instead of restarting at the
+/// section top: an edited HWP5 document keeps the saved caches of the paragraphs before the edit,
+/// so the re-synthesized suffix has to start where that prefix ends (#462).
+#[derive(Clone, Copy, Debug)]
+pub struct BodySeed {
+    pub section: usize,
+    /// Body paragraph index the cursor applies to.
+    pub paragraph: usize,
+    /// Page-relative cursor the paragraph's flow starts from, in HWPUNIT: the kept prefix's bottom.
+    /// The paragraph's own space-before is added by the walk, as for any other paragraph.
+    pub v_pos_hu: i32,
+}
+
+/// The cursor the walk below carries past one body paragraph, in HWPUNIT: the paragraph's entry
+/// position plus the tables it anchors when it has any (text cannot follow a table at the line
+/// cursor, which is what Hangul flags as corruption), otherwise its last line block
+/// (`v_pos + line_height + line_spacing`, the advance `compute_linesegs` commits); plus the
+/// paragraph's space-after. `None` without a line cache to measure. The walk and a caller
+/// continuing a flow from kept caches ([`saved_body_cursor`]) both read this one rule, so the seam
+/// of an edited document holds the value the walk itself would have produced (#462).
+fn body_cursor(
+    entry_v_pos: i32,
+    line_segs: &[LineSeg],
+    table_total: i32,
+    space_after: i32,
+) -> Option<i32> {
+    let last = line_segs.last()?;
+    let bottom = if table_total > 0 {
+        entry_v_pos.saturating_add(table_total)
+    } else {
+        last.v_pos
+            .saturating_add(last.line_height)
+            .saturating_add(last.line_spacing)
+    };
+    Some(bottom.saturating_add(space_after))
+}
+
+/// [`body_cursor`] measured from a paragraph's saved record, for a caller continuing a flow from
+/// kept caches: the saved first line stands for the entry position, and the tables are measured
+/// from their saved nested caches, which is what the renderer draws for that kept paragraph.
+pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32> {
+    let entry = paragraph.line_segs.first()?;
+    let table_total = paragraph
+        .controls
+        .iter()
+        .filter_map(|control| match control {
+            Control::Table(table) => Some(table_height(table)),
+            _ => None,
+        })
+        .sum();
+    body_cursor(entry.v_pos, &paragraph.line_segs, table_total, space_after)
+}
+
+/// [`synthesize_linesegs`] with body-flow seeds, so an edited document can re-synthesize only the
+/// paragraphs after an edit while keeping the genuine caches before it (#462). A seeded paragraph
+/// starts at its seed; an explicit page break in that paragraph still restarts the page.
+pub fn synthesize_linesegs_seeded(
+    doc: &mut Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    seeds: &[BodySeed],
+) {
+    synthesize_linesegs_inner(doc, store, warnings, None, seeds);
 }
 
 /// [`synthesize_linesegs`] with an explicit prepass page budget, so a test can prove how an
@@ -79,7 +144,7 @@ fn synthesize_linesegs_with_prepass_page_limit(
     warnings: &mut RenderIssueAccumulator,
     page_limit: usize,
 ) -> Option<crate::layout::BodyAnchors> {
-    synthesize_linesegs_inner(doc, store, warnings, Some(page_limit))
+    synthesize_linesegs_inner(doc, store, warnings, Some(page_limit), &[])
 }
 
 fn synthesize_linesegs_inner(
@@ -87,6 +152,7 @@ fn synthesize_linesegs_inner(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     prepass_page_limit: Option<usize>,
+    seeds: &[BodySeed],
 ) -> Option<crate::layout::BodyAnchors> {
     let snap = doc.clone();
     let use_fragment_flow = doc.meta.source_format != "hwp5";
@@ -180,6 +246,16 @@ fn synthesize_linesegs_inner(
                 .get(snap.sections[si].paragraphs[pi].para_shape.0 as usize)
                 .map_or((0, 0), |ps| (ps.spacing_top, ps.spacing_bottom));
             let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
+            // A seeded paragraph continues the flow a caller measured before it, so an edited
+            // document's re-synthesized suffix begins where its kept prefix ends (#462) instead
+            // of at a section-top cursor that contradicts the kept caches. An explicit page
+            // break still wins: it restarts the page regardless of the seed.
+            if let Some(seed) = seeds
+                .iter()
+                .find(|seed| seed.section == si && seed.paragraph == pi)
+            {
+                v_pos = seed.v_pos_hu;
+            }
             if explicit_break {
                 v_pos = 0;
             }
@@ -228,16 +304,13 @@ fn synthesize_linesegs_inner(
                 // HWP 5.0 §4.3.4 (PARA_LINE_SEG): bit0 marks the first line of a page.
                 first.flags |= 0x1;
             }
-            doc.sections[si].paragraphs[pi].line_segs = segs;
             // A table paragraph advances by table height rather than one line_advance, keeping
-            // following text from overlapping the table (which Hangul flags as corruption).
-            // compute_linesegs has already added one line_advance for the anchor paragraph,
-            // so replace the cursor with entry position plus table heights, summing multiple tables.
-            if table_total > 0 {
-                v_pos = anchor_v + table_total;
-            }
-            // Space-after moves the next paragraph's first line down accordingly.
-            v_pos += sp_bottom;
+            // following text from overlapping the table (which Hangul flags as corruption), and
+            // space-after moves the next paragraph's first line down. `body_cursor` holds both
+            // readings, so measuring a kept prefix from its saved record cannot drift from this.
+            v_pos = body_cursor(anchor_v, &segs, table_total, sp_bottom)
+                .expect("compute_linesegs always commits at least one line");
+            doc.sections[si].paragraphs[pi].line_segs = segs;
         }
     }
     flow_anchors
@@ -743,6 +816,24 @@ mod tests {
         let h = table_height(&table_with(cell_with(&[])));
         assert_eq!(h, 141 + 141 + TABLE_BLOCK_PADDING);
     }
+
+    #[test]
+    fn saved_body_cursor_follows_the_walks_two_readings() {
+        // No table: the saved line block (0 + 1000) is the bottom, plus space-after 300.
+        let mut plain = Paragraph {
+            line_segs: vec![seg(0, 1000)],
+            ..Default::default()
+        };
+        assert_eq!(saved_body_cursor(&plain, 300), Some(1300));
+
+        // A table paragraph advances past the table, not past its text line (#462): the saved
+        // entry position 0 plus the table's height, plus the same space-after.
+        let table = table_with(cell_with(&[0]));
+        let height = table_height(&table);
+        plain.controls.push(Control::Table(table));
+        assert_eq!(saved_body_cursor(&plain, 300), Some(height + 300));
+        assert!(height > 1300, "the table reaches below the text line");
+    }
 }
 
 /// Regression coverage for #426: an anchor prepass that stops before it collected every
@@ -838,7 +929,7 @@ mod anchor_prepass_tests {
     ) -> (crate::layout::BodyAnchors, crate::issues::RenderIssueReport) {
         let mut store = FontStore::new_isolated();
         let mut warnings = RenderIssueAccumulator::new();
-        let anchors = synthesize_linesegs_inner(doc, &mut store, &mut warnings, None)
+        let anchors = synthesize_linesegs_inner(doc, &mut store, &mut warnings, None, &[])
             .expect("a floating-table section runs the prepass");
         (anchors, warnings.finish())
     }
