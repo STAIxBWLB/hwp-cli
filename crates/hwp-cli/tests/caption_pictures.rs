@@ -112,7 +112,7 @@ fn owner_caption(document: &Document, owner: Owner) -> Option<&Caption> {
         })
 }
 
-fn caption_picture(caption: &Caption) -> &Picture {
+fn caption_picture<'a>(caption: &'a Caption, stage: &str) -> &'a Picture {
     caption
         .paragraphs
         .iter()
@@ -121,7 +121,7 @@ fn caption_picture(caption: &Caption) -> &Picture {
             Control::Picture(picture) => Some(picture),
             _ => None,
         })
-        .expect("caption must retain its nested picture")
+        .unwrap_or_else(|| panic!("{stage} must retain its nested picture"))
 }
 
 fn has_record(records: &[OpaqueRecord], tag: u16) -> bool {
@@ -260,19 +260,29 @@ fn run_caption_conversion(label: &str, owner: Owner, nested: bool, strict: bool)
     hwpx::write_document(&document, &input).unwrap();
     let source = hwpx::read_document(&input).unwrap().document;
     let before = owner_caption(&source, owner).expect("HWPX setup must retain caption ownership");
-    let source_picture = caption_picture(before);
+    let source_picture = caption_picture(before, "HWPX setup caption");
     assert_picture(&source, source_picture, &bytes, false);
     if nested {
         let inner_caption = source_picture
             .caption
             .as_ref()
             .expect("HWPX setup must retain nested caption ownership");
-        assert_picture(&source, caption_picture(inner_caption), &bytes, false);
+        assert_picture(
+            &source,
+            caption_picture(inner_caption, "HWPX setup nested caption"),
+            &bytes,
+            false,
+        );
     }
     if let Some(shape_bytes) = &shape_bytes {
         let shape_caption = owner_caption(&source, Owner::Shape)
             .expect("combined HWPX setup must retain its shape caption");
-        assert_picture(&source, caption_picture(shape_caption), shape_bytes, false);
+        assert_picture(
+            &source,
+            caption_picture(shape_caption, "HWPX setup shape caption"),
+            shape_bytes,
+            false,
+        );
         assert_ne!(
             bytes, *shape_bytes,
             "combined fixture uses distinct image assets"
@@ -337,7 +347,7 @@ fn run_caption_conversion(label: &str, owner: Owner, nested: bool, strict: bool)
     } else {
         let after = owner_caption(&converted, owner)
             .expect("converted owner must retain its caption and caption picture");
-        caption_picture(after)
+        caption_picture(after, "HWP read-back caption")
     };
     assert_picture(&converted, converted_picture, &bytes, true);
     if matches!(owner, Owner::Shape | Owner::TableAndShape) {
@@ -368,7 +378,12 @@ fn run_caption_conversion(label: &str, owner: Owner, nested: bool, strict: bool)
             .caption
             .as_ref()
             .expect("converted picture must retain its nested caption");
-        assert_picture(&converted, caption_picture(inner_caption), &bytes, true);
+        assert_picture(
+            &converted,
+            caption_picture(inner_caption, "HWP read-back nested caption"),
+            &bytes,
+            true,
+        );
     }
 }
 

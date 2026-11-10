@@ -5853,6 +5853,30 @@ mod tests {
     }
 
     #[test]
+    fn caption_picture_raw_list_mirrors_do_not_enable_synthesis() {
+        let Control::Picture(picture) = picture_with_instance_id(0) else {
+            unreachable!()
+        };
+        let mut document = caption_picture_fixture("generic", picture);
+        let Control::Generic(generic) = &mut document.sections[0].paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        generic.raw_children = vec![OpaqueRecord {
+            tag: tag::SHAPE_COMPONENT,
+            data: b"opaque primary tree".to_vec(),
+            children: Vec::new(),
+        }];
+        generic.paragraph_lists.push(hwp_model::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: generic.caption.as_ref().unwrap().paragraphs.clone(),
+        });
+        assert!(
+            !has_synthesizable_picture(&document),
+            "raw-backed extraction lists are not emitted and must not trigger synthesis"
+        );
+    }
+
+    #[test]
     fn caption_picture_unresolved_assets_follow_body_loss_and_cleanup_rules() {
         let Control::Picture(picture) = picture_with_instance_id(0) else {
             unreachable!()
