@@ -123,7 +123,7 @@ fn drop_fragment_history(fragment: &mut Document) -> PreservationReport {
 /// Divides `doc` into one fragment per `Section`, in document order (D-05).
 ///
 /// Each fragment keeps the source's whole `DocHeader`, metadata and retained package/form
-/// fields (D-06), while excluding whole-document history through [`drop_fragment_history`].
+/// fields (D-06), while excluding whole-document revision history.
 /// Only `sections`, `header.properties.section_count` (set to 1) and
 /// `header.properties.caret` (zeroed because it can reference an excluded list/paragraph) are
 /// otherwise fragment-specific. History omissions are returned in the preservation ledger.
