@@ -5757,6 +5757,95 @@ mod tests {
         doc
     }
 
+    fn picture_holding_raw_id(common: u32, raw: u32) -> Control {
+        let Control::Picture(mut picture) = picture_with_instance_id(common) else {
+            unreachable!()
+        };
+        picture.extras = build_picture_extras(100, 100, (100, 100), 1, raw);
+        Control::Picture(picture)
+    }
+
+    #[test]
+    fn raw_picture_ids_reserve_both_common_and_derived_candidates() {
+        for raw in [0x3000_0000, 0x3010_0000] {
+            let mut doc = doc_with_picture_ids(&[]);
+            doc.sections[0].paragraphs[0].controls = vec![picture_holding_raw_id(0x5000_0000, raw)];
+            let next = InstanceIds::new(&doc).next().unwrap();
+            assert_ne!(
+                next, raw,
+                "new common id repeats a preserved picture record id"
+            );
+            assert_ne!(
+                next ^ 0x0010_0000,
+                raw,
+                "new picture record id repeats a preserved raw id"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_picture_ids_inside_preserved_generic_trees_are_reserved() {
+        let Control::Generic(mut generic) = shape_caption_holding(Vec::new()) else {
+            unreachable!()
+        };
+        generic.caption = None;
+        // build_picture_extras writes the id at payload bytes74..78, beneath SHAPE_COMPONENT.
+        generic.raw_children = build_picture_extras(100, 100, (100, 100), 1, 0x3010_0000);
+        let mut doc = doc_with_picture_ids(&[]);
+        doc.sections[0].paragraphs[0].controls = vec![Control::Generic(generic)];
+        let next = InstanceIds::new(&doc).next().unwrap();
+        assert_ne!(
+            next ^ 0x0010_0000,
+            0x3010_0000,
+            "a raw Generic subtree already owns this picture id"
+        );
+    }
+
+    #[test]
+    fn raw_picture_id_reservation_reaches_caption_paragraphs() {
+        let mut doc = doc_with_picture_ids(&[]);
+        doc.sections[0].paragraphs[0].controls =
+            vec![shape_caption_holding(vec![picture_holding_raw_id(
+                0x5000_0000,
+                0x3010_0000,
+            )])];
+        let next = InstanceIds::new(&doc).next().unwrap();
+        assert_ne!(
+            next ^ 0x0010_0000,
+            0x3010_0000,
+            "the shape caption owns this raw picture id"
+        );
+    }
+
+    #[test]
+    fn raw_picture_id_requires_its_complete_field_and_can_exhaust_the_range() {
+        // The current writer appends the four-byte instance id after74 prefix bytes.
+        // A short opaque record must stay unread rather than manufacturing an id from its tail.
+        for len in [0, 73, 74, 75, 76, 77, 78] {
+            let mut doc = doc_with_picture_ids(&[]);
+            let Control::Picture(mut picture) = picture_holding_raw_id(0x5000_0000, 0x3010_0000)
+            else {
+                unreachable!()
+            };
+            picture.extras[0].children[0].data.truncate(len);
+            doc.sections[0].paragraphs[0].controls = vec![Control::Picture(picture)];
+            let mut ids = InstanceIds::with_range(&doc, 0x3000_0000, 0x3000_0001);
+            if len < 78 {
+                assert_eq!(
+                    ids.next(),
+                    Some(0x3000_0000),
+                    "a {len}-byte record lacks the full id"
+                );
+            } else {
+                assert_eq!(
+                    ids.next(),
+                    None,
+                    "the one available id derives a preserved raw picture id"
+                );
+            }
+        }
+    }
+
     /// An id handed out must be inside the synthesized range and not already used by any
     /// picture, table or container. `max + 1` of the in-range ids steps over the range edge:
     /// with `0x300fffff` present it returns `0x30100000`, which another object already holds.
