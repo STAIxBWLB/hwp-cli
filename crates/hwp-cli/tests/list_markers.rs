@@ -162,6 +162,46 @@ fn convert_hwp_warns_instead_of_silently_substituting_custom_numbering() {
 }
 
 #[test]
+fn convert_sample_default_ladder_does_not_warn_about_unused_extended_levels() {
+    let dir = workspace("default-sample-convert");
+    let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/samples/report-tables.hwpx");
+    let run = hwp()
+        .arg("convert")
+        .arg(input)
+        .arg("-o")
+        .arg(dir.join("out.hwp"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{stderr}");
+    assert!(
+        !stderr.contains("numbering_default_substitution"),
+        "unused HWPX extension levels must not warn: {stderr}"
+    );
+}
+
+#[test]
+fn new_markdown_default_list_does_not_warn_about_unused_eighth_level() {
+    let dir = workspace("default-markdown-new");
+    let input = dir.join("list.md");
+    std::fs::write(&input, "1. First item\n2. Second item\n").unwrap();
+    let run = hwp()
+        .args(["new", "--from"])
+        .arg(input)
+        .arg("-o")
+        .arg(dir.join("out.hwp"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{stderr}");
+    assert!(
+        !stderr.contains("numbering_default_substitution"),
+        "unused markdown extension level must not warn: {stderr}"
+    );
+}
+
+#[test]
 fn mcp_convert_returns_numbering_substitution_in_its_warning_contract() {
     let dir = workspace("mcp-convert");
     let input = compose_hwpx(&dir);
