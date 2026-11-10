@@ -17,6 +17,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Shared stage-sync and file-identity helper failures now name their phase and advise checking
+  output-directory permissions and free space before rerunning. The helper error values use
+  fixed Korean messages without staging/destination paths or underlying I/O error chains,
+  including in binding commands ([#471](https://github.com/STAIxBWLB/hwp-cli/issues/471)).
+
 - HWP5 picture synthesis resolves unlisted `ItemRef` values with the model's case-sensitive
   exact name, path-suffix and filename-stem rules. Partial names such as `image1` no longer
   select `image10.png`; unresolved references report `BinaryAssetRemoved` instead of embedding
