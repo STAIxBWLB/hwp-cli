@@ -945,10 +945,11 @@ fn serve_closes_an_empty_connection_without_answering() {
     let addr = &server.addr;
 
     let mut probe = TcpStream::connect(addr).unwrap();
-    probe.shutdown(std::net::Shutdown::Write).unwrap();
+    // Configure the socket before the half-close lets the server close it immediately.
     probe
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
+    probe.shutdown(std::net::Shutdown::Write).unwrap();
     let mut raw = Vec::new();
     probe.read_to_end(&mut raw).unwrap();
     assert!(
