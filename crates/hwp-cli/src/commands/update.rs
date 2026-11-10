@@ -827,11 +827,20 @@ mod tests {
                 "install.sh에 {triple} 없음 (update와 자산 이름 규칙 불일치)"
             );
         }
-        // The archive-name construction must also match.
-        assert!(
-            script.contains("$BIN-$TAG-$target.tar.gz"),
-            "install.sh 아카이브 이름 규칙이 asset_names와 다릅니다"
-        );
+        // Both prefix attempts must use the same tag/target/archive rule.
+        for declaration in [
+            "BIN=\"ahwp\"",
+            "COMPAT_BIN=\"hwp\"",
+            "asset_base=\"$1-$TAG-$target\"",
+            "asset=\"$asset_base.tar.gz\"",
+            "fetch_archive \"$BIN\"",
+            "fetch_archive \"$COMPAT_BIN\"",
+        ] {
+            assert!(
+                script.contains(declaration),
+                "installer/updater bridge naming drift: missing {declaration}"
+            );
+        }
     }
 
     #[test]

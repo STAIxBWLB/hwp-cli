@@ -408,7 +408,7 @@ fi
 # artifact is not a document, so a committed sample stands in beside a copy of
 # the policy. Synthetic bytes resolve nothing; the pins being accepted is the
 # point. scripts/check.sh and CI build target/debug/ahwp before this runs.
-CERT_BIN="${HWP_REGRESSION_CERTIFY_BIN:-${CARGO_TARGET_DIR:-$REPO/target}/debug/hwp}"
+CERT_BIN="${HWP_REGRESSION_CERTIFY_BIN:-${CARGO_TARGET_DIR:-$REPO/target}/debug/ahwp}"
 certdir="$ROOT/certify"
 mkdir -p "$certdir"
 if [[ ! -x "$CERT_BIN" ]]; then
@@ -430,7 +430,7 @@ assert len(rules) == 1, rules
 assert report["render"]["fonts"], "empty font resolution log"
 PY
   then
-    pass 'hwp certify accepts an emitted policy and reaches the fonts rule'
+    pass 'ahwp certify accepts an emitted policy and reaches the fonts rule'
   else
     fail 'certify end to end' "no report with a fonts rule and resolution log; see $certdir.log"
   fi
