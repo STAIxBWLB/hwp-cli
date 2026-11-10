@@ -5320,6 +5320,72 @@ pub(crate) fn verify_document_quiet(
 mod tests {
     use super::*;
 
+    /// Compile through HWPX to bypass the HWP authoring guard, then exercise the existing
+    /// compose verification entry point against the actual substituted HWP output. This
+    /// backstop must work even if a future caller accidentally omits the early guard.
+    #[test]
+    fn compose_hwp_verification_rejects_template_format_and_start_substitution() {
+        let dir = std::env::temp_dir().join(format!(
+            "hwp-compose-numbering-verification-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for kind in ["template", "format", "start"] {
+            for nested in [false, true] {
+                let level = usize::from(kind == "format");
+                let marker = if kind == "template" { "{n}-" } else { "{n}." };
+                let paragraph = serde_json::json!({"type":"paragraph","style":"body",
+                    "list":{"name":"o","level":level},"runs":[{"type":"text","text":"numbered"}]});
+                let blocks = if nested {
+                    serde_json::json!([{"type":"table","width_mm":80,"columns":[{"width_mm":80}],
+                        "rows":[{"cells":[{"blocks":[paragraph]}]}]}])
+                } else {
+                    serde_json::json!([paragraph])
+                };
+                let mut levels = vec![serde_json::json!({"marker":marker,"start":1}); level + 1];
+                if kind == "start" {
+                    levels[level]["start"] = serde_json::json!(7);
+                }
+                let spec = serde_json::json!({"version":"1.0","styles":{"body":{"font_size_pt":10}},
+                    "lists":{"o":{"kind":"ordered","levels":levels}},"sections":[{"blocks":blocks}]});
+                let spec = hwp_cli::document_spec::parse_spec(
+                    &spec.to_string(),
+                    hwp_cli::document_spec::SpecInputFormat::Json,
+                )
+                .unwrap();
+                let mut expected = hwp_cli::document_spec::compile_spec(
+                    &spec,
+                    &dir,
+                    &dir.join("expected.hwpx"),
+                    false,
+                    false,
+                    &[],
+                )
+                .unwrap()
+                .document;
+                for origin in ["document-spec-v1", "document-spec-v2"] {
+                    expected.meta.source_format = origin.into();
+                    let output = dir.join(format!("{kind}-{nested}-{origin}.hwp"));
+                    crate::commands::convert::write_hwp_structural(&expected, &output).unwrap();
+                    let result = verify_document_quiet(&output, &expected);
+                    assert!(
+                        result.is_err(),
+                        "{origin}/{kind}/nested={nested}: compose verification must detect substituted used numbering"
+                    );
+                    assert!(
+                        result.unwrap_err().to_string().contains("HWPX"),
+                        "numbering refusal names a repair step"
+                    );
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// #224: the three spellings the help documents all parse, and the two ratio spellings
     /// produce the same tuple - only the `pt` suffix selects the fixed-spacing type.
     #[test]

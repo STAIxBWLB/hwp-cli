@@ -4258,6 +4258,156 @@ mod tests {
         assert_eq!(bullet_records(&h), vec![raw(2)]);
     }
 
+    fn drawn_default_numbering_levels() -> Vec<hwp_model::NumLevel> {
+        let mut levels = synthesized_numbering_levels();
+        for (level, format) in levels.iter_mut().zip(DEFAULT_NUMBERING_FORMATS) {
+            level.fmt = format;
+        }
+        levels
+    }
+
+    fn assert_numbering_default_substitution_warning(
+        category: &str,
+        level_index: usize,
+        change: impl FnOnce(&mut hwp_model::NumLevel),
+    ) {
+        let mut levels = drawn_default_numbering_levels();
+        change(&mut levels[level_index]);
+        let private_marker = "PRIVATE_NUMBERING_MARKER^1";
+        let mut raw_backed_levels = levels.clone();
+        raw_backed_levels[0].template = private_marker.to_string();
+        let raw = RawEntry {
+            data: DEFAULT_NUMBERING_DATA.to_vec(),
+            children: Vec::new(),
+        };
+        let mut doc = Document::default();
+        doc.header.numberings = vec![raw.clone()];
+        doc.header.numbering_levels = vec![raw_backed_levels, levels];
+        let mut report = WriteReport::new();
+        let roots = emit_doc_info(&doc, &mut report);
+        let records: Vec<_> = roots
+            .iter()
+            .flat_map(|root| &root.children)
+            .filter(|node| node.tag == tag::NUMBERING)
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].data, raw.data);
+        assert_eq!(records[1].data, DEFAULT_NUMBERING_DATA);
+
+        let substitutions: Vec<_> = report
+            .warnings
+            .iter()
+            .filter(|warning| warning.contains("numbering_default_substitution"))
+            .collect();
+        assert_eq!(
+            substitutions.len(),
+            1,
+            "default substitution must warn exactly once for the unbacked definition: {:?}",
+            report.warnings
+        );
+        let warning = substitutions[0];
+        assert!(warning.contains("definition=1"), "{warning}");
+        assert!(
+            warning.contains(&format!("levels=[{level_index}]")),
+            "{warning}"
+        );
+        assert!(
+            warning.contains(&format!("changed={category}")),
+            "{warning}"
+        );
+        assert!(warning.contains("기본"), "{warning}");
+        assert!(warning.contains("보존"), "{warning}");
+        assert!(warning.contains("HWPX"), "{warning}");
+        assert!(!warning.contains(private_marker), "{warning}");
+        assert!(report.preservation.events.is_empty());
+    }
+
+    #[test]
+    fn emit_doc_info_warns_when_default_numbering_substitutes_template() {
+        assert_numbering_default_substitution_warning("template", 0, |level| {
+            level.template = "PRIVATE_NUMBERING_MARKER^1".to_string();
+        });
+    }
+
+    #[test]
+    fn emit_doc_info_warns_when_default_numbering_substitutes_start() {
+        assert_numbering_default_substitution_warning("start", 2, |level| {
+            level.start = 7;
+        });
+    }
+
+    #[test]
+    fn emit_doc_info_warns_when_default_numbering_substitutes_drawn_format() {
+        // The reader reports Digit here, but the emitted record draws Hangul syllables.
+        assert_numbering_default_substitution_warning("format", 1, |level| {
+            level.fmt = hwp_model::NumFmt::Digit;
+        });
+    }
+
+    #[test]
+    fn emit_doc_info_does_not_warn_for_exact_drawn_numbering_defaults() {
+        let mut doc = Document::default();
+        doc.header.numbering_levels = vec![drawn_default_numbering_levels()];
+        let mut report = WriteReport::new();
+        let roots = emit_doc_info(&doc, &mut report);
+        let numbering = roots
+            .iter()
+            .flat_map(|root| &root.children)
+            .find(|node| node.tag == tag::NUMBERING)
+            .expect("the existing writer emits its default record");
+        assert_eq!(numbering.data, DEFAULT_NUMBERING_DATA);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.preservation.events.is_empty());
+    }
+
+    #[test]
+    fn emit_doc_info_does_not_warn_for_raw_backed_numbering() {
+        let mut levels = drawn_default_numbering_levels();
+        levels[0].template = "PRIVATE_RAW_BACKED_MARKER^1".to_string();
+        levels[1].fmt = hwp_model::NumFmt::LatinUpper;
+        levels[2].start = 7;
+        let raw = RawEntry {
+            data: DEFAULT_NUMBERING_DATA.to_vec(),
+            children: Vec::new(),
+        };
+        let mut doc = Document::default();
+        doc.header.numberings = vec![raw.clone()];
+        doc.header.numbering_levels = vec![levels];
+        let mut report = WriteReport::new();
+        let roots = emit_doc_info(&doc, &mut report);
+        let numbering = roots
+            .iter()
+            .flat_map(|root| &root.children)
+            .find(|node| node.tag == tag::NUMBERING)
+            .expect("the existing raw record is emitted");
+        assert_eq!(numbering.data, raw.data);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.preservation.events.is_empty());
+    }
+
+    #[test]
+    fn emit_doc_info_does_not_warn_after_official_numbering_materialization() {
+        let data = crate::numbering::official_eight_level_data();
+        let levels = crate::numbering::parse_official_eight_level_data(&data)
+            .expect("the evidenced official record has its modeled levels");
+        let mut doc = Document::default();
+        doc.header.numbering_levels = vec![levels; 8];
+        materialize_evidenced_official_numbering(&mut doc)
+            .expect("the existing official path materializes its preserved raw records");
+        assert_eq!(doc.header.numberings.len(), 8);
+        let mut report = WriteReport::new();
+        let roots = emit_doc_info(&doc, &mut report);
+        let records: Vec<_> = roots
+            .iter()
+            .flat_map(|root| &root.children)
+            .filter(|node| node.tag == tag::NUMBERING)
+            .collect();
+        assert_eq!(records.len(), 8);
+        assert!(records.iter().all(|record| record.data == data));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.preservation.events.is_empty());
+    }
+
     /// #225: the attr1 fold and the tail patch must be byte-level no-ops for a shape whose
     /// stored bits already agree with the IR spacing fields - that is exactly what keeps the
     /// hwp5 identity round trip byte-identical. Also pins the two short-tail branches: a tail
