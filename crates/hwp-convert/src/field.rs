@@ -191,6 +191,7 @@ fn field_value(chars: &[HwpChar], start: usize) -> String {
         match ch {
             HwpChar::Text(c) => s.push(*c),
             HwpChar::CharCtrl(10) => s.push('\n'),
+            HwpChar::InlineCtrl { code, .. } if *code == hwp_model::ctrl_char::TAB => s.push('\t'),
             HwpChar::InlineCtrl { code, .. } if *code == FIELD_END => break,
             _ => {}
         }
@@ -402,15 +403,18 @@ fn set_field_para(
     Ok(count + nested)
 }
 
+/// Field tabs use the same eight-WCHAR inline representation emitted by the HWP5 writer.
+/// Both preflight and insertion consume this builder, including field/hyperlink creation.
 fn build_value_chars(value: &str) -> Vec<HwpChar> {
     value
         .chars()
-        .map(|c| {
-            if c == '\n' {
-                HwpChar::CharCtrl(10)
-            } else {
-                HwpChar::Text(c)
-            }
+        .map(|c| match c {
+            '\t' => HwpChar::InlineCtrl {
+                code: hwp_model::ctrl_char::TAB,
+                payload: vec![0; 12],
+            },
+            '\n' => HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK),
+            c => HwpChar::Text(c),
         })
         .collect()
 }
@@ -841,7 +845,7 @@ fn create_field_in_para(
         apply_run_style(
             &mut para.char_shape_runs,
             dstart,
-            dstart + utf16_len(value),
+            iw + inserted_w - 8, // Restore before the eight-WCHAR FIELD_END control.
             shape,
         );
     }
