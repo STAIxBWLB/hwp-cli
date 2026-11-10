@@ -1911,11 +1911,10 @@ fn has_synthesizable_picture(doc: &Document) -> bool {
 /// trailing path component case-insensitively, since a stream name may or may not carry a
 /// `BinData/` prefix. `BinRef::ItemRef` is resolved through the package manifest first, the same
 /// rule `Document::bin_stream_index` applies: an id the manifest lists names its href's stream or
-/// nothing (`id="logo" href="BinData/p1.png"` need not look like its file name). An id the
-/// manifest does not list tries the exact trailing-component match, then falls back to the
-/// substring match hwpx-origin documents rely on today. There is no index-0 fallback: an
-/// unresolvable reference returns `None`, which the caller reports as a typed loss instead of
-/// silently substituting an unrelated stream.
+/// nothing (`id="logo" href="BinData/p1.png"` need not look like its file name). An unlisted id
+/// uses the model's exact name, path-suffix and filename-stem rules. There is no substring or
+/// index-0 fallback: an unresolvable reference returns `None`, which the caller reports as a
+/// typed loss instead of silently substituting an unrelated stream.
 fn bin_stream_index(
     bin_names: &[String],
     bin_data: &[hwp_model::BinDataItem],
@@ -1935,16 +1934,20 @@ fn bin_stream_index(
                 .iter()
                 .position(|n| trailing(n).eq_ignore_ascii_case(&name))
         }
-        hwp_model::BinRef::ItemRef(s) if !s.is_empty() => {
-            if let Some((_, href)) = manifest.iter().find(|(id, _)| id == s) {
-                return bin_names.iter().position(|n| n == href);
+        hwp_model::BinRef::ItemRef(item) => {
+            if let Some((_, href)) = manifest.iter().find(|(id, _)| id == item) {
+                return bin_names.iter().position(|name| name == href);
             }
-            bin_names
-                .iter()
-                .position(|n| trailing(n).eq_ignore_ascii_case(s))
-                .or_else(|| bin_names.iter().position(|n| n.contains(s.as_str())))
+            bin_names.iter().position(|name| {
+                name == item
+                    || name.ends_with(&format!("/{item}"))
+                    || name
+                        .rsplit('/')
+                        .next()
+                        .and_then(|file| file.split('.').next())
+                        .is_some_and(|stem| stem == item)
+            })
         }
-        _ => None,
     }
 }
 
@@ -2182,8 +2185,8 @@ fn synth_pictures_para(
         match control {
             Control::Picture(p) if p.extras.is_empty() => {
                 // Resolve the stream this picture actually references: BinRef::Id
-                // through header.bin_data's storage_id naming, BinRef::ItemRef by
-                // exact name then substring. No index-0 fallback - an unresolvable
+                // through header.bin_data's storage_id naming, BinRef::ItemRef through the
+                // manifest or exact model name rules. No index-0 fallback - an unresolvable
                 // reference is a reported loss below, never a silently substituted
                 // image (a different logo, seal, signature or photograph).
                 let pick = bin_index(&p.bin_ref);
@@ -5873,8 +5876,7 @@ mod tests {
 
     #[test]
     fn picture_itemref_resolves_to_the_named_stream() {
-        // S3: BinRef::ItemRef("BIN0002.png") already matches the existing substring
-        // heuristic today - a regression guard, not a red-before-fix case.
+        // An exact unlisted filename continues to resolve to its own stream.
         let doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef("BIN0002.png".to_string()));
         let output = picture_report_path("picture-itemref");
 
@@ -6129,8 +6131,8 @@ mod tests {
 
     #[test]
     fn picture_with_unresolvable_reference_reports_binary_asset_removed() {
-        // S2: BinRef::ItemRef names no existing stream. Today this silently falls back to
-        // bin_streams[0] instead of reporting a loss - the tangled defect this plan closes.
+        // A reference that names no available stream stays unresolved even when other
+        // payloads are available, and is reported as a typed loss.
         let doc = picture_binref_repro_doc(hwp_model::BinRef::ItemRef(
             "not-in-this-document.png".to_string(),
         ));
