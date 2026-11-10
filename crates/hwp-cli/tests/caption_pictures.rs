@@ -89,6 +89,7 @@ fn shape_with_caption(caption: Caption) -> GenericControl {
             arrow_end: 0,
             anchored: true,
             description: None,
+            image_fill_dropped: false,
         }],
         equation: None,
         column_def: None,
