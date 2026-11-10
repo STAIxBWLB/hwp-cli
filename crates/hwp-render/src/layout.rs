@@ -901,26 +901,111 @@ pub(crate) struct BodyAnchor {
     pub starts_page: bool,
 }
 
+/// Body anchors collected by the prepass, with an explicit completion result.
+///
+/// A slot is `None` when the pass stopped before that paragraph was visited, so an
+/// untouched entry can no longer be read as a legitimate page-top anchor (`v_pos == 0`,
+/// `starts_page == false`). `completed` carries the other half of the answer: a budget stop
+/// that refused a page *after* the last anchor was recorded leaves every slot filled, and a
+/// floating-table continuation is exactly that case (#426).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BodyAnchors {
+    slots: Vec<Vec<Option<BodyAnchor>>>,
+    completed: bool,
+}
+
+impl BodyAnchors {
+    pub(crate) fn completed(&self) -> bool {
+        self.completed
+    }
+
+    pub(crate) fn slot(&self, section_index: usize, para_index: usize) -> Option<BodyAnchor> {
+        self.slots
+            .get(section_index)?
+            .get(para_index)
+            .copied()
+            .flatten()
+    }
+
+    /// Every paragraph of this section was visited with no budget stop, so its anchors may
+    /// drive the fragment flow.
+    pub(crate) fn section_complete(&self, section_index: usize) -> bool {
+        self.completed()
+            && self
+                .slots
+                .get(section_index)
+                .is_some_and(|slots| slots.iter().all(Option::is_some))
+    }
+}
+
 /// Obtain body anchors from the same flow that plans floating-table fragments.
 /// The caller supplies cell caches and clears body caches before this measurement.
+///
+/// The prepass gets its own accumulator, so it neither spends the caller's page/display-item
+/// budget nor returns the document's warnings a second time - the real layout pass reports those
+/// once. Only the diagnostics that can invalidate an anchor are propagated: a page budget that
+/// refused a transition. The prepass sets no display-item limit itself, so that flag can only be
+/// set by a caller that injects one later; it still counts as an incomplete pass because it is
+/// the same refusal signal [`layout_document_bounded`] reads.
 pub(crate) fn synthesized_body_anchors(
     doc: &Document,
     store: &mut FontStore,
-) -> Vec<Vec<BodyAnchor>> {
-    let mut anchors: Vec<Vec<BodyAnchor>> = doc
+    warnings: &mut RenderIssueAccumulator,
+) -> BodyAnchors {
+    synthesized_body_anchors_with_limit(doc, store, warnings, None)
+}
+
+/// [`synthesized_body_anchors`] with an explicit page budget, so a caller can prove how the
+/// prepass behaves when it stops early. Production paths pass no limit.
+pub(crate) fn synthesized_body_anchors_with_page_limit(
+    doc: &Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    page_limit: usize,
+) -> BodyAnchors {
+    synthesized_body_anchors_with_limit(doc, store, warnings, Some(page_limit))
+}
+
+fn synthesized_body_anchors_with_limit(
+    doc: &Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    page_limit: Option<usize>,
+) -> BodyAnchors {
+    let mut slots: Vec<Vec<Option<BodyAnchor>>> = doc
         .sections
         .iter()
-        .map(|section| vec![BodyAnchor::default(); section.paragraphs.len()])
+        .map(|section| vec![None; section.paragraphs.len()])
         .collect();
-    let mut warnings = RenderIssueAccumulator::new();
+    let mut prepass = RenderIssueAccumulator::new();
+    if let Some(limit) = page_limit {
+        prepass.set_page_limit(limit);
+    }
     layout_document_inner(
         doc,
         store,
-        &mut warnings,
+        &mut prepass,
         &mut SegmentRecorder::disabled(),
-        Some(&mut anchors),
+        Some(&mut slots),
     );
-    anchors
+    // Every early return inside the layout is a refused page transition (a body overflow, an
+    // explicit break, a paragraph's own line pagination, a table continuation or the section
+    // close), so these two flags cover all of them. The unvisited check covers a stop that
+    // returned before a later paragraph, and the flags cover a stop after the last one.
+    let stopped = prepass.page_budget_exceeded() || prepass.display_item_budget_exceeded();
+    if prepass.page_budget_exceeded() {
+        warnings.push_once(RenderIssueCode::LayoutBudgetExceeded, b"pages");
+    }
+    if prepass.display_item_budget_exceeded() {
+        warnings.push_once(RenderIssueCode::LayoutBudgetExceeded, b"display_items");
+    }
+    let visited = slots
+        .iter()
+        .all(|section| section.iter().all(Option::is_some));
+    BodyAnchors {
+        slots,
+        completed: visited && !stopped,
+    }
 }
 
 fn layout_document_inner(
@@ -928,7 +1013,7 @@ fn layout_document_inner(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
-    anchors: Option<&mut [Vec<BodyAnchor>]>,
+    anchors: Option<&mut [Vec<Option<BodyAnchor>>]>,
 ) -> DisplayList {
     // Memoized cell heights are keyed by addresses inside `doc`; never let one
     // document's entries answer for another's, and do not keep them past the
@@ -944,7 +1029,7 @@ fn layout_document_pages(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     rec: &mut SegmentRecorder,
-    mut anchors: Option<&mut [Vec<BodyAnchor>]>,
+    mut anchors: Option<&mut [Vec<Option<BodyAnchor>>]>,
 ) -> DisplayList {
     let mut pages = Vec::new();
     let mut page_numbers = PageNumberState::new(doc.header.properties.start_numbers[0]);
@@ -1202,10 +1287,10 @@ fn layout_document_pages(
             let mut bg_first_slice = true;
 
             if let Some(anchors) = anchors.as_deref_mut() {
-                anchors[section_index][para_index] = BodyAnchor {
+                anchors[section_index][para_index] = Some(BodyAnchor {
                     v_pos: ((content_bottom + geom.spacing_top - body_top) * 100.0).round() as i32,
                     starts_page: false,
-                };
+                });
             }
             if para.line_segs.is_empty() {
                 // Cacheless body advance follows declared line spacing. Its fallback
@@ -1365,11 +1450,11 @@ fn layout_document_pages(
                         Some(&(_, first_baseline)),
                     ) = (anchors.as_deref_mut(), plan.first(), lines.first())
                     {
-                        anchors[section_index][para_index] = BodyAnchor {
+                        anchors[section_index][para_index] = Some(BodyAnchor {
                             v_pos: ((first_baseline + first_dy - max_size * 1.2 - body_top) * 100.0)
                                 .round() as i32,
                             starts_page: first_opens_page.is_some(),
-                        };
+                        });
                     }
                     para_split = plan.iter().any(|&(_, _, opens)| opens.is_some());
                     let mut src = scratch.items.into_iter();

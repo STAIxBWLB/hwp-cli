@@ -314,6 +314,33 @@ next page. The paragraph anchoring a table sits at its entry v_pos, and a paragr
 overwrites the cursor with `v_pos = anchor_v + table_total` (preventing overlap). Finally
 `spacing_bottom` is added.
 
+### 2.2.1 Floating-table sections read a prepass anchor set
+
+A section whose paragraphs carry a body-flow table (`placement.treat_as_char == false`) cannot use
+the cursor above: the renderer plans legal row/cell fragments for that table, so the paragraph
+positions must come from the same layout pass. `layout::synthesized_body_anchors` runs the layout
+once over a copy with every body cache cleared and records, per paragraph, the resolved first-line
+top (`BodyAnchor::v_pos`) and whether that first line opened a page (`starts_page`).
+`synthesize_linesegs` then starts each paragraph of such a section at its anchor and sets
+`LineSeg.flags` bit 0 where the anchor opened a page (HWP 5.0 §4.3.4). Native HWP5 sources keep the
+base cursor, so genuine caches and HWP5 identity are untouched.
+
+The prepass returns a `BodyAnchors`: one `Option<BodyAnchor>` slot per paragraph plus a `completed`
+flag (#426). A slot is `None` when the pass stopped before that paragraph was visited, so an
+untouched entry can no longer be read as a legitimate page-top anchor (`v_pos = 0`,
+`starts_page = false`). `completed` is false when a page or display-item budget refused a page
+transition anywhere in the pass, even after every anchor was recorded - a floating table that needs a
+continuation page is exactly that case.
+
+Policy: an incomplete prepass never publishes its anchors. A floating-table section whose anchors are
+not complete falls back to the base cursor above and reports `anchor_prepass_incomplete`
+(`section=<n>`; severity `incomplete`, stage `layout`) once per section, while the prepass's own
+budget refusal is propagated as `layout_budget_exceeded`. Falling back rather than refusing is
+deliberate: the base cursor is the pre-existing layout for those sections, so a hypothetical stop
+degrades positions instead of failing a render. The prepass keeps a private accumulator, so it
+neither spends the caller's page/display-item budget nor repeats the document's other warnings; only
+the diagnostics that can invalidate an anchor are propagated.
+
 ### 2.3 Line layout for one paragraph (`compute_linesegs`)
 
 Line metrics are derived from the `base_size` of the first character shape (1000 by default):

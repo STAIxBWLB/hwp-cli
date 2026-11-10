@@ -106,6 +106,11 @@ pub enum RenderIssueCode {
     WmfUnsupportedRecordOmitted,
     /// WMF 해석의 레코드/객체/픽셀 상한 초과 → placeholder.
     WmfBudgetExceeded,
+    /// The body-anchor prepass for a floating-table section stopped before it collected every
+    /// paragraph's anchor (a page or display-item budget stop, or an unvisited paragraph). The
+    /// section falls back to the measured base cursor rather than publishing default zero
+    /// anchors as measured positions (#426).
+    AnchorPrepassIncomplete,
 }
 
 impl RenderIssueCode {
@@ -114,7 +119,7 @@ impl RenderIssueCode {
     /// added here as well. The exhaustive match in `all_lists_every_code` fails to compile until
     /// the new variant has a match arm there, which is the prompt to add it here; the match arm
     /// does not itself force this entry.
-    pub const ALL: [RenderIssueCode; 35] = [
+    pub const ALL: [RenderIssueCode; 36] = [
         Self::ParseBudgetExceeded,
         Self::RenderExecutionFailed,
         Self::PaginationDriftDetected,
@@ -150,6 +155,7 @@ impl RenderIssueCode {
         Self::WmfParseInvalidPlaceholder,
         Self::WmfUnsupportedRecordOmitted,
         Self::WmfBudgetExceeded,
+        Self::AnchorPrepassIncomplete,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -189,6 +195,7 @@ impl RenderIssueCode {
             Self::WmfParseInvalidPlaceholder => "wmf_parse_invalid_placeholder",
             Self::WmfUnsupportedRecordOmitted => "wmf_unsupported_record_omitted",
             Self::WmfBudgetExceeded => "wmf_budget_exceeded",
+            Self::AnchorPrepassIncomplete => "anchor_prepass_incomplete",
         }
     }
 
@@ -615,7 +622,8 @@ mod tests {
                 | RenderIssueCode::LayoutBudgetExceeded
                 | RenderIssueCode::WmfParseInvalidPlaceholder
                 | RenderIssueCode::WmfUnsupportedRecordOmitted
-                | RenderIssueCode::WmfBudgetExceeded => RenderIssueCode::ALL.contains(&code),
+                | RenderIssueCode::WmfBudgetExceeded
+                | RenderIssueCode::AnchorPrepassIncomplete => RenderIssueCode::ALL.contains(&code),
             }
         }
         for (index, code) in RenderIssueCode::ALL.iter().enumerate() {
