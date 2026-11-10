@@ -309,7 +309,7 @@
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
-      "maxProperties": 19,
+      "maxProperties": 20,
       "properties": {
         "binary_asset_removed": { "$ref": "#/$defs/lossCount" },
         "binary_relationship_removed": { "$ref": "#/$defs/lossCount" },
@@ -325,6 +325,7 @@
         "hwp_opaque_stream_changed": { "$ref": "#/$defs/lossCount" },
         "hwpx_opaque_entry_changed": { "$ref": "#/$defs/lossCount" },
         "hwpx_package_entry_removed": { "$ref": "#/$defs/lossCount" },
+        "image_fill_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "metadata_value_removed": { "$ref": "#/$defs/lossCount" },
         "opaque_control_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "page_range_paragraph_rounded": { "$ref": "#/$defs/lossCount" },

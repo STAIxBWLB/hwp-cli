@@ -330,6 +330,7 @@ fn which_paragraphs_always_have_a_para_segment_agrees_across_both_implementation
         arrow_end: 0,
         anchored: false,
         description: None,
+        image_fill_dropped: false,
     });
     let mut container = generic(*b"cont");
     container.container_box = Some(hwp_model::ContainerBox {

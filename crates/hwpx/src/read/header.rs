@@ -681,6 +681,16 @@ pub fn parse_header(xml: &str) -> Result<(DocHeader, Vec<String>)> {
                         // Genuine HWPX also uses constant hatchColor values for solid fills,
                         // so do not infer a hatch from this attribute. Only HWP5 preserves it.
                     }
+                    // An image fill's payload (`hc:img binaryItemIDRef`) is not modeled: no
+                    // genuine HWPX sample establishes the element's attributes or how the
+                    // referenced BinData stream is encoded, so the fill is marked instead of
+                    // guessed and the writer ledgers the drop as
+                    // `image_fill_unrepresentable` (#452).
+                    b"imgBrush" => {
+                        if let Some(bf) = &mut current_border {
+                            bf.image_fill_dropped = true;
+                        }
+                    }
                     // hc:gradation is a border-fill gradient (GG-7). The flat event loop
                     // retains explicit state while collecting its colors.
                     b"gradation" if current_border.is_some() && !empty => {
@@ -863,5 +873,45 @@ fn style_kind_attr(value: Option<&str>) -> Option<u8> {
         Some("PARA") => Some(0),
         Some("CHAR") => Some(1),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod image_fill_tests {
+    use super::*;
+
+    /// #452: an image-only `hc:imgBrush` inside a border fill's `hc:fillBrush` is not modeled
+    /// (no genuine HWPX sample establishes its attributes or payload encoding), so the reader
+    /// marks the entry instead of inventing a solid or gradient fill for it.
+    #[test]
+    fn border_fill_image_brush_is_marked_without_inventing_a_solid_or_gradient() {
+        let xml = r##"<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"><hh:refList><hh:borderFills itemCnt="1"><hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0"><hh:leftBorder type="SOLID" width="0.1 mm" color="#000000"/><hh:rightBorder type="SOLID" width="0.1 mm" color="#000000"/><hh:topBorder type="SOLID" width="0.1 mm" color="#000000"/><hh:bottomBorder type="SOLID" width="0.1 mm" color="#000000"/><hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/><hc:fillBrush><hc:imgBrush mode="TILE"><hc:img binaryItemIDRef="image1" bright="0" contrast="0" effect="REAL_PIC" alpha="0"/></hc:imgBrush></hc:fillBrush></hh:borderFill></hh:borderFills></hh:refList></hh:head>"##;
+        let (header, _warnings) = parse_header(xml).unwrap();
+        let fill = header
+            .border_fills
+            .first()
+            .expect("the border fill table entry");
+        assert!(
+            fill.image_fill_dropped,
+            "the image fill must be marked, not silently dropped"
+        );
+        assert_eq!(fill.fill_type & 0x1, 0, "no solid fill bit is invented");
+        assert_eq!(fill.fill_type & 0x4, 0, "no gradient bit is invented");
+        assert_eq!(fill.bg_color, None, "no face color is invented");
+        assert_eq!(fill.gradient, None);
+    }
+
+    /// The control: a solid `hc:winBrush` border fill stays unmarked.
+    #[test]
+    fn solid_border_fill_is_not_marked() {
+        let xml = r##"<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head" xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"><hh:refList><hh:borderFills itemCnt="1"><hh:borderFill id="1" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0"><hh:leftBorder type="SOLID" width="0.1 mm" color="#000000"/><hh:rightBorder type="SOLID" width="0.1 mm" color="#000000"/><hh:topBorder type="SOLID" width="0.1 mm" color="#000000"/><hh:bottomBorder type="SOLID" width="0.1 mm" color="#000000"/><hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/><hc:fillBrush><hc:winBrush faceColor="#FF0000" hatchColor="#000000" alpha="0"/></hc:fillBrush></hh:borderFill></hh:borderFills></hh:refList></hh:head>"##;
+        let (header, _warnings) = parse_header(xml).unwrap();
+        let fill = header
+            .border_fills
+            .first()
+            .expect("the border fill table entry");
+        assert!(!fill.image_fill_dropped);
+        assert_eq!(fill.fill_type & 0x1, 0x1);
+        assert_eq!(fill.bg_color, Some(0x0000_00FF));
     }
 }

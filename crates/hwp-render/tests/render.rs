@@ -365,6 +365,7 @@ fn hwpx_container_children_render_at_container_origin() {
         arrow_end: 0,
         anchored: false,
         description: None,
+        image_fill_dropped: false,
     };
     doc.sections[0].paragraphs[0]
         .controls
@@ -1451,6 +1452,7 @@ fn 글상자_내부_개요_번호_마커_렌더() {
                 arrow_end: 0,
                 anchored: true,
                 description: None,
+                image_fill_dropped: false,
             }],
             equation: None,
             column_def: None,
@@ -1496,6 +1498,7 @@ fn nested_non_anchored_shape_is_placed_at_parent_origin_plus_its_own_offset() {
         arrow_end: 0,
         anchored: false,
         description: None,
+        image_fill_dropped: false,
     };
 
     // Inner shape (the A3-page-1 `id="25"` construct): stored at a small, deliberately
@@ -3416,6 +3419,7 @@ fn generic_shape_caption_is_rendered() {
                 arrow_end: 0,
                 anchored: true,
                 description: None,
+                image_fill_dropped: false,
             }],
             equation: None,
             column_def: None,

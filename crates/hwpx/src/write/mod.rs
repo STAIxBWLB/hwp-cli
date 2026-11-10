@@ -129,7 +129,7 @@ pub fn write_document_with_report_with_limits(
             )
         })
         .collect();
-    let header_xml = header::write_header(&doc.header, doc.sections.len().max(1));
+    let header_xml = header::write_header(&doc.header, doc.sections.len().max(1), &mut report);
 
     // 미리보기 텍스트 (선두 1KB 근사)
     let mut preview = doc.plain_text();

@@ -70,6 +70,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   this is a serialized-ID uniqueness fix, with its effect on opening in Hancom unverified
   ([#465](https://github.com/STAIxBWLB/hwp-cli/issues/465)).
 
+- An HWPX border fill or shape whose fill is an `hc:imgBrush` image brush is no longer dropped
+  silently on read. The reader marks the site, the HWPX writer records the new
+  `image_fill_unrepresentable` preservation code for it, and a same-format `hwpx` conversion
+  refuses to publish the unfilled result instead of publishing it quietly. The fill is recorded
+  rather than modeled because no genuine Hancom-saved HWPX sample establishes that element's
+  attributes or payload encoding; no solid or gradient fill is invented in its place, and the
+  shape's geometry and border lines are kept. HWP5 output keeps its previous behavior: an HWP5
+  source's own image fill stays in its raw border-fill bytes, and an HWPX image fill is not yet
+  emitted for an HWP target
+  ([#452](https://github.com/STAIxBWLB/hwp-cli/issues/452)).
+
 - Text edits refuse before mutation when they would shift opaque HWP5 `PARA_RANGE_TAG`
   positions, including field/slot/form filling and control insertion/removal. Whole-cell
   replacement also refuses when rebuilding would discard a tagged subtree. Equal-WCHAR-width

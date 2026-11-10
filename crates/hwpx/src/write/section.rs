@@ -1435,6 +1435,17 @@ fn write_shape_element(
     // 흰색으로 내보내면(㉙ 버그) 투명이어야 할 가이드 도형이 불투명 흰 원반이 되어 한글
     // 에서 뒤 내용을 덮는다(annual 6쪽 링 다이어그램 미렌더 원인 — fill 플래그 대조 확정).
     // 도넛 구멍은 solid 흰색(0x00FFFFFF)이라 fillBrush 유지, 가이드원(무채움)만 투명.
+    if s.image_fill_dropped {
+        // The source shape's `hc:imgBrush` was read without being modeled, so this shape is
+        // re-emitted unfilled. Ledger the drop rather than silently publishing a shape whose
+        // background image vanished (#452).
+        report.loss(
+            PreservationCode::ImageFillUnrepresentable,
+            PreservationResourceKind::Control,
+            PreservationDisposition::Unrepresentable,
+            1,
+        );
+    }
     if let Some(gr) = &s.fill_gradient {
         // reader parse_gradation의 역: type/angle 속성 + color 자식들.
         let _ = write!(
@@ -1580,6 +1591,7 @@ fn write_gso(
             arrow_end: 0,
             anchored: attr & 1 != 0,
             description: parse_gso_description(&g.data),
+            image_fill_dropped: style.is_some_and(|s| s.image_fill_dropped),
         };
         let pos = gso_pos_xml(attr, voff, hoff);
         write_shape_element(

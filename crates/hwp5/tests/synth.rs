@@ -775,6 +775,7 @@ fn 글상자_hwpx출신_안전저하_텍스트보존() {
         arrow_end: 0,
         anchored: true,
         description: None,
+        image_fill_dropped: false,
     };
     let gso = GenericControl {
         ctrl_id: *b"rect", // The form produced by the HWPX reader.

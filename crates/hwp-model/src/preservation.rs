@@ -34,6 +34,11 @@ pub enum PreservationCode {
     HwpOpaqueStreamChanged,
     HwpxOpaqueEntryChanged,
     HwpxPackageEntryRemoved,
+    /// An HWPX source's `hc:imgBrush` image fill (a border fill's or a shape's fill) was read
+    /// without being modeled, so the rewritten package renders that fill as unfilled. No
+    /// genuine HWPX sample establishes the element's payload encoding, so the drop is recorded
+    /// instead of guessed (#452).
+    ImageFillUnrepresentable,
     MetadataValueRemoved,
     OpaqueControlUnrepresentable,
     /// A page-range split boundary that crossed a paragraph was rounded to
@@ -66,6 +71,7 @@ impl PreservationCode {
             Self::HwpOpaqueStreamChanged => "hwp_opaque_stream_changed",
             Self::HwpxOpaqueEntryChanged => "hwpx_opaque_entry_changed",
             Self::HwpxPackageEntryRemoved => "hwpx_package_entry_removed",
+            Self::ImageFillUnrepresentable => "image_fill_unrepresentable",
             Self::MetadataValueRemoved => "metadata_value_removed",
             Self::OpaqueControlUnrepresentable => "opaque_control_unrepresentable",
             Self::PageRangeParagraphRounded => "page_range_paragraph_rounded",
@@ -259,6 +265,7 @@ mod tests {
             HwpOpaqueStreamChanged,
             HwpxOpaqueEntryChanged,
             HwpxPackageEntryRemoved,
+            ImageFillUnrepresentable,
             MetadataValueRemoved,
             OpaqueControlUnrepresentable,
             PageRangeParagraphRounded,
@@ -281,6 +288,7 @@ mod tests {
                 | HwpOpaqueStreamChanged
                 | HwpxOpaqueEntryChanged
                 | HwpxPackageEntryRemoved
+                | ImageFillUnrepresentable
                 | MetadataValueRemoved
                 | OpaqueControlUnrepresentable
                 | PageRangeParagraphRounded

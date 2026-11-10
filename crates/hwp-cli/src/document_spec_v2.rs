@@ -1042,6 +1042,7 @@ fn attach_text_box(
         arrow_end: 0,
         anchored: visual.placement == VisualPlacement::Inline,
         description: Some(description.to_string()),
+        image_fill_dropped: false,
     };
     let paragraph_lists = vec![hwp_model::ParagraphList {
         header_data: Vec::new(),

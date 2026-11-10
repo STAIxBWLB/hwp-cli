@@ -975,6 +975,7 @@ mod tests {
             arrow_end: 0,
             anchored: false,
             description: None,
+            image_fill_dropped: false,
         };
         let mut issues = RenderIssueAccumulator::new();
         draw_ir_shapes(&[rect], &mut page, &mut issues);
@@ -1018,6 +1019,7 @@ mod tests {
             arrow_end: 0,
             anchored: false,
             description: None,
+            image_fill_dropped: false,
         };
         draw_ir_shapes(&[invisible], &mut p2, &mut issues);
         assert!(p2.items.is_empty(), "보이지 않는 도형은 생략");
@@ -1056,6 +1058,7 @@ mod tests {
             arrow_end: 0,
             anchored: false,
             description: None,
+            image_fill_dropped: false,
         };
         let mut issues = RenderIssueAccumulator::new();
         draw_ir_shapes(&[shape], &mut page, &mut issues);
@@ -1110,6 +1113,7 @@ mod tests {
             arrow_end: 0,
             anchored: false,
             description: None,
+            image_fill_dropped: false,
         };
         // 직각: Move + Line×3 + Close = 5개, CubicTo 없음.
         let sharp = ir_shape_path(&base);
@@ -1207,6 +1211,7 @@ mod tests {
             arrow_end: 1, // 끝 화살촉
             anchored: false,
             description: None,
+            image_fill_dropped: false,
         };
         let mut issues = RenderIssueAccumulator::new();
         draw_ir_shapes(&[line], &mut page, &mut issues);

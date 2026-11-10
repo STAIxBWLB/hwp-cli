@@ -357,6 +357,7 @@ fn geometry(tag: u16, d: &[u8], s: &Style) -> Option<ShapeGeom> {
         arrow_end: 0,
         anchored: false, // 배치는 gso 40B 헤더가 결정(writer가 pos로 방출)
         description: None,
+        image_fill_dropped: false,
     })
 }
 
