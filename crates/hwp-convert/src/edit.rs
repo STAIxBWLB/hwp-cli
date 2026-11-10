@@ -4053,3 +4053,7 @@ mod tests {
         validate_table_invariants(first_table(&doc)).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "edit_range_tag_tests.rs"]
+mod edit_range_tag_tests;
