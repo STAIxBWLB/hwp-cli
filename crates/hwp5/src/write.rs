@@ -5818,6 +5818,63 @@ mod tests {
     }
 
     #[test]
+    fn raw_picture_ids_in_other_preserved_opaque_owners_are_reserved() {
+        // Opaque preservation can retain a known picture record beneath unknown parents.
+        // These are allocator fixtures, not a claim that each hierarchy opens in Hangul.
+        let mut collisions = Vec::new();
+        for owner in [
+            "section",
+            "paragraph",
+            "table",
+            "section-definition",
+            "generic-extras",
+        ] {
+            let mut doc = hwp_convert::from_markdown("anchor");
+            let records = build_picture_extras(100, 100, (100, 100), 1, 0x3010_0000);
+            match owner {
+                "section" => doc.sections[0].extras = records,
+                "paragraph" => doc.sections[0].paragraphs[0].extras = records,
+                "table" => {
+                    let mut table = synth_table(None);
+                    table.extras = records;
+                    doc.sections[0].paragraphs[0]
+                        .controls
+                        .push(Control::Table(table));
+                }
+                "section-definition" => {
+                    let definition = doc.sections[0].paragraphs[0]
+                        .controls
+                        .iter_mut()
+                        .find_map(|control| match control {
+                            Control::SectionDef(definition) => Some(definition),
+                            _ => None,
+                        })
+                        .expect("markdown creates a section definition");
+                    definition.extras = records;
+                }
+                "generic-extras" => {
+                    let Control::Generic(mut generic) = shape_caption_holding(Vec::new()) else {
+                        unreachable!()
+                    };
+                    generic.caption = None;
+                    generic.extras = records;
+                    doc.sections[0].paragraphs[0]
+                        .controls
+                        .push(Control::Generic(generic));
+                }
+                _ => unreachable!(),
+            }
+            if InstanceIds::new(&doc).next().unwrap() ^ 0x0010_0000 == 0x3010_0000 {
+                collisions.push(owner);
+            }
+        }
+        assert!(
+            collisions.is_empty(),
+            "raw picture ids were reused from opaque owners: {collisions:?}"
+        );
+    }
+
+    #[test]
     fn raw_picture_id_requires_its_complete_field_and_can_exhaust_the_range() {
         // The current writer appends the four-byte instance id after74 prefix bytes.
         // A short opaque record must stay unread rather than manufacturing an id from its tail.
