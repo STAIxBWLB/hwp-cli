@@ -23,6 +23,45 @@ use crate::shape::{InlineItem, glyph_source_sequences, shape_range, source_has_n
 /// so treat it as table-specific outer padding added once, separately from row heights.
 const TABLE_BLOCK_PADDING: i32 = 566;
 
+/// One page's body box in HWPUNIT: the paper less its top and bottom margins and its header and
+/// footer bands. Both paginating paths read the sums from here, so the cache and the renderer
+/// cannot drift on where the body ends (#423).
+pub(crate) struct BodyBox {
+    /// Paper top edge to body top edge: the top margin plus the header band.
+    pub(crate) top_hu: i32,
+    /// Bottom margin plus footer band: subtract this from the paper height to reach the body
+    /// bottom.
+    pub(crate) bottom_hu: i32,
+    /// Body height, at least one HWPUNIT.
+    pub(crate) height_hu: i32,
+}
+
+/// `paper_height_hu` is the paper extent the caller paginates on: the renderer passes the
+/// landscape-resolved height, the body cache its page height.
+pub(crate) fn body_box(page: &hwp_model::PageDef, paper_height_hu: i32) -> BodyBox {
+    let top_hu = page.margin_top.0 + page.margin_header.0;
+    let bottom_hu = page.margin_bottom.0 + page.margin_footer.0;
+    BodyBox {
+        top_hu,
+        bottom_hu,
+        height_hu: paper_height_hu
+            .saturating_sub(top_hu)
+            .saturating_sub(bottom_hu)
+            .max(1),
+    }
+}
+
+/// The vertical block a line reserves when paginating: the baseline offset the fallback planner
+/// places a line at (1.2 x size) plus the descent it tests against the body bottom (0.4 x size),
+/// both fixed in `layout.rs`. Reserving the glyph height alone let a synthesized line start
+/// where the planner breaks the page, so a multiline paragraph paginated differently in each
+/// path (#423).
+pub(crate) fn line_fit_block(base: i32) -> i32 {
+    let ascent = base.saturating_mul(12) / 10;
+    let descent = base.saturating_mul(4) / 10;
+    ascent.saturating_add(descent)
+}
+
 /// Synthesize line layout for the whole authored document, including body and table-cell paragraphs.
 /// Native HWP5 sources keep the base cursor path, so native edits do not mix
 /// cacheless fragment anchors/page-start flags with restored genuine caches. The base path
@@ -126,15 +165,13 @@ fn synthesize_linesegs_inner(
         let body_width = page.map_or(42520, |pg| {
             pg.width.0 - pg.margin_left.0 - pg.margin_right.0
         });
-        // Body height excludes top/bottom margins. Lines/tables crossing this height move
-        // to a new page and restart v_pos at zero: genuine multipage caches are page-relative.
-        // Measured in a genuine university HWPX: body vertpos resets on every page,
-        // and its maximum 59668 is below body height. Without resetting, accumulated v_pos
-        // can greatly exceed page height (such as 354408), which Hangul flags as corruption.
+        // Body height excludes the top/bottom margins and, as of #423, the header/footer bands:
+        // the same box `layout_document_pages` draws in. Genuine multipage caches are
+        // page-relative: body vertpos resets on every page, and its maximum 59668 is below body
+        // height. Without resetting, accumulated v_pos can greatly exceed page height (such as
+        // 354408), which Hangul flags as corruption.
         let content_h = page
-            .map_or(75686, |pg| {
-                pg.height.0 - pg.margin_top.0 - pg.margin_bottom.0
-            })
+            .map_or(75686, |pg| body_box(pg, pg.height.0).height_hu)
             .max(1);
         let mut v_pos = 0i32;
         for pi in 0..doc.sections[si].paragraphs.len() {
@@ -538,10 +575,13 @@ pub(crate) fn compute_linesegs(
     };
 
     // Place one line and advance the vertical cursor. Body flow restarts at the
-    // next page when the line exceeds the content height; cell-local layout passes
-    // an unbounded height and therefore never resets here.
+    // next page when the line's whole block (its baseline offset plus its descent,
+    // `line_fit_block`) no longer fits the body height, which is the same test the
+    // fallback planner applies; cell-local layout passes an unbounded height and
+    // therefore never resets here.
+    let line_block = line_fit_block(base);
     let place = |segs: &mut Vec<LineSeg>, v_pos: &mut i32, start: u32| {
-        if *v_pos > 0 && (*v_pos).saturating_add(base) > content_h {
+        if *v_pos > 0 && (*v_pos).saturating_add(line_block) > content_h {
             *v_pos = 0;
         }
         segs.push(make(start, *v_pos));

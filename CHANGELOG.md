@@ -115,6 +115,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   empty paragraph's space-after and the raw-vs-half spacing unit stay with #415, and no native
   geometry value is introduced ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
 
+- Synthesized body line layout now paginates in the body box the renderer draws: the cache
+  subtracts the header and footer bands as well as the top and bottom margins, from the same
+  `lineseg::body_box` sums `layout_document_pages` uses, so a synthesized line can no longer start
+  inside a band (with both bands zero the body box is unchanged). A line also reserves the whole
+  block the fallback planner reserves (its 1.2 x size baseline offset plus a 0.4 x size descent)
+  instead of its glyph height alone, so the lines after a floating-table anchor break on the page
+  that anchor's own layout pass measured; where the glyph-height test used to keep a line the
+  planner moved, the cache now breaks the page earlier. No native geometry value is introduced and
+  no Hancom behavior is claimed
+  ([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+
 ## [1.5.0]
 
 **Compatibility**

@@ -51,6 +51,10 @@ body_width      = (paper_w - margin_left - margin_right) / 100
 body_bottom     = h - (margin_bottom + margin_footer) / 100
 ```
 
+The top and bottom sums come from `lineseg::body_box`, which the lineseg synthesis paginates with,
+so the drawn body and the synthesized cache cannot drift on where the body ends
+([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+
 State variables: `prev_v_pos=-1` (to detect a page reset), `content_bottom=body_top` (the flow
 cursor), `paras_on_page=0`, `page_notes: Vec<&Note>` and `list_state: ListState`.
 
@@ -310,9 +314,13 @@ A `doc.clone()` snapshot (snap) provides immutable references while doc is mutat
 
 ```
 body_width = pg.width - margin_left - margin_right
-content_h  = max(pg.height - margin_top - margin_bottom, 1)
+content_h  = max(pg.height - margin_top - margin_bottom - margin_header - margin_footer, 1)
 v_pos      = 0   // accumulated relative to the page
 ```
+
+`content_h` is `lineseg::body_box`'s height, the same four margins `layout_document_pages`
+subtracts, so the header and footer bands are not line space in either path
+([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
 
 Per paragraph, `spacing_top` is added to v_pos (except the first paragraph), `fill_nested` fills the
 line layout inside cells and text boxes first, and then the total table height is computed. **When a
@@ -330,7 +338,11 @@ once over a copy with every body cache cleared and records, per paragraph, the r
 top (`BodyAnchor::v_pos`) and whether that first line opened a page (`starts_page`).
 `synthesize_linesegs` then starts each paragraph of such a section at its anchor and sets
 `LineSeg.flags` bit 0 where the anchor opened a page (HWP 5.0 §4.3.4). Native HWP5 sources keep the
-base cursor, so genuine caches and HWP5 identity are untouched.
+base cursor, so genuine caches and HWP5 identity are untouched. The anchor carries only the
+paragraph's *first* line, so a multiline paragraph's later lines paginate by `compute_linesegs`
+alone; that fit rule therefore has to reserve the block the planner reserved (§2.3), or the lines
+after the anchor land on a different page than the pass that produced it
+([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
 
 The prepass returns a `BodyAnchors`: one `Option<BodyAnchor>` slot per paragraph plus a `completed`
 flag (#426). A slot is `None` when the pass stopped before that paragraph was visited, so an
@@ -366,6 +378,19 @@ baseline_gap  = base * 85 / 100
 seg_width     = max(body_width, 1)
 ```
 
+Base metrics are listed in the previous block; a line also reserves its whole block for the page
+reset:
+
+```
+line_fit_block = base*12/10 + base*4/10    // baseline offset 1.2 x size + descent 0.4 x size
+```
+
+Those two ratios are `layout.rs`'s fallback planning constants (`1.2 x size` above the content
+cursor, `0.4 x size` tested against `body_bottom`), so a cache page break lands on the line the
+renderer would break at ([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)). Reserving the
+glyph height alone (`v_pos + base`) kept a line the planner moves, which made a multiline paragraph
+paginate differently in each path.
+
 Shaping (`shape_range`) measures glyph x_advance in pt and breaks lines greedily against
 `seg_width/100` less the indent the renderer will apply inside the line box
 (`layout::line_indents`): a positive indent narrows the first line, a hanging indent every line
@@ -377,7 +402,7 @@ UTF-16 length of each shaping-cluster source, rather than the glyph index, so su
 ligatures and combining text retain correct WCHAR offsets. Each line is emitted by `place`:
 
 ```
-if v_pos>0 && v_pos + base > content_h { v_pos = 0 }   // page reset (cells use content_h=MAX so it never fires)
+if v_pos>0 && v_pos + line_fit_block > content_h { v_pos = 0 }   // page reset (cells use content_h=MAX so it never fires)
 segs.push(LineSeg{ text_start, v_pos, line_height:base, text_height:base,
                    baseline_gap, line_spacing, col_start:0, seg_width, flags:0x0006_0000 })
 v_pos += line_advance
