@@ -1342,6 +1342,7 @@ mod tests {
                 arrow_end: 0,
                 anchored: false,
                 description: None,
+                image_fill_dropped: false,
             });
             let mut p = para("");
             attach(&mut p, ctrl_char::OBJECT, *b"rect", Control::Generic(g));

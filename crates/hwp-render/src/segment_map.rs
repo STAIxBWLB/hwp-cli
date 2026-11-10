@@ -978,6 +978,7 @@ mod tests {
             hatch: None,
             gradient: None,
             tail: Vec::new(),
+            image_fill_dropped: false,
         });
         let id = doc.header.border_fills.len() as u16;
         // PAGE_BORDER_FILL: attr(u32, bit0 = paper-relative), four u16 gaps, then the id.
@@ -1057,6 +1058,7 @@ mod tests {
             hatch: None,
             gradient: None,
             tail: Vec::new(),
+            image_fill_dropped: false,
         });
         let id = doc.header.border_fills.len() as u16;
         for shape in &mut doc.header.para_shapes {
@@ -2041,6 +2043,7 @@ mod tests {
                 arrow_end: 0,
                 anchored: false,
                 description: None,
+                image_fill_dropped: false,
             });
         }
         Control::Generic(control)

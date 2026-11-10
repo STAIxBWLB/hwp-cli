@@ -453,6 +453,9 @@ fn parse_border_fill(data: &[u8]) -> Result<hwp_model::BorderFill> {
         bg_color,
         hatch,
         gradient,
+        // An HWP5 image fill (fill-type bit 1) stays in the raw `tail` bytes and is written
+        // back verbatim, so this HWPX-read marker stays false here (#452).
+        image_fill_dropped: false,
         tail,
     })
 }

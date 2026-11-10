@@ -1538,6 +1538,7 @@ fn collect_shape(
     let mut arrow_end = 0u8;
     let mut anchored = false;
     let mut description = None;
+    let mut image_fill_dropped = false;
     let mut read_attrs = |e: &BytesStart<'_>| match e.local_name().as_ref().as_bytes() {
         b"pos" => {
             x = attr_offset_i32(e, "horzOffset").unwrap_or(x);
@@ -1570,6 +1571,11 @@ fn collect_shape(
                 fill = parse_color(&c);
             }
         }
+        // An image fill's payload (`hc:img binaryItemIDRef`) is not modeled: no genuine HWPX
+        // sample establishes the element's attributes or how the referenced BinData stream is
+        // encoded, so the fill is marked instead of guessed and the writer ledgers the drop as
+        // `image_fill_unrepresentable` (#452).
+        b"imgBrush" => image_fill_dropped = true,
         // Read pt0..N only as Polygon/Curve geometry. Rect/Ellipse/Arc pt0..3 represent bounding-box
         // corners in genuine files and round-trip through sz; ignore them to avoid spurious geometry
         // points.
@@ -1662,6 +1668,7 @@ fn collect_shape(
             arrow_end,
             anchored,
             description,
+            image_fill_dropped,
         });
     }
     Ok(())
@@ -2113,5 +2120,72 @@ mod page_ctrl_tests {
             .expect("picture");
         assert_eq!(picture.brightness, 100);
         assert_eq!(picture.contrast, -100);
+    }
+}
+
+#[cfg(test)]
+mod image_fill_tests {
+    use super::*;
+
+    /// #452: a shape's `hc:imgBrush` is not modeled (no genuine HWPX sample establishes its
+    /// attributes or payload encoding), so the semantic shape path marks the shape instead of
+    /// publishing it as an unfilled shape without evidence.
+    #[test]
+    fn shape_image_brush_is_marked_and_keeps_its_geometric_path() {
+        let xml = concat!(
+            r##"<?xml version="1.0"?><hs:sec><hp:p paraPrIDRef="0" styleIDRef="0">"##,
+            r##"<hp:run charPrIDRef="0"><hp:rect id="1" ratio="0">"##,
+            r##"<hp:pos treatAsChar="0" horzOffset="1000" vertOffset="2000"/>"##,
+            r##"<hp:sz width="3000" height="4000"/>"##,
+            r##"<hc:fillBrush><hc:imgBrush binaryItemIDRef="image1" mode="TOTAL"/></hc:fillBrush>"##,
+            r##"</hp:rect></hp:run></hp:p></hs:sec>"##,
+        );
+        let (section, _) = parse_section(xml).unwrap();
+        let shapes = section.paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Generic(generic) => Some(&generic.gso_shapes),
+                _ => None,
+            })
+            .expect("shape control");
+        assert_eq!(shapes.len(), 1, "{shapes:?}");
+        let shape = &shapes[0];
+        assert_eq!(shape.kind, ShapeKind::Rect);
+        // The geometric path survives untouched: dropping the fill must not cost the geometry.
+        assert_eq!(
+            (shape.x, shape.y, shape.w, shape.h),
+            (1000, 2000, 3000, 4000)
+        );
+        // An image fill is not a solid fill: marking it must not invent one.
+        assert!(shape.image_fill_dropped);
+        assert_eq!(shape.fill, 0xFFFF_FFFF);
+        assert!(shape.fill_gradient.is_none());
+    }
+
+    /// Control for the test above: a solid `hc:winBrush` fill is fully modeled, so it is read as
+    /// the shape's face colour and is not marked as a dropped image fill.
+    #[test]
+    fn shape_solid_brush_is_not_marked_as_an_image_fill() {
+        let xml = concat!(
+            r##"<?xml version="1.0"?><hs:sec><hp:p paraPrIDRef="0" styleIDRef="0">"##,
+            r##"<hp:run charPrIDRef="0"><hp:ellipse id="2">"##,
+            r##"<hp:sz width="500" height="600"/>"##,
+            r##"<hc:fillBrush><hc:winBrush faceColor="#FF0000" hatchColor="#000000" alpha="0"/></hc:fillBrush>"##,
+            r##"</hp:ellipse></hp:run></hp:p></hs:sec>"##,
+        );
+        let (section, _) = parse_section(xml).unwrap();
+        let shapes = section.paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Generic(generic) => Some(&generic.gso_shapes),
+                _ => None,
+            })
+            .expect("shape control");
+        let shape = shapes.first().expect("shape");
+        assert_eq!(shape.kind, ShapeKind::Ellipse);
+        assert!(!shape.image_fill_dropped);
+        assert_eq!(shape.fill, 0x0000_00FF, "faceColor #FF0000 as COLORREF");
     }
 }

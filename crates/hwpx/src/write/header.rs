@@ -5,7 +5,10 @@
 
 use std::fmt::Write as _;
 
-use hwp_model::{BorderLine, CharShape, DocHeader, LANG_COUNT, ParaShape};
+use hwp_model::{
+    BorderLine, CharShape, DocHeader, LANG_COUNT, ParaShape, PreservationCode,
+    PreservationDisposition, PreservationResourceKind, WriteReport,
+};
 
 use crate::write::templates::{FULL_XMLNS, color_attr, esc};
 
@@ -71,7 +74,7 @@ pub(crate) fn width_mm_attr(line: &BorderLine) -> String {
     }
 }
 
-pub fn write_header(header: &DocHeader, section_count: usize) -> String {
+pub fn write_header(header: &DocHeader, section_count: usize, report: &mut WriteReport) -> String {
     let mut out = String::with_capacity(32 * 1024);
     let _ = write!(
         out,
@@ -90,7 +93,7 @@ pub fn write_header(header: &DocHeader, section_count: usize) -> String {
     );
     out.push_str("<hh:refList>");
     write_fontfaces(&mut out, header);
-    write_border_fills(&mut out, header);
+    write_border_fills(&mut out, header, report);
     write_char_properties(&mut out, header);
     write_tab_properties(&mut out, header);
     write_numberings(&mut out, header);
@@ -162,7 +165,7 @@ fn write_border_line(out: &mut String, el: &str, line: &BorderLine) {
     );
 }
 
-fn write_border_fills(out: &mut String, header: &DocHeader) {
+fn write_border_fills(out: &mut String, header: &DocHeader, report: &mut WriteReport) {
     // 참조는 1-기반이므로 최소 2개(기본 무테두리)를 보장
     let count = header.border_fills.len().max(2);
     let _ = write!(out, r##"<hh:borderFills itemCnt="{count}">"##);
@@ -176,6 +179,17 @@ fn write_border_fills(out: &mut String, header: &DocHeader) {
     };
     for i in 0..count {
         let bf = header.border_fills.get(i).unwrap_or(&default_bf);
+        if bf.image_fill_dropped {
+            // The source's `hc:imgBrush` was read without being modeled, so this table entry
+            // is re-emitted without its fill. Ledger the drop rather than silently producing
+            // an unfilled cell or table border (#452).
+            report.loss(
+                PreservationCode::ImageFillUnrepresentable,
+                PreservationResourceKind::Control,
+                PreservationDisposition::Unrepresentable,
+                1,
+            );
+        }
         let _ = write!(
             out,
             r##"<hh:borderFill id="{}" threeD="{}" shadow="{}" centerLine="NONE" breakCellSeparateLine="0">"##,

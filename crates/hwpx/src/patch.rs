@@ -996,7 +996,8 @@ pub fn rewrite_document_staged(
     }
 
     if dirty.header {
-        let xml = crate::write::header::write_header(&doc.header, doc.sections.len().max(1));
+        let xml =
+            crate::write::header::write_header(&doc.header, doc.sections.len().max(1), &mut report);
         replacements.insert("Contents/header.xml".to_string(), xml.into_bytes());
     }
 

@@ -6642,6 +6642,7 @@ mod certification_budget_tests {
             arrow_end: 0,
             anchored: false,
             description: None,
+            image_fill_dropped: false,
         }
     }
 

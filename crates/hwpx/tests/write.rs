@@ -602,6 +602,7 @@ fn caption_round_trip() {
             arrow_end: 0,
             anchored: true,
             description: None,
+            image_fill_dropped: false,
         }],
         equation: None,
         column_def: None,
@@ -2110,6 +2111,7 @@ fn 도형_shapegeom_hwpx_왕복() {
         arrow_end: 0,
         anchored: false,
         description: Some("사각형 설명".to_string()),
+        image_fill_dropped: false,
     };
     let poly = ShapeGeom {
         kind: ShapeKind::Polygon,
@@ -2128,6 +2130,7 @@ fn 도형_shapegeom_hwpx_왕복() {
         arrow_end: 0,
         anchored: false,
         description: Some("다각형 설명".to_string()),
+        image_fill_dropped: false,
     };
     let gso = GenericControl {
         ctrl_id: *b"rect",
@@ -2312,7 +2315,7 @@ fn 왕복_charpr(inner: &str) -> (hwp_model::CharShape, hwp_model::CharShape) {
         r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000" textColor="#000000" shadeColor="#FFFFFF">{inner}</hh:charPr></hh:charProperties></hh:head>"##
     );
     let (h1, _) = hwpx::read::header::parse_header(&xml).unwrap();
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
     (h1.char_shapes[0].clone(), h2.char_shapes[0].clone())
 }
@@ -2387,7 +2390,7 @@ fn ge_a5_underline_shape_roundtrip() {
     // The serialized XML contains the normalized shape name.
     let xml = r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"><hh:underline type="BOTTOM" shape="DASH" color="#000000"/></hh:charPr></hh:charProperties></hh:head>"##;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(out.contains(r#"shape="DASH""#), "serialized DASH: {out}");
 }
 
@@ -2403,7 +2406,7 @@ fn legacy_underline_shape_field_alone_survives_roundtrip() {
         shape.attr &= !(0xFu32 << 4);
         shape.underline_shape = field;
 
-        let out = hwpx::write::header::write_header(&header, 1);
+        let out = hwpx::write::header::write_header(&header, 1, &mut hwp_model::WriteReport::new());
         assert!(
             out.contains(&format!(
                 r#"<hh:underline type="BOTTOM" shape="{expected}""#
@@ -2435,7 +2438,7 @@ fn normalized_underline_shape_writes_without_legacy_field() {
         shape.attr = (shape.attr & !(0xFu32 << 4)) | (code << 4);
         shape.underline_shape = 0;
 
-        let out = hwpx::write::header::write_header(&header, 1);
+        let out = hwpx::write::header::write_header(&header, 1, &mut hwp_model::WriteReport::new());
 
         assert!(
             out.contains(&format!(
@@ -2459,7 +2462,7 @@ fn gg8_symmark_roundtrip() {
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
     assert_eq!(h1.char_shapes[0].emphasis_kind(), 1);
     assert_eq!(h1.char_shapes[1].emphasis_kind(), 6);
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"symMark="DOT_ABOVE""#),
         "serialized XML: {out}"
@@ -2492,7 +2495,7 @@ fn gg10_strike_shape_roundtrip() {
     // The serialized XML contains shape="DASH_DOT".
     let xml = r##"<hh:head><hh:charProperties itemCnt="1"><hh:charPr id="0" height="1000"><hh:strikeout shape="DASH_DOT" color="#000000"/></hh:charPr></hh:charProperties></hh:head>"##;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"<hh:strikeout shape="DASH_DOT""#),
         "serialized XML: {out}"
@@ -2507,7 +2510,7 @@ fn gg10_strike_shape_roundtrip() {
 fn ge_a7_번호_형식_왕복() {
     let xml = r#"<hh:head><hh:numberings itemCnt="1"><hh:numbering id="1" start="0"><hh:paraHead start="3" level="1" numFormat="ROMAN_CAPITAL">제^1조</hh:paraHead><hh:paraHead start="1" level="2" numFormat="HANGUL_SYLLABLE">(^2)</hh:paraHead></hh:numbering></hh:numberings></hh:head>"#;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
 
     let lv1 = &h1.numbering_levels[0][0];
@@ -2544,7 +2547,7 @@ fn ge_a8_문단머리_heading_왕복() {
     assert_eq!(ps1.numbering_id, 1, "번호정의 링크");
 
     // write → re-read.
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"<hh:heading type="NUMBER" idRef="2" level="2"/>"#),
         "write가 heading을 역방출해야 함: {out}"
@@ -2568,7 +2571,7 @@ fn 글머리표_definition_id_왕복() {
     assert_eq!(header.para_shapes[0].numbering_id, 0);
     assert_eq!(header.bullet_chars, vec!['■']);
 
-    let out = hwpx::write::header::write_header(&header, 1);
+    let out = hwpx::write::header::write_header(&header, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"<hh:bullet id="1" char="■" useImage="0"/>"#),
         "글머리표 정의 방출: {out}"
@@ -2588,7 +2591,7 @@ fn 글머리표_definition_id_왕복() {
 fn ge_a8_기본문단_heading_none_유지() {
     let xml = r#"<hh:head><hh:paraProperties itemCnt="1"><hh:paraPr id="0" tabPrIDRef="0"><hh:align horizontal="JUSTIFY" vertical="BASELINE"/><hh:heading type="NONE" idRef="0" level="0"/></hh:paraPr></hh:paraProperties></hh:head>"#;
     let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"<hh:heading type="NONE" idRef="0" level="0"/>"#),
         "기본 paraPr은 NONE 유지: {out}"
@@ -2695,7 +2698,7 @@ fn existing_seven_level_hwpx_does_not_gain_a_synthetic_eighth_definition() {
         ..Default::default()
     };
 
-    let out = hwpx::write::header::write_header(&header, 1);
+    let out = hwpx::write::header::write_header(&header, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"level="7""#),
         "seven levels must be emitted: {out}"
@@ -2731,7 +2734,7 @@ fn gc4_탭정의_hwpx_왕복() {
 
     // Write items in the genuine hp:switch/case[unit=HWPUNIT,pos=X]/default[pos=2X] structure.
     // Bare tabItem can make Hangul hang and is forbidden.
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(
             r#"<hp:case hp:required-namespace="http://www.hancom.co.kr/hwpml/2016/HwpUnitChar"><hh:tabItem pos="4000" type="RIGHT" leader="DASH" unit="HWPUNIT"/></hp:case><hp:default><hh:tabItem pos="8000" type="RIGHT" leader="DASH"/></hp:default>"#
@@ -2787,7 +2790,7 @@ fn gc4_naked_tabitem_하위호환_읽기() {
 #[test]
 fn gc4_탭정의_없으면_기본상수_불변() {
     let h = hwp_model::DocHeader::default();
-    let out = hwpx::write::header::write_header(&h, 1);
+    let out = hwpx::write::header::write_header(&h, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(
             r#"<hh:tabProperties itemCnt="1"><hh:tabPr id="0" autoTabLeft="0" autoTabRight="0"/></hh:tabProperties>"#
@@ -3256,7 +3259,7 @@ fn empty_numbering_template_round_trips_as_empty() {
     assert_eq!(h1.numbering_levels[0][8].template, "");
     assert_eq!(h1.numbering_levels[0][9].template, "");
 
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"level="9" align="LEFT" useInstWidth="1" autoIndent="1" widthAdjust="0" textOffsetType="PERCENT" textOffset="50" numFormat="HANGUL_JAMO" charPrIDRef="4294967295" checkable="0"/>"#),
         "an empty template must self-close instead of materializing a default: {out}"
@@ -3284,7 +3287,7 @@ fn no_fill_win_brush_round_trips() {
     assert_eq!(h1.border_fills[1].fill_type & 0x1, 0x1);
     assert_eq!(h1.border_fills[1].bg_color, Some(0xFFFF_FFFF));
 
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"<hc:winBrush faceColor="none""#),
         "the explicit no-fill brush must be emitted back: {out}"
@@ -3311,7 +3314,7 @@ fn entity_bearing_numbering_template_round_trips() {
     assert_eq!(h1.numbering_levels[0][0].template, "<^1>");
     assert_eq!(h1.numbering_levels[0][1].template, "^2 & A<B");
 
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains("&lt;^1&gt;") && out.contains("^2 &amp; A&lt;B"),
         "an entity-bearing template must be written escaped: {out}"

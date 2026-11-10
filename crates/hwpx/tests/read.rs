@@ -717,7 +717,7 @@ fn 개요_heading_idref_왕복_보존() {
     assert_eq!(h1.para_shapes[0].head_type(), 1, "개요형 머리");
     assert_eq!(h1.para_shapes[0].numbering_id, 0, "원시 idRef 유지");
 
-    let out = hwpx::write::header::write_header(&h1, 1);
+    let out = hwpx::write::header::write_header(&h1, 1, &mut hwp_model::WriteReport::new());
     assert!(
         out.contains(r#"<hh:heading type="OUTLINE" idRef="0" level="0"/>"#),
         "개요 idRef 원시값 재방출: {out}"
@@ -749,7 +749,7 @@ fn subst_font_alt_name_round_trip() {
     assert_eq!(header.fonts[0][0].name, "Primary");
     assert_eq!(header.fonts[0][0].alt_name.as_deref(), Some("Fallback"));
 
-    let written = hwpx::write::header::write_header(&header, 1);
+    let written = hwpx::write::header::write_header(&header, 1, &mut hwp_model::WriteReport::new());
     assert!(
         written.contains(r#"<hh:substFont face="Fallback"/>"#),
         "{written}"

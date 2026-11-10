@@ -522,6 +522,13 @@ pub struct ShapeGeom {
     /// Accessible object description (`hp:shapeComment` in HWPX).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The source carried an image fill (`hc:imgBrush`) this model cannot carry. No genuine
+    /// HWPX sample establishes that element's attributes or payload encoding, so the reader
+    /// drops the fill and marks the site; the HWPX writer reports
+    /// `image_fill_unrepresentable` rather than emitting a shape that silently renders
+    /// unfilled (#452).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub image_fill_dropped: bool,
 }
 
 /// hwpx hp:container 자체 상자(HWPUNIT, PAPER 기준 pos/sz + treatAsChar).

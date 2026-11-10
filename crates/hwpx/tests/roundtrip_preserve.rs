@@ -356,6 +356,7 @@ fn 원문없는_컨테이너는_도형을_합성하지_않고_손실이벤트를
                 arrow_end: 0,
                 anchored: false,
                 description: None,
+                image_fill_dropped: false,
             }],
             equation: None,
             column_def: None,

@@ -132,6 +132,7 @@ fn text_box(paragraphs: Vec<Paragraph>) -> GenericControl {
             arrow_end: 0,
             anchored: true,
             description: None,
+            image_fill_dropped: false,
         }],
         equation: None,
         column_def: None,

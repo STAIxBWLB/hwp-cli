@@ -522,6 +522,11 @@ pub struct BorderFill {
     /// Gradient fill from fill-type bit 2. It takes precedence over hatch and solid fills.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradient: Option<crate::control::GradientSpec>,
+    /// The source carried an image fill (`hc:imgBrush`) this model cannot carry. HWP5 keeps
+    /// its own image fill in the raw `tail` bytes, so only the HWPX read path marks this; the
+    /// HWPX writer reports `image_fill_unrepresentable` for it (#452).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub image_fill_dropped: bool,
     #[serde(with = "hex_bytes")]
     pub tail: Vec<u8>,
 }
