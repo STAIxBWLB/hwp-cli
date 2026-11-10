@@ -28,7 +28,7 @@ cfb = "0.16"
 flate2 = "1"
 quick-xml = "0.42"
 libc = "0.2"
-resvg = { version = "=0.47.0", default-features = false }
+resvg = { version = "=0.49.0", default-features = false }
 regex = "1.11"
 zip = "9"
 # Checksum verification for self-update (hwp update) release archives — already
@@ -38,7 +38,7 @@ sha2 = "0.11"
 # GATE-01) — already pulled in via zip's AES-encrypted-archive support, so the
 # dependency graph does not grow.
 aes = "0.9.1"
-getrandom = "0.3"
+getrandom = "0.4"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 # `hwp serve` HTTP adapter (issue #312, decision record in doc 22 §4) — a
 # synchronous thread model, so no tokio. httparse owns request-head parsing
@@ -64,7 +64,7 @@ subsetter = "0.2"
 insta = { version = "1", features = ["json"] }
 proptest = "1"
 jsonschema = { version = "0.33", default-features = false }
-base64 = "0.22.1"
+base64 = "0.23.1"
 cbc = "0.2.1"
 hmac = "0.13.0"
 pbkdf2 = "0.13.0"
