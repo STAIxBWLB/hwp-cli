@@ -43,8 +43,9 @@ fn set_text(para: &mut Paragraph, chars: Vec<HwpChar>) {
 }
 
 /// A body-flow table (`treat_as_char == false`), the shape that makes a section read prepass
-/// anchors instead of the bare cursor.
-fn floating_table(height: i32) -> Table {
+/// anchors instead of the bare cursor. Enough rows to exceed the body box make it continue onto
+/// the next page.
+fn floating_table(rows: u16, row_height: i32) -> Table {
     Table {
         common_data: Vec::new(),
         placement: Some(GsoPlacement {
@@ -54,43 +55,45 @@ fn floating_table(height: i32) -> Table {
             ..Default::default()
         }),
         attr: 1,
-        rows: 1,
+        rows,
         cols: 1,
         cell_spacing: 0,
         inner_margins: [0; 4],
-        row_cell_counts: vec![1],
+        row_cell_counts: vec![1; usize::from(rows)],
         border_fill: BorderFillId(1),
         table_tail: Vec::new(),
-        cells: vec![Cell {
-            list_attr: 0,
-            col: 0,
-            row: 0,
-            col_span: 1,
-            row_span: 1,
-            width: HwpUnit(20000),
-            height: HwpUnit(height),
-            margins: [0; 4],
-            border_fill: BorderFillId(1),
-            header_tail: Vec::new(),
-            paragraphs: vec![Paragraph::default()],
-        }],
+        cells: (0..rows)
+            .map(|row| Cell {
+                list_attr: 0,
+                col: 0,
+                row,
+                col_span: 1,
+                row_span: 1,
+                width: HwpUnit(20000),
+                height: HwpUnit(row_height),
+                margins: [0; 4],
+                border_fill: BorderFillId(1),
+                header_tail: Vec::new(),
+                paragraphs: vec![Paragraph::default()],
+            })
+            .collect(),
         caption: None,
         extras: Vec::new(),
     }
 }
 
-/// The section's page: paper size and the six margins the body box is derived from.
-fn page_of(doc: &Document) -> PageDef {
-    doc.sections[0]
+/// One section's page: paper size and the six margins the body box is derived from.
+fn page_of(doc: &Document, section: usize) -> PageDef {
+    doc.sections[section]
         .section_def()
         .and_then(|definition| definition.page)
         .expect("from_markdown writes a section page")
 }
 
-/// State the whole page box explicitly, so the body height is the paper less exactly the bands a
-/// test names and nothing else.
-fn set_page(doc: &mut Document, paper_h: i32, header: i32, footer: i32) {
-    for control in &mut doc.sections[0].paragraphs[0].controls {
+/// State a section's whole page box explicitly, so the body height is the paper less exactly the
+/// bands a test names and nothing else.
+fn set_page(doc: &mut Document, section: usize, paper_h: i32, header: i32, footer: i32) {
+    for control in &mut doc.sections[section].paragraphs[0].controls {
         let Control::SectionDef(definition) = control else {
             continue;
         };
@@ -109,8 +112,8 @@ fn set_page(doc: &mut Document, paper_h: i32, header: i32, footer: i32) {
 }
 
 /// Body height as the renderer derives it: the paper less both margins and both bands.
-fn body_height(doc: &Document) -> i32 {
-    let page = page_of(doc);
+fn body_height(doc: &Document, section: usize) -> i32 {
+    let page = page_of(doc, section);
     page.height.0
         - page.margin_top.0
         - page.margin_bottom.0
@@ -155,10 +158,10 @@ fn synthesized_lines_stay_inside_the_body_box_with_header_and_footer_bands() {
         ("footer only", 0, BAND),
     ] {
         let mut doc = hwp_convert::from_markdown("Anchor\n");
-        set_page(&mut doc, PAPER_H, header, footer);
+        set_page(&mut doc, 0, PAPER_H, header, footer);
         let chars = breaks(24);
         set_text(&mut doc.sections[0].paragraphs[0], chars);
-        let body = body_height(&doc);
+        let body = body_height(&doc, 0);
         synthesize(&mut doc);
         let segs = doc.sections[0].paragraphs[0].line_segs.clone();
         assert_eq!(segs.len(), 24, "{label}: one line per hard break");
@@ -184,13 +187,13 @@ fn synthesized_lines_stay_inside_the_body_box_with_header_and_footer_bands() {
 #[test]
 fn zero_band_control_keeps_the_margin_only_body_box() {
     let mut doc = hwp_convert::from_markdown("Anchor\n");
-    set_page(&mut doc, PAPER_H, 0, 0);
+    set_page(&mut doc, 0, PAPER_H, 0, 0);
     let chars = breaks(24);
     set_text(&mut doc.sections[0].paragraphs[0], chars);
-    let body = body_height(&doc);
+    let body = body_height(&doc, 0);
     assert_eq!(
         body,
-        page_of(&doc).height.0,
+        page_of(&doc, 0).height.0,
         "control fixture: with no margins the body box is the whole paper"
     );
     synthesize(&mut doc);
@@ -220,10 +223,10 @@ fn synthesized_lines_reserve_the_planners_line_block() {
     // Body 18900 HWPUNIT sits between the two candidates for the line at 17600: its glyphs end
     // at 18600 (inside the body) while its block ends at 19200 (outside), which is the window
     // where the two rules disagree.
-    set_page(&mut doc, 18900, 0, 0);
+    set_page(&mut doc, 0, 18900, 0, 0);
     let chars = breaks(24);
     set_text(&mut doc.sections[0].paragraphs[0], chars);
-    let body = body_height(&doc);
+    let body = body_height(&doc, 0);
     synthesize(&mut doc);
     let segs = doc.sections[0].paragraphs[0].line_segs.clone();
     assert_eq!(segs.len(), 24, "one line per hard break");
@@ -268,13 +271,19 @@ fn synthesized_lines_reserve_the_planners_line_block() {
 
 /// A body whose second paragraph is 24 hard-broken lines after a floating table. The table makes
 /// the section read prepass anchors, so that paragraph's cache starts where the planner measured
-/// its first line rather than at the bare cursor.
-fn floating_table_then_multiline(paper_h: i32, header: i32, footer: i32) -> Document {
+/// its first line rather than at the bare cursor. `table_rows` rows taller than the body box make
+/// the table continue onto the next page before the paragraph starts.
+fn floating_table_then_multiline(
+    paper_h: i32,
+    header: i32,
+    footer: i32,
+    table_rows: u16,
+) -> Document {
     let mut doc = hwp_convert::from_markdown("Anchor\n\nText\n");
-    set_page(&mut doc, paper_h, header, footer);
+    set_page(&mut doc, 0, paper_h, header, footer);
     doc.sections[0].paragraphs[0]
         .controls
-        .push(Control::Table(floating_table(1000)));
+        .push(Control::Table(floating_table(table_rows, 1000)));
     let mut text = doc.sections[0].paragraphs[1].clone();
     set_text(&mut text, breaks(24));
     doc.sections[0].paragraphs[1] = text;
@@ -292,7 +301,7 @@ fn assert_multiline_segments_after_floating_table(
     mut doc: Document,
     block_guard: bool,
 ) {
-    let body = body_height(&doc);
+    let body = body_height(&doc, 0);
     let total = doc.sections[0].paragraphs[1].wchar_len();
 
     synthesize(&mut doc);
@@ -374,7 +383,7 @@ fn assert_multiline_segments_after_floating_table(
 fn paginated_multiline_segments_after_a_floating_table_stay_inside_the_body_box() {
     assert_multiline_segments_after_floating_table(
         "bands",
-        floating_table_then_multiline(PAPER_H, BAND, BAND),
+        floating_table_then_multiline(PAPER_H, BAND, BAND, 1),
         false,
     );
 }
@@ -388,7 +397,58 @@ fn paginated_multiline_segments_after_a_floating_table_stay_inside_the_body_box(
 fn paginated_multiline_segments_after_a_floating_table_reserve_the_planners_line_block() {
     assert_multiline_segments_after_floating_table(
         "zero bands",
-        floating_table_then_multiline(19200, 0, 0),
+        floating_table_then_multiline(19200, 0, 0, 1),
         true,
     );
+}
+
+/// A floating table that has to continue onto the next page: the multiline paragraph then starts
+/// after the continuation, and its cache must still stay page-relative inside the body box, with
+/// one segment per hard break and no page opened twice (#423).
+#[test]
+fn paginated_multiline_segments_after_a_table_continuation_stay_inside_the_body_box() {
+    let doc = floating_table_then_multiline(PAPER_H, BAND, BAND, 15);
+    let body = body_height(&doc, 0);
+    // Fifteen rows plus the table's own block padding are taller than one body box, so this
+    // document can only place the paragraph after a continuation page.
+    assert!(
+        15 * 1000 + 566 > body,
+        "fixture: the table is taller than the body box {body}, so it must continue"
+    );
+    assert_multiline_segments_after_floating_table("continuation", doc, false);
+}
+
+/// Every section paginates in its own body box: a band-free section followed by a banded one must
+/// not share the first section's bottom (#423).
+#[test]
+fn each_section_paginates_in_its_own_body_box() {
+    let mut doc = hwp_convert::from_markdown("Anchor\n");
+    set_page(&mut doc, 0, PAPER_H, 0, 0);
+    set_text(&mut doc.sections[0].paragraphs[0], breaks(24));
+    let mut banded = doc.sections[0].clone();
+    set_text(&mut banded.paragraphs[0], breaks(24));
+    doc.sections.push(banded);
+    set_page(&mut doc, 1, PAPER_H, BAND, BAND);
+    let bodies = [body_height(&doc, 0), body_height(&doc, 1)];
+    assert!(
+        bodies[0] > bodies[1],
+        "fixture: the banded section's body is the shorter one, {bodies:?}"
+    );
+
+    synthesize(&mut doc);
+    for (section, body) in bodies.iter().copied().enumerate() {
+        let segs = doc.sections[section].paragraphs[0].line_segs.clone();
+        assert_eq!(segs.len(), 24, "section {section}: one line per hard break");
+        for (index, seg) in segs.iter().enumerate() {
+            assert!(
+                seg.v_pos + seg.line_height <= body,
+                "section {section}: line {index} ends at {} beyond its body box {body}",
+                seg.v_pos + seg.line_height
+            );
+        }
+        assert!(
+            pages_in(&segs) > 1,
+            "section {section}: the paragraph must paginate"
+        );
+    }
 }
