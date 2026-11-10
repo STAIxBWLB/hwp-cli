@@ -399,7 +399,7 @@ pub fn prepare_binding_plan(
         let path = SegmentPath { section, indices };
         let paragraph = crate::address::paragraph_at_mut(&mut candidate, &path)
             .ok_or_else(|| refuse("적용할 문단 주소가 없음"))?;
-        crate::edit::splice_edits(paragraph, edits);
+        crate::edit::splice_edits(paragraph, edits)?;
         crate::address::invalidate_ancestors(&mut candidate, &path);
     }
     let plan_bytes = serde_json::to_vec(plan).map_err(|_| refuse("계획 직렬화 실패"))?;

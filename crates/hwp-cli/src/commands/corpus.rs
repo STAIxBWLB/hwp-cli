@@ -2225,9 +2225,9 @@ fn normalized_relative(root: &Path, path: &Path) -> Result<String> {
     Ok(components.join("/"))
 }
 
-/// 실패한 case는 자기 디렉터리를 비운 채 남긴다. 그 디렉터리를 "예상 밖"으로 처리하면
-/// 실패 사유가 담긴 report 자체가 게시되지 못하고 트리 불일치 오류로 덮인다. 그래서 runner가
-/// 만드는 case 디렉터리는 파일이 없어도 허용한다.
+/// A failed case leaves its directory empty. Rejecting that directory as unexpected would
+/// prevent publishing the failure report and replace the cause with a tree mismatch error.
+/// Allow directories created by the runner even when they contain no files.
 fn audit_tree(root: &Path, manifest: &ArtifactManifest, case_ids: &[&str]) -> Result<()> {
     let expected_paths: BTreeSet<_> = manifest
         .files
@@ -2266,7 +2266,7 @@ fn audit_tree(root: &Path, manifest: &ArtifactManifest, case_ids: &[&str]) -> Re
         )
         .collect::<BTreeSet<_>>();
     if !observed_directories.is_subset(&expected_directories) {
-        // 경로는 닫힌 manifest에서 온 산출물 이름이라 진단에 실어도 된다.
+        // Artifact names from the closed manifest are safe to include in diagnostics.
         let unexpected = observed_directories
             .difference(&expected_directories)
             .cloned()
@@ -2601,8 +2601,8 @@ mod tests {
         let policy: CertificationPolicy = serde_json::from_slice(&policy_bytes).unwrap();
         verify_policy_contract(&policy, &manifest.fonts).unwrap();
         for font in &manifest.fonts {
-            // 폰트 바이트는 커밋하지 않는다. scripts/fetch-corpus-fonts.sh 가 채우기 전에는 건너뛰고,
-            // 있으면 커밋된 입력과 똑같이 hash를 강제한다(코퍼스 게이트는 fetch 후 항상 검사).
+            // Font bytes are not committed. Skip until scripts/fetch-corpus-fonts.sh supplies them;
+            // when present, enforce their hashes like committed inputs (the corpus gate always fetches first).
             if !corpus.join(&font.path).exists() {
                 eprintln!("skip: corpus fonts absent — run scripts/fetch-corpus-fonts.sh");
                 continue;
@@ -2994,19 +2994,25 @@ mod tests {
         let original = compiled_official_letter();
 
         let mut first_link = original.clone();
-        assert!(hwp_convert::create_hyperlink(
-            &mut first_link,
-            "제주한라대학교",
-            "https://example.invalid/first",
-            "링크"
-        ));
+        assert!(
+            hwp_convert::create_hyperlink(
+                &mut first_link,
+                "제주한라대학교",
+                "https://example.invalid/first",
+                "링크"
+            )
+            .unwrap()
+        );
         let mut second_link = original.clone();
-        assert!(hwp_convert::create_hyperlink(
-            &mut second_link,
-            "제주한라대학교",
-            "https://example.invalid/second",
-            "링크"
-        ));
+        assert!(
+            hwp_convert::create_hyperlink(
+                &mut second_link,
+                "제주한라대학교",
+                "https://example.invalid/second",
+                "링크"
+            )
+            .unwrap()
+        );
         assert_ne!(
             structural_semantic_sha256(&first_link).unwrap(),
             structural_semantic_sha256(&second_link).unwrap()

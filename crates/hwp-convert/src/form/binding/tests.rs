@@ -399,12 +399,10 @@ fn captured_xml_generic_list_is_inventory_only() {
 fn native_field_para() -> Paragraph {
     let mut doc = document();
     doc.sections[0].paragraphs[1] = paragraph("FIELD-ANCHOR");
-    assert!(crate::field::create_field(
-        &mut doc,
-        "FIELD-ANCHOR",
-        "owner-native-field",
-        "value"
-    ));
+    assert!(
+        crate::field::create_field(&mut doc, "FIELD-ANCHOR", "owner-native-field", "value")
+            .unwrap()
+    );
     doc.sections[0].paragraphs[1].clone()
 }
 fn assert_native_inventory(doc: &Document, inherited_cause: &str) {

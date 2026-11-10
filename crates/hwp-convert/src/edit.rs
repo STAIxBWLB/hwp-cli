@@ -174,103 +174,122 @@ fn is_explicit_form_value(cell: &hwp_model::Cell, wanted: &str) -> bool {
             if token.range == (0..normalized.len()) && token.name == wanted)
 }
 
-/// 문서 전체에서 `from`을 `to`로 치환한다(본문·표 셀·글상자 문단 재귀).
-/// `all`이 거짓이면 첫 1건만 바꾼다. 반환값은 치환 횟수.
-///
-/// 한 문단의 연속된 일반 문자(Text) 안에서만 매칭한다 — 컨트롤 문자(표 앵커·
-/// 문단끝 등)가 끼면 그 경계에서 매칭이 끊긴다(서식·구조 보존).
-pub fn replace_text(doc: &mut Document, from: &str, to: &str, all: bool) -> usize {
-    if from.is_empty() {
-        return 0;
-    }
-    let mut budget = if all { usize::MAX } else { 1 };
-    let mut count = 0;
-    for section in &mut doc.sections {
-        for para in &mut section.paragraphs {
-            count += replace_in_para(para, from, to, &mut budget);
-            if budget == 0 {
-                return count;
-            }
-        }
-    }
-    count
+/// Opaque HWP5 range marks (format 5.0 section 4.3.5); no saved layout is available locally.
+pub(crate) const PARA_RANGE_TAG: u16 = 0x10 + 54;
+pub(crate) const RANGE_TAG_SHIFT_REFUSAL: &str = "미해석 PARA_RANGE_TAG 구간 표시가 있어 WCHAR 위치가 바뀌거나 표시를 잃는 문단 재작성을 지원하지 않습니다. 같은 WCHAR 길이의 텍스트 치환을 사용하거나 한글에서 구간 표시를 제거한 파일로 다시 실행하세요.";
+
+pub(crate) fn paragraph_has_range_tags(para: &Paragraph) -> bool {
+    para.extras
+        .iter()
+        .any(|record| record.tag == PARA_RANGE_TAG)
 }
 
-fn replace_in_para(para: &mut Paragraph, from: &str, to: &str, budget: &mut usize) -> usize {
-    let mut n = replace_in_chars(para, from, to, budget);
-    for ctrl in &mut para.controls {
-        if *budget == 0 {
-            break;
-        }
-        match ctrl {
-            Control::Table(t) => {
-                for cell in &mut t.cells {
-                    for p in &mut cell.paragraphs {
-                        if *budget == 0 {
-                            break;
-                        }
-                        n += replace_in_para(p, from, to, budget);
-                    }
-                }
-            }
-            Control::Generic(g) => {
-                let before = n;
-                for list in &mut g.paragraph_lists {
-                    for p in &mut list.paragraphs {
-                        if *budget == 0 {
-                            break;
-                        }
-                        n += replace_in_para(p, from, to, budget);
-                    }
-                }
-                if n > before {
-                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
-                    g.hwpx_raw_xml = None;
-                }
-            }
-            _ => {}
-        }
+pub(crate) fn paragraph_tree_has_range_tags(para: &Paragraph) -> bool {
+    fn raw_has_tags(records: &[hwp_model::OpaqueRecord]) -> bool {
+        records
+            .iter()
+            .any(|record| record.tag == PARA_RANGE_TAG || raw_has_tags(&record.children))
     }
-    n
-}
-
-/// 한 문단의 `chars` 안에서 치환을 반복한다(budget 한도). char_shape_run 위치를
-/// 보정한다. 줄 배치는 비워 두고(낡음) writer가 재합성하게 한다.
-fn replace_in_chars(para: &mut Paragraph, from: &str, to: &str, budget: &mut usize) -> usize {
-    let from_w = utf16_len(from);
-    let from_chars = from.chars().count();
-    let mut count = 0;
-    // 삽입한 `to` 다음부터 이어서 탐색한다 — `to`가 `from`을 포함하면(예:
-    // "한라대학교"→"제주한라대학교") 처음부터 재탐색 시 삽입한 텍스트 안에서
-    // 다시 매칭돼 무한 루프에 빠진다.
-    let mut start = 0usize;
-    while *budget > 0 {
-        let Some((char_idx, wpos)) = find_match(&para.chars, from, start) else {
-            break;
+    if raw_has_tags(&para.extras) {
+        return true;
+    }
+    para.controls.iter().any(|control| {
+        let caption = match control {
+            Control::Table(table) => {
+                if table
+                    .cells
+                    .iter()
+                    .any(|cell| cell.paragraphs.iter().any(paragraph_tree_has_range_tags))
+                {
+                    return true;
+                }
+                &table.caption
+            }
+            Control::Picture(picture) => &picture.caption,
+            Control::Generic(generic) => {
+                if raw_has_tags(&generic.raw_children)
+                    || generic
+                        .paragraph_lists
+                        .iter()
+                        .any(|list| list.paragraphs.iter().any(paragraph_tree_has_range_tags))
+                {
+                    return true;
+                }
+                &generic.caption
+            }
+            Control::SectionDef(_) => return false,
         };
-        let inserted = splice_text(para, char_idx..char_idx + from_chars, wpos, from_w, to);
-        count += 1;
-        *budget -= 1;
-        start = char_idx + inserted;
-    }
-    count
+        caption
+            .as_ref()
+            .is_some_and(|caption| caption.paragraphs.iter().any(paragraph_tree_has_range_tags))
+    })
 }
 
-/// Replace the text characters `range` of `para` (starting at WCHAR offset `wpos`, `from_w`
-/// WCHARs wide) with `to`, and return how many characters went in. The new text takes the char
-/// shape active at `wpos`, later run boundaries shift by the length change, and the now stale
-/// line layout is dropped for the writer to rebuild. `to` is normalized the way markdown import
-/// stores text: CRLF and LF become a line break, a tab the 8-WCHAR inline tab control, and
-/// other C0 controls are dropped.
-pub(crate) fn splice_text(
-    para: &mut Paragraph,
-    range: std::ops::Range<usize>,
-    wpos: u32,
+pub(crate) fn document_has_range_tags(doc: &Document) -> bool {
+    doc.sections
+        .iter()
+        .any(|section| section.paragraphs.iter().any(paragraph_tree_has_range_tags))
+}
+
+pub(crate) fn ensure_range_tag_shift_allowed(
+    para: &Paragraph,
     from_w: u32,
-    to: &str,
-) -> usize {
-    let to_hwp: Vec<HwpChar> = to
-        .replace("\r\n", "\n")
+    to_w: u32,
+) -> Result<(), String> {
+    if from_w != to_w && paragraph_has_range_tags(para) {
+        return Err(RANGE_TAG_SHIFT_REFUSAL.to_string());
+    }
+    Ok(())
+}
+
+/// Matches the existing first-anchor insertion walk: own text, cells and Generic lists.
+/// Captions are not targets of these anchor-based mutators.
+pub(crate) fn ensure_anchor_shift_allowed(
+    doc: &Document,
+    anchor: &str,
+    inserted_w: u32,
+) -> Result<(), String> {
+    fn first<'a>(para: &'a Paragraph, anchor: &str) -> Option<&'a Paragraph> {
+        if find_match(&para.chars, anchor, 0).is_some() {
+            return Some(para);
+        }
+        for control in &para.controls {
+            match control {
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        for paragraph in &cell.paragraphs {
+                            if let Some(found) = first(paragraph, anchor) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                Control::Generic(generic) => {
+                    for list in &generic.paragraph_lists {
+                        for paragraph in &list.paragraphs {
+                            if let Some(found) = first(paragraph, anchor) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            if let Some(found) = first(para, anchor) {
+                return ensure_range_tag_shift_allowed(found, 0, inserted_w);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn replacement_chars(to: &str) -> Vec<HwpChar> {
+    to.replace("\r\n", "\n")
         .chars()
         .filter_map(|c| match c {
             '\n' => Some(HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)),
@@ -281,18 +300,161 @@ pub(crate) fn splice_text(
             c if (c as u32) < 0x20 => None,
             c => Some(HwpChar::Text(c)),
         })
-        .collect();
-    let to_w = to_hwp.iter().map(HwpChar::wchar_width).sum();
-    let inserted = to_hwp.len();
-    para.chars.splice(range, to_hwp);
-    adjust_runs(&mut para.char_shape_runs, wpos, from_w, to_w);
-    para.line_segs.clear();
-    inserted
+        .collect()
 }
 
-/// Apply `edits` (character ranges of `para`, in order and not overlapping, with their
-/// replacements) back to front, so each range still names the original text when it is spliced.
-pub(crate) fn splice_edits(para: &mut Paragraph, edits: Vec<(std::ops::Range<usize>, String)>) {
+/// Validates every original range before any back-to-front splice, including net-zero batches.
+pub(crate) fn check_splice_edits(
+    para: &Paragraph,
+    edits: &[(std::ops::Range<usize>, String)],
+) -> Result<(), String> {
+    if paragraph_has_range_tags(para) {
+        for (range, replacement) in edits {
+            let from_w = para.chars[range.clone()]
+                .iter()
+                .map(HwpChar::wchar_width)
+                .sum();
+            let to_w = replacement_chars(replacement)
+                .iter()
+                .map(HwpChar::wchar_width)
+                .sum();
+            ensure_range_tag_shift_allowed(para, from_w, to_w)?;
+        }
+    }
+    Ok(())
+}
+
+/// Replaces matches in contiguous Text spans across body, cells and text boxes.
+/// With `all=false`, only the first match is changed. A width-changing tagged target
+/// refuses before any target is mutated; the successful result is the replacement count.
+pub fn replace_text(doc: &mut Document, from: &str, to: &str, all: bool) -> Result<usize, String> {
+    if from.is_empty() {
+        return Ok(0);
+    }
+    if document_has_range_tags(doc) {
+        replace_text_pass(doc, from, to, all, false)?;
+    }
+    replace_text_pass(doc, from, to, all, true)
+}
+
+fn replace_text_pass(
+    doc: &mut Document,
+    from: &str,
+    to: &str,
+    all: bool,
+    apply: bool,
+) -> Result<usize, String> {
+    let mut budget = if all { usize::MAX } else { 1 };
+    let mut count = 0;
+    for section in &mut doc.sections {
+        for para in &mut section.paragraphs {
+            count += replace_in_para(para, from, to, &mut budget, apply)?;
+            if budget == 0 {
+                return Ok(count);
+            }
+        }
+    }
+    Ok(count)
+}
+
+fn replace_in_para(
+    para: &mut Paragraph,
+    from: &str,
+    to: &str,
+    budget: &mut usize,
+    apply: bool,
+) -> Result<usize, String> {
+    let mut n = replace_in_chars(para, from, to, budget, apply)?;
+    for ctrl in &mut para.controls {
+        if *budget == 0 {
+            break;
+        }
+        match ctrl {
+            Control::Table(table) => {
+                for cell in &mut table.cells {
+                    for paragraph in &mut cell.paragraphs {
+                        if *budget == 0 {
+                            break;
+                        }
+                        n += replace_in_para(paragraph, from, to, budget, apply)?;
+                    }
+                }
+            }
+            Control::Generic(generic) => {
+                let before = n;
+                for list in &mut generic.paragraph_lists {
+                    for paragraph in &mut list.paragraphs {
+                        if *budget == 0 {
+                            break;
+                        }
+                        n += replace_in_para(paragraph, from, to, budget, apply)?;
+                    }
+                }
+                if apply && n > before {
+                    generic.hwpx_raw_xml = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(n)
+}
+
+fn replace_in_chars(
+    para: &mut Paragraph,
+    from: &str,
+    to: &str,
+    budget: &mut usize,
+    apply: bool,
+) -> Result<usize, String> {
+    let from_w = utf16_len(from);
+    let from_chars = from.chars().count();
+    let to_w = replacement_chars(to).iter().map(HwpChar::wchar_width).sum();
+    let mut count = 0;
+    let mut start = 0usize;
+    while *budget > 0 {
+        let Some((char_idx, wpos)) = find_match(&para.chars, from, start) else {
+            break;
+        };
+        let inserted = if apply {
+            splice_text(para, char_idx..char_idx + from_chars, wpos, from_w, to)?
+        } else {
+            ensure_range_tag_shift_allowed(para, from_w, to_w)?;
+            from_chars
+        };
+        count += 1;
+        *budget -= 1;
+        start = char_idx + inserted;
+    }
+    Ok(count)
+}
+
+/// Replaces one text span after validating its normalized WCHAR width. Range records stay opaque.
+pub(crate) fn splice_text(
+    para: &mut Paragraph,
+    range: std::ops::Range<usize>,
+    wpos: u32,
+    from_w: u32,
+    to: &str,
+) -> Result<usize, String> {
+    let to_hwp = replacement_chars(to);
+    let to_w = to_hwp.iter().map(HwpChar::wchar_width).sum();
+    ensure_range_tag_shift_allowed(para, from_w, to_w)?;
+    let inserted = to_hwp.len();
+    if !paragraph_has_range_tags(para) || para.chars[range.clone()] != to_hwp {
+        para.chars.splice(range, to_hwp);
+        adjust_runs(&mut para.char_shape_runs, wpos, from_w, to_w);
+        para.line_segs.clear();
+    }
+    Ok(inserted)
+}
+
+/// Applies disjoint original spans back to front, after validating the whole paragraph batch.
+pub(crate) fn splice_edits(
+    para: &mut Paragraph,
+    edits: Vec<(std::ops::Range<usize>, String)>,
+) -> Result<(), String> {
+    check_splice_edits(para, &edits)?;
     for (range, replacement) in edits.into_iter().rev() {
         let wpos = para.chars[..range.start]
             .iter()
@@ -302,29 +464,32 @@ pub(crate) fn splice_edits(para: &mut Paragraph, edits: Vec<(std::ops::Range<usi
             .iter()
             .map(HwpChar::wchar_width)
             .sum();
-        splice_text(para, range, wpos, from_w, &replacement);
+        splice_text(para, range, wpos, from_w, &replacement)?;
     }
+    Ok(())
 }
 
-/// Address-driven entry point for a text-replace edit (EDT-05, 07-02): resolves the target
-/// paragraph via [`crate::address::paragraph_at_mut`] and applies the same per-paragraph rewrite
-/// [`replace_in_chars`] performs, scoped to that one paragraph — no recursion into child table
-/// cells / generic controls (an address names exactly one paragraph, unlike [`replace_in_para`]'s
-/// document-wide walk). Returns the number of replacements made in that paragraph: 0 when `from`
-/// is empty, the address does not resolve, or no match was found.
-pub fn replace_text_at(doc: &mut Document, path: &SegmentPath, from: &str, to: &str) -> usize {
+/// Addressed replacement touches one writable paragraph and preserves ancestors on refusal.
+pub fn replace_text_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    from: &str,
+    to: &str,
+) -> Result<usize, String> {
     if from.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
-        return 0;
+        return Ok(0);
     };
     let mut budget = usize::MAX;
-    let count = replace_in_chars(para, from, to, &mut budget);
+    replace_in_chars(para, from, to, &mut budget, false)?;
+    budget = usize::MAX;
+    let count = replace_in_chars(para, from, to, &mut budget, true)?;
     if count > 0 {
         crate::address::invalidate_ancestors(doc, path);
     }
-    count
+    Ok(count)
 }
 
 /// 연속된 Text 문자열에서 `start_idx` 이후 `from`의 첫 위치를 찾는다.
@@ -397,6 +562,9 @@ pub fn set_cell(
     col: u16,
     text: &str,
 ) -> Result<(), String> {
+    if document_has_range_tags(doc) && check_set_cell_edit(doc, table_index, row, col, text)? {
+        return Ok(());
+    }
     // The hwp5-sourced edit path runs the writer with synthesize=false, so neither
     // assign_instance_ids nor set_last_para_flag runs and paragraphs created here
     // must carry their own document-unique ids. Read the global maximum before the
@@ -1500,6 +1668,55 @@ fn split_cell_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
+/// Checks the whole cell subtree before the rebuilding walk can invalidate ancestors.
+/// A tagged exact no-op preserves the existing paragraphs and their opaque records.
+pub(crate) fn check_set_cell_edit(
+    doc: &mut Document,
+    table_index: usize,
+    row: u16,
+    col: u16,
+    text: &str,
+) -> Result<bool, String> {
+    let blocks = split_cell_blocks(text);
+    with_nth_table_readonly(doc, table_index, |table| {
+        let cell = table
+            .cells
+            .iter()
+            .find(|cell| cell.row == row && cell.col == col)
+            .ok_or_else(|| format!("표에 셀 ({row}, {col})이 없습니다"))?;
+        if !cell.paragraphs.iter().any(paragraph_tree_has_range_tags) {
+            return Ok(false);
+        }
+        let identical = cell.paragraphs.len() == blocks.len()
+            && cell.paragraphs.iter().zip(&blocks).all(|(para, block)| {
+                if !para.controls.is_empty() {
+                    return false;
+                }
+                let chars = para
+                    .chars
+                    .strip_suffix(&[HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK)])
+                    .unwrap_or(&para.chars);
+                let expected: Vec<_> = block
+                    .chars()
+                    .map(|c| {
+                        if c == '\n' {
+                            HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
+                        } else {
+                            HwpChar::Text(c)
+                        }
+                    })
+                    .collect();
+                chars == expected
+            });
+        if identical {
+            Ok(true)
+        } else {
+            Err(RANGE_TAG_SHIFT_REFUSAL.to_string())
+        }
+    })
+    .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
+}
+
 /// `next_instance_id` must already be a reserved, overflow-checked range of
 /// `blocks.len() - 1` ids - see [`set_cell`], which refuses before mutating anything.
 fn set_cell_in_table(
@@ -2382,15 +2599,31 @@ pub enum ObjectKind {
 /// Deletes objects — removes the control together with its anchor chars (through FIELD_END for
 /// fields) and adjusts WCHAR positions (GK-8). Recurses through body, table cells, and text
 /// boxes. Returns the number deleted.
-pub fn delete_object(doc: &mut Document, kind: ObjectKind, selector: &str) -> usize {
+pub fn delete_object(
+    doc: &mut Document,
+    kind: ObjectKind,
+    selector: &str,
+) -> Result<usize, String> {
+    if document_has_range_tags(doc) {
+        delete_object_pass(doc, kind, selector, false)?;
+    }
+    delete_object_pass(doc, kind, selector, true)
+}
+
+fn delete_object_pass(
+    doc: &mut Document,
+    kind: ObjectKind,
+    selector: &str,
+    apply: bool,
+) -> Result<usize, String> {
     let mut count = 0;
     let mut table_seen = 0usize;
     for section in &mut doc.sections {
         for para in &mut section.paragraphs {
-            count += delete_object_in_para(para, kind, selector, &mut table_seen);
+            count += delete_object_in_para(para, kind, selector, &mut table_seen, apply)?;
         }
     }
-    count
+    Ok(count)
 }
 
 fn delete_object_in_para(
@@ -2398,7 +2631,8 @@ fn delete_object_in_para(
     kind: ObjectKind,
     selector: &str,
     table_seen: &mut usize,
-) -> usize {
+    apply: bool,
+) -> Result<usize, String> {
     // Collects the indexes of the controls to delete.
     let targets: Vec<usize> = para
         .controls
@@ -2438,7 +2672,7 @@ fn delete_object_in_para(
             Control::Table(t) => {
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        n += delete_object_in_para(p, kind, selector, table_seen);
+                        n += delete_object_in_para(p, kind, selector, table_seen, apply)?;
                     }
                 }
             }
@@ -2446,10 +2680,10 @@ fn delete_object_in_para(
                 let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        n += delete_object_in_para(p, kind, selector, table_seen);
+                        n += delete_object_in_para(p, kind, selector, table_seen, apply)?;
                     }
                 }
-                if n > before {
+                if apply && n > before {
                     // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
                     g.hwpx_raw_xml = None;
                 }
@@ -2458,30 +2692,30 @@ fn delete_object_in_para(
         }
     }
     if targets.is_empty() {
-        return n;
+        return Ok(n);
     }
-    n += remove_controls(para, &targets);
-    n
+    if apply {
+        n += remove_controls(para, &targets)?;
+    } else {
+        check_control_removal(para, &targets)?;
+        n += targets.len();
+    }
+    Ok(n)
 }
 
 /// Removes the controls at the `targets` indexes and their anchor chars (ExtCtrl + FIELD_END of
 /// a field start), and adjusts char_shape_runs positions. Returns the number removed.
-fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
-    // 1) Remove anchor chars — the ExtCtrl pointing at a target control + the field's FIELD_END.
-    let mut removed: Vec<(u32, u32)> = Vec::new();
-    let mut orig_pos = 0u32;
-    let mut kept = Vec::with_capacity(para.chars.len());
-    // Whether we are looking for the FIELD_END (code 4) matching a deleted FIELD_START (code 3).
-    // Text/CharCtrl in between pass through untouched.
+fn check_control_removal(para: &Paragraph, targets: &[usize]) -> Result<Vec<(u32, u32)>, String> {
+    let mut removed = Vec::new();
+    let mut orig_pos = 0;
     let mut pending_field_end = false;
-    for ch in std::mem::take(&mut para.chars) {
+    for ch in &para.chars {
         let width = ch.wchar_width();
-        let drop = match &ch {
+        let drop = match ch {
             HwpChar::ExtCtrl {
                 code, ctrl_index, ..
             } => {
                 let hit = ctrl_index.is_some_and(|i| targets.contains(&(i as usize)));
-                // Only a field start (FIELD_START=3) opens FIELD_END tracking — pictures, tables, and bookmarks have none.
                 pending_field_end = hit && *code == 3;
                 hit
             }
@@ -2496,11 +2730,24 @@ fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
         };
         if drop {
             removed.push((orig_pos, width));
-        } else {
-            kept.push(ch);
         }
         orig_pos += width;
     }
+    ensure_range_tag_shift_allowed(para, removed.iter().map(|(_, width)| width).sum(), 0)?;
+    Ok(removed)
+}
+
+fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> Result<usize, String> {
+    let removed = check_control_removal(para, targets)?;
+    let mut orig_pos = 0;
+    let kept = std::mem::take(&mut para.chars)
+        .into_iter()
+        .filter(|ch| {
+            let keep = !removed.iter().any(|(pos, _)| *pos == orig_pos);
+            orig_pos += ch.wchar_width();
+            keep
+        })
+        .collect();
     para.chars = kept;
     // 2) Remove the controls (in reverse order to preserve indexes).
     let mut sorted = targets.to_vec();
@@ -2521,7 +2768,7 @@ fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
     para.char_shape_runs.dedup();
     // 4) Reconnect ExtCtrl ↔ controls in order of appearance.
     crate::field::relink_ctrl_index(para);
-    n
+    Ok(n)
 }
 
 #[cfg(test)]
@@ -2538,7 +2785,7 @@ mod tests {
             section: 0,
             indices: vec![1],
         };
-        let n = replace_text_at(&mut doc, &path, "같은", "다른");
+        let n = replace_text_at(&mut doc, &path, "같은", "다른").unwrap();
         assert_eq!(n, 1);
         assert_eq!(doc.sections[0].paragraphs[0].plain_text(), "같은 문단");
         assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "다른 문단");
@@ -2553,7 +2800,7 @@ mod tests {
             section: 0,
             indices: vec![99],
         };
-        let n = replace_text_at(&mut doc, &path, "문단", "다른");
+        let n = replace_text_at(&mut doc, &path, "문단", "다른").unwrap();
         assert_eq!(n, 0);
         assert_eq!(doc, before);
     }
@@ -2894,7 +3141,10 @@ mod tests {
         std::fs::write(&tmp, &png).unwrap();
         crate::image::insert_image(&mut doc, "본문", &tmp, crate::image::ImageSize::Natural)
             .unwrap();
-        assert_eq!(delete_object(&mut doc, ObjectKind::Image, "본문"), 1);
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::Image, "본문").unwrap(),
+            1
+        );
         let has_pic = doc.sections[0]
             .paragraphs
             .iter()
@@ -2903,7 +3153,10 @@ mod tests {
         assert!(!has_pic, "그림 삭제됨");
         let _ = std::fs::remove_file(&tmp);
         // Deleting the nth table — removing the 0-th (the GFM table) makes the table disappear.
-        assert_eq!(delete_object(&mut doc, ObjectKind::TableNth(0), ""), 1);
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::TableNth(0), "").unwrap(),
+            1
+        );
         let has_table = doc.sections[0]
             .paragraphs
             .iter()
@@ -2911,7 +3164,10 @@ mod tests {
             .any(|c| matches!(c, Control::Table(_)));
         assert!(!has_table, "표 삭제됨");
         // A missing index deletes 0.
-        assert_eq!(delete_object(&mut doc, ObjectKind::TableNth(3), ""), 0);
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::TableNth(3), "").unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -2923,8 +3179,14 @@ mod tests {
             "앵커",
             "책갈피1"
         ));
-        assert_eq!(delete_object(&mut doc, ObjectKind::Field, "이름"), 1);
-        assert_eq!(delete_object(&mut doc, ObjectKind::Bookmark, "책갈피1"), 1);
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::Field, "이름").unwrap(),
+            1
+        );
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::Bookmark, "책갈피1").unwrap(),
+            1
+        );
         // No leftover fields/bookmarks may remain.
         assert!(crate::field::list_fields(&doc).is_empty());
         assert!(crate::bookmark::list_bookmarks(&doc).is_empty());
@@ -2959,7 +3221,7 @@ mod tests {
         for p in &mut doc.sections[0].paragraphs {
             p.line_segs.push(dummy_lineseg());
         }
-        let n = replace_text(&mut doc, "바꿀문단", "변경됨", true);
+        let n = replace_text(&mut doc, "바꿀문단", "변경됨", true).unwrap();
         assert_eq!(n, 1);
         let paras = &doc.sections[0].paragraphs;
         let edited = paras
@@ -2977,7 +3239,7 @@ mod tests {
     #[test]
     fn 본문_치환_길이변화_run보정() {
         let mut doc = from_markdown("부서명을 적으세요\n");
-        let n = replace_text(&mut doc, "부서명", "기획팀입니다", true);
+        let n = replace_text(&mut doc, "부서명", "기획팀입니다", true).unwrap();
         assert_eq!(n, 1);
         let text = doc.plain_text();
         assert!(text.contains("기획팀입니다을 적으세요"), "got: {text:?}");
@@ -2999,7 +3261,7 @@ mod tests {
     fn 치환문이_찾기문_포함_무한루프_없음() {
         // "한라대학교" → "제주한라대학교": to가 from을 포함 → 재탐색 무한루프 방지.
         let mut doc = from_markdown("한라대학교 보고서\n");
-        let n = replace_text(&mut doc, "한라대학교", "제주한라대학교", true);
+        let n = replace_text(&mut doc, "한라대학교", "제주한라대학교", true).unwrap();
         assert_eq!(n, 1);
         let text = doc.plain_text();
         assert!(text.contains("제주한라대학교 보고서"), "got: {text:?}");
@@ -3009,9 +3271,9 @@ mod tests {
     #[test]
     fn 치환_전체_vs_단일() {
         let mut doc = from_markdown("가 가 가\n");
-        let single = replace_text(&mut doc.clone(), "가", "나", false);
+        let single = replace_text(&mut doc.clone(), "가", "나", false).unwrap();
         assert_eq!(single, 1);
-        let all = replace_text(&mut doc, "가", "나", true);
+        let all = replace_text(&mut doc, "가", "나", true).unwrap();
         assert_eq!(all, 3);
         assert!(doc.plain_text().contains("나 나 나"));
     }

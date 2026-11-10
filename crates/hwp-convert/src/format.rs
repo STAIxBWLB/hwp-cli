@@ -10,7 +10,7 @@ use hwp_model::{
     ParaShapeId, Paragraph,
 };
 
-use crate::edit::{find_match, utf16_len};
+use crate::edit::{find_match, paragraph_has_range_tags, utf16_len};
 use crate::segment_id::SegmentPath;
 
 /// Character-format changes; None retains the existing value.
@@ -287,12 +287,6 @@ pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> b
     applied
 }
 
-/// HWP5 `HWPTAG_PARA_RANGE_TAG` (HWPTAG_BEGIN + 54; 한글 문서 파일 형식 5.0 §4.3.5, 표 63):
-/// highlight and proofreading marks whose start and end are text offsets. They sit in
-/// `Paragraph::extras` as opaque records and no splice path in this crate rebases them
-/// (#470), so an edit that moves text under one must refuse instead.
-const PARA_RANGE_TAG: u16 = 0x10 + 54;
-
 /// Why `keep_together` is not implemented. The paragraph-shape bits it would write (attr1 bit 17
 /// keep-with-next, bit 18 keep-lines, bit 19 break-before) are **unverified**: none of the
 /// genuine Hangul-saved files available (902 parsed, about 13,000 paragraph shapes) sets any of
@@ -465,7 +459,7 @@ fn apply_blank_plan(para: &mut Paragraph, plan: &BlankPlan) {
 /// Idempotent: a second application finds no leading blanks and an identical shape, so it
 /// returns `Ok(false)`, appends no shape and leaves the paragraph, line layout included,
 /// untouched. Refuses a `level` outside 0..=7, and a paragraph that carries a
-/// [`PARA_RANGE_TAG`] record when blanks would be removed (before anything is changed).
+/// [`crate::edit::PARA_RANGE_TAG`] record when blanks would be removed (before anything is changed).
 pub fn set_indent_level_at(
     doc: &mut Document,
     path: &SegmentPath,
@@ -487,7 +481,7 @@ pub fn set_indent_level_at(
     };
     // Plan first, mutate later: every refusal happens before the document is touched.
     let plan = leading_blank_plan(para);
-    if plan.is_some() && para.extras.iter().any(|e| e.tag == PARA_RANGE_TAG) {
+    if plan.is_some() && paragraph_has_range_tags(para) {
         return Err("set_indent_level은 구간 표시(형광펜·교정 부호)가 있는 문단의 앞쪽 공백을 지울 수 없습니다: 표시의 위치가 글자 위치를 가리켜 공백을 지우면 엉뚱한 글자에 표시가 걸립니다. 표시를 먼저 지우거나, 공백을 지우지 않는 set_para로 left_mm·indent_mm만 지정하세요".to_string());
     }
     let stripped = plan.is_some();
@@ -1336,7 +1330,7 @@ mod tests {
 
     fn range_tag() -> hwp_model::OpaqueRecord {
         hwp_model::OpaqueRecord {
-            tag: PARA_RANGE_TAG,
+            tag: crate::edit::PARA_RANGE_TAG,
             data: vec![0, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0],
             children: Vec::new(),
         }

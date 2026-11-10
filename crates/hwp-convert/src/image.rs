@@ -1,8 +1,9 @@
-//! 이미지 삽입 — 앵커 텍스트 뒤에 새 그림(Picture)을 꽂는다.
+//! Image insertion: add a new Picture after anchor text.
 //!
-//! writer가 빈-extras Picture에 hwp5 도형 레코드(SHAPE_COMPONENT + 그림)를 합성하므로
-//! (hwpx→hwp와 동일한 검증된 경로), 여기서는 최소 Picture + BinStream + 앵커 ExtCtrl만
-//! 만든다. bin_ref=ItemRef(name)로 hwpx 출력·hwp5 합성·렌더가 모두 바이트를 해석한다.
+//! The writer synthesizes HWP5 shape records (SHAPE_COMPONENT plus picture) for Pictures with empty
+//! extras, using the verified HWPX-to-HWP path. Build only a minimal Picture, BinStream and ExtCtrl
+//! anchor here. bin_ref=ItemRef(name) lets HWPX output, HWP5 synthesis and rendering resolve the
+//! same bytes.
 
 use std::path::{Path, PathBuf};
 
@@ -10,27 +11,27 @@ use hwp_model::{
     BinRef, BinStream, CharShape, Control, Document, HwpChar, HwpUnit, Paragraph, Picture,
 };
 
-use crate::edit::{adjust_runs, find_match, utf16_len};
+use crate::edit::{adjust_runs, ensure_anchor_shift_allowed, find_match, utf16_len};
 use crate::field::{relink_ctrl_index, rev_payload};
 
-/// gso 개체(그림/표 등) 확장 컨트롤 문자 코드.
+/// Extended-control character code for gso objects such as pictures and tables.
 const GSO_CODE: u16 = 11;
 /// mm → HWPUNIT(1/7200 inch = 1/100 pt): 7200/25.4.
 const MM_TO_HWPUNIT: f32 = 283.464_57;
-/// PageDef 없을 때 본문 폭 기본값(HWPUNIT, ≈400pt).
+/// Default body width without a PageDef, in HWPUNIT (approximately 400pt).
 const DEFAULT_CONTENT_WIDTH: i32 = 40_000;
 
-/// 삽입 이미지 표시 크기.
+/// Display dimensions of an inserted image.
 pub enum ImageSize {
-    /// 원본 픽셀 크기(96 DPI 기준), 본문 폭 초과 시 비례 축소.
+    /// Original pixel dimensions at 96 DPI, proportionally reduced to fit body width.
     Natural,
-    /// 밀리미터 지정(너비, 높이).
+    /// Width and height in millimeters.
     Mm(f32, f32),
 }
 
-/// PNG/GIF/BMP/JPEG 헤더에서 픽셀 (너비, 높이)를 읽는다(무의존 헤더 파싱).
+/// Reads pixel width/height from PNG/GIF/BMP/JPEG headers without a decoding dependency.
 pub fn image_pixel_size(data: &[u8]) -> Option<(u32, u32)> {
-    // PNG: IHDR 폭/높이 at 16..24 (big-endian)
+    // PNG: big-endian IHDR width/height at 16..24.
     if data.len() >= 24 && data.starts_with(b"\x89PNG\r\n\x1a\n") {
         let w = u32::from_be_bytes(data[16..20].try_into().ok()?);
         let h = u32::from_be_bytes(data[20..24].try_into().ok()?);
@@ -42,13 +43,13 @@ pub fn image_pixel_size(data: &[u8]) -> Option<(u32, u32)> {
         let h = u16::from_le_bytes([data[8], data[9]]) as u32;
         return Some((w, h));
     }
-    // BMP: BITMAPINFOHEADER 폭/높이 at 18..26 (little-endian)
+    // BMP: little-endian BITMAPINFOHEADER width/height at 18..26.
     if data.len() >= 26 && data.starts_with(b"BM") {
         let w = i32::from_le_bytes(data[18..22].try_into().ok()?);
         let h = i32::from_le_bytes(data[22..26].try_into().ok()?);
         return Some((w.unsigned_abs(), h.unsigned_abs()));
     }
-    // JPEG: SOF 마커(0xFFC0~0xFFCF, C4/C8/CC 제외)에서 높이·너비
+    // JPEG: height/width in SOF markers 0xFFC0..0xFFCF, excluding C4/C8/CC.
     if data.len() >= 4 && data[0] == 0xFF && data[1] == 0xD8 {
         let mut i = 2;
         while i + 9 < data.len() {
@@ -73,8 +74,9 @@ pub fn image_pixel_size(data: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-/// 매직 바이트로 이미지 (확장자, MIME)를 판별한다(md/html 이미지 복원용).
-/// 알 수 없으면 `("bin", "application/octet-stream")` — 스펙상 미지 포맷은 `.bin`.
+/// Identifies image extension/MIME from magic bytes, for Markdown/HTML image restoration. Unknown
+/// formats use ("bin", "application/octet-stream"); the specification assigns .bin to unknown
+/// formats.
 pub fn image_kind(data: &[u8]) -> (&'static str, &'static str) {
     match data {
         [0x89, b'P', b'N', b'G', ..] => ("png", "image/png"),
@@ -85,7 +87,7 @@ pub fn image_kind(data: &[u8]) -> (&'static str, &'static str) {
     }
 }
 
-/// 문서 첫 구역의 본문 폭(HWPUNIT). PageDef 없으면 A4 근사 기본값.
+/// Body width of the first section, in HWPUNIT; use an A4-like default without a PageDef.
 fn content_width(doc: &Document) -> i32 {
     doc.sections
         .first()
@@ -95,7 +97,7 @@ fn content_width(doc: &Document) -> i32 {
         .unwrap_or(DEFAULT_CONTENT_WIDTH)
 }
 
-/// 확장자(소문자) 추출·검증. 지원: png/jpg/jpeg/bmp/gif.
+/// Extracts and validates a lowercase extension: png/jpg/jpeg/bmp/gif.
 fn ext_of(path: &Path) -> Result<String, String> {
     let ext = path
         .extension()
@@ -110,7 +112,8 @@ fn ext_of(path: &Path) -> Result<String, String> {
     }
 }
 
-/// 표시 크기(HWPUNIT)를 계산한다. 자연 크기는 본문 폭(max_w) 초과 시 비례 축소.
+/// Computes display dimensions in HWPUNIT, proportionally shrinking natural size beyond max_w body
+/// width.
 pub(crate) fn display_size(data: &[u8], size: &ImageSize, max_w: i32) -> (i32, i32) {
     match size {
         ImageSize::Mm(w, h) => (
@@ -288,14 +291,14 @@ fn check_resolved_under_roots(resolved: &Path, roots: &[PathBuf]) -> Result<(), 
     }
 }
 
-/// 한 문단에서 앵커 텍스트 뒤에 그림 앵커를 삽입한다. 반환=삽입 여부.
+/// Inserts a picture anchor after matching text in one paragraph, returning whether inserted.
 fn insert_image_in_para(para: &mut Paragraph, anchor: &str, pic: &Picture) -> bool {
     let Some((cidx, wpos)) = find_match(&para.chars, anchor, 0) else {
         return false;
     };
     let ins = (cidx + anchor.chars().count()).min(para.chars.len());
     let iw = wpos + utf16_len(anchor);
-    // control 삽입 위치 = ins 이전 ExtCtrl 개수(등장순서가 chars와 정합해야 함).
+    // The insertion control index is the preceding ExtCtrl count, matching character/control order.
     let ci = para.chars[..ins]
         .iter()
         .filter(|c| matches!(c, HwpChar::ExtCtrl { .. }))
@@ -313,12 +316,12 @@ fn insert_image_in_para(para: &mut Paragraph, anchor: &str, pic: &Picture) -> bo
     );
     adjust_runs(&mut para.char_shape_runs, iw, 0, 8); // ExtCtrl wchar_width=8
     relink_ctrl_index(para);
-    para.header.ctrl_mask = 0; // writer가 chars에서 재계산(gso bit11 포함)
+    para.header.ctrl_mask = 0; // The writer recalculates ctrl_mask from chars, including gso bit11.
     para.line_segs.clear();
     true
 }
 
-/// 본문/표 셀/글상자 문단을 재귀로 훑어 첫 매칭에 그림을 삽입한다.
+/// Recursively inserts at the first anchor match in body, table-cell or text-box paragraphs.
 fn insert_image_rec(para: &mut Paragraph, anchor: &str, pic: &Picture) -> bool {
     if insert_image_in_para(para, anchor, pic) {
         return true;
@@ -338,7 +341,8 @@ fn insert_image_rec(para: &mut Paragraph, anchor: &str, pic: &Picture) -> bool {
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
                         if insert_image_rec(p, anchor, pic) {
-                            // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                            // The object's content changed; clear captured XML to prevent stale
+                            // output.
                             g.hwpx_raw_xml = None;
                             return true;
                         }
@@ -351,8 +355,9 @@ fn insert_image_rec(para: &mut Paragraph, anchor: &str, pic: &Picture) -> bool {
     false
 }
 
-/// `anchor` 텍스트를 가진 첫 문단의 그 뒤에 `path` 이미지를 인라인(글자처럼)으로 삽입한다.
-/// writer(hwp5)가 빈-extras Picture에 도형 레코드를 합성한다.
+/// Inserts the image at path inline after anchor text in the first matching paragraph. The HWP5
+/// writer synthesizes shape records for the resulting empty-extras Picture.
+/// Refuses before document mutation when the anchor insertion would shift opaque range tags.
 pub fn insert_image(
     doc: &mut Document,
     anchor: &str,
@@ -365,6 +370,7 @@ pub fn insert_image(
     if data.is_empty() {
         return Err(format!("빈 이미지 파일: {}", path.display()));
     }
+    ensure_anchor_shift_allowed(doc, anchor, 8)?;
     let (w, h) = display_size(&data, &size, content_width(doc));
     let name = format!("inserted{}.{ext}", doc.bin_streams.len() + 1);
     let pic = Picture {
@@ -399,7 +405,7 @@ pub fn insert_image(
     Ok(())
 }
 
-/// 도장(직인) 기본 크기 20mm — 공공 실무 관례.
+/// Default seal size: 20mm, following public-administration practice.
 const DEFAULT_SEAL_MM: f32 = 20.0;
 /// Fallback advance classes for the seal anchor, in thousandths of the active char shape's
 /// base size (em). Used **only** when no measured metrics are available (no exact face on
@@ -425,28 +431,29 @@ const SEAL_EM_PUNCT: i32 = 320;
 /// Base size used when a char shape is missing or has no size (10pt), as the measured
 /// path does for line height.
 const SEAL_DEFAULT_BASE: i32 = 1000;
-/// 도장 z-순서 — 본문·일반 개체 위(앞)에 겹치도록 크게 잡는다.
+/// Seal z-order, placed in front of body text and ordinary objects.
 const SEAL_Z_ORDER: u32 = 1000;
 
-/// 도장 배치를 위해 호출자(`hwp-cli`)가 실측해 넘기는 앵커 메트릭(HWPUNIT 단위).
-/// `hwp-convert`는 `hwp-render`에 의존하지 않으므로(project invariant 1) 이 실측은
-/// `hwp-cli`가 셰이핑 엔진을 거쳐 계산해 데이터로 넘긴다(D-06).
+/// Measured seal-anchor metrics supplied by hwp-cli in HWPUNIT. hwp-convert cannot depend on
+/// hwp-render (project invariant 1), so hwp-cli computes these through the shaping engine and
+/// passes them as data (D-06).
 #[derive(Debug, Clone, Copy)]
 pub struct SealAnchorMetrics {
-    /// 앵커 문구가 시작되는, 문단 기준 실측 가로 오프셋(HWPUNIT).
+    /// Measured horizontal offset of the anchor text's start, relative to the paragraph, in
+    /// HWPUNIT.
     pub anchor_start: i32,
-    /// 앵커 문구 자체의 실측 너비(HWPUNIT).
+    /// Measured width of the anchor text itself, in HWPUNIT.
     pub anchor_width: i32,
-    /// 앵커가 놓인 줄의 실측 높이(HWPUNIT). 도장이 이보다 크면 세로 오프셋이 음수가
-    /// 되어 위아래 줄과 겹친다 — 이는 의도된 동작이며 보정하지 않는다(D-07).
+    /// Measured height of the anchor's line, in HWPUNIT. A taller seal has a negative vertical
+    /// offset and overlaps surrounding lines; this is intentional and must not be clamped (D-07).
     pub line_height: i32,
 }
 
 /// Anchor measurement callback: (matched paragraph, anchor WCHAR range) -> metrics.
 type SealMeasure<'a> = dyn FnMut(&Paragraph, (u32, u32)) -> Option<SealAnchorMetrics> + 'a;
 
-/// 한 문단에서 앵커 문구 위에 도장을 **부유 배치**한다. 앵커 텍스트는 유지하고,
-/// gso 앵커 문자만 앵커 뒤에 삽입한다. 반환=삽입 여부.
+/// Places a floating seal over the anchor in one paragraph. Keep anchor text and insert only a gso
+/// anchor character after it; return whether inserted.
 ///
 /// Placement is paragraph-relative (vertRelTo/horzRelTo=PARA), centred on the anchor.
 /// `measure` supplies measured metrics for this paragraph (D-06); `None` falls back to
@@ -467,16 +474,16 @@ fn insert_seal_in_para(
     // metrics can never come from a different (e.g. enclosing) paragraph.
     let m = measure(para, (wpos, wpos + utf16_len(anchor)))
         .unwrap_or_else(|| estimate_anchor_metrics(para, (cidx, wpos), anchor, char_shapes));
-    // 앵커 문구 중앙에 도장 중심을 맞춘 문단 기준 오프셋.
+    // Center the seal horizontally on the anchor text, relative to the paragraph.
     let horz = m.anchor_start + m.anchor_width / 2 - seal_w / 2;
-    // 줄 높이보다 큰 도장은 위로 밀어 줄 중앙에 오게 한다(음수=위로).
-    // 위아래 줄과의 겹침은 보정하지 않는다(D-07) — 클램프 금지.
+    // A seal taller than the line moves upward to remain vertically centered. Overlap with adjacent
+    // lines is intentional; do not clamp (D-07).
     let vert = (m.line_height - seal_h) / 2;
     let pic = Picture {
         common_data: Vec::new(),
         width: HwpUnit(seal_w.max(1)),
         height: HwpUnit(seal_h.max(1)),
-        treat_as_char: false, // 부유(글 앞) 배치 — writer가 floating 공통속성 합성
+        treat_as_char: false, // Floating in front of text; the writer synthesizes common floating attributes.
         z_order: SEAL_Z_ORDER,
         vert_offset: vert,
         horz_offset: horz.max(0),
@@ -492,7 +499,7 @@ fn insert_seal_in_para(
         bin_ref: BinRef::ItemRef(name.to_string()),
         extras: Vec::new(),
     };
-    // 앵커 뒤에 gso 앵커 문자 삽입 — 앵커 텍스트 자체는 유지된다.
+    // Insert the gso anchor after the matched text, retaining the text itself.
     let ins = (cidx + anchor.chars().count()).min(para.chars.len());
     let iw = wpos + utf16_len(anchor);
     let ci = para.chars[..ins]
@@ -512,7 +519,7 @@ fn insert_seal_in_para(
     );
     adjust_runs(&mut para.char_shape_runs, iw, 0, 8); // ExtCtrl wchar_width=8
     relink_ctrl_index(para);
-    para.header.ctrl_mask = 0; // writer가 chars에서 재계산(gso bit11 포함)
+    para.header.ctrl_mask = 0; // The writer recalculates ctrl_mask from chars, including gso bit11.
     para.line_segs.clear();
     true
 }
@@ -565,7 +572,7 @@ fn estimate_anchor_metrics(
     }
 }
 
-/// 본문/표 셀/글상자 문단을 재귀로 훑어 첫 매칭에 도장을 부유 배치한다.
+/// Recursively places a floating seal at the first anchor match in body, cells or text boxes.
 fn insert_seal_rec(
     para: &mut Paragraph,
     char_shapes: &[CharShape],
@@ -593,7 +600,8 @@ fn insert_seal_rec(
                 for l in &mut g.paragraph_lists {
                     for p in &mut l.paragraphs {
                         if insert_seal_rec(p, char_shapes, anchor, seal_w, seal_h, name, measure) {
-                            // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                            // The object's content changed; clear captured XML to prevent stale
+                            // output.
                             g.hwpx_raw_xml = None;
                             return true;
                         }
@@ -606,16 +614,19 @@ fn insert_seal_rec(
     false
 }
 
-/// 앵커 문구가 있는 첫 문단의 그 위치에 도장 이미지를 **부유(글 앞) 배치**로 겹친다.
-/// `insert_image`(앵커 뒤 인라인 삽입)와 달리 앵커 텍스트를 유지하고 그림을 떠 있는
-/// 개체로 만들어 앵커 문구 위에 겹치게 한다("(인)" 위 직인 날인 관례).
+/// Places a seal floating in front of text over the first matching anchor paragraph. Unlike inline
+/// insert_image, retain the anchor text and overlap it with a floating image, following the
+/// official-seal convention over "(인)".
 ///
-/// `size_mm`이 없으면 기본 20mm(도장 관례). 이미지 원본 비율을 유지한다(정사각 폴백).
-/// hwp5 writer가 빈-extras Picture에 floating 공통속성을 합성한다(검증된 경로 재사용).
+/// Absent size_mm defaults to the customary 20mm. Preserve the image aspect ratio, falling back to
+/// square.
+/// The HWP5 writer synthesizes floating common attributes for empty-extras Pictures, reusing the
+/// verified path.
 ///
 /// `measure` is called once with the paragraph that actually receives the seal and the
 /// anchor's WCHAR range `[start, end)` in it; `hwp-cli` answers with shaped metrics (D-06).
 /// `None` falls back to a font-independent width-class estimate (same result on every host).
+/// Refuses before mutation or measurement when insertion would shift opaque range tags.
 pub fn insert_seal(
     doc: &mut Document,
     anchor: &str,
@@ -633,8 +644,9 @@ pub fn insert_seal(
     if !(mm.is_finite() && mm > 0.0) {
         return Err(format!("도장 크기(mm)는 양수여야 합니다: {mm}"));
     }
+    ensure_anchor_shift_allowed(doc, anchor, 8)?;
     let seal_w = ((mm * MM_TO_HWPUNIT).round() as i32).max(1);
-    // 원본 비율 유지(치수를 못 읽으면 정사각).
+    // Preserve the original aspect ratio; use square dimensions when unreadable.
     let seal_h = match image_pixel_size(&data) {
         Some((pw, ph)) if pw > 0 => ((i64::from(seal_w) * i64::from(ph)) / i64::from(pw)) as i32,
         _ => seal_w,
@@ -658,10 +670,10 @@ pub fn insert_seal(
 mod tests {
     use super::*;
 
-    /// image_pixel_size가 최소 PNG/BMP 헤더에서 치수를 읽는다.
+    /// image_pixel_size reads dimensions from minimal PNG/BMP headers.
     #[test]
     fn 픽셀_치수_헤더_파싱() {
-        // PNG: 시그니처(8) + IHDR len(4) + "IHDR"(4) + w(4 BE) + h(4 BE)
+        // PNG: signature(8), IHDR length(4), "IHDR"(4), big-endian width(4), height(4).
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
         png.extend([0, 0, 0, 13]);
         png.extend(b"IHDR");
@@ -669,7 +681,7 @@ mod tests {
         png.extend(100u32.to_be_bytes());
         assert_eq!(image_pixel_size(&png), Some((200, 100)));
 
-        // BMP: "BM" + 16바이트 채운 뒤 폭/높이 at 18/22 (LE)
+        // BMP: "BM", 16 filler bytes, then little-endian width/height at 18..26.
         let mut bmp = b"BM".to_vec();
         bmp.extend([0u8; 16]);
         bmp.extend(50i32.to_le_bytes());
@@ -677,7 +689,7 @@ mod tests {
         assert_eq!(image_pixel_size(&bmp), Some((50, 40)));
     }
 
-    /// insert_image가 Picture+BinStream을 만들고 앵커 링크가 맞는다.
+    /// insert_image creates a Picture and BinStream with a valid anchor link.
     #[test]
     fn 이미지_삽입_구조() {
         let mut doc = crate::from_markdown::from_markdown("사진: 여기");
@@ -689,12 +701,12 @@ mod tests {
         png.extend(b"IHDR");
         png.extend(96u32.to_be_bytes());
         png.extend(96u32.to_be_bytes());
-        png.extend([0u8; 8]); // 나머지(파싱 안 함)
+        png.extend([0u8; 8]); // Remaining bytes are not parsed.
         std::fs::write(&png_path, &png).unwrap();
 
         insert_image(&mut doc, "사진:", &png_path, ImageSize::Natural).unwrap();
 
-        // BinStream 1개 + Picture 1개 + resolve_bin 성공.
+        // One BinStream, one Picture, and successful resolve_bin.
         assert_eq!(doc.bin_streams.len(), 1);
         let para = &doc.sections[0].paragraphs[0];
         let pic = para.controls.iter().find_map(|c| match c {
@@ -704,7 +716,7 @@ mod tests {
         let pic = pic.expect("Picture 존재");
         assert!(pic.extras.is_empty(), "writer가 합성하도록 빈 extras");
         assert!(doc.resolve_bin(&pic.bin_ref).is_some(), "bin_ref 해석");
-        // 앵커 ExtCtrl가 Picture를 가리킨다.
+        // The anchor ExtCtrl points to the Picture.
         let ext = para.chars.iter().find_map(|c| match c {
             HwpChar::ExtCtrl {
                 code, ctrl_index, ..
@@ -718,12 +730,12 @@ mod tests {
         // 96px → 96*7200/96 = 7200 HWPUNIT.
         assert_eq!(pic.width.0, 7200);
 
-        // 없는 앵커는 오류.
+        // A missing anchor is an error.
         assert!(insert_image(&mut doc, "없는앵커", &png_path, ImageSize::Natural).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// insert_seal이 앵커 문단에 **부유** Picture를 만들고 앵커 텍스트를 유지한다.
+    /// insert_seal creates a floating Picture in the anchor paragraph and preserves anchor text.
     #[test]
     fn 도장_부유_삽입_구조() {
         let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
@@ -750,30 +762,31 @@ mod tests {
                 _ => None,
             })
             .expect("Picture 존재");
-        // 부유 배치·writer 합성용 빈 extras·앞 z-order.
-        // hwpx writer(write_picture)는 treat_as_char=false일 때
-        // textWrap=IN_FRONT_OF_TEXT + flowWithText=0 + allowOverlap=1 + PARA 기준으로
-        // 이 오프셋/z-order를 방출하고, hwp5 writer는 attr=0x04aa4310(PARA·글앞·제한해제)로 합성한다.
+        // Floating placement, empty extras for writer synthesis, and front z-order. When
+        // treat_as_char=false, the HWPX writer emits textWrap=IN_FRONT_OF_TEXT, flowWithText=0,
+        // allowOverlap=1, PARA-relative offsets/z-order. The HWP5 writer synthesizes
+        // attr=0x04aa4310 (PARA, in front of text, unrestricted).
         assert!(!pic.treat_as_char, "도장은 부유(글 앞) 배치여야 한다");
         assert!(
             pic.extras.is_empty(),
             "writer가 floating 속성 합성하도록 빈 extras"
         );
         assert_eq!(pic.z_order, SEAL_Z_ORDER, "앞(위) 배치용 z-order 상수");
-        // 도장이 줄 높이보다 크면 세로 오프셋이 음수(위로 올려 줄 중앙 정렬).
+        // A seal taller than its line has a negative vertical offset, moving upward to stay
+        // centered.
         assert!(
             pic.vert_offset < 0,
             "큰 도장은 줄 위로 올려 겹친다(음수 세로 오프셋)"
         );
         assert!(doc.resolve_bin(&pic.bin_ref).is_some(), "bin_ref 해석");
-        // 기본 20mm·정사각(96x96)이므로 너비=높이.
+        // Default 20mm and square 96x96 source: width equals height.
         assert_eq!(pic.width.0, (20.0 * MM_TO_HWPUNIT).round() as i32);
         assert_eq!(pic.height.0, pic.width.0, "원본 비율(정사각) 유지");
-        // 앵커 문구를 지나며 오프셋이 양수(문단 안쪽으로 이동).
+        // The anchor text advances the horizontal offset into the paragraph.
         assert!(pic.horz_offset > 0, "앵커 뒤쪽 가로 오프셋");
-        // 앵커 텍스트는 유지되어야 한다.
+        // Anchor text must remain unchanged.
         assert!(doc.plain_text().contains("(인)"), "앵커 텍스트 유지");
-        // 앵커 ExtCtrl가 Picture를 가리킨다.
+        // The anchor ExtCtrl points to the Picture.
         let ext = para.chars.iter().find_map(|c| match c {
             HwpChar::ExtCtrl {
                 code, ctrl_index, ..
@@ -784,7 +797,7 @@ mod tests {
             matches!(para.controls[ext.unwrap() as usize], Control::Picture(_)),
             "앵커 ExtCtrl가 Picture를 가리켜야 한다"
         );
-        // 없는 앵커·잘못된 크기는 오류.
+        // Missing anchors and invalid sizes are errors.
         assert!(insert_seal(&mut doc, "없음", &png_path, Some(15.0), |_, _| None).is_err());
         assert!(insert_seal(&mut doc, "(인)", &png_path, Some(0.0), |_, _| None).is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -800,8 +813,9 @@ mod tests {
         png
     }
 
-    /// 실측 메트릭이 있으면(D-06) 도장 중심이 상수 근사가 아니라 실측 앵커
-    /// 위치·너비로 결정된다 — 줄보다 작은 도장(세로 오프셋 양수)인 경우.
+    /// With measured metrics (D-06), the seal center follows the measured anchor position/width
+    /// rather than constant estimates; here the seal is shorter than its line and has a positive
+    /// vertical offset.
     #[test]
     fn 도장_실측_메트릭_위치_정확() {
         let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
@@ -847,8 +861,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 실측 메트릭에서 도장이 앵커 줄보다 크면 세로 오프셋이 음수가 되어 위아래
-    /// 줄과 겹친다 — 이는 의도된 동작이며 클램프하지 않는다(D-07).
+    /// When measured metrics put a seal taller than its anchor line, the vertical offset is
+    /// negative and it overlaps adjacent lines. This is intentional and must not be clamped (D-07).
     #[test]
     fn 도장_실측_메트릭_줄보다_크면_세로오프셋_음수() {
         let mut doc = crate::from_markdown::from_markdown("결재란 (인) 끝");
