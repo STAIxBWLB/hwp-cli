@@ -466,7 +466,10 @@ mod tests {
             let digest = if corrupt {
                 "0".repeat(64)
             } else {
-                format!("{:x}", Sha256::digest(BRIDGE_ARCHIVE_BYTES))
+                Sha256::digest(BRIDGE_ARCHIVE_BYTES)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
             };
             std::fs::write(dest, format!("{digest}  owner-authored.tar.gz")).unwrap();
         } else {
