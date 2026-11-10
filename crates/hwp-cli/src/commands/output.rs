@@ -707,6 +707,14 @@ struct StagedOutput {
     preserve_workspace: bool,
 }
 
+/// Fixed helper diagnostics shared by all callers, including binding commands.
+/// Static phase/cause text carries no paths, and call sites discard source error chains.
+fn output_helper_error(phase: &'static str, cause: &'static str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{phase} 단계에서 {cause}. 출력 디렉터리의 권한과 여유 공간을 확인한 뒤 다시 실행하세요."
+    )
+}
+
 impl StagedOutput {
     fn new(destination: &Path, input: Option<&Path>) -> anyhow::Result<Self> {
         let snapshot = inspect_destination(destination)?;
@@ -764,25 +772,24 @@ impl StagedOutput {
     }
 
     fn sync_file(&self) -> anyhow::Result<()> {
-        let metadata = fs::symlink_metadata(&self.staged).with_context(|| {
-            format!(
-                "임시 출력 파일을 확인할 수 없습니다: {}",
-                self.staged.display()
-            )
+        let metadata = fs::symlink_metadata(&self.staged).map_err(|_| {
+            output_helper_error("임시 출력 동기화", "파일 정보를 확인할 수 없습니다")
         })?;
         if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-            anyhow::bail!(
-                "writer가 일반 파일이 아닌 임시 출력을 만들었습니다: {}",
-                self.staged.display()
-            );
+            return Err(output_helper_error(
+                "임시 출력 동기화",
+                "일반 파일이 아닌 임시 출력이 확인됐습니다",
+            ));
         }
         fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&self.staged)
-            .with_context(|| format!("임시 출력 파일을 열 수 없습니다: {}", self.staged.display()))?
+            .map_err(|_| output_helper_error("임시 출력 동기화", "파일을 열 수 없습니다"))?
             .sync_all()
-            .with_context(|| format!("임시 출력 동기화 실패: {}", self.staged.display()))
+            .map_err(|_| {
+                output_helper_error("임시 출력 동기화", "파일 내용을 동기화할 수 없습니다")
+            })
     }
 
     // On Windows, the cfg(windows) block below is last, so an early return appears as a tail return.
@@ -1963,27 +1970,22 @@ impl FileIdentity {
             )
         };
         if handle == INVALID_HANDLE_VALUE {
-            return Err(std::io::Error::last_os_error()).with_context(|| {
-                format!(
-                    "Windows 파일 식별자용 핸들을 열 수 없습니다: {}",
-                    path.display()
-                )
-            });
+            return Err(output_helper_error(
+                "파일 식별자 확인",
+                "Windows 파일 식별자용 핸들을 열 수 없습니다",
+            ));
         }
 
         let mut information = BY_HANDLE_FILE_INFORMATION::default();
         let loaded = unsafe { GetFileInformationByHandle(handle, &mut information) };
-        let error = (loaded == 0).then(std::io::Error::last_os_error);
         unsafe {
             CloseHandle(handle);
         }
-        if let Some(error) = error {
-            return Err(error).with_context(|| {
-                format!(
-                    "Windows 파일 식별자를 확인할 수 없습니다: {}",
-                    path.display()
-                )
-            });
+        if loaded == 0 {
+            return Err(output_helper_error(
+                "파일 식별자 확인",
+                "Windows 파일 식별자를 확인할 수 없습니다",
+            ));
         }
         Ok(Self {
             volume: information.dwVolumeSerialNumber,
@@ -2013,7 +2015,9 @@ struct FileIdentity {
 impl FileIdentity {
     fn from_metadata(_metadata: &fs::Metadata, path: &Path) -> anyhow::Result<Self> {
         Ok(Self {
-            canonical_path: path.canonicalize()?,
+            canonical_path: path.canonicalize().map_err(|_| {
+                output_helper_error("파일 식별자 확인", "정규 파일 경로를 확인할 수 없습니다")
+            })?,
         })
     }
 
