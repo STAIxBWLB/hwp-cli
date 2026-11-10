@@ -315,7 +315,7 @@ fn ordinary_convert_edit_and_identity_keep_history() {
             .arg("-o")
             .arg(&output);
         if command == "edit" {
-            process.args(["--replace", "Selected body=Edited body"]);
+            process.args(["--replace", "Selected body=>Edited body"]);
         }
         let result = process.output().unwrap();
         assert!(
