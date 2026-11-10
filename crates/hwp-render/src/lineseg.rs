@@ -51,17 +51,6 @@ pub(crate) fn body_box(page: &hwp_model::PageDef, paper_height_hu: i32) -> BodyB
     }
 }
 
-/// The vertical block a line reserves when paginating: the baseline offset the fallback planner
-/// places a line at (1.2 x size) plus the descent it tests against the body bottom (0.4 x size),
-/// both fixed in `layout.rs`. Reserving the glyph height alone let a synthesized line start
-/// where the planner breaks the page, so a multiline paragraph paginated differently in each
-/// path (#423).
-pub(crate) fn line_fit_block(base: i32) -> i32 {
-    let ascent = base.saturating_mul(12) / 10;
-    let descent = base.saturating_mul(4) / 10;
-    ascent.saturating_add(descent)
-}
-
 /// Synthesize line layout for the whole authored document, including body and table-cell paragraphs.
 /// Native HWP5 sources keep the base cursor path, so native edits do not mix
 /// cacheless fragment anchors/page-start flags with restored genuine caches. The base path
@@ -575,13 +564,15 @@ pub(crate) fn compute_linesegs(
     };
 
     // Place one line and advance the vertical cursor. Body flow restarts at the
-    // next page when the line's whole block (its baseline offset plus its descent,
-    // `line_fit_block`) no longer fits the body height, which is the same test the
-    // fallback planner applies; cell-local layout passes an unbounded height and
-    // therefore never resets here.
-    let line_block = line_fit_block(base);
+    // next page when the line's own block (`line_height`, as in genuine saved
+    // caches) no longer fits the body height; cell-local layout passes an
+    // unbounded height and therefore never resets here. `layout`'s fallback
+    // planner still reserves a 1.2 + 0.4 x size block in its own pass, so the two
+    // can break the last line of a page differently. No local genuine sample
+    // breaks a paragraph at the body bottom, so neither rule is established:
+    // the cache keeps the block its own saved fields define (#423).
     let place = |segs: &mut Vec<LineSeg>, v_pos: &mut i32, start: u32| {
-        if *v_pos > 0 && (*v_pos).saturating_add(line_block) > content_h {
+        if *v_pos > 0 && (*v_pos).saturating_add(base) > content_h {
             *v_pos = 0;
         }
         segs.push(make(start, *v_pos));

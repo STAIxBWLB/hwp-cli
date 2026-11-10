@@ -1,7 +1,6 @@
-//! The synthesized line cache and the renderer must agree on the body box and on the per-line
-//! fit block (#423). Every number here is page geometry or the paragraph shape's own line
-//! metrics, so no assertion depends on a host font, on shaped glyph widths, or on a page count
-//! taken from a drawing pass.
+//! The synthesized line cache and the renderer must agree on the body box (#423). Every number
+//! here is page geometry or the paragraph shape's own line metrics, so no assertion depends on a
+//! host font, on shaped glyph widths, or on a page count taken from a drawing pass.
 
 use hwp_model::{
     BorderFillId, Cell, Control, Document, GsoPlacement, HwpChar, HwpUnit, PageDef, Paragraph,
@@ -121,13 +120,6 @@ fn body_height(doc: &Document, section: usize) -> i32 {
         - page.margin_footer.0
 }
 
-/// The block the fallback planner reserves for one line: a baseline 1.2 x size below the line top
-/// plus a 0.4 x size descent, both fixed in `layout.rs` and mirrored for the cache by
-/// `lineseg::line_fit_block`.
-fn line_block(line_height: i32) -> i32 {
-    line_height * 12 / 10 + line_height * 4 / 10
-}
-
 fn synthesize(doc: &mut Document) {
     let mut store = FontStore::new_isolated();
     let mut issues = RenderIssueAccumulator::new();
@@ -148,8 +140,8 @@ fn pages_in(segs: &[hwp_model::LineSeg]) -> usize {
 }
 
 /// A synthesized line may never sit below the drawn body box. With header and/or footer bands
-/// the cache has to reset at the same bottom the renderer uses, not at the paper height (#423
-/// part 1): the bands are not text space.
+/// the cache has to reset at the same bottom the renderer uses, not at the paper height (#423):
+/// the bands are not text space.
 #[test]
 fn synthesized_lines_stay_inside_the_body_box_with_header_and_footer_bands() {
     for (label, header, footer) in [
@@ -213,62 +205,6 @@ fn zero_band_control_keeps_the_margin_only_body_box() {
     );
 }
 
-/// The cache reserves the same per-line block the fallback planner does (#423 part 2). A line
-/// whose glyph height fits but whose baseline-plus-descent does not is one the planner moves to
-/// the next page, so the cache has to move it too; the guard below proves a height-only rule
-/// would have kept it.
-#[test]
-fn synthesized_lines_reserve_the_planners_line_block() {
-    let mut doc = hwp_convert::from_markdown("Anchor\n");
-    // Body 18900 HWPUNIT sits between the two candidates for the line at 17600: its glyphs end
-    // at 18600 (inside the body) while its block ends at 19200 (outside), which is the window
-    // where the two rules disagree.
-    set_page(&mut doc, 0, 18900, 0, 0);
-    let chars = breaks(24);
-    set_text(&mut doc.sections[0].paragraphs[0], chars);
-    let body = body_height(&doc, 0);
-    synthesize(&mut doc);
-    let segs = doc.sections[0].paragraphs[0].line_segs.clone();
-    assert_eq!(segs.len(), 24, "one line per hard break");
-
-    for (index, seg) in segs.iter().enumerate() {
-        if seg.v_pos == 0 {
-            continue;
-        }
-        assert!(
-            seg.v_pos + line_block(seg.line_height) <= body,
-            "line {index} reserves {} at v_pos {} and ends at {} beyond the body box {body}: the \
-             fallback planner breaks the page before this line",
-            line_block(seg.line_height),
-            seg.v_pos,
-            seg.v_pos + line_block(seg.line_height)
-        );
-    }
-
-    // Non-vacuity: some page must end on a line a height-only rule would have kept, so the
-    // assertion above is exercising the difference and not a paragraph that never reaches the
-    // bottom of the body.
-    let mut guarded = 0;
-    for pair in segs.windows(2) {
-        let (last, next) = (&pair[0], &pair[1]);
-        if next.v_pos < last.v_pos && last.v_pos > 0 {
-            assert_eq!(next.v_pos, 0, "a new page starts at the body top");
-            let advance = last.line_spacing + last.line_height;
-            assert!(
-                last.v_pos + advance + last.line_height <= body,
-                "page break after v_pos {} does not demonstrate the block rule: the next line's \
-                 glyphs would already have crossed the body box {body}",
-                last.v_pos
-            );
-            guarded += 1;
-        }
-    }
-    assert!(
-        guarded > 0,
-        "the paragraph must break a page at a line the glyph-height rule would have kept"
-    );
-}
-
 /// A body whose second paragraph is 24 hard-broken lines after a floating table. The table makes
 /// the section read prepass anchors, so that paragraph's cache starts where the planner measured
 /// its first line rather than at the bare cursor. `table_rows` rows taller than the body box make
@@ -293,14 +229,8 @@ fn floating_table_then_multiline(
 
 /// Every segment of the multiline paragraph after a floating table must carry the next slice of
 /// the paragraph's text, and every page boundary must be a reset the body box justifies.
-/// Checking the paragraph's first anchor alone cannot see this (#423). `block_guard` also demands
-/// proof that some break happens at a line a glyph-height-only rule would have kept, which only a
-/// run whose two body boxes agree can state.
-fn assert_multiline_segments_after_floating_table(
-    label: &str,
-    mut doc: Document,
-    block_guard: bool,
-) {
+/// Checking the paragraph's first anchor alone cannot see this (#423).
+fn assert_multiline_segments_after_floating_table(label: &str, mut doc: Document) {
     let body = body_height(&doc, 0);
     let total = doc.sections[0].paragraphs[1].wchar_len();
 
@@ -335,7 +265,6 @@ fn assert_multiline_segments_after_floating_table(
     // Page boundaries: a restart is a reset to the body top, and every line stays inside the body
     // box the planner drew the anchors in.
     let mut boundaries = 0;
-    let mut guarded = 0;
     let mut previous = 0;
     for (index, seg) in segs.iter().enumerate() {
         if seg.v_pos < previous {
@@ -344,61 +273,37 @@ fn assert_multiline_segments_after_floating_table(
                 seg.v_pos, 0,
                 "{label}: segment {index} opens a page but does not start at the body top"
             );
-            let last = &segs[index - 1];
-            let advance = last.line_spacing + last.line_height;
-            if last.v_pos + advance + last.line_height <= body {
-                guarded += 1;
-            }
         }
         assert!(
             seg.v_pos + seg.line_height <= body,
             "{label}: segment {index} ends at {} beyond the body box {body}",
             seg.v_pos + seg.line_height
         );
-        if seg.v_pos > 0 {
-            assert!(
-                seg.v_pos + line_block(seg.line_height) <= body,
-                "{label}: segment {index} reserves a block ending at {} beyond the body box {body}",
-                seg.v_pos + line_block(seg.line_height)
-            );
-        }
         previous = seg.v_pos;
     }
     assert!(
         boundaries > 0,
         "{label}: the paragraph after the floating table must paginate"
     );
-    if block_guard {
-        assert!(
-            guarded > 0,
-            "{label}: no page breaks at a line a glyph-height-only rule would have kept, so the \
-             block assertion above is vacuous"
-        );
-    }
 }
 
 /// The anchored multiline paragraph with header and footer bands: no segment may reach into the
-/// bands, so the cache paginates it inside the drawn body box (#423 part 1 in the anchored path).
+/// bands, so the cache paginates it inside the drawn body box (#423 in the anchored path).
 #[test]
 fn paginated_multiline_segments_after_a_floating_table_stay_inside_the_body_box() {
     assert_multiline_segments_after_floating_table(
         "bands",
         floating_table_then_multiline(PAPER_H, BAND, BAND, 1),
-        false,
     );
 }
 
-/// The same paragraph without bands, on a page whose body ends inside the window where the two fit
-/// rules disagree: with the two body boxes agreeing, this run isolates the per-line block, so a
-/// segment may not start where the planner would have broken the page (#423 part 2 in the anchored
-/// path). The 19200 body ends between the anchored line at 17900 (glyphs end at 18900, inside) and
-/// its block (19500, outside).
+/// The same paragraph on a page with no bands and no margins, so the body box is the whole paper:
+/// the zero-band control for the anchored path, which the shared body box leaves unchanged.
 #[test]
-fn paginated_multiline_segments_after_a_floating_table_reserve_the_planners_line_block() {
+fn paginated_multiline_segments_after_a_floating_table_zero_band_control() {
     assert_multiline_segments_after_floating_table(
         "zero bands",
-        floating_table_then_multiline(19200, 0, 0, 1),
-        true,
+        floating_table_then_multiline(PAPER_H, 0, 0, 1),
     );
 }
 
@@ -415,7 +320,7 @@ fn paginated_multiline_segments_after_a_table_continuation_stay_inside_the_body_
         15 * 1000 + 566 > body,
         "fixture: the table is taller than the body box {body}, so it must continue"
     );
-    assert_multiline_segments_after_floating_table("continuation", doc, false);
+    assert_multiline_segments_after_floating_table("continuation", doc);
 }
 
 /// Every section paginates in its own body box: a band-free section followed by a banded one must

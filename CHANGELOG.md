@@ -118,13 +118,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Synthesized body line layout now paginates in the body box the renderer draws: the cache
   subtracts the header and footer bands as well as the top and bottom margins, from the same
   `lineseg::body_box` sums `layout_document_pages` uses, so a synthesized line can no longer start
-  inside a band (with both bands zero the body box is unchanged). A line also reserves the whole
-  block the fallback planner reserves (its 1.2 x size baseline offset plus a 0.4 x size descent)
-  instead of its glyph height alone, so the lines after a floating-table anchor break on the page
-  that anchor's own layout pass measured; where the glyph-height test used to keep a line the
-  planner moved, the cache now breaks the page earlier. No native geometry value is introduced and
-  no Hancom behavior is claimed
-  ([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+  inside a band (with both bands zero the body box is unchanged). PAGE_DEF (record `0x49`) carries
+  `margin_header` and `margin_footer` beside the top and bottom margins
+  (한글문서파일형식 5.0 §4.3.10.1.1), and every local genuine document agrees: 16 files, 16
+  sections, all with nonzero bands and 956 body line segments, none reaching below the banded box.
+  A page reset still reserves the line's own block (`line_height`, the block a genuine saved cache
+  records for it); the fallback planner's 1.2 + 0.4 x size block remains a known gap, because no
+  local genuine sample breaks a paragraph at the body bottom, so neither block is established from
+  bytes and no rule was changed to match either one. No native geometry value is introduced and no
+  Hancom behavior is claimed ([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
 
 ## [1.5.0]
 

@@ -1383,9 +1383,6 @@ fn layout_document_pages(
                         (max_size * 100.0).round() as i32,
                     ) as f32
                         / 100.0;
-                    // This line block - the 1.2 x size baseline offset below plus this descent -
-                    // is what the line cache reserves at `lineseg::line_fit_block`, so a cache
-                    // page break lands where this planner breaks (#423).
                     let descent = max_size * 0.4;
                     let mut lines: Vec<(usize, f32)> = Vec::new();
                     let last_y = place_wrapped(

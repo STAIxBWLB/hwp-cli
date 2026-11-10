@@ -340,8 +340,7 @@ top (`BodyAnchor::v_pos`) and whether that first line opened a page (`starts_pag
 `LineSeg.flags` bit 0 where the anchor opened a page (HWP 5.0 §4.3.4). Native HWP5 sources keep the
 base cursor, so genuine caches and HWP5 identity are untouched. The anchor carries only the
 paragraph's *first* line, so a multiline paragraph's later lines paginate by `compute_linesegs`
-alone; that fit rule therefore has to reserve the block the planner reserved (§2.3), or the lines
-after the anchor land on a different page than the pass that produced it
+alone and its own fit rule decides them (§2.3), independently of the pass that produced the anchor
 ([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
 
 The prepass returns a `BodyAnchors`: one `Option<BodyAnchor>` slot per paragraph plus a `completed`
@@ -378,18 +377,15 @@ baseline_gap  = base * 85 / 100
 seg_width     = max(body_width, 1)
 ```
 
-Base metrics are listed in the previous block; a line also reserves its whole block for the page
-reset:
-
-```
-line_fit_block = base*12/10 + base*4/10    // baseline offset 1.2 x size + descent 0.4 x size
-```
-
-Those two ratios are `layout.rs`'s fallback planning constants (`1.2 x size` above the content
-cursor, `0.4 x size` tested against `body_bottom`), so a cache page break lands on the line the
-renderer would break at ([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)). Reserving the
-glyph height alone (`v_pos + base`) kept a line the planner moves, which made a multiline paragraph
-paginate differently in each path.
+The page reset reserves the line's own block, `line_height`: a genuine saved cache places the
+baseline at `baseline_gap` and the descent ends at `line_height`, so that is the block Hangul itself
+recorded for the line. The fallback planner in `layout.rs` reserves a different block - it places a
+baseline `1.2 x size` below the line top and tests a `0.4 x size` descent against `body_bottom` - so
+the two passes can move the last line of a page differently. No local genuine sample breaks a
+paragraph at the body bottom (every mid-paragraph page reset in the local corpus happens well above
+it), so neither ratio is established from saved bytes; the cache therefore keeps the rule its own
+saved fields state and the remaining disagreement stays a known gap, not a Hancom claim
+([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
 
 Shaping (`shape_range`) measures glyph x_advance in pt and breaks lines greedily against
 `seg_width/100` less the indent the renderer will apply inside the line box
@@ -402,7 +398,7 @@ UTF-16 length of each shaping-cluster source, rather than the glyph index, so su
 ligatures and combining text retain correct WCHAR offsets. Each line is emitted by `place`:
 
 ```
-if v_pos>0 && v_pos + line_fit_block > content_h { v_pos = 0 }   // page reset (cells use content_h=MAX so it never fires)
+if v_pos>0 && v_pos + base > content_h { v_pos = 0 }   // page reset (cells use content_h=MAX so it never fires)
 segs.push(LineSeg{ text_start, v_pos, line_height:base, text_height:base,
                    baseline_gap, line_spacing, col_start:0, seg_width, flags:0x0006_0000 })
 v_pos += line_advance
