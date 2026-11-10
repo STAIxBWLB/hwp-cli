@@ -14,7 +14,7 @@ on:
     # Exact version verification is the verify-version job's job.
     tags: ["v*.*.*"]
 
-# Tag releases run one at a time, so two update-formula runs cannot race on Formula/hwp.rb.
+# Tag releases run one at a time, so two update-formula runs cannot race on Formula/ahwp.rb.
 # GitHub keeps one pending run per group: a third tag pushed while one run is running and
 # another is pending replaces the pending one; that cancelled tag is recovered by re-running
 # its workflow (create-release is rerun-safe).
@@ -200,7 +200,9 @@ jobs:
               --notes-file /tmp/release-notes.md --verify-tag --draft
           fi
 
-  # Build platform `hwp` binaries -> upload archives (tar.gz/zip) + sha256 to the release.
+  # Build platform `ahwp` binaries -> upload archives (tar.gz/zip) + sha256 to the release.
+  # The asset name carries the command name (#510): `ahwp-<tag>-<target>`, with the legacy
+  # `hwp-<tag>-<target>` names republished from the same bytes by `alias-assets` below.
   upload-assets:
     needs: create-release
     timeout-minutes: 30
@@ -245,7 +247,10 @@ jobs:
         run: pip3 install --break-system-packages cargo-zigbuild==0.23.4 ziglang==0.16.0
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: hwp
+          # The binary is `ahwp` since #510's T1; `alias-assets` adds the `hwp`
+          # compatibility name to each archive afterwards, and the action packs what this
+          # name builds. A tag whose tree still names the binary `hwp` fails here.
+          bin: ahwp
           target: ${{ matrix.target }}
           # Empty for the native targets — the action then picks its own default.
           build-tool: ${{ matrix.build-tool }}
@@ -254,16 +259,108 @@ jobs:
           archive: $bin-$tag-$target
           # The binary carries third-party code under its own notice (NOTICE: kordoc, MIT),
           # so the licenses travel with it. Next to the binary at the archive root, where
-          # install.sh, `hwp update` and the Homebrew formula only pick up `hwp`.
+          # install.sh, `ahwp update` and the Homebrew formula only pick up the executable.
           include: LICENSE-MIT,LICENSE-APACHE,NOTICE
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # #510's rename bridge: every archive also carries the legacy `hwp` command name, and through
+  # 1.x the same bytes are published under the legacy `hwp-<tag>-<target>` asset name so an
+  # already-installed 1.5 `hwp update` (which fetches that name) keeps upgrading.
+  #
+  # Why here instead of per-OS in upload-assets: the alias has to be inside the archive for
+  # install.sh, the formula and `update` to see one layout, and upload-rust-binary-action packs
+  # only what `bin:` built. Repacking once on one runner keeps that logic in one place instead of
+  # a tar/zip branch in five matrix legs.
+  #
+  # The alias is a hard link on the Unix targets (one binary, two names) and a copy in the
+  # Windows zip, where a link has no meaning. 2.0.0 drops both the alias and the legacy asset
+  # name (issue #510, Phase 4); the major guard below is what retires them.
+  alias-assets:
+    needs: upload-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Add the hwp name and republish the legacy asset names
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tag="$GITHUB_REF_NAME"
+          major="${tag#v}"
+          major="${major%%.*}"
+          work="$(pwd)/assets"
+          mkdir -p "$work"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$work" \
+            --pattern "ahwp-$tag-*.tar.gz" --pattern "ahwp-$tag-*.zip"
+          cd "$work"
+
+          # Both names in one archive, asserted from the archive itself rather than trusted.
+          repack_tar() {
+            local archive="$1" dir
+            dir="repack-${archive%.tar.gz}"
+            mkdir -p "$dir"
+            tar -xzf "$archive" -C "$dir"
+            [ -f "$dir/ahwp" ] || { echo "::error::$archive carries no ahwp"; return 1; }
+            ln "$dir/ahwp" "$dir/hwp"
+            mapfile -t entries < <(ls -A "$dir")
+            tar -czf "$archive" -C "$dir" "${entries[@]}"
+            # grep reads all of its input (`>/dev/null`, not -q): under pipefail an early
+            # exit turns a match into a SIGPIPE failure (#368).
+            tar -tzf "$archive" | grep -x 'ahwp' >/dev/null
+            tar -tzf "$archive" | grep -x 'hwp' >/dev/null
+          }
+
+          repack_zip() {
+            local archive="$1" dir absolute
+            dir="repack-${archive%.zip}"
+            absolute="$(pwd)/$archive"
+            mkdir -p "$dir"
+            unzip -q "$archive" -d "$dir"
+            [ -f "$dir/ahwp.exe" ] || { echo "::error::$archive carries no ahwp.exe"; return 1; }
+            cp -p "$dir/ahwp.exe" "$dir/hwp.exe"
+            (cd "$dir" && zip -qr "$absolute" -- *)
+            unzip -l "$archive" | grep 'ahwp\.exe' >/dev/null
+            unzip -l "$archive" | grep 'hwp\.exe' >/dev/null
+          }
+
+          archives=(ahwp-"$tag"-*.tar.gz ahwp-"$tag"-*.zip)
+          [ "${#archives[@]}" -gt 0 ] || { echo "::error::no ahwp archive was published for $tag"; exit 1; }
+          for archive in "${archives[@]}"; do
+            case "$archive" in
+            *.tar.gz) repack_tar "$archive" ;;
+            *.zip) repack_zip "$archive" ;;
+            esac
+            sha256sum "$archive" >"$archive.sha256"
+            if [ "$major" = "1" ]; then
+              legacy="${archive/ahwp-/hwp-}"
+              cp "$archive" "$legacy"
+              cmp "$archive" "$legacy"
+              sha256sum "$legacy" >"$legacy.sha256"
+            else
+              echo "$archive: major $major, no legacy hwp- asset (#510 Phase 4)"
+            fi
+          done
+
+          # --clobber replaces the archives upload-assets just published with the repacked
+          # bytes, so a release never carries an archive without the compatibility name.
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
+            ahwp-"$tag"-*.tar.gz ahwp-"$tag"-*.tar.gz.sha256 \
+            ahwp-"$tag"-*.zip ahwp-"$tag"-*.zip.sha256 \
+            hwp-"$tag"-*.tar.gz hwp-"$tag"-*.tar.gz.sha256 \
+            hwp-"$tag"-*.zip hwp-"$tag"-*.zip.sha256
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | sort
+
   # claude.ai skill bundle: SKILL.md + bootstrap.sh + the Linux x86_64 binary in one zip.
   # Why the binary ships instead of a download script: the claude.ai sandbox network is
   # restricted to registries, so the binary cannot be fetched at runtime (bundling beats downloading).
+  # The zip keeps its `hwp-skill` name and the skill keeps the name `hwp` (#510 leaves both
+  # alone), but the binary it carries is `bin/ahwp`, which is what the skill's bootstrap and
+  # templates call.
   skill-bundle:
-    needs: upload-assets
+    needs: alias-assets
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -274,26 +371,27 @@ jobs:
         run: |
           set -euo pipefail
           work=$(mktemp -d)
-          # The Linux archive just published by upload-assets (naming: $bin-$tag-$target.tar.gz).
+          # The Linux archive just published (naming: $bin-$tag-$target.tar.gz), after
+          # alias-assets repacked it.
           gh release download "$GITHUB_REF_NAME" \
-            --pattern "hwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" \
+            --pattern "ahwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" \
             --dir "$work" --clobber
-          tar -xzf "$work/hwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" -C "$work"
+          tar -xzf "$work/ahwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" -C "$work"
           # The asset is already extracted here, so the serverless-compatibility gate is
           # free: it must run, and its glibc floor must stay at the cross-build baseline
           # (a native build would silently raise it back to the runner's glibc).
-          "$work/hwp" --version
-          floor=$(strings -a "$work/hwp" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          "$work/ahwp" --version
+          floor=$(strings -a "$work/ahwp" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
           echo "glibc floor: $floor"
           [ "$floor" = "GLIBC_2.17" ] || { echo "::error::glibc floor regressed ($floor) — the Linux asset no longer runs on Vercel/Lambda"; exit 1; }
           bundle="$work/bundle"
           mkdir -p "$bundle/bin"
           cp skills/hwp/SKILL.md "$bundle/SKILL.md"
           cp skills/hwp/claude-web/bootstrap.sh "$bundle/bootstrap.sh"
-          cp "$work/hwp" "$bundle/bin/hwp"
+          cp "$work/ahwp" "$bundle/bin/ahwp"
           cp LICENSE-MIT LICENSE-APACHE NOTICE "$bundle/"
-          chmod +x "$bundle/bin/hwp" "$bundle/bootstrap.sh"
-          (cd "$bundle" && zip -r "$work/hwp-skill-claude-web.zip" SKILL.md bootstrap.sh bin/hwp LICENSE-MIT LICENSE-APACHE NOTICE)
+          chmod +x "$bundle/bin/ahwp" "$bundle/bootstrap.sh"
+          (cd "$bundle" && zip -r "$work/hwp-skill-claude-web.zip" SKILL.md bootstrap.sh bin/ahwp LICENSE-MIT LICENSE-APACHE NOTICE)
           (cd "$work" && sha256sum hwp-skill-claude-web.zip > hwp-skill-claude-web.zip.sha256)
           gh release upload "$GITHUB_REF_NAME" \
             "$work/hwp-skill-claude-web.zip" \
@@ -370,14 +468,14 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           branch="brew/formula-v$ver"
           scripts/update_formula.sh "$ver"
-          if git diff --quiet Formula/hwp.rb; then
+          if git diff --quiet Formula/ahwp.rb; then
             echo "no formula change — skipping PR"
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add Formula/hwp.rb
+          git add Formula/ahwp.rb
           git commit -m "chore(brew): formula v$ver"
           # Give --force-with-lease its reference point on reruns: a fresh checkout only
           # fetches main, so an existing remote branch would be rejected as "stale info".
@@ -405,7 +503,7 @@ jobs:
       # The step above used to end on a warning and exit 0 whether or not the formula actually
       # moved, so a release could finish green with `brew install hwp` still serving the previous
       # version and nothing failing. This repository IS the tap, so what Homebrew serves is
-      # Formula/hwp.rb on main - read it back and require it to name the released version.
+      # Formula/ahwp.rb on main - read it back and require it to name the released version.
       # Auto-merge is asynchronous (it lands once the PR's checks settle), hence the wait rather
       # than a single read.
       - name: The tap serves the released version
@@ -415,17 +513,17 @@ jobs:
           set -euo pipefail
           ver="${GITHUB_REF_NAME#v}"
           for attempt in $(seq 1 30); do
-            served="$(gh api "repos/$GITHUB_REPOSITORY/contents/Formula/hwp.rb?ref=main" \
+            served="$(gh api "repos/$GITHUB_REPOSITORY/contents/Formula/ahwp.rb?ref=main" \
               --jq '.content' | base64 -d \
               | sed -n 's/^[[:space:]]*version "\([^"]*\)".*/\1/p' | head -1)"
             if [ "$served" = "$ver" ]; then
-              echo "Formula/hwp.rb on main serves $served (attempt $attempt)"
+              echo "Formula/ahwp.rb on main serves $served (attempt $attempt)"
               exit 0
             fi
             echo "attempt $attempt: main still serves '${served:-<unreadable>}', want '$ver'"
             sleep 10
           done
           echo "::error::the tap still serves '${served:-<unreadable>}' after the release of v$ver."
-          echo "::error::brew install/upgrade hwp would hand users the previous version."
+          echo "::error::brew install/upgrade ahwp would hand users the previous version."
           echo "::error::merge the formula PR: https://github.com/$GITHUB_REPOSITORY/pulls"
           exit 1

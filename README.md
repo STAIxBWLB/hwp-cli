@@ -142,7 +142,8 @@ brew install ahwp
 ahwp --version
 ```
 
-Upgrade with `brew update && brew upgrade ahwp`. Supported platforms are macOS (Apple Silicon and
+Upgrade with `brew update && brew upgrade ahwp`; an install made under the old `hwp` formula name
+migrates through `formula_renames.json`. Supported platforms are macOS (Apple Silicon and
 Intel) and Linux x86_64.
 
 ### Pre-built binaries

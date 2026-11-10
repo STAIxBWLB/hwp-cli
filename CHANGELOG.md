@@ -23,6 +23,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   environment variables and schema contracts remain unchanged
   ([#510](https://github.com/STAIxBWLB/hwp-cli/issues/510)).
 
+- Release archives publish the `ahwp-<tag>-<target>` name and, while the tag stays in 1.x, the
+  legacy `hwp-<tag>-<target>` name for the same bytes, so an installed 1.5 `hwp update` and
+  `scripts/install.sh` keep resolving an asset. Every archive also carries the `hwp` (`hwp.exe`)
+  compatibility name beside `ahwp` (`ahwp.exe`), and the Homebrew formula moves to
+  `Formula/ahwp.rb` with `formula_renames.json` mapping `hwp` to `ahwp`, so
+  `brew update && brew upgrade` replaces an installed `hwp` in place. The formula keeps the legacy
+  asset URLs until 2.0.0 retires the legacy names, and the release-readiness archive/font gate now
+  asserts the renamed binary, both asset names and the in-archive compatibility name
+  ([#510](https://github.com/STAIxBWLB/hwp-cli/issues/510)).
+
 **Fixed**
 
 - Section, saved-page and typed-range splits exclude the source's whole HWP5 `/DocHistory`
