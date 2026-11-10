@@ -217,9 +217,9 @@ fn zero_band_control_keeps_the_margin_only_body_box() {
 #[test]
 fn synthesized_lines_reserve_the_planners_line_block() {
     let mut doc = hwp_convert::from_markdown("Anchor\n");
-    // Body 18900 HWPUNIT: a line at 17600 fits by its glyph height (bottom 18600) but its block
-    // ends at 19200, past the body - 1300 below a whole line advance, which is where the two
-    // rules disagree.
+    // Body 18900 HWPUNIT sits between the two candidates for the line at 17600: its glyphs end
+    // at 18600 (inside the body) while its block ends at 19200 (outside), which is the window
+    // where the two rules disagree.
     set_page(&mut doc, 18900, 0, 0);
     let chars = breaks(24);
     set_text(&mut doc.sections[0].paragraphs[0], chars);
@@ -379,11 +379,11 @@ fn paginated_multiline_segments_after_a_floating_table_stay_inside_the_body_box(
     );
 }
 
-/// The same paragraph without bands, on a page whose body ends just above a line block: with the
-/// two body boxes agreeing, this run isolates the per-line block, so a segment may not start
-/// where the planner would have broken the page (#423 part 2 in the anchored path). 19200 is 1300
-/// past the anchored last line at 17900, the window where a glyph-height rule keeps a line the
-/// block rule moves.
+/// The same paragraph without bands, on a page whose body ends inside the window where the two fit
+/// rules disagree: with the two body boxes agreeing, this run isolates the per-line block, so a
+/// segment may not start where the planner would have broken the page (#423 part 2 in the anchored
+/// path). The 19200 body ends between the anchored line at 17900 (glyphs end at 18900, inside) and
+/// its block (19500, outside).
 #[test]
 fn paginated_multiline_segments_after_a_floating_table_reserve_the_planners_line_block() {
     assert_multiline_segments_after_floating_table(
