@@ -114,8 +114,14 @@ fi
 [ "$want" = "$got" ] || die "체크섬 불일치 (기대 $want / 실제 $got). 설치를 중단했습니다. 릴리스 자산과 네트워크 상태를 확인한 뒤 다시 실행하세요"
 
 tar -xf "$tmp/$asset" -C "$tmp" || die "압축 해제 실패. 릴리스 아카이브를 확인한 뒤 다시 실행하세요"
-[ -f "$tmp/$payload" ] && [ ! -L "$tmp/$payload" ] \
-  || die "아카이브에 $payload 일반 실행 파일이 없습니다. 올바른 릴리스 자산을 확인한 뒤 다시 실행하세요"
+# A bridge archive has the canonical payload even when its download name is legacy.
+if [ -f "$tmp/$BIN" ] && [ ! -L "$tmp/$BIN" ]; then
+  payload="$BIN"
+elif [ -f "$tmp/$COMPAT_BIN" ] && [ ! -L "$tmp/$COMPAT_BIN" ]; then
+  payload="$COMPAT_BIN"
+else
+  die "아카이브에 $payload 일반 실행 파일이 없습니다. 올바른 릴리스 자산을 확인한 뒤 다시 실행하세요"
+fi
 
 mkdir -p "$DIR" || die "설치 디렉터리를 만들지 못했습니다: $DIR. 디렉터리 권한과 여유 공간을 확인한 뒤 다시 실행하세요"
 primary_tmp="$(mktemp "$DIR/.$BIN.install.XXXXXX")" \
