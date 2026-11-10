@@ -437,8 +437,106 @@ fn merge_control_node(
         (Control::Table(original), Control::Table(edited)) => {
             merge_table_control(source, emitted, original, edited)
         }
+        (Control::Picture(original), Control::Picture(edited)) => {
+            merge_picture_control(source, emitted, original, edited)
+        }
         _ => emitted.clone(),
     }
+}
+
+/// Reuses an immutable source caption header when its modeled fields are unchanged.
+/// Unknown listflag bits and tail bytes are copied without assigning them new IR semantics.
+/// A paragraph-count change updates only the already-known leading INT32, as tables do.
+fn merge_picture_control(
+    source: &RecordNode,
+    emitted: &RecordNode,
+    original: &Picture,
+    edited: &Picture,
+) -> RecordNode {
+    let (Some(original_caption), Some(edited_caption)) = (&original.caption, &edited.caption)
+    else {
+        return emitted.clone();
+    };
+    if original_caption.side != edited_caption.side
+        || original_caption.direction != edited_caption.direction
+        || original_caption.gap != edited_caption.gap
+        || original_caption.width != edited_caption.width
+        || original_caption.last_width != edited_caption.last_width
+    {
+        return emitted.clone();
+    }
+    let Some((source_header, source_paragraphs)) =
+        picture_caption_records(source, original_caption.paragraphs.len())
+    else {
+        return emitted.clone();
+    };
+    let Some((emitted_header, emitted_paragraphs)) =
+        picture_caption_records(emitted, edited_caption.paragraphs.len())
+    else {
+        return emitted.clone();
+    };
+    let matches = match_paragraphs(&original_caption.paragraphs, &edited_caption.paragraphs);
+    let paragraphs = edited_caption
+        .paragraphs
+        .iter()
+        .enumerate()
+        .map(|(index, paragraph)| {
+            let emitted_node = &emitted.children[emitted_paragraphs.start + index];
+            match matches[index] {
+                Some(original_index) => merge_paragraph_node(
+                    &source.children[source_paragraphs.start + original_index],
+                    emitted_node,
+                    &original_caption.paragraphs[original_index],
+                    paragraph,
+                ),
+                None => emitted_node.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    // Keep source child order when only the caption changed. If other emitted picture
+    // metadata changed, retain that output and replace only its caption header/list.
+    let source_rest = source.children[..source_header]
+        .iter()
+        .chain(source.children[source_paragraphs.end..].iter());
+    let emitted_rest = emitted.children[..emitted_header]
+        .iter()
+        .chain(emitted.children[emitted_paragraphs.end..].iter());
+    let (mut merged, header, range) = if source.data == emitted.data && source_rest.eq(emitted_rest)
+    {
+        (source.clone(), source_header, source_paragraphs)
+    } else {
+        (emitted.clone(), emitted_header, emitted_paragraphs)
+    };
+    merged.children[header] = source.children[source_header].clone();
+    if original_caption.paragraphs.len() != edited_caption.paragraphs.len() {
+        let Ok(count) = i32::try_from(edited_caption.paragraphs.len()) else {
+            return emitted.clone();
+        };
+        merged.children[header].data[..4].copy_from_slice(&count.to_le_bytes());
+    }
+    merged.children.splice(range, paragraphs);
+    merged
+}
+
+/// Matches body_text::take_gso_caption: the first parseable direct LIST_HEADER followed
+/// by consecutive direct PARA_HEADER siblings. The known caption prefix is 22 bytes;
+/// extra header bytes stay opaque. Refuse a mapping that disagrees with the parsed IR.
+fn picture_caption_records(
+    node: &RecordNode,
+    paragraph_count: usize,
+) -> Option<(usize, std::ops::Range<usize>)> {
+    let header = node
+        .children
+        .iter()
+        .position(|child| child.tag == tag::LIST_HEADER && child.data.len() >= 22)?;
+    let start = header + 1;
+    let end = start
+        + node.children[start..]
+            .iter()
+            .take_while(|child| child.tag == tag::PARA_HEADER)
+            .count();
+    (end - start == paragraph_count).then_some((header, start..end))
 }
 
 /// Rewrites the edited paragraphs of a table into its **source** record tree, leaving every
@@ -5986,10 +6084,6 @@ mod tests {
         }
     }
 
-    /// The HWP5 reader keeps a shape's caption apart from its paragraph lists, so a picture
-    /// whose only home is a shape caption still holds an instance id from the synthesized
-    /// range. The allocator must start past it, or the next synthesized picture repeats it and
-    /// the raw-preserved caption leaves two objects with one id.
     fn caption_header_merge_fixture(count: usize) -> Picture {
         let Control::Picture(mut picture) = picture_with_instance_id(0x3000_0020) else {
             unreachable!()
@@ -6256,6 +6350,10 @@ mod tests {
         }
     }
 
+    /// The HWP5 reader keeps a shape's caption apart from its paragraph lists, so a picture
+    /// whose only home is a shape caption still holds an instance id from the synthesized
+    /// range. The allocator must start past it, or the next synthesized picture repeats it and
+    /// the raw-preserved caption leaves two objects with one id.
     #[test]
     fn synthesized_picture_ids_start_past_ids_held_in_shape_captions() {
         let mut doc = Document::default();

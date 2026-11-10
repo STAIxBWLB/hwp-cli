@@ -88,6 +88,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   emitted for an HWP target
   ([#452](https://github.com/STAIxBWLB/hwp-cli/issues/452)).
 
+- Source-preserving HWP5 edits reuse an unchanged picture-caption `LIST_HEADER`, retaining
+  opaque listflag bits 3-6 and tail bytes when caption paragraphs are restyled, including by
+  `update_style`. Paragraph-count changes patch only the existing count field; intentional
+  header changes and unmatched record lists retain the regeneration fallback. No new flag
+  semantics or IR fields are introduced ([#448](https://github.com/STAIxBWLB/hwp-cli/issues/448)).
+
 - Text edits refuse before mutation when they would shift opaque HWP5 `PARA_RANGE_TAG`
   positions, including field/slot/form filling and control insertion/removal. Whole-cell
   replacement also refuses when rebuilding would discard a tagged subtree. Equal-WCHAR-width
