@@ -1984,10 +1984,8 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     let mut new_items: Vec<hwp_model::BinDataItem> = Vec::new();
     // Pairs of bin_stream index and new name.
     let mut renames: Vec<(usize, String)> = Vec::new();
-    // Unique instance_id per gso object; Hangul may treat equal IDs as one object and ignore
-    // duplicates.
-    // A document that already carries synthesized pictures (a re-read output of this writer)
-    // holds ids from this same range, so start past the highest one instead of reusing it.
+    // Reserve both common and raw picture-record ids before choosing new id pairs.
+    // Merge can renumber a common id while preserving its separate raw picture id.
     let mut inst = InstanceIds::new(doc);
 
     // Fill empty HWPX-origin header/footer LIST_HEADER values from section PageDef dimensions:
@@ -2032,15 +2030,32 @@ fn synthesize_pictures(doc: &mut Document, warnings: &mut WriteReport) {
     }
 }
 
+fn collect_raw_picture_ids(records: &[OpaqueRecord], used: &mut BTreeSet<u32>) {
+    for record in records {
+        if record.tag == tag::SHAPE_COMPONENT_PICTURE {
+            // Field source: build_picture_extras writes 12 border bytes + 32 corners
+            // + 16 clip + 8 margins + 3 adjustments + 2 BinItem id + 1 transparency,
+            // then this little-endian u32 at 74..78 (also docs/design/03-hwp5-write.md §7).
+            // Read only that writer-authored field; short records have no complete id.
+            if let Some(bytes) = record.data.get(74..78) {
+                used.insert(u32::from_le_bytes(
+                    bytes.try_into().expect("slice len checked"),
+                ));
+            }
+        }
+        collect_raw_picture_ids(&record.children, used);
+    }
+}
+
 /// Allocator for the gso instance ids this writer synthesizes for pictures.
 ///
 /// Ids come from `0x3000_0000..0x3010_0000`. An id is handed out only when neither it nor the
 /// id derived from it for the picture record (`id ^ 0x0010_0000`, which lands in
 /// `0x3010_0000..0x3020_0000`) is already held by a picture, table or gso container of the
-/// document, wherever that id sits. A re-read output of this writer holds ids from this same
-/// range, so a plain counter would repeat them. The counter only moves forward and every
-/// candidate has bit 20 clear, so an id handed out is never a later candidate and never the
-/// derived value of one: only ids the document already holds need avoiding. When the range is
+/// document, including separate ids in preserved raw picture records. Merge can change a
+/// common id while retaining its raw picture id, so reserving only common ids is insufficient.
+/// The counter only moves forward and every candidate has bit 20 clear, so an id handed out
+/// is never a later candidate and never the derived value of one: only ids the document already holds need avoiding. When the range is
 /// used up the allocator returns `None` instead of stepping past the range edge into another
 /// object's id; the caller leaves that picture unsynthesized and the existing strip step
 /// reports it as removed.
@@ -2066,16 +2081,19 @@ impl InstanceIds {
                 .map(|b| u32::from_le_bytes(b.try_into().expect("slice len checked")))
         }
         fn walk(para: &Paragraph, used: &mut BTreeSet<u32>) {
+            collect_raw_picture_ids(&para.extras, used);
             for control in &para.controls {
                 match control {
                     Control::Picture(p) => {
                         used.extend(common_id(&p.common_data));
+                        collect_raw_picture_ids(&p.extras, used);
                         if let Some(caption) = &p.caption {
                             caption.paragraphs.iter().for_each(|q| walk(q, used));
                         }
                     }
                     Control::Table(t) => {
                         used.extend(common_id(&t.common_data));
+                        collect_raw_picture_ids(&t.extras, used);
                         if let Some(caption) = &t.caption {
                             caption.paragraphs.iter().for_each(|q| walk(q, used));
                         }
@@ -2084,6 +2102,8 @@ impl InstanceIds {
                         }
                     }
                     Control::Generic(g) => {
+                        collect_raw_picture_ids(&g.extras, used);
+                        collect_raw_picture_ids(&g.raw_children, used);
                         if g.ctrl_id == *b"gso " {
                             used.extend(common_id(&g.data));
                         }
@@ -2095,12 +2115,15 @@ impl InstanceIds {
                             caption.paragraphs.iter().for_each(|q| walk(q, used));
                         }
                     }
-                    _ => {}
+                    Control::SectionDef(definition) => {
+                        collect_raw_picture_ids(&definition.extras, used)
+                    }
                 }
             }
         }
         let mut used = BTreeSet::new();
         for section in &doc.sections {
+            collect_raw_picture_ids(&section.extras, &mut used);
             section.paragraphs.iter().for_each(|p| walk(p, &mut used));
         }
         Self {
@@ -5876,7 +5899,7 @@ mod tests {
 
     #[test]
     fn raw_picture_id_requires_its_complete_field_and_can_exhaust_the_range() {
-        // The current writer appends the four-byte instance id after74 prefix bytes.
+        // The current writer appends the four-byte instance id after 74 prefix bytes.
         // A short opaque record must stay unread rather than manufacturing an id from its tail.
         for len in [0, 73, 74, 75, 76, 77, 78] {
             let mut doc = doc_with_picture_ids(&[]);

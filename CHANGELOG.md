@@ -52,6 +52,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   fallback do not warn; referenced extension levels and differences within its seven slots do
   ([#486](https://github.com/STAIxBWLB/hwp-cli/issues/486)).
 
+- HWP5 picture synthesis reserves instance IDs in preserved raw picture records as well as
+  object common headers. Merging a writer-made picture document and then inserting an image
+  no longer reuses the preserved picture-record ID. Existing raw records remain unchanged;
+  this is a serialized-ID uniqueness fix, with its effect on opening in Hancom unverified
+  ([#465](https://github.com/STAIxBWLB/hwp-cli/issues/465)).
+
 ## [1.5.0]
 
 **Compatibility**
