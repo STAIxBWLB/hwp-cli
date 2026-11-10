@@ -3303,3 +3303,31 @@ fn no_fill_win_brush_round_trips() {
     );
     assert_eq!(bf.bg_color, Some(0xFFFF_FFFF));
 }
+
+/// #487: quick-xml emits `&lt;`/`&gt;`/`&amp;` as separate `GeneralRef` events rather than
+/// inside the surrounding `Text`, so the header reader used to drop them from a numbering
+/// template: `<{n}>` (written as `&lt;^2&gt;`) came back as `^2`. The template is format
+/// content, so an entity-bearing marker must survive write → reread unchanged.
+#[test]
+fn entity_bearing_numbering_template_round_trips() {
+    let xml = r##"<hh:head><hh:numberings itemCnt="1"><hh:numbering id="1" start="0"><hh:paraHead start="1" level="1" numFormat="DIGIT">&lt;^1&gt;</hh:paraHead><hh:paraHead start="1" level="2" numFormat="DIGIT">^2 &amp; A&lt;B</hh:paraHead></hh:numbering></hh:numberings></hh:head>"##;
+    let (h1, _) = hwpx::read::header::parse_header(xml).unwrap();
+    assert_eq!(h1.numbering_levels[0][0].template, "<^1>");
+    assert_eq!(h1.numbering_levels[0][1].template, "^2 & A<B");
+
+    let out = hwpx::write::header::write_header(&h1, 1);
+    assert!(
+        out.contains("&lt;^1&gt;") && out.contains("^2 &amp; A&lt;B"),
+        "an entity-bearing template must be written escaped: {out}"
+    );
+
+    let (h2, _) = hwpx::read::header::parse_header(&out).unwrap();
+    assert_eq!(
+        h2.numbering_levels[0][0].template, "<^1>",
+        "`<`/`>` must survive the write/re-read cycle"
+    );
+    assert_eq!(
+        h2.numbering_levels[0][1].template, "^2 & A<B",
+        "`&` next to text must survive the write/re-read cycle"
+    );
+}

@@ -1,6 +1,6 @@
 //! quick-xml 보조 유틸.
 
-use quick_xml::events::BytesStart;
+use quick_xml::events::{BytesRef, BytesStart};
 
 /// 로컬 이름(네임스페이스 접두사 제거) 기준 속성 조회.
 /// 속성값을 **엔티티 해석까지 마친** 문자열로 돌려준다. quick-xml은 속성값을 파일에 있던
@@ -21,6 +21,24 @@ pub fn attr(e: &BytesStart<'_>, name: &str) -> Option<String> {
             None
         }
     })
+}
+
+/// 엔티티 참조(`&amp;` `&#x2264;`)를 문자로 되돌린다. quick-xml은 참조를 텍스트에
+/// 합치지 않고 `Event::GeneralRef`로 따로 주므로, 요소 텍스트를 모으는 쪽마다 이
+/// 해석이 필요하다. DTD 없이는 외부 엔티티를 풀 수 없어 미리 정의된 5종 + 숫자
+/// 참조만 푼다(모르는 참조는 `None` — 호출자가 그대로 흘리지 않고 버린다).
+pub(crate) fn resolve_entity(r: &BytesRef<'_>) -> Option<char> {
+    r.resolve_char_ref()
+        .ok()
+        .flatten()
+        .or_else(|| match &r[..] {
+            b"amp" => Some('&'),
+            b"lt" => Some('<'),
+            b"gt" => Some('>'),
+            b"quot" => Some('"'),
+            b"apos" => Some('\''),
+            _ => None,
+        })
 }
 
 pub fn attr_u32(e: &BytesStart<'_>, name: &str) -> Option<u32> {

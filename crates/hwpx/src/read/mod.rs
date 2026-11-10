@@ -16,6 +16,7 @@ use quick_xml::events::Event;
 
 use crate::error::Result;
 use crate::package::HwpxPackage;
+use xml::resolve_entity;
 
 pub struct ReadResult {
     pub document: Document,
@@ -433,20 +434,6 @@ pub fn parse_opf_extra_items(xml: &str) -> Vec<(String, String, String)> {
             )
         })
         .collect()
-}
-
-fn resolve_entity(r: &quick_xml::events::BytesRef<'_>) -> Option<char> {
-    r.resolve_char_ref()
-        .ok()
-        .flatten()
-        .or_else(|| match &r[..] {
-            b"amp" => Some('&'),
-            b"lt" => Some('<'),
-            b"gt" => Some('>'),
-            b"quot" => Some('"'),
-            b"apos" => Some('\''),
-            _ => None,
-        })
 }
 
 fn set_metadata_field(meta: &mut hwp_model::Metadata, field: &str, value: &str) {
