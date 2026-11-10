@@ -1673,6 +1673,62 @@ fn contains_disallowed_text_control(value: &str) -> bool {
         .any(|character| character.is_control() && character != '\t')
 }
 
+/// Whether any block, at any table-cell depth, references `name` at `level`.
+pub(crate) fn uses_list_level(blocks: &[BlockSpec], name: &str, level: usize) -> bool {
+    blocks.iter().any(|block| match block {
+        BlockSpec::Paragraph {
+            list: Some(reference),
+            ..
+        } => reference.name == name && usize::from(reference.level) == level,
+        BlockSpec::Table { rows, .. } => rows
+            .iter()
+            .flat_map(|row| &row.cells)
+            .any(|cell| uses_list_level(&cell.blocks, name, level)),
+        _ => false,
+    })
+}
+
+/// Check the NUMBERING fallback the HWP writer actually emits. Ordered specs request Digit;
+/// only referenced levels need the format check, while every declared marker/start is kept.
+pub(crate) fn check_hwp_list_preservation(
+    lists: &BTreeMap<String, ListSpec>,
+    is_used: impl Fn(&str, usize) -> bool,
+) -> Result<(), String> {
+    let defaults = hwp5::write::synthesized_numbering_levels();
+    for (name, list) in lists {
+        if list.kind != ListKind::Ordered {
+            continue;
+        }
+        for (index, level) in list.levels.iter().enumerate() {
+            let Some(default) = defaults.get(index) else {
+                return Err(format!(
+                    "목록 '{name}'의 level {index}는 현재 HWP 출력기의 기본 번호 범위를 벗어납니다. HWPX 출력으로 다시 시도하세요"
+                ));
+            };
+            let token = format!("^{}", index + 1);
+            if level.start != default.start
+                || level.marker.replace("{n}", &token) != default.template
+            {
+                let marker = default.template.replace(&token, "{n}");
+                return Err(format!(
+                    "목록 '{name}'의 level {index} marker/start를 현재 HWP 출력기가 보존할 수 없습니다. HWPX 출력으로 다시 시도하거나 기본 marker '{marker}', start {}을 사용하세요",
+                    default.start
+                ));
+            }
+            let used = is_used(name, index);
+            if used
+                && hwp5::write::DEFAULT_NUMBERING_FORMATS.get(index)
+                    != Some(&hwp_model::NumFmt::Digit)
+            {
+                return Err(format!(
+                    "목록 '{name}'의 level {index} 번호 형식(Digit)을 현재 HWP 출력기가 해당 수준의 기본 형식으로 바꿉니다. 번호 형식을 보존하려면 HWPX 출력으로 다시 시도하세요"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn compile_spec(
     spec: &DocumentSpec,
     base_dir: &Path,
@@ -1682,6 +1738,30 @@ pub fn compile_spec(
     roots: &[PathBuf],
 ) -> Result<CompiledSpec, ComposeError> {
     validate_spec(spec, base_dir)?;
+    if output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("hwp"))
+    {
+        check_hwp_list_preservation(&spec.lists, |name, level| {
+            spec.sections.iter().any(|section| {
+                uses_list_level(&section.blocks, name, level)
+                    || section
+                        .header
+                        .iter()
+                        .chain(section.footer.iter())
+                        .any(|frame| {
+                            [&frame.default, &frame.first, &frame.odd, &frame.even]
+                                .iter()
+                                .any(|blocks| uses_list_level(blocks, name, level))
+                        })
+            })
+        })
+        .map_err(|message| ComposeError::Compile {
+            path: "$.lists".into(),
+            message,
+        })?;
+    }
     let compiler = Compiler::new(
         spec,
         base_dir,

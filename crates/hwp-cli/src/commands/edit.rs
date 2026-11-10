@@ -5275,6 +5275,100 @@ impl std::fmt::Display for SemanticVerificationMismatch {
 
 impl std::error::Error for SemanticVerificationMismatch {}
 
+/// Compare the numbering actually used by a composed document before generic projection can
+/// replace modeled definitions with the fallback record. Legacy edit/convert policy is unchanged.
+fn verify_composed_hwp_numbering(
+    expected: &hwp_model::Document,
+    actual: &hwp_model::Document,
+) -> anyhow::Result<()> {
+    type UsedLevel = (u16, usize, String, u32, hwp_model::NumFmt);
+    fn collect(
+        doc: &hwp_model::Document,
+        paragraphs: &[hwp_model::Paragraph],
+        drawn: bool,
+        out: &mut Vec<UsedLevel>,
+    ) -> anyhow::Result<()> {
+        for paragraph in paragraphs {
+            let shape = doc.header.para_shapes.get(paragraph.para_shape.0 as usize)
+                .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 문단 모양 참조가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+            if shape.head_type() == 2 {
+                let index = shape.head_level().saturating_sub(1) as usize;
+                let definition = shape.numbering_id as usize;
+                let levels = doc.header.numbering_levels.get(definition)
+                    .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 번호 정의 {definition}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+                let level = levels.get(index)
+                    .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 번호 정의 {definition}의 level {index}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+                let mut format = level.fmt;
+                if drawn
+                    && doc.header.numberings.get(definition).is_some_and(|raw| {
+                        hwp5::write::is_materialized_default_numberings(
+                            std::slice::from_ref(raw),
+                            std::slice::from_ref(levels),
+                        )
+                    })
+                {
+                    // The generic reader reports this known record as Digit at every slot.
+                    // Its measured selectors, not that approximation, determine what it draws.
+                    format = hwp5::write::DEFAULT_NUMBERING_FORMATS[index];
+                }
+                out.push((
+                    shape.numbering_id,
+                    index,
+                    level.template.clone(),
+                    level.start,
+                    format,
+                ));
+            }
+            for control in &paragraph.controls {
+                let caption = match control {
+                    hwp_model::Control::Table(table) => {
+                        for cell in &table.cells {
+                            collect(doc, &cell.paragraphs, drawn, out)?;
+                        }
+                        &table.caption
+                    }
+                    hwp_model::Control::Picture(picture) => &picture.caption,
+                    hwp_model::Control::Generic(generic) => {
+                        for list in &generic.paragraph_lists {
+                            collect(doc, &list.paragraphs, drawn, out)?;
+                        }
+                        &generic.caption
+                    }
+                    hwp_model::Control::SectionDef(_) => continue,
+                };
+                if let Some(caption) = caption {
+                    collect(doc, &caption.paragraphs, drawn, out)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut wanted = Vec::new();
+    let mut drawn = Vec::new();
+    for section in &expected.sections {
+        collect(expected, &section.paragraphs, false, &mut wanted)?;
+    }
+    for section in &actual.sections {
+        collect(actual, &section.paragraphs, true, &mut drawn)?;
+    }
+    if wanted != drawn {
+        let first = wanted
+            .iter()
+            .zip(&drawn)
+            .position(|(left, right)| left != right)
+            .unwrap_or(wanted.len().min(drawn.len()));
+        let location = wanted
+            .get(first)
+            .or_else(|| drawn.get(first))
+            .map(|level| format!("번호 정의 {}, level {}", level.0, level.1))
+            .unwrap_or_else(|| "사용된 번호 수준".into());
+        anyhow::bail!(
+            "합성 번호 검증 실패: {location}의 template/start/format이 요청과 다릅니다. HWPX 출력으로 다시 시도하거나 HWP 기본 번호 형식을 사용하세요"
+        );
+    }
+    Ok(())
+}
+
 fn verify_output_with_success_log(
     output: &Path,
     expected: Option<&hwp_model::Document>,
@@ -5288,6 +5382,14 @@ fn verify_output_with_success_log(
             OutputFormat::Hwpx => Some(SemanticTarget::Hwpx),
             OutputFormat::Json | OutputFormat::Markdown => None,
         };
+        if matches!(target, Some(SemanticTarget::Hwp))
+            && matches!(
+                expected.meta.source_format.as_str(),
+                "document-spec-v1" | "document-spec-v2"
+            )
+        {
+            verify_composed_hwp_numbering(expected, &doc)?;
+        }
         let expected = semantic_signature_for(expected, target);
         let actual = semantic_signature_for(&doc, target);
         if actual != expected {

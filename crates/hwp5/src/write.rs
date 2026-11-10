@@ -2874,7 +2874,7 @@ fn hwp_string(w: &mut ByteWriter, s: &str) {
 
 // ─────────────────────────── DocInfo ───────────────────────────
 
-fn emit_doc_info(doc: &Document, _warnings: &mut WriteReport) -> Vec<RecordNode> {
+fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> {
     let h = &doc.header;
     let mut roots = Vec::new();
 
@@ -2905,6 +2905,52 @@ fn emit_doc_info(doc: &Document, _warnings: &mut WriteReport) -> Vec<RecordNode>
         h.tab_defs.clone()
     };
     let numberings_owned = numbering_records(h);
+    // Raw-backed definitions are emitted verbatim, including the official records already
+    // materialized upstream. Only unbacked modeled levels can be replaced by the default.
+    let default_levels = synthesized_numbering_levels();
+    for (definition, levels) in h
+        .numbering_levels
+        .iter()
+        .enumerate()
+        .skip(h.numberings.len())
+    {
+        let mut changed_levels = Vec::new();
+        let mut changed_template = false;
+        let mut changed_format = false;
+        let mut changed_start = false;
+        for (index, level) in levels.iter().enumerate() {
+            let default = default_levels.get(index);
+            let template_changed = default.is_none_or(|value| value.template != level.template);
+            // The reader drops format selectors, so compare what Hancom actually draws.
+            let format_changed = DEFAULT_NUMBERING_FORMATS
+                .get(index)
+                .is_none_or(|format| *format != level.fmt);
+            let start_changed = default.is_none_or(|value| value.start != level.start);
+            if template_changed || format_changed || start_changed {
+                changed_levels.push(index.to_string());
+                changed_template |= template_changed;
+                changed_format |= format_changed;
+                changed_start |= start_changed;
+            }
+        }
+        if !changed_levels.is_empty() {
+            let mut categories = Vec::new();
+            if changed_template {
+                categories.push("template");
+            }
+            if changed_format {
+                categories.push("format");
+            }
+            if changed_start {
+                categories.push("start");
+            }
+            warnings.warning(format!(
+                "numbering_default_substitution: definition={definition} levels=[{}] changed={} - 원본 NUMBERING 레코드가 없어 모델의 번호 정의를 기본 번호로 대체합니다. 번호 모양을 보존하려면 HWPX로 저장하세요.",
+                changed_levels.join(","),
+                categories.join(",")
+            ));
+        }
+    }
     let bullets_owned = bullet_records(h);
 
     // DOCUMENT_PROPERTIES — 구역 수는 실제 섹션 수에서 유도
