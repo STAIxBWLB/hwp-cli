@@ -1193,7 +1193,24 @@ fn write_hwp_impl(
         // first changed paragraph a v_pos *above* its kept predecessor, which the renderer reads
         // as a page start and draws the change mid-page (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
-        hwp_render::lineseg::synthesize_linesegs_seeded(&mut d, &mut store, &mut warns, &seeds);
+        // Put the caches the output will keep in place first: an edited paragraph is cacheless in
+        // this document, so a cache that is present is one the writer restores unchanged, and the
+        // walk below must measure those rather than its own ephemeral synthesis of them. Otherwise
+        // a kept table whose saved cell caches are taller grows again after the paragraphs below it
+        // were already placed (#509).
+        if let Some((_, original)) = source {
+            restore_unchanged_native_paragraphs(original, doc, &mut d);
+        }
+        hwp_render::lineseg::synthesize_linesegs_seeded(
+            &mut d,
+            &mut store,
+            &mut warns,
+            &hwp_render::lineseg::BodyFlow {
+                seeds: &seeds,
+                preserve_nested: source.is_some(),
+            },
+        );
+        // The walk re-synthesized every body cache; hand the kept prefix its saved records back.
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d);
         }
@@ -1314,9 +1331,10 @@ fn restore_unchanged_native_paragraphs(
 /// Restore one section's body list. Paragraphs before the edit keep their saved records; from the
 /// first edited body paragraph on, the body cache the renderer synthesized stays, because a saved
 /// `v_pos` there measures the flow the edit invalidated: kept after a taller table it sits above
-/// the table's drawn bottom and the renderer reads the step back as a new page (#462). Nested
-/// lists (cell, caption, text box) are restored on both sides of the seam: their caches are local
-/// to their own box and do not depend on the body cursor.
+/// the table's drawn bottom and the renderer reads the step back as a new page (#462). The nested
+/// lists this pass recurses into (table cells and generic paragraph lists, captions included only
+/// where a whole unchanged paragraph brings them) are restored on both sides of the seam: their
+/// caches are local to their own box and do not depend on the body cursor.
 fn restore_unchanged_body_paragraphs(
     original: &[hwp_model::Paragraph],
     edited: &[hwp_model::Paragraph],
@@ -1375,9 +1393,6 @@ fn match_unchanged_paragraphs(
     edited: &[hwp_model::Paragraph],
 ) -> Vec<Option<usize>> {
     let mut matches = vec![None; edited.len()];
-    if edited.len() != original.len() {
-        return matches;
-    }
     let mut used = vec![false; original.len()];
     for edited_index in 0..edited.len() {
         let instance_id = edited[edited_index].header.instance_id;
@@ -1519,8 +1534,9 @@ fn restore_unchanged_paragraph_keeping_body(
 }
 
 /// Restore everything except the paragraph's own body cache: unchanged controls keep their saved
-/// records, and the unchanged paragraphs inside their cells, captions and lists are restored
-/// recursively. A body paragraph the edit moved keeps the lines the renderer synthesized for it.
+/// records, and the unchanged paragraphs inside their table cells and generic paragraph lists are
+/// restored recursively. A body paragraph the edit moved keeps the lines the renderer synthesized
+/// for it. A caption inside a control the edit changed is not restored here.
 fn restore_unchanged_controls(
     original: &hwp_model::Paragraph,
     edited: &hwp_model::Paragraph,

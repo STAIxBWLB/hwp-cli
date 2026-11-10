@@ -692,3 +692,131 @@ fn native_floating_edit_restarts_the_base_cursor_at_an_explicit_break() {
         "the native base path sets no cacheless page-start flag"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// #509 finding 5: the body walk must carry the advance `compute_linesegs` actually committed.
+//
+// A committed line serializes `line_spacing = max(advance - base, 0)`, so reading the cursor back
+// out of the segs (`v_pos + line_height + line_spacing`) yields `max(base, advance)`. For FIXED
+// spacing below the base line, and for FIXED 0, that is not the advance the synthesizer used, and
+// every following paragraph moves. Unseeded synthesis (HWPX/markdown -> HWP) must stay exactly as
+// it was, so each case below pins the positions the pre-change walk produced; the numbers were
+// read off the unseeded synthesis of the same documents on the change's base `a9f1571`.
+// ---------------------------------------------------------------------------------------------
+
+/// One body line of 1000 HWPUNIT whose FIXED line spacing is `value / 2`, as `line_advance_hu`
+/// reads FIXED mode, so `value` 600 is an advance of 300 below the base line and 0 an advance of 0.
+fn fix_line_spacing(doc: &mut Document, value: i32) {
+    for shape in &mut doc.header.char_shapes {
+        shape.base_size = 1000;
+    }
+    for shape in &mut doc.header.para_shapes {
+        shape.spacing_top = 0;
+        shape.spacing_bottom = 0;
+        shape.line_spacing_type = 1;
+        shape.line_spacing = value;
+        shape.line_spacing_old = value;
+    }
+}
+
+/// Zero-margin page of `height_hu`: the body box is the whole page, so pagination follows flow
+/// geometry alone (no font, no header band).
+fn set_body_height(doc: &mut Document, height_hu: i32) {
+    for control in &mut doc.sections[0].paragraphs[0].controls {
+        let Control::SectionDef(definition) = control else {
+            continue;
+        };
+        let page = definition
+            .page
+            .as_mut()
+            .expect("from_markdown defines a page");
+        page.height = HwpUnit(height_hu);
+        page.margin_top = HwpUnit(0);
+        page.margin_bottom = HwpUnit(0);
+        page.margin_header = HwpUnit(0);
+        page.margin_footer = HwpUnit(0);
+        page.margin_left = HwpUnit(0);
+        page.margin_right = HwpUnit(0);
+    }
+}
+
+/// Each body paragraph's first-line `v_pos`, the walk's published cursor chain.
+fn body_v_pos(doc: &Document) -> Vec<i32> {
+    doc.sections[0]
+        .paragraphs
+        .iter()
+        .map(|para| {
+            para.line_segs
+                .first()
+                .unwrap_or_else(|| panic!("paragraph has no synthesized line"))
+                .v_pos
+        })
+        .collect()
+}
+
+/// FIXED spacing below the base line: main advanced 300 per paragraph, and re-deriving the cursor
+/// from the segs (base 1000 + serialized 0) would advance 1000 instead.
+#[test]
+fn unseeded_synthesis_keeps_a_fixed_advance_below_the_base_line() {
+    let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n");
+    fix_line_spacing(&mut doc, 600);
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 300, 600]);
+
+    let last = doc.sections[0].paragraphs[0].line_segs[0];
+    assert_eq!(
+        last.line_spacing, 0,
+        "fixture: a sub-base FIXED advance serializes as zero spacing, which is why the segs \
+         cannot carry the cursor"
+    );
+}
+
+/// FIXED 0 spacing: main advanced nothing, so every paragraph starts at the same position.
+#[test]
+fn unseeded_synthesis_keeps_a_zero_fixed_advance() {
+    let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n");
+    fix_line_spacing(&mut doc, 0);
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 0, 0]);
+}
+
+/// A page that overflows: the reset to the page top happens inside `compute_linesegs`, and the
+/// sub-base advance still has to be carried across it.
+#[test]
+fn unseeded_synthesis_keeps_a_sub_base_advance_across_a_page_break() {
+    let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n\nD\n\nE\n\nF\n");
+    fix_line_spacing(&mut doc, 600);
+    set_body_height(&mut doc, 2400);
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 300, 600, 900, 1200, 0]);
+}
+
+/// An explicit page break restarts the cursor; the paragraph after it still advances by the
+/// committed 300, not by the base line.
+#[test]
+fn unseeded_synthesis_keeps_a_sub_base_advance_after_an_explicit_break() {
+    let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n");
+    fix_line_spacing(&mut doc, 600);
+    doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 0, 300]);
+}
+
+/// A floating table makes the section read prepass anchors. The anchors are measured before the
+/// walk, so this case pins that the anchored path still publishes the anchor's own position: a
+/// walk that fed the re-derived cursor back into the flow would move it.
+#[test]
+fn unseeded_synthesis_keeps_its_anchors_under_a_floating_prepass() {
+    let mut doc = hwp_convert::from_markdown("First\n\nFollowing\n");
+    fix_line_spacing(&mut doc, 600);
+    let fill = add_fill(&mut doc, 0x0005_6789);
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(table(
+            vec![Paragraph::default()],
+            fill,
+            1200,
+        )));
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 1600]);
+}

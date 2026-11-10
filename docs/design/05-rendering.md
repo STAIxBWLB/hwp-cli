@@ -370,22 +370,45 @@ boundary (`seg.v_pos < prev_v_pos`) and draws the change on the next page
 ([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
 
 The fix adds one rule and no new geometry: the writer measures the prefix it will restore and passes
-one `lineseg::BodySeed` per section (`synthesize_linesegs_seeded`). A seed names the section, the
-first body paragraph whose flow the edit moved, and the cursor that paragraph starts at —
+one `lineseg::BodySeed` per section (`synthesize_linesegs_seeded`, which takes a
+`lineseg::BodyFlow { seeds, preserve_nested }`). A seed names the section, the first body paragraph
+whose flow the edit moved, and the cursor that paragraph starts at, which is
 `lineseg::saved_body_cursor` over that prefix's last kept paragraph. It reads `lineseg::body_cursor`,
 the one rule §2.2's walk also uses: the paragraph's entry position plus its tables' height when it
-anchors any (text cannot resume at the line cursor after a table), otherwise its last saved line block
-(`v_pos + line_height + line_spacing`), plus its space-after. The restore pass stops at the same
-index: from the first changed paragraph on, the body cache the synthesizer produced is what gets
-written, while the prefix before it and every nested list (cell, caption, text box) come back from
-the snapshot. Nested caches are local to their own box, so the edit does not invalidate them. An
-explicit page break in the seeded paragraph still restarts the page.
+anchors any (text cannot resume at the line cursor after a table), otherwise the cursor the line
+synthesizer reached, plus its space-after.
+
+The walk passes that line cursor in rather than reading it back out of the committed line, because
+the two are not the same number. A committed line serializes `line_spacing = max(advance - base, 0)`,
+so `v_pos + line_height + line_spacing` reads back `max(base, advance)`: with FIXED spacing below the
+base line, or FIXED 0, re-deriving the cursor would move every following paragraph and change
+unseeded synthesis (HWPX or markdown to HWP). `saved_body_cursor` reconstructs the reading from a
+saved record because a saved cache has no other field to offer; that path feeds a seed, never the
+unseeded walk ([#509](https://github.com/STAIxBWLB/hwp-cli/pull/509)).
+
+The restore runs twice, around the synthesis. Before it, every paragraph the edit did not change
+gets its saved record back, so the nested caches the output will keep are in place while the walk
+measures them (`BodyFlow::preserve_nested` keeps a nested list that already has a cache instead of
+re-synthesizing it, and a preserved list paragraph still advances the list cursor by its own block).
+An edited paragraph is cacheless in that document, so a cache present there is one the writer
+restores; measuring it is what keeps a kept table's height the height the paragraphs below it are
+placed against. After the synthesis the same restore runs again for the body caches alone: the prefix
+before the first changed paragraph gets its saved `v_pos` back, and from that paragraph on the body
+cache the synthesizer produced is what gets written. Unchanged table cells and the paragraphs of
+generic lists are restored on both sides of the seam, matched by `instance_id`, then by full
+equality, and only then by index when the list length is unchanged, so an insertion or deletion
+inside a list keeps the untouched siblings' caches. Captions are restored only where a whole
+unchanged paragraph brings them: a caption inside a control the edit changed is not rewritten here.
 
 Consequences worth keeping. An unedited document never enters this path, so HWP5 identity stays
-byte-identical. An edit in a section's first paragraph needs no seed (the section starts at 0
-anyway), and a prefix paragraph without a saved cache yields no seed rather than a guessed position.
-The seed continues the synthesizer's own spacing unit, so the seam can sit half a paragraph spacing
-away from Hangul's saved gap until the unit calibration in
+byte-identical, and an unseeded synthesis (HWPX or markdown to HWP) runs the same cursor rule it ran
+before. An edit in a section's first paragraph needs no seed (the section starts at 0 anyway), and a
+prefix paragraph without a saved cache yields no seed rather than a guessed position. A seed is
+applied only when it lands inside the body box (`0..=content_h`), and the arithmetic around it
+saturates, because a saved cursor comes from untrusted bytes and an out-of-page one must degrade to a
+page start instead of overflowing. An explicit page break in the seeded paragraph still restarts the
+page. The seed continues the synthesizer's own spacing unit, so the seam
+can sit half a paragraph spacing away from Hangul's saved gap until the unit calibration in
 [#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) lands. A floating-table section reads prepass
 anchors instead of the cursor (§2.2.1), so a seed has no effect there.
 
