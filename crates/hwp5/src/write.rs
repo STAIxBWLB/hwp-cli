@@ -2874,7 +2874,42 @@ fn hwp_string(w: &mut ByteWriter, s: &str) {
 
 // ─────────────────────────── DocInfo ───────────────────────────
 
-fn emit_doc_info(doc: &Document, _warnings: &mut WriteReport) -> Vec<RecordNode> {
+/// Numbering references in paragraphs emitted from the model, excluding raw-only mirrors.
+fn referenced_numbering_levels(doc: &Document) -> BTreeSet<(usize, usize)> {
+    let mut used = BTreeSet::new();
+    let mut pending: Vec<_> = doc.sections.iter().flat_map(|s| &s.paragraphs).collect();
+    while let Some(paragraph) = pending.pop() {
+        if let Some(shape) = doc.header.para_shapes.get(paragraph.para_shape.0 as usize)
+            && shape.head_type() == 2
+        {
+            used.insert((shape.numbering_id as usize, shape.head_level() as usize - 1));
+        }
+        for control in &paragraph.controls {
+            let caption = match control {
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        pending.extend(&cell.paragraphs);
+                    }
+                    &table.caption
+                }
+                Control::Picture(picture) => &picture.caption,
+                Control::Generic(generic) if generic.raw_children.is_empty() => {
+                    for list in &generic.paragraph_lists {
+                        pending.extend(&list.paragraphs);
+                    }
+                    &generic.caption
+                }
+                Control::Generic(_) | Control::SectionDef(_) => continue,
+            };
+            if let Some(caption) = caption {
+                pending.extend(&caption.paragraphs);
+            }
+        }
+    }
+    used
+}
+
+fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> {
     let h = &doc.header;
     let mut roots = Vec::new();
 
@@ -2905,6 +2940,58 @@ fn emit_doc_info(doc: &Document, _warnings: &mut WriteReport) -> Vec<RecordNode>
         h.tab_defs.clone()
     };
     let numberings_owned = numbering_records(h);
+    // Raw-backed definitions are emitted verbatim, including the official records already
+    // materialized upstream. Only unbacked modeled levels can be replaced by the default.
+    let default_levels = synthesized_numbering_levels();
+    let used_levels = referenced_numbering_levels(doc);
+    for (definition, levels) in h
+        .numbering_levels
+        .iter()
+        .enumerate()
+        .skip(h.numberings.len())
+    {
+        let mut changed_levels = Vec::new();
+        let mut changed_template = false;
+        let mut changed_format = false;
+        let mut changed_start = false;
+        for (index, level) in levels.iter().enumerate() {
+            // HWPX and Markdown carry extra unused levels beyond the native seven-slot
+            // fallback. Their absence changes visible numbering only if a paragraph uses one.
+            if index >= default_levels.len() && !used_levels.contains(&(definition, index)) {
+                continue;
+            }
+            let default = default_levels.get(index);
+            let template_changed = default.is_none_or(|value| value.template != level.template);
+            // The reader drops format selectors, so compare what Hancom actually draws.
+            let format_changed = DEFAULT_NUMBERING_FORMATS
+                .get(index)
+                .is_none_or(|format| *format != level.fmt);
+            let start_changed = default.is_none_or(|value| value.start != level.start);
+            if template_changed || format_changed || start_changed {
+                changed_levels.push(index.to_string());
+                changed_template |= template_changed;
+                changed_format |= format_changed;
+                changed_start |= start_changed;
+            }
+        }
+        if !changed_levels.is_empty() {
+            let mut categories = Vec::new();
+            if changed_template {
+                categories.push("template");
+            }
+            if changed_format {
+                categories.push("format");
+            }
+            if changed_start {
+                categories.push("start");
+            }
+            warnings.warning(format!(
+                "numbering_default_substitution: definition={definition} levels=[{}] changed={} - 원본 NUMBERING 레코드가 없어 모델의 번호 정의를 기본 번호로 대체합니다. 번호 모양을 보존하려면 HWPX로 저장하세요.",
+                changed_levels.join(","),
+                categories.join(",")
+            ));
+        }
+    }
     let bullets_owned = bullet_records(h);
 
     // DOCUMENT_PROPERTIES — 구역 수는 실제 섹션 수에서 유도
@@ -4256,6 +4343,277 @@ mod tests {
         h.bullet_chars.truncate(1);
         assert_eq!(numbering_records(&h), vec![raw(1)]);
         assert_eq!(bullet_records(&h), vec![raw(2)]);
+    }
+
+    fn drawn_default_numbering_levels() -> Vec<hwp_model::NumLevel> {
+        let mut levels = synthesized_numbering_levels();
+        for (level, format) in levels.iter_mut().zip(DEFAULT_NUMBERING_FORMATS) {
+            level.fmt = format;
+        }
+        levels
+    }
+
+    fn assert_numbering_default_substitution_warning(
+        category: &str,
+        level_index: usize,
+        change: impl FnOnce(&mut hwp_model::NumLevel),
+    ) {
+        let mut levels = drawn_default_numbering_levels();
+        change(&mut levels[level_index]);
+        let private_marker = "PRIVATE_NUMBERING_MARKER^1";
+        let mut raw_backed_levels = levels.clone();
+        raw_backed_levels[0].template = private_marker.to_string();
+        let raw = RawEntry {
+            data: DEFAULT_NUMBERING_DATA.to_vec(),
+            children: Vec::new(),
+        };
+        let mut doc = Document::default();
+        doc.header.numberings = vec![raw.clone()];
+        doc.header.numbering_levels = vec![raw_backed_levels, levels];
+        let mut report = WriteReport::new();
+        let roots = emit_doc_info(&doc, &mut report);
+        let records: Vec<_> = roots
+            .iter()
+            .flat_map(|root| &root.children)
+            .filter(|node| node.tag == tag::NUMBERING)
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].data, raw.data);
+        assert_eq!(records[1].data, DEFAULT_NUMBERING_DATA);
+
+        let substitutions: Vec<_> = report
+            .warnings
+            .iter()
+            .filter(|warning| warning.contains("numbering_default_substitution"))
+            .collect();
+        assert_eq!(
+            substitutions.len(),
+            1,
+            "default substitution must warn exactly once for the unbacked definition: {:?}",
+            report.warnings
+        );
+        let warning = substitutions[0];
+        assert!(warning.contains("definition=1"), "{warning}");
+        assert!(
+            warning.contains(&format!("levels=[{level_index}]")),
+            "{warning}"
+        );
+        assert!(
+            warning.contains(&format!("changed={category}")),
+            "{warning}"
+        );
+        assert!(warning.contains("기본"), "{warning}");
+        assert!(warning.contains("보존"), "{warning}");
+        assert!(warning.contains("HWPX"), "{warning}");
+        assert!(!warning.contains(private_marker), "{warning}");
+        assert!(report.preservation.events.is_empty());
+    }
+
+    #[test]
+    fn emit_doc_info_warns_for_used_eighth_level_in_each_emitted_paragraph_scope() {
+        let numbered = Paragraph {
+            para_shape: hwp_model::ParaShapeId(1),
+            chars: vec![HwpChar::Text('x')],
+            ..Paragraph::default()
+        };
+        let caption = Caption {
+            side: CaptionSide::Bottom,
+            direction: CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![numbered.clone()],
+        };
+        for scope in [
+            "body",
+            "cell",
+            "table-caption",
+            "picture-caption",
+            "header",
+            "footer",
+            "shape-caption",
+        ] {
+            let mut root = Paragraph::default();
+            match scope {
+                "body" => root = numbered.clone(),
+                "cell" | "table-caption" => {
+                    let mut table = synth_table(None);
+                    if scope == "cell" {
+                        table.cells.push(Cell {
+                            list_attr: 0,
+                            col: 0,
+                            row: 0,
+                            col_span: 1,
+                            row_span: 1,
+                            width: hwp_model::HwpUnit(1000),
+                            height: hwp_model::HwpUnit(1000),
+                            margins: [0; 4],
+                            border_fill: hwp_model::BorderFillId(0),
+                            header_tail: Vec::new(),
+                            paragraphs: vec![numbered.clone()],
+                        });
+                    } else {
+                        table.caption = Some(caption.clone());
+                    }
+                    root.controls.push(Control::Table(table));
+                }
+                "picture-caption" => {
+                    let Control::Picture(mut picture) = picture_with_instance_id(1) else {
+                        unreachable!()
+                    };
+                    picture.caption = Some(caption.clone());
+                    root.controls.push(Control::Picture(picture));
+                }
+                _ => {
+                    let Control::Generic(mut generic) = shape_caption_holding(Vec::new()) else {
+                        unreachable!()
+                    };
+                    if scope == "shape-caption" {
+                        generic.caption = Some(caption.clone());
+                    } else {
+                        generic.ctrl_id = if scope == "header" {
+                            *b"head"
+                        } else {
+                            *b"foot"
+                        };
+                        generic.caption = None;
+                        generic.paragraph_lists.push(hwp_model::ParagraphList {
+                            header_data: Vec::new(),
+                            paragraphs: vec![numbered.clone()],
+                        });
+                    }
+                    root.controls.push(Control::Generic(generic));
+                }
+            }
+            let mut doc = Document::default();
+            let mut levels = drawn_default_numbering_levels();
+            let mut eighth = levels[0].clone();
+            eighth.template = "^8".to_string();
+            levels.push(eighth);
+            // Only definition 1 is referenced; an unused shape is not a paragraph use.
+            doc.header.numbering_levels = vec![levels.clone(), levels];
+            doc.header.para_shapes = vec![
+                ParaShape::default(),
+                ParaShape {
+                    attr1: 2 << 23,
+                    list_level: Some(8),
+                    numbering_id: 1,
+                    ..ParaShape::default()
+                },
+            ];
+            let mut unused_report = WriteReport::new();
+            emit_doc_info(&doc, &mut unused_report);
+            assert!(
+                unused_report.warnings.is_empty(),
+                "{scope}: {:?}",
+                unused_report.warnings
+            );
+            doc.sections.push(Section {
+                paragraphs: vec![root],
+                extras: Vec::new(),
+            });
+            let mut report = WriteReport::new();
+            let roots = emit_doc_info(&doc, &mut report);
+            assert!(
+                roots
+                    .iter()
+                    .flat_map(|r| &r.children)
+                    .filter(|r| r.tag == tag::NUMBERING)
+                    .all(|r| r.data == DEFAULT_NUMBERING_DATA)
+            );
+            assert_eq!(report.warnings.len(), 1, "{scope}: {:?}", report.warnings);
+            assert!(
+                report.warnings[0].contains("definition=1 levels=[7]"),
+                "{scope}: {:?}",
+                report.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn emit_doc_info_warns_when_default_numbering_substitutes_template() {
+        assert_numbering_default_substitution_warning("template", 0, |level| {
+            level.template = "PRIVATE_NUMBERING_MARKER^1".to_string();
+        });
+    }
+
+    #[test]
+    fn emit_doc_info_warns_when_default_numbering_substitutes_start() {
+        assert_numbering_default_substitution_warning("start", 2, |level| {
+            level.start = 7;
+        });
+    }
+
+    #[test]
+    fn emit_doc_info_warns_when_default_numbering_substitutes_drawn_format() {
+        // The reader reports Digit here, but the emitted record draws Hangul syllables.
+        assert_numbering_default_substitution_warning("format", 1, |level| {
+            level.fmt = hwp_model::NumFmt::Digit;
+        });
+    }
+
+    #[test]
+    fn emit_doc_info_does_not_warn_for_exact_drawn_numbering_defaults() {
+        let mut doc = Document::default();
+        doc.header.numbering_levels = vec![drawn_default_numbering_levels()];
+        let mut report = WriteReport::new();
+        let roots = emit_doc_info(&doc, &mut report);
+        let numbering = roots
+            .iter()
+            .flat_map(|root| &root.children)
+            .find(|node| node.tag == tag::NUMBERING)
+            .expect("the existing writer emits its default record");
+        assert_eq!(numbering.data, DEFAULT_NUMBERING_DATA);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.preservation.events.is_empty());
+    }
+
+    #[test]
+    fn emit_doc_info_does_not_warn_for_raw_backed_numbering() {
+        let mut levels = drawn_default_numbering_levels();
+        levels[0].template = "PRIVATE_RAW_BACKED_MARKER^1".to_string();
+        levels[1].fmt = hwp_model::NumFmt::LatinUpper;
+        levels[2].start = 7;
+        let raw = RawEntry {
+            data: DEFAULT_NUMBERING_DATA.to_vec(),
+            children: Vec::new(),
+        };
+        let mut doc = Document::default();
+        doc.header.numberings = vec![raw.clone()];
+        doc.header.numbering_levels = vec![levels];
+        let mut report = WriteReport::new();
+        let roots = emit_doc_info(&doc, &mut report);
+        let numbering = roots
+            .iter()
+            .flat_map(|root| &root.children)
+            .find(|node| node.tag == tag::NUMBERING)
+            .expect("the existing raw record is emitted");
+        assert_eq!(numbering.data, raw.data);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.preservation.events.is_empty());
+    }
+
+    #[test]
+    fn emit_doc_info_does_not_warn_after_official_numbering_materialization() {
+        let data = crate::numbering::official_eight_level_data();
+        let levels = crate::numbering::parse_official_eight_level_data(&data)
+            .expect("the evidenced official record has its modeled levels");
+        let mut doc = Document::default();
+        doc.header.numbering_levels = vec![levels; 8];
+        materialize_evidenced_official_numbering(&mut doc)
+            .expect("the existing official path materializes its preserved raw records");
+        assert_eq!(doc.header.numberings.len(), 8);
+        let mut report = WriteReport::new();
+        let roots = emit_doc_info(&doc, &mut report);
+        let records: Vec<_> = roots
+            .iter()
+            .flat_map(|root| &root.children)
+            .filter(|node| node.tag == tag::NUMBERING)
+            .collect();
+        assert_eq!(records.len(), 8);
+        assert!(records.iter().all(|record| record.data == data));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.preservation.events.is_empty());
     }
 
     /// #225: the attr1 fold and the tail patch must be byte-level no-ops for a shape whose

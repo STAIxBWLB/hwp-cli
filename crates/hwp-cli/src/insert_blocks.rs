@@ -112,21 +112,6 @@ fn scan_blocks(blocks: &[BlockSpec], found: &mut Referenced) -> Result<(), Strin
     Ok(())
 }
 
-/// Whether any block, at any table-cell depth, references `name` at `level`.
-fn uses_list_level(blocks: &[BlockSpec], name: &str, level: usize) -> bool {
-    blocks.iter().any(|block| match block {
-        BlockSpec::Paragraph {
-            list: Some(reference),
-            ..
-        } => reference.name == name && usize::from(reference.level) == level,
-        BlockSpec::Table { rows, .. } => rows
-            .iter()
-            .flat_map(|row| &row.cells)
-            .any(|cell| uses_list_level(&cell.blocks, name, level)),
-        _ => false,
-    })
-}
-
 fn referenced(request: &InsertBlocks) -> Result<Referenced, String> {
     if request.blocks.is_empty() || request.blocks.len() > MAX_BLOCKS {
         return Err(format!(
@@ -339,39 +324,9 @@ fn check_hwp_lists(
             "목록 '{name}'의 새 번호 정의를 추가하면 기존 8수준 official 번호의 HWP 직렬화 계약이 깨져 기존 번호 인코딩이 변경됩니다. 기존 번호를 보존하려면 HWPX 출력으로 다시 시도하세요"
         ));
     }
-    let defaults = hwp5::write::synthesized_numbering_levels();
-    for (name, list) in lists {
-        if list.kind != ListKind::Ordered {
-            continue;
-        }
-        for (index, level) in list.levels.iter().enumerate() {
-            let Some(default) = defaults.get(index) else {
-                return Err(format!(
-                    "목록 '{name}'의 level {index}는 현재 HWP 출력기의 기본 번호 범위를 벗어납니다. HWPX 출력으로 다시 시도하세요"
-                ));
-            };
-            let token = format!("^{}", index + 1);
-            if level.start != default.start
-                || level.marker.replace("{n}", &token) != default.template
-            {
-                let marker = default.template.replace(&token, "{n}");
-                return Err(format!(
-                    "목록 '{name}'의 level {index} marker/start를 현재 HWP 출력기가 보존할 수 없습니다. HWPX 출력으로 다시 시도하거나 기본 marker '{marker}', start {}을 사용하세요",
-                    default.start
-                ));
-            }
-            let used = uses_list_level(&request.blocks, name, index);
-            if used
-                && hwp5::write::DEFAULT_NUMBERING_FORMATS.get(index)
-                    != Some(&hwp_model::NumFmt::Digit)
-            {
-                return Err(format!(
-                    "목록 '{name}'의 level {index} 번호 형식(Digit)을 현재 HWP 출력기가 해당 수준의 기본 형식으로 바꿉니다. 번호 형식을 보존하려면 HWPX 출력으로 다시 시도하세요"
-                ));
-            }
-        }
-    }
-    Ok(())
+    crate::document_spec::check_hwp_list_preservation(lists, |name, level| {
+        crate::document_spec::uses_list_level(&request.blocks, name, level)
+    })
 }
 
 struct StyleResolver<'a, 'b> {

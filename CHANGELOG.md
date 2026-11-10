@@ -18,6 +18,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   reads the template back identically instead of refusing at semantic verification
   ([#487](https://github.com/STAIxBWLB/hwp-cli/issues/487)).
 
+- `compose` to HWP now shares `insert_blocks`' marker/start and used-Digit-level preservation
+  checks, refusing unsupported ordered lists with the existing HWPX remedy. Compose-origin
+  HWP verification compares used templates, starts and known drawn default formats before
+  fallback projection. Other HWP writes remain allowed but disclose modeled NUMBERING fallback
+  substitutions through the existing writer/CLI/MCP warning contract, without exposing private
+  marker values or encoding new NUMBERING bytes. Unused extension levels beyond the seven-slot
+  fallback do not warn; referenced extension levels and differences within its seven slots do
+  ([#486](https://github.com/STAIxBWLB/hwp-cli/issues/486)).
+
 ## [1.5.0]
 
 **Compatibility**

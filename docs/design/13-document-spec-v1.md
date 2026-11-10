@@ -68,6 +68,24 @@ named style with explicit run formatting; explicit values win. Paragraphs may re
 list and zero-based level. Table cells support rectangular `col_span` and `row_span`; covered cells
 must be omitted from later rows/cells.
 
+Ordered lists request the Digit format. HWP compose refuses a declared marker/start that the
+existing NUMBERING fallback cannot preserve; every supplied level must match its default marker
+and start 1. A referenced level must also use a Digit slot in that record (zero-based 0, 2 or 4).
+The native default ladder is `1. 가. 1) 가) (1) (가) ①`, not seven plain-digit levels. The same
+check is shared with HWP `insert_blocks`, including table cells and header/footer blocks at
+compose time. Use HWPX for custom numbering that the HWP fallback cannot preserve.
+
+Conversion remains allowed: CLI stderr and MCP `ConvertReport.warnings` report
+`numbering_default_substitution` with definition/level IDs and the changed template/format/start
+categories whenever an unbacked modeled definition becomes that fallback. The warning does not
+echo private marker text. Definitions with raw NUMBERING records and modeled levels equal to the
+actual defaults do not produce this warning. Levels beyond the fallback's seven slots count only
+when a numbered paragraph references that definition and level; unused HWPX or Markdown extension
+levels do not warn. Differences within the seven slots still warn even if unused. A successful conversion is not a claim that its
+requested list markers were retained. Compose's HWP verification separately checks used levels
+before generic fallback projection, so substituted templates/starts or known default format
+selectors cannot pass silently even if an authoring guard regresses.
+
 All physical dimensions are decimal millimetres (`*_mm`), font/paragraph spacing is points
 (`*_pt`), line height is a percent, colors are `#RRGGBB`, list levels are zero-based at use sites,
 and table columns are declared left-to-right. String limits count Unicode scalar values, matching
