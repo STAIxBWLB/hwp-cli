@@ -2718,6 +2718,71 @@ mod tests {
         dir
     }
 
+    fn assert_output_helper_recovery(error: &anyhow::Error, phase: &str, private_root: &Path) {
+        let private_root = private_root.to_string_lossy().into_owned();
+        for message in [
+            error.to_string(),
+            format!("{error:#}"),
+            format!("{error:?}"),
+        ] {
+            assert!(message.contains(phase), "missing helper phase: {message}");
+            for remedy in ["권한", "여유 공간", "다시 실행"] {
+                assert!(
+                    message.contains(remedy),
+                    "missing {remedy} remedy: {message}"
+                );
+            }
+            assert!(
+                !message.contains("PRIVATE_471") && !message.contains(private_root.as_str()),
+                "helper errors must not expose output/staging paths: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn output_helper_sync_missing_stage_has_private_recovery_message() {
+        let dir = test_dir("helper-missing-stage");
+        let destination = dir.join("PRIVATE_471-output.hwpx");
+        fs::write(&destination, b"original").unwrap();
+        let error = {
+            let staged = StagedOutput::new(&destination, None).unwrap();
+            staged.sync_file().unwrap_err()
+        };
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+        assert_no_debris(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_output_helper_recovery(&error, "임시 출력 동기화 단계", &dir);
+    }
+
+    #[test]
+    fn output_helper_sync_non_regular_stage_has_private_recovery_message() {
+        let dir = test_dir("helper-non-regular-stage");
+        let destination = dir.join("PRIVATE_471-output.hwpx");
+        fs::write(&destination, b"original").unwrap();
+        let error = {
+            let staged = StagedOutput::new(&destination, None).unwrap();
+            fs::create_dir(staged.path()).unwrap();
+            staged.sync_file().unwrap_err()
+        };
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+        assert_no_debris(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_output_helper_recovery(&error, "임시 출력 동기화 단계", &dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn output_helper_identity_probe_has_private_recovery_message() {
+        let dir = test_dir("helper-identity-probe");
+        let path = dir.join("PRIVATE_471-identity.hwpx");
+        fs::write(&path, b"identity").unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        let error = FileIdentity::from_metadata(&metadata, &path).unwrap_err();
+        fs::remove_dir_all(&dir).unwrap();
+        assert_output_helper_recovery(&error, "파일 식별자 확인 단계", &dir);
+    }
+
     fn assert_no_debris(dir: &Path) {
         let leftovers: Vec<_> = fs::read_dir(dir)
             .unwrap()
