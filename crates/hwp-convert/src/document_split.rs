@@ -38,13 +38,22 @@
 //! body paragraph and table gets a source-to-output address so a later binding does not guess
 //! shifted indices.
 //!
+//! **Side-storage policy (#449).** Every fragment excludes the source's whole HWP5 DocHistory.
+//! Its omitted storage and streams are returned in the typed preservation ledger. XMLTemplate
+//! remains opaque native-form binding data; HWPX extra entries and their OPF registrations remain
+//! paired because retained opaque content can depend on master pages, scripts or extension parts.
+//! Those retained global parts can still contain document-wide information.
+//!
 //! This module must not depend on the sibling merge-grafting module: D-06's
 //! "whole DocHeader unchanged" is exactly the direction that needs no offset
 //! arithmetic.
 
 use std::collections::BTreeSet;
 
-use hwp_model::{BinRef, Control, Document, HwpChar, Paragraph, Section};
+use hwp_model::{
+    BinRef, Control, Document, HwpChar, Paragraph, PreservationCode, PreservationDisposition,
+    PreservationEvent, PreservationReport, PreservationResourceKind, Section,
+};
 use sha2::{Digest as _, Sha256};
 
 /// A 1-based, inclusive page range for [`split_page_ranges`].
@@ -81,21 +90,50 @@ pub struct SplitOutcome {
     pub fragments: Vec<Document>,
     /// Every D-08 boundary rounding applied while building the fragments.
     pub roundings: Vec<PageBoundaryRounding>,
+    /// Intentional side-storage losses, counted once for each produced fragment.
+    pub preservation: PreservationReport,
+}
+
+/// Excludes whole-document revision history from an owned fragment only.
+///
+/// Counts match IR-level cross-format accounting: one populated storage slot and its modeled
+/// streams. The bytes are opaque and never interpreted or copied into public diagnostics.
+/// XMLTemplate and HWPX package parts stay unchanged to retain schema/part dependencies.
+fn drop_fragment_history(fragment: &mut Document) -> PreservationReport {
+    let mut preservation = PreservationReport::new();
+    let streams = fragment.hwp5_doc_history.len();
+    if streams != 0 {
+        fragment.hwp5_doc_history.clear();
+        preservation.record(PreservationEvent::new(
+            PreservationCode::HwpContainerStorageRemoved,
+            PreservationResourceKind::ContainerStorage,
+            PreservationDisposition::Removed,
+            1,
+        ));
+        preservation.record(PreservationEvent::new(
+            PreservationCode::HwpContainerStreamRemoved,
+            PreservationResourceKind::ContainerStream,
+            PreservationDisposition::Removed,
+            streams,
+        ));
+    }
+    preservation
 }
 
 /// Divides `doc` into one fragment per `Section`, in document order (D-05).
 ///
-/// Each fragment carries the source's whole `DocHeader`, `metadata` and every
-/// singular package-passthrough field unchanged (D-06) — only `sections`,
-/// `header.properties.section_count` (set to 1) and `header.properties.caret`
-/// (zeroed, since it may otherwise reference a list/paragraph id outside the
-/// fragment's own body) are fragment-specific.
+/// Each fragment keeps the source's whole `DocHeader`, metadata and retained package/form
+/// fields (D-06), while excluding whole-document history through [`drop_fragment_history`].
+/// Only `sections`, `header.properties.section_count` (set to 1) and
+/// `header.properties.caret` (zeroed because it can reference an excluded list/paragraph) are
+/// otherwise fragment-specific. History omissions are returned in the preservation ledger.
 ///
 /// Returns `Err` when `doc` has no sections.
 pub fn split_sections(doc: &Document) -> Result<SplitOutcome, String> {
     if doc.sections.is_empty() {
         return Err("문서에 구역이 없어 분할할 수 없습니다".to_string());
     }
+    let mut preservation = PreservationReport::new();
     let fragments = doc
         .sections
         .iter()
@@ -104,12 +142,14 @@ pub fn split_sections(doc: &Document) -> Result<SplitOutcome, String> {
             fragment.sections = vec![section.clone()];
             fragment.header.properties.section_count = 1;
             fragment.header.properties.caret = (0, 0, 0);
+            preservation.extend(drop_fragment_history(&mut fragment));
             fragment
         })
         .collect();
     Ok(SplitOutcome {
         fragments,
         roundings: Vec::new(),
+        preservation,
     })
 }
 
@@ -237,6 +277,7 @@ pub fn split_page_ranges(doc: &Document, ranges: &[PageRange]) -> Result<SplitOu
 
     let mut fragments = Vec::with_capacity(ranges.len());
     let mut roundings = Vec::new();
+    let mut preservation = PreservationReport::new();
 
     for (range_index, range) in ranges.iter().enumerate() {
         let raw_start = addresses[range.first - 1];
@@ -308,6 +349,7 @@ pub fn split_page_ranges(doc: &Document, ranges: &[PageRange]) -> Result<SplitOu
         fragment.header.properties.section_count = sections.len() as u16;
         fragment.sections = sections;
         fragment.header.properties.caret = (0, 0, 0);
+        preservation.extend(drop_fragment_history(&mut fragment));
         fix_fragment_last_paragraph_flags(&mut fragment);
         fragments.push(fragment);
     }
@@ -315,6 +357,7 @@ pub fn split_page_ranges(doc: &Document, ranges: &[PageRange]) -> Result<SplitOu
     Ok(SplitOutcome {
         fragments,
         roundings,
+        preservation,
     })
 }
 
@@ -561,6 +604,8 @@ pub struct RangeOutcome {
     pub fragment: Document,
     pub address_map: Vec<SourceToOutputAddress>,
     pub resources: ResourceClosureReport,
+    /// Side-storage losses reported through the caller's preservation ledger.
+    pub preservation: PreservationReport,
     /// The source paragraph range that was taken: `[start, end)` in `section`.
     pub section: usize,
     pub start: usize,
@@ -1507,6 +1552,7 @@ pub fn extract_range(
     }];
     fragment.header.properties.section_count = 1;
     fragment.header.properties.caret = (0, 0, 0);
+    let preservation = drop_fragment_history(&mut fragment);
     fix_fragment_last_paragraph_flags(&mut fragment);
 
     // The closure runs over the fragment as built, with the whole header and the carried setup
@@ -1556,6 +1602,7 @@ pub fn extract_range(
         fragment,
         address_map,
         resources: report,
+        preservation,
         section: section_index,
         start,
         end,
