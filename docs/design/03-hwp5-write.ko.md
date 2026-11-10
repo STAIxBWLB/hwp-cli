@@ -294,6 +294,11 @@ hwpx의 `<hp:pic>`은 `extras`가 빈 IR `Picture`로 읽힌다. hwp5는 그림�
 
 합성 후 `bin_ref = BinRef::Id(storage_id)`. `emit_picture`(write.rs:1941)는 `common_data`(없으면 최소 40B 글자처럼취급)를 쓰고 `extras`를 자식으로 방출.
 
+그림 발견·합성·cleanup은 표·그림·의미 Generic의 캡션과 중첩 캡션도 순회한다.
+본문과 같은 바이너리 resolver, storage ID, instance-ID allocator를 사용한다.
+원본 raw 트리가 있는 Generic의 캡션과 문단 리스트는 추출용 사본이므로 합성하지 않는다.
+비교할 genuine caption-picture 표본을 확보하지 못해 native caption-picture parity는 미검증이다.
+
 머리말/꼬리말(head/foot)의 빈 LIST_HEADER는 `fill_head_foot_list_header`가 구역 PageDef 치수(textWidth=본문폭, textHeight=머리말/꼬리말 여백)로 채운다(`HEADER_LIST_HEADER_TEMPLATE` 34B, paraCount만 실제 문단 수로 패치). 안 채우면 strip이 머리말째 드롭한다.
 
 ---
@@ -317,7 +322,10 @@ hwp5 출신 GenericControl은 원본 자식 서브트리를 `raw_children`(Opaqu
 hwpx reader가 만든 도형(`ctrl_id != "gso "` + `gso_shapes` 보유)은 hwp5 SHAPE_COMPONENT가 없다. 정품 템플릿 역합성(㉒)은 한글 실기에서 손상 판정났다(라인 252B 템플릿을 사각형에 사용 → 정품 239B와 13B 어긋남). 자가검증 불가로 **안전 저하**로 전환(`degrade_hwpx_gso`, write.rs:467):
 
 - **글상자(텍스트 보유)**: 그 문단들을 host 문단 뒤 본문으로 hoist(텍스트 보존), 도형 래퍼는 생략.
-- **순수 장식(텍스트 없음)**: 손대지 않아 `strip_unwritable_pictures`가 드롭(유효 보장).
+- **캡션 내용이 있는 합성 불가 래퍼**: 합성한 그림을 포함한 캡션 문단을 글상자 문단과 함께
+  host 문단 뒤 본문으로 옮긴다. 원래 래퍼와 캡션 배치는 보존하지 못한다.
+  typed loss report의 `OpaqueControlUnrepresentable`을 유지하므로 `--strict`는 공개를 거부한다.
+- **순수 장식(본문·캡션 내용 없음)**: `strip_unwritable_pictures`가 드롭한다.
 
 hoist 시 제거된 컨트롤의 ExtCtrl 문자를 `chars.retain`으로 삭제하고 남은 `ctrl_index`를 재매핑한다(strip과 동일 로직). `synth.rs`의 `글상자_hwpx출신_안전저하_텍스트보존`이 회귀 방지.
 

@@ -629,7 +629,8 @@ fn materialize_document(
         if synth_pictures {
             synthesize_pictures(&mut d, &mut report);
         }
-        if synth_gso {
+        if synth_gso || synth_pictures {
+            // A new caption picture may belong to a wrapper that must be degraded.
             degrade_hwpx_gso(&mut d, &mut report);
         }
         for section in &mut d.sections {
@@ -1774,13 +1775,33 @@ pub fn is_materialized_generated_picture(picture: &hwp_model::Picture, media: &[
 // hardware checks reported corruption: using a 252-byte line template for a rectangle shifted
 // border/fill sections by 13 bytes relative to the genuine 239-byte layout, with attr/desc
 // mismatches. Without self-verifiable Hangul acceptance, resynthesis risks corruption; degrade
-// safely instead. Hoist text-box paragraphs into the body to preserve text, and leave textless
-// decorations for strip_unwritable_pictures to remove. Correct per-kind synthesis from genuine
-// templates remains follow-up work requiring repeated owner hardware checks.
+// safely instead. Hoist text-box and caption content into the body; leave decorations without
+// either kind of content for strip_unwritable_pictures to remove. Correct per-kind synthesis from
+// genuine templates remains follow-up work requiring repeated owner hardware checks.
 
-/// Hoists HWPX-origin text-box paragraphs into the body, preserving text without the shape wrapper.
-/// Leave textless decorations for stripping. Recurse through body, table-cell and nested paragraph
-/// lists.
+/// Caption lists represented semantically in the emitted document. A raw-backed Generic's
+/// caption is only an extraction mirror; its raw tree remains the serialization source.
+fn semantic_caption_mut(control: &mut Control) -> Option<&mut Caption> {
+    match control {
+        Control::Table(table) => table.caption.as_mut(),
+        Control::Picture(picture) => picture.caption.as_mut(),
+        Control::Generic(generic) if generic.raw_children.is_empty() => generic.caption.as_mut(),
+        _ => None,
+    }
+}
+
+/// Matches the generic-control stripping policy; generated notes can emit their lists.
+fn generic_payload_is_unwritable(generic: &hwp_model::GenericControl) -> bool {
+    generic.data.is_empty()
+        && generic.ctrl_id != *b"cold"
+        && generic.raw_children.is_empty()
+        && !((generic.ctrl_id == *b"fn  " || generic.ctrl_id == *b"en  ")
+            && !generic.paragraph_lists.is_empty())
+}
+
+/// Hoists unsupported HWPX text-box and caption content into the body without a shape wrapper.
+/// Caption reparenting retains the typed wrapper loss. Leave content-free decorations for stripping.
+/// Recurse through emitted cells, paragraph lists and captions, never raw extraction mirrors.
 fn degrade_hwpx_gso(doc: &mut Document, warnings: &mut WriteReport) {
     for section in &mut doc.sections {
         degrade_hwpx_gso_list(&mut section.paragraphs, warnings);
@@ -1788,9 +1809,12 @@ fn degrade_hwpx_gso(doc: &mut Document, warnings: &mut WriteReport) {
 }
 
 fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut WriteReport) {
-    // Recurse first through nested containers: table cells and every Generic paragraph list.
+    // Process nested emitted content before hoisting this list's unsupported wrappers.
     for p in paras.iter_mut() {
         for c in &mut p.controls {
+            if matches!(&*c, Control::Generic(g) if !g.raw_children.is_empty()) {
+                continue;
+            }
             match c {
                 Control::Table(t) => {
                     for cell in &mut t.cells {
@@ -1804,6 +1828,9 @@ fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut WriteReport)
                 }
                 _ => {}
             }
+            if let Some(caption) = semantic_caption_mut(c) {
+                degrade_hwpx_gso_list(&mut caption.paragraphs, warnings);
+            }
         }
     }
     // Expand HWPX-origin gso text-box paragraphs in this list into the body after the host
@@ -1813,21 +1840,38 @@ fn degrade_hwpx_gso_list(paras: &mut Vec<Paragraph>, warnings: &mut WriteReport)
         let mut hoisted: Vec<Paragraph> = Vec::new();
         let mut removed: Vec<u32> = Vec::new();
         for (i, c) in p.controls.iter().enumerate() {
-            if let Control::Generic(g) = c
-                && g.ctrl_id != *b"gso "
-                && !g.gso_shapes.is_empty()
-                && g.raw_children.is_empty()
-                && g.data.is_empty()
-                && !g.paragraph_lists.is_empty()
-            {
-                for l in &g.paragraph_lists {
-                    hoisted.extend(l.paragraphs.iter().cloned());
-                }
-                removed.push(i as u32);
+            let Control::Generic(g) = c else { continue };
+            if !g.raw_children.is_empty() || !g.data.is_empty() {
+                continue;
+            }
+            let text_box =
+                g.ctrl_id != *b"gso " && !g.gso_shapes.is_empty() && !g.paragraph_lists.is_empty();
+            let caption = g.caption.as_ref().filter(|caption| {
+                !caption.paragraphs.is_empty() && (text_box || generic_payload_is_unwritable(g))
+            });
+            if !text_box && caption.is_none() {
+                continue;
+            }
+            for list in &g.paragraph_lists {
+                hoisted.extend(list.paragraphs.iter().cloned());
+            }
+            if text_box {
                 warnings.warning(
                     "hwpx 출신 글상자를 본문 텍스트로 저하(도형 래퍼 생략 — 한글 수용)".to_string(),
                 );
             }
+            if let Some(caption) = caption {
+                hoisted.extend(caption.paragraphs.iter().cloned());
+                // Keep the wrapper loss that stripping would report, including under --strict.
+                warnings.loss(
+                    PreservationCode::OpaqueControlUnrepresentable,
+                    PreservationResourceKind::Control,
+                    PreservationDisposition::Unrepresentable,
+                    1,
+                );
+                warnings.warning("HWPX 도형 캡션을 본문으로 옮김(원래 개체·캡션 배치 보존 불가)");
+            }
+            removed.push(i as u32);
         }
         if !removed.is_empty() {
             let mut kept = Vec::with_capacity(p.controls.len());
@@ -1888,17 +1932,26 @@ fn has_synthesizable_gso(doc: &Document) -> bool {
 /// Recursively checks for inserted pictures with empty extras and no shape records. Enable picture
 /// synthesis even for HWP5 origin, or strip_unwritable_pictures removes them.
 fn has_synthesizable_picture(doc: &Document) -> bool {
+    fn in_caption(caption: &Option<Caption>) -> bool {
+        caption
+            .as_ref()
+            .is_some_and(|caption| caption.paragraphs.iter().any(in_para))
+    }
     fn in_para(p: &Paragraph) -> bool {
         p.controls.iter().any(|c| match c {
-            Control::Picture(pic) => pic.extras.is_empty(),
-            Control::Table(t) => t
-                .cells
-                .iter()
-                .any(|cell| cell.paragraphs.iter().any(in_para)),
-            Control::Generic(g) => g
-                .paragraph_lists
-                .iter()
-                .any(|l| l.paragraphs.iter().any(in_para)),
+            Control::Picture(pic) => pic.extras.is_empty() || in_caption(&pic.caption),
+            Control::Table(t) => {
+                in_caption(&t.caption)
+                    || t.cells
+                        .iter()
+                        .any(|cell| cell.paragraphs.iter().any(in_para))
+            }
+            Control::Generic(g) if g.raw_children.is_empty() => {
+                in_caption(&g.caption)
+                    || g.paragraph_lists
+                        .iter()
+                        .any(|list| list.paragraphs.iter().any(in_para))
+            }
             _ => false,
         })
     }
@@ -2189,8 +2242,8 @@ fn fill_head_foot_list_header(para: &mut Paragraph, text_width: i32, head_h: i32
     }
 }
 
-/// Synthesizes shape records for empty-extras pictures in a paragraph, recursing through table
-/// cells/text boxes.
+/// Synthesizes picture records across emitted body/cell/text-box paragraphs and every caption.
+/// All positions share the same binary resolver, storage assignments and instance-id allocator.
 #[allow(clippy::too_many_arguments)]
 fn synth_pictures_para(
     para: &mut Paragraph,
@@ -2205,6 +2258,9 @@ fn synth_pictures_para(
     warnings: &mut WriteReport,
 ) {
     for control in &mut para.controls {
+        if matches!(&*control, Control::Generic(g) if !g.raw_children.is_empty()) {
+            continue;
+        }
         match control {
             Control::Picture(p) if p.extras.is_empty() => {
                 // Resolve the stream this picture actually references: BinRef::Id
@@ -2354,6 +2410,14 @@ fn synth_pictures_para(
             }
             _ => {}
         }
+        if let Some(caption) = semantic_caption_mut(control) {
+            for paragraph in &mut caption.paragraphs {
+                synth_pictures_para(
+                    paragraph, bin_names, bin_dims, bin_index, assigned, next_id, inst, new_items,
+                    renames, warnings,
+                );
+            }
+        }
     }
 }
 
@@ -2389,6 +2453,10 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
     let mut removed: Vec<u32> = Vec::new();
     let mut kept = Vec::with_capacity(para.controls.len());
     for (i, mut control) in std::mem::take(&mut para.controls).into_iter().enumerate() {
+        if matches!(&control, Control::Generic(g) if !g.raw_children.is_empty()) {
+            kept.push(control);
+            continue;
+        }
         match &mut control {
             Control::Picture(p) if p.extras.is_empty() => {
                 warnings.loss(
@@ -2404,13 +2472,7 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
             // automatic numbering, etc.). Preserve HWP5 originals with raw_children. Exception:
             // footnotes/endnotes (fn/en) normally have only ctrl_id and empty CTRL_HEADER data;
             // their paragraph_lists can synthesize LIST_HEADER plus paragraphs, so preserve them.
-            Control::Generic(g)
-                if g.data.is_empty()
-                    && g.ctrl_id != *b"cold"
-                    && g.raw_children.is_empty()
-                    && !((g.ctrl_id == *b"fn  " || g.ctrl_id == *b"en  ")
-                        && !g.paragraph_lists.is_empty()) =>
-            {
+            Control::Generic(g) if generic_payload_is_unwritable(g) => {
                 warnings.loss(
                     PreservationCode::OpaqueControlUnrepresentable,
                     PreservationResourceKind::Control,
@@ -2435,6 +2497,11 @@ fn strip_unwritable_pictures(para: &mut Paragraph, warnings: &mut WriteReport) {
                 }
             }
             _ => {}
+        }
+        if let Some(caption) = semantic_caption_mut(&mut control) {
+            for paragraph in &mut caption.paragraphs {
+                strip_unwritable_pictures(paragraph, warnings);
+            }
         }
         kept.push(control);
     }
@@ -5740,6 +5807,183 @@ mod tests {
             hwpx_raw_xml: None,
             container_box: None,
         })
+    }
+
+    fn caption_picture_fixture(owner: &str, picture: Picture) -> Document {
+        let caption = Caption {
+            side: CaptionSide::Bottom,
+            direction: CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![Paragraph {
+                chars: vec![
+                    HwpChar::ExtCtrl {
+                        code: 11,
+                        ctrl_id: *b"gso ",
+                        payload: vec![0; 12],
+                        ctrl_index: Some(0),
+                    },
+                    HwpChar::CharCtrl(13),
+                ],
+                controls: vec![Control::Picture(picture)],
+                ..Paragraph::default()
+            }],
+        };
+        let owner = match owner {
+            "table" => {
+                let mut table = synth_table(None);
+                table.caption = Some(caption);
+                Control::Table(table)
+            }
+            "picture" => {
+                let Control::Picture(mut outer) = picture_with_instance_id(0x3000_0100) else {
+                    unreachable!()
+                };
+                outer.extras = build_picture_extras(100, 100, (100, 100), 1, 0x3010_0100);
+                outer.caption = Some(caption);
+                Control::Picture(outer)
+            }
+            "generic" => {
+                let Control::Generic(mut generic) = shape_caption_holding(Vec::new()) else {
+                    unreachable!()
+                };
+                generic.caption = Some(caption);
+                Control::Generic(generic)
+            }
+            _ => unreachable!(),
+        };
+        let mut document = Document::default();
+        document.meta.source_format = "hwp5".into();
+        document.sections.push(Section {
+            paragraphs: vec![Paragraph {
+                controls: vec![owner],
+                ..Paragraph::default()
+            }],
+            extras: Vec::new(),
+        });
+        document
+    }
+
+    #[test]
+    fn caption_picture_discovery_reaches_every_caption_owner() {
+        let mut missed = Vec::new();
+        for owner in ["table", "picture", "generic"] {
+            let Control::Picture(picture) = picture_with_instance_id(0) else {
+                unreachable!()
+            };
+            let document = caption_picture_fixture(owner, picture);
+            if !has_synthesizable_picture(&document) {
+                missed.push(owner);
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "caption-only inserted pictures must enable native-origin synthesis: {missed:?}"
+        );
+    }
+
+    #[test]
+    fn caption_picture_raw_generic_mirrors_stay_untouched() {
+        let Control::Picture(picture) = picture_with_instance_id(0) else {
+            unreachable!()
+        };
+        let mut document = caption_picture_fixture("generic", picture);
+        document.bin_streams.push(hwp_model::BinStream {
+            name: "unrelated.png".into(),
+            data: vec![1],
+        });
+        let Control::Generic(generic) = &mut document.sections[0].paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        generic.raw_children = vec![OpaqueRecord {
+            tag: tag::SHAPE_COMPONENT,
+            data: b"opaque primary tree".to_vec(),
+            children: Vec::new(),
+        }];
+        assert!(
+            !has_synthesizable_picture(&document),
+            "an extraction-only caption is not emitted"
+        );
+        let original = document.clone();
+        let mut report = WriteReport::new();
+        synthesize_pictures(&mut document, &mut report);
+        strip_unwritable_pictures(&mut document.sections[0].paragraphs[0], &mut report);
+        assert_eq!(
+            document, original,
+            "raw-backed controls must keep their semantic mirrors untouched"
+        );
+        assert!(
+            report.preservation.is_lossless(),
+            "no binary loss may be invented for an un-emitted mirror"
+        );
+    }
+
+    #[test]
+    fn caption_picture_raw_list_mirrors_do_not_enable_synthesis() {
+        let Control::Picture(picture) = picture_with_instance_id(0) else {
+            unreachable!()
+        };
+        let mut document = caption_picture_fixture("generic", picture);
+        let Control::Generic(generic) = &mut document.sections[0].paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        generic.raw_children = vec![OpaqueRecord {
+            tag: tag::SHAPE_COMPONENT,
+            data: b"opaque primary tree".to_vec(),
+            children: Vec::new(),
+        }];
+        generic.paragraph_lists.push(hwp_model::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: generic.caption.as_ref().unwrap().paragraphs.clone(),
+        });
+        assert!(
+            !has_synthesizable_picture(&document),
+            "raw-backed extraction lists are not emitted and must not trigger synthesis"
+        );
+    }
+
+    #[test]
+    fn caption_picture_unresolved_assets_follow_body_loss_and_cleanup_rules() {
+        let Control::Picture(picture) = picture_with_instance_id(0) else {
+            unreachable!()
+        };
+        let mut document = caption_picture_fixture("table", picture);
+        document.bin_streams.push(hwp_model::BinStream {
+            name: "unrelated.png".into(),
+            data: vec![1],
+        });
+        let mut report = WriteReport::new();
+        synthesize_pictures(&mut document, &mut report);
+        strip_unwritable_pictures(&mut document.sections[0].paragraphs[0], &mut report);
+        let Control::Table(table) = &document.sections[0].paragraphs[0].controls[0] else {
+            unreachable!()
+        };
+        let para = &table.caption.as_ref().unwrap().paragraphs[0];
+        assert!(
+            para.controls.is_empty(),
+            "unwritable caption pictures must be removed just like body pictures"
+        );
+        assert!(
+            !para
+                .chars
+                .iter()
+                .any(|ch| matches!(ch, HwpChar::ExtCtrl { .. })),
+            "removed caption pictures must leave no dangling anchor"
+        );
+        for code in [
+            PreservationCode::BinaryAssetRemoved,
+            PreservationCode::PictureControlRemoved,
+        ] {
+            assert!(
+                report
+                    .preservation
+                    .events
+                    .iter()
+                    .any(|event| event.code == code && event.count == 1),
+                "caption loss must report {code:?}"
+            );
+        }
     }
 
     /// The HWP5 reader keeps a shape's caption apart from its paragraph lists, so a picture

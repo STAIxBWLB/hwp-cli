@@ -40,6 +40,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   another picture. Manifest precedence and native `BinRef::Id` compatibility are preserved
   ([#453](https://github.com/STAIxBWLB/hwp-cli/issues/453)).
 
+- HWP5 picture discovery, synthesis and cleanup reach table, picture and Generic captions,
+  including nested captions. Caption images retain their binary data and picture records;
+  unsupported HWPX shape wrappers still degrade safely, with their caption content moved to
+  the body and wrapper/placement loss reported through `OpaqueControlUnrepresentable`.
+  Raw-backed extraction mirrors remain untouched. Native caption-picture parity is unverified
+  ([#455](https://github.com/STAIxBWLB/hwp-cli/issues/455)).
+
 - A floating-table section's line-layout prepass now reports whether it collected every
   paragraph's anchor instead of returning default zero positions. An interrupted pass (a refused
   page transition, or a paragraph it never reached) no longer publishes its empty entries as
