@@ -79,7 +79,9 @@ Conversion remains allowed: CLI stderr and MCP `ConvertReport.warnings` report
 `numbering_default_substitution` with definition/level IDs and the changed template/format/start
 categories whenever an unbacked modeled definition becomes that fallback. The warning does not
 echo private marker text. Definitions with raw NUMBERING records and modeled levels equal to the
-actual defaults do not produce this warning. A successful conversion is not a claim that its
+actual defaults do not produce this warning. Levels beyond the fallback's seven slots count only
+when a numbered paragraph references that definition and level; unused HWPX or Markdown extension
+levels do not warn. Differences within the seven slots still warn even if unused. A successful conversion is not a claim that its
 requested list markers were retained. Compose's HWP verification separately checks used levels
 before generic fallback projection, so substituted templates/starts or known default format
 selectors cannot pass silently even if an authoring guard regresses.

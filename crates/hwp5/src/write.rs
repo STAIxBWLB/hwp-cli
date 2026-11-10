@@ -2874,6 +2874,41 @@ fn hwp_string(w: &mut ByteWriter, s: &str) {
 
 // ─────────────────────────── DocInfo ───────────────────────────
 
+/// Numbering references in paragraphs emitted from the model, excluding raw-only mirrors.
+fn referenced_numbering_levels(doc: &Document) -> BTreeSet<(usize, usize)> {
+    let mut used = BTreeSet::new();
+    let mut pending: Vec<_> = doc.sections.iter().flat_map(|s| &s.paragraphs).collect();
+    while let Some(paragraph) = pending.pop() {
+        if let Some(shape) = doc.header.para_shapes.get(paragraph.para_shape.0 as usize)
+            && shape.head_type() == 2
+        {
+            used.insert((shape.numbering_id as usize, shape.head_level() as usize - 1));
+        }
+        for control in &paragraph.controls {
+            let caption = match control {
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        pending.extend(&cell.paragraphs);
+                    }
+                    &table.caption
+                }
+                Control::Picture(picture) => &picture.caption,
+                Control::Generic(generic) if generic.raw_children.is_empty() => {
+                    for list in &generic.paragraph_lists {
+                        pending.extend(&list.paragraphs);
+                    }
+                    &generic.caption
+                }
+                Control::Generic(_) | Control::SectionDef(_) => continue,
+            };
+            if let Some(caption) = caption {
+                pending.extend(&caption.paragraphs);
+            }
+        }
+    }
+    used
+}
+
 fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> {
     let h = &doc.header;
     let mut roots = Vec::new();
@@ -2908,6 +2943,7 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
     // Raw-backed definitions are emitted verbatim, including the official records already
     // materialized upstream. Only unbacked modeled levels can be replaced by the default.
     let default_levels = synthesized_numbering_levels();
+    let used_levels = referenced_numbering_levels(doc);
     for (definition, levels) in h
         .numbering_levels
         .iter()
@@ -2919,6 +2955,11 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
         let mut changed_format = false;
         let mut changed_start = false;
         for (index, level) in levels.iter().enumerate() {
+            // HWPX and Markdown carry extra unused levels beyond the native seven-slot
+            // fallback. Their absence changes visible numbering only if a paragraph uses one.
+            if index >= default_levels.len() && !used_levels.contains(&(definition, index)) {
+                continue;
+            }
             let default = default_levels.get(index);
             let template_changed = default.is_none_or(|value| value.template != level.template);
             // The reader drops format selectors, so compare what Hancom actually draws.
@@ -4366,6 +4407,127 @@ mod tests {
         assert!(warning.contains("HWPX"), "{warning}");
         assert!(!warning.contains(private_marker), "{warning}");
         assert!(report.preservation.events.is_empty());
+    }
+
+    #[test]
+    fn emit_doc_info_warns_for_used_eighth_level_in_each_emitted_paragraph_scope() {
+        let numbered = Paragraph {
+            para_shape: hwp_model::ParaShapeId(1),
+            chars: vec![HwpChar::Text('x')],
+            ..Paragraph::default()
+        };
+        let caption = Caption {
+            side: CaptionSide::Bottom,
+            direction: CaptionDirection::Horizontal,
+            gap: 0,
+            width: None,
+            last_width: 0,
+            paragraphs: vec![numbered.clone()],
+        };
+        for scope in [
+            "body",
+            "cell",
+            "table-caption",
+            "picture-caption",
+            "header",
+            "footer",
+            "shape-caption",
+        ] {
+            let mut root = Paragraph::default();
+            match scope {
+                "body" => root = numbered.clone(),
+                "cell" | "table-caption" => {
+                    let mut table = synth_table(None);
+                    if scope == "cell" {
+                        table.cells.push(Cell {
+                            list_attr: 0,
+                            col: 0,
+                            row: 0,
+                            col_span: 1,
+                            row_span: 1,
+                            width: hwp_model::HwpUnit(1000),
+                            height: hwp_model::HwpUnit(1000),
+                            margins: [0; 4],
+                            border_fill: hwp_model::BorderFillId(0),
+                            header_tail: Vec::new(),
+                            paragraphs: vec![numbered.clone()],
+                        });
+                    } else {
+                        table.caption = Some(caption.clone());
+                    }
+                    root.controls.push(Control::Table(table));
+                }
+                "picture-caption" => {
+                    let Control::Picture(mut picture) = picture_with_instance_id(1) else {
+                        unreachable!()
+                    };
+                    picture.caption = Some(caption.clone());
+                    root.controls.push(Control::Picture(picture));
+                }
+                _ => {
+                    let Control::Generic(mut generic) = shape_caption_holding(Vec::new()) else {
+                        unreachable!()
+                    };
+                    if scope == "shape-caption" {
+                        generic.caption = Some(caption.clone());
+                    } else {
+                        generic.ctrl_id = if scope == "header" {
+                            *b"head"
+                        } else {
+                            *b"foot"
+                        };
+                        generic.caption = None;
+                        generic.paragraph_lists.push(hwp_model::ParagraphList {
+                            header_data: Vec::new(),
+                            paragraphs: vec![numbered.clone()],
+                        });
+                    }
+                    root.controls.push(Control::Generic(generic));
+                }
+            }
+            let mut doc = Document::default();
+            let mut levels = drawn_default_numbering_levels();
+            let mut eighth = levels[0].clone();
+            eighth.template = "^8".to_string();
+            levels.push(eighth);
+            // Only definition 1 is referenced; an unused shape is not a paragraph use.
+            doc.header.numbering_levels = vec![levels.clone(), levels];
+            doc.header.para_shapes = vec![
+                ParaShape::default(),
+                ParaShape {
+                    attr1: 2 << 23,
+                    list_level: Some(8),
+                    numbering_id: 1,
+                    ..ParaShape::default()
+                },
+            ];
+            let mut unused_report = WriteReport::new();
+            emit_doc_info(&doc, &mut unused_report);
+            assert!(
+                unused_report.warnings.is_empty(),
+                "{scope}: {:?}",
+                unused_report.warnings
+            );
+            doc.sections.push(Section {
+                paragraphs: vec![root],
+                extras: Vec::new(),
+            });
+            let mut report = WriteReport::new();
+            let roots = emit_doc_info(&doc, &mut report);
+            assert!(
+                roots
+                    .iter()
+                    .flat_map(|r| &r.children)
+                    .filter(|r| r.tag == tag::NUMBERING)
+                    .all(|r| r.data == DEFAULT_NUMBERING_DATA)
+            );
+            assert_eq!(report.warnings.len(), 1, "{scope}: {:?}", report.warnings);
+            assert!(
+                report.warnings[0].contains("definition=1 levels=[7]"),
+                "{scope}: {:?}",
+                report.warnings
+            );
+        }
     }
 
     #[test]

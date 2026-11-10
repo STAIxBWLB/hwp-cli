@@ -76,7 +76,10 @@ HWP 기본 레코드로 보존할 수 없는 사용자 번호에는 HWPX를 사�
 stderr와 MCP `ConvertReport.warnings`에 `numbering_default_substitution`을 기록한다.
 경고에는 정의·수준 ID와 바뀌는 template/format/start 분류를 넣고, 비공개 marker 텍스트는
 내보내지 않는다. 원시 NUMBERING 레코드가 있는 정의나 실제 기본값과 일치하는 모델 수준에는
-이 경고가 없다. 변환 성공이 요청한 번호 marker의 보존을 뜻하지는 않는다. compose의 HWP
+이 경고가 없다. 기본 레코드의 7개 슬롯을 넘는 수준은 번호 문단이 해당 정의·수준을 실제로
+참조할 때만 경고한다. 사용하지 않는 HWPX·Markdown 확장 수준에는 경고하지 않으며, 7개
+슬롯 안의 차이는 사용 여부와 관계없이 계속 경고한다. 변환 성공이 요청한 번호 marker의
+보존을 뜻하지는 않는다. compose의 HWP
 검증은 일반 기본값 투영 전에 사용된 수준을 별도로 비교하므로, 작성 단계의 검사가 누락돼도
 바뀐 template/start나 알려진 기본 format selector가 조용히 통과하지 않는다.
 

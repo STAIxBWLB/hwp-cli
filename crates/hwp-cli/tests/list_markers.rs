@@ -164,8 +164,8 @@ fn convert_hwp_warns_instead_of_silently_substituting_custom_numbering() {
 #[test]
 fn convert_sample_default_ladder_does_not_warn_about_unused_extended_levels() {
     let dir = workspace("default-sample-convert");
-    let input = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/samples/report-tables.hwpx");
+    let input =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx");
     let run = hwp()
         .arg("convert")
         .arg(input)
