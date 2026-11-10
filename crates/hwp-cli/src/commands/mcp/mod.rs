@@ -81,7 +81,7 @@ pub fn handle_request(line: &str, ctx: &dyn FileAuthority) -> Option<String> {
                 json!({
                     "protocolVersion": protocol_version,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "hwp-cli", "version": env!("CARGO_PKG_VERSION")},
+                    "serverInfo": {"name": "agent-hwp", "version": env!("CARGO_PKG_VERSION")},
                 }),
             ))
         }

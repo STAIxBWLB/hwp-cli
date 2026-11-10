@@ -21,10 +21,10 @@ for tool in pdfinfo pdffonts pdftotext pdftoppm python3; do
   }
 done
 
-HWP_BIN="${HWP_BIN:-$ROOT/target/debug/hwp}"
+HWP_BIN="${HWP_BIN:-$ROOT/target/debug/ahwp}"
 if [ ! -x "$HWP_BIN" ]; then
-  echo "[pdf-parity] hwp 빌드"
-  cargo build -p hwp-cli --quiet
+  echo "[pdf-parity] ahwp 빌드"
+  cargo build -p agent-hwp --quiet
 fi
 
 MANIFEST="${PDF_PARITY_MANIFEST:-$ROOT/fixtures/pdf-parity/public/manifest.json}"
@@ -39,7 +39,7 @@ case "$cmd" in
   run)
     shift
     # Build the closed-schema validator used before scoring and before publishing.
-    cargo build -p hwp-cli --example validate_structured_corpus --quiet
+    cargo build -p agent-hwp --example validate_structured_corpus --quiet
     python3 tools/pdf_parity.py run --hwp-bin "$HWP_BIN" \
       --manifest "$MANIFEST" --out "$OUT_DIR" "$@"
     ;;

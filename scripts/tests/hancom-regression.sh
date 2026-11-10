@@ -407,12 +407,12 @@ fi
 # files and reaches the fonts rule with a non-empty resolution log. The stub
 # artifact is not a document, so a committed sample stands in beside a copy of
 # the policy. Synthetic bytes resolve nothing; the pins being accepted is the
-# point. scripts/check.sh and CI build target/debug/hwp before this runs.
+# point. scripts/check.sh and CI build target/debug/ahwp before this runs.
 CERT_BIN="${HWP_REGRESSION_CERTIFY_BIN:-${CARGO_TARGET_DIR:-$REPO/target}/debug/hwp}"
 certdir="$ROOT/certify"
 mkdir -p "$certdir"
 if [[ ! -x "$CERT_BIN" ]]; then
-  fail 'certify end to end' "no hwp binary at $CERT_BIN; run cargo build -p hwp-cli first"
+  fail 'certify end to end' "no ahwp binary at $CERT_BIN; run cargo build -p agent-hwp first"
 else
   cp -R "$ROOT/fonts/current/fonts" "$certdir/fonts"
   cp "$REPO/fixtures/samples/report-tables.hwpx" "$certdir/sample.hwpx"

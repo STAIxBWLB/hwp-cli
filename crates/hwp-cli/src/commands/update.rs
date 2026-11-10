@@ -1,15 +1,15 @@
-//! `hwp update` — 자체 업데이트.
+//! `ahwp update`: self-update with the 1.x compatibility bridge.
 //!
-//! GitHub 릴리스에 올라간 플랫폼별 아카이브(`release.yml`의 `upload-assets` 산출물)를 받아
-//! 실행 중인 바이너리를 교체한다. **새 런타임 크레이트를 들이지 않으려고** 네트워크는
-//! `curl`, 압축 해제는 `tar`에 위임한다(둘 다 macOS·Linux·Windows 10 1803+ 기본 탑재).
-//! 외부 명령은 전부 인자 벡터로 실행한다 — 셸 문자열 조립 없음(주입 방지).
+//! Download platform-specific GitHub release archives (`release.yml` upload-assets output)
+//! and replace the resolved running executable. To avoid new runtime dependencies, delegate
+//! network access to `curl` and extraction to `tar` (available on macOS/Linux/Windows 10 1803+).
+//! Invoke external commands with argument vectors, without assembling shell strings.
 //!
-//! Homebrew 설치본은 **덮어쓰지 않고** `brew upgrade hwp`에 위임한다. Cellar 바이너리를
-//! 직접 갈아끼우면 brew 매니페스트와 어긋나 다음 `brew upgrade`가 조용히 되돌린다.
+//! Delegate Homebrew installations to `brew upgrade ahwp` instead of replacing Cellar binaries.
+//! Direct replacement would disagree with the manifest and be reverted by a later brew upgrade.
 //!
-//! 순수 로직(버전 비교·타깃 매핑·자산 이름·설치 종류 판별·파일 교체)과 부작용(curl/tar
-//! 호출)을 나눠 뒀다 — 앞쪽은 네트워크 없이 단위 테스트한다.
+//! Separate version/target/asset/install-kind/replacement logic from curl/tar side effects;
+//! the former is tested without network access.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -20,9 +20,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const REPO: &str = "STAIxBWLB/hwp-cli";
-const BIN: &str = "hwp";
+const BIN: &str = "ahwp";
+const LEGACY_BIN: &str = "hwp";
 
-/// 릴리스 아카이브 형식 — 타깃별로 `release.yml`이 만드는 확장자.
+/// Release archive formats produced for each target by `release.yml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Archive {
     TarGz,
@@ -38,17 +39,17 @@ impl Archive {
     }
 }
 
-/// 설치 경로가 말해 주는 설치 방식 — 교체 전략이 갈린다.
+/// Installation kind inferred from the resolved executable path, selecting replacement policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallKind {
-    /// Homebrew Cellar 아래 — brew에 위임한다.
+    /// Inside Homebrew Cellar: delegate to brew.
     Brew,
-    /// 그 외(직접 내려받기·`cargo install`) — 파일을 직접 교체해도 안전하다.
+    /// Other installations (direct download or cargo install): replace the executable directly.
     Plain,
 }
 
-/// (os, arch) → 릴리스가 실제로 게시하는 타깃 트리플. 지원 밖이면 None.
-/// 매트릭스 정본은 `.github/workflows/release.yml`의 `upload-assets`다.
+/// Map (os, arch) to a published release target triple; return None for unsupported targets.
+/// The canonical target matrix is upload-assets in `.github/workflows/release.yml`.
 pub fn target_triple(os: &str, arch: &str) -> Option<(&'static str, Archive)> {
     match (os, arch) {
         ("macos", "aarch64") => Some(("aarch64-apple-darwin", Archive::TarGz)),
@@ -60,18 +61,22 @@ pub fn target_triple(os: &str, arch: &str) -> Option<(&'static str, Archive)> {
     }
 }
 
-/// 자산 이름 — `release.yml`의 `archive: $bin-$tag-$target` 규칙과 대칭.
-/// 예: `hwp-v0.3.0-aarch64-apple-darwin.tar.gz` + 같은 이름의 `.sha256`.
+/// Canonical asset names matching the release workflow archive rule: $bin-$tag-$target.
+/// For example, `ahwp-v1.6.0-aarch64-apple-darwin.tar.gz` and the matching `.sha256`.
 pub fn asset_names(tag: &str, triple: &str, archive: Archive) -> (String, String) {
-    let stem = format!("{BIN}-{tag}-{triple}");
+    asset_names_for(BIN, tag, triple, archive)
+}
+
+fn asset_names_for(bin: &str, tag: &str, triple: &str, archive: Archive) -> (String, String) {
+    let stem = format!("{bin}-{tag}-{triple}");
     (
         format!("{stem}.{}", archive.ext()),
         format!("{stem}.sha256"),
     )
 }
 
-/// 태그가 `v?X.Y.Z[-pre]` 꼴인지 확인한다. URL·파일명에 그대로 들어가므로
-/// 경로 탈출(`../`)·질의 문자열 주입을 여기서 막는다.
+/// Validate the `v?X.Y.Z[-pre]` tag shape before interpolating it into URLs and file names,
+/// rejecting path traversal (`../`) and query-string injection.
 pub fn validate_tag(tag: &str) -> Result<()> {
     let body = tag.strip_prefix('v').unwrap_or(tag);
     let (core, pre) = match body.split_once('-') {
@@ -95,7 +100,7 @@ pub fn validate_tag(tag: &str) -> Result<()> {
     }
 }
 
-/// 버전 문자열을 (major, minor, patch, 릴리스여부)로. 파싱 실패분은 0으로 취급한다.
+/// Parse (major, minor, patch, stable-release); invalid numeric components become zero.
 fn parse_version(v: &str) -> (u64, u64, u64, bool) {
     let body = v.trim().trim_start_matches('v');
     let (core, pre) = match body.split_once('-') {
@@ -107,17 +112,17 @@ fn parse_version(v: &str) -> (u64, u64, u64, bool) {
         it.next().unwrap_or(0),
         it.next().unwrap_or(0),
         it.next().unwrap_or(0),
-        pre.is_none(), // 프리릴리스는 같은 (X.Y.Z) 정식판보다 낮다
+        pre.is_none(), // Prereleases rank below a stable release with the same X.Y.Z.
     )
 }
 
-/// `latest`가 `current`보다 새 버전인가.
+/// Whether `latest` is newer than `current`.
 pub fn is_newer(current: &str, latest: &str) -> bool {
     parse_version(latest) > parse_version(current)
 }
 
-/// 실행 파일 경로로 설치 방식을 판별한다. brew는 심볼릭 링크(`bin/hwp` → `Cellar/…`)를
-/// 쓰므로 호출부가 canonical 경로를 넘긴다.
+/// Infer installation kind from the executable path. Homebrew uses links into Cellar,
+/// so callers pass the canonical executable path.
 pub fn install_kind(exe: &Path) -> InstallKind {
     let p = exe.to_string_lossy().replace('\\', "/");
     if p.contains("/Cellar/") || p.contains("/homebrew/") || p.contains("/linuxbrew/") {
@@ -127,8 +132,8 @@ pub fn install_kind(exe: &Path) -> InstallKind {
     }
 }
 
-/// 새 바이너리를 제자리 교체한다. 임시 파일은 **대상과 같은 디렉터리**에 만든다
-/// (rename은 같은 파일시스템 안에서만 원자적). 실패하면 백업으로 되돌린다.
+/// Replace the executable in place, staging in the target directory for same-filesystem
+/// atomic rename. Restore the backup if replacement fails.
 pub fn replace_binary(target: &Path, new_file: &Path) -> Result<()> {
     let dir = target
         .parent()
@@ -144,17 +149,17 @@ pub fn replace_binary(target: &Path, new_file: &Path) -> Result<()> {
     })?;
     copy_exec_mode(target, &staged)?;
 
-    // 원본을 백업으로 옮긴 뒤 새 것을 제자리로. Windows는 실행 중인 exe를 덮어쓸 수 없어
-    // 이 "먼저 비켜 놓기"가 필수고, unix에서도 실패 시 복원 경로가 된다.
+    // Move the original aside before replacing it: Windows cannot overwrite a running executable,
+    // and the backup also provides the recovery path on Unix.
     let _ = std::fs::remove_file(&backup);
     std::fs::rename(target, &backup)
         .with_context(|| format!("기존 바이너리를 비켜 놓지 못했습니다: {}", target.display()))?;
     if let Err(e) = std::fs::rename(&staged, target) {
-        let _ = std::fs::rename(&backup, target); // 되돌리기
+        let _ = std::fs::rename(&backup, target); // Roll back.
         let _ = std::fs::remove_file(&staged);
         return Err(e).context("새 바이너리를 제자리에 놓지 못했습니다(원본 복원됨)");
     }
-    // 실행 중인 파일이라 지우지 못할 수 있다(Windows) — 남아도 무해하다.
+    // Windows may keep the running backup locked; leaving it is harmless.
     let _ = std::fs::remove_file(&backup);
     Ok(())
 }
@@ -162,7 +167,7 @@ pub fn replace_binary(target: &Path, new_file: &Path) -> Result<()> {
 #[cfg(unix)]
 fn copy_exec_mode(from: &Path, to: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
-    // 기존 바이너리 권한을 승계하고, 없으면 0755.
+    // Inherit the executable mode, falling back to 0755 if unavailable.
     let mode = std::fs::metadata(from)
         .map(|m| m.permissions().mode())
         .unwrap_or(0o755);
@@ -172,11 +177,11 @@ fn copy_exec_mode(from: &Path, to: &Path) -> Result<()> {
 
 #[cfg(not(unix))]
 fn copy_exec_mode(_from: &Path, _to: &Path) -> Result<()> {
-    Ok(()) // Windows는 확장자로 실행 여부가 정해진다.
+    Ok(()) // Windows executable recognition uses the extension.
 }
 
-/// curl로 한 파일을 받는다. HTTPS·TLS1.2 이상만 허용하고 HTTP 오류는 실패로 만든다(-f).
-fn download(url: &str, dest: &Path) -> Result<()> {
+/// Download one file over HTTPS/TLS 1.2+. Only curl exit 22 with HTTP 404 means absent.
+fn download(url: &str, dest: &Path) -> Result<bool> {
     let out = Command::new("curl")
         .args([
             "-fsSL",
@@ -185,22 +190,45 @@ fn download(url: &str, dest: &Path) -> Result<()> {
             "--tlsv1.2",
             "--retry",
             "2",
+            "-w",
+            "%{http_code}",
             "-o",
         ])
         .arg(dest)
         .arg(url)
         .output()
         .map_err(|e| anyhow!("curl 실행 실패({e}) — curl이 설치돼 있어야 합니다: {url}"))?;
-    if !out.status.success() {
-        bail!(
-            "내려받기 실패: {url}\n{}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
+    download_result(
+        out.status.code(),
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+        url,
+    )
 }
 
-/// curl로 받은 본문을 문자열로 돌려준다(GitHub API 조회용).
+/// Interpret explicit curl status fields without treating transport errors as absent assets.
+fn download_result(
+    exit_code: Option<i32>,
+    http_status: &str,
+    stderr: &str,
+    url: &str,
+) -> Result<bool> {
+    // curl's HTTP failure exit code and explicit final response status distinguish absence
+    // from authentication, rate-limit, server and transport failures. Never infer it from stderr.
+    if exit_code == Some(22) && http_status.trim() == "404" {
+        return Ok(false);
+    }
+    if exit_code != Some(0) {
+        bail!(
+            "내려받기 실패: {url} (HTTP {})\n{}\n네트워크와 릴리스 자산 접근 권한을 확인한 뒤 다시 실행하세요",
+            http_status.trim(),
+            stderr.trim()
+        );
+    }
+    Ok(true)
+}
+
+/// Fetch a UTF-8 response body for GitHub API queries.
 fn fetch_text(url: &str) -> Result<String> {
     let out = Command::new("curl")
         .args([
@@ -223,7 +251,7 @@ fn fetch_text(url: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// 최신 릴리스 태그(`vX.Y.Z`).
+/// Fetch the latest release tag (`vX.Y.Z`).
 fn fetch_latest_tag() -> Result<String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body = fetch_text(&url)?;
@@ -236,7 +264,7 @@ fn fetch_latest_tag() -> Result<String> {
     Ok(tag.to_string())
 }
 
-/// `.sha256` 자산 본문("<sha>  <파일명>")과 실제 파일 해시를 대조한다.
+/// Compare a `.sha256` asset body (hash followed by file name) with the downloaded bytes.
 fn verify_sha256(file: &Path, sha_line: &str) -> Result<()> {
     let want = sha_line
         .split_whitespace()
@@ -244,7 +272,9 @@ fn verify_sha256(file: &Path, sha_line: &str) -> Result<()> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     if want.len() != 64 {
-        bail!("체크섬 자산 형식이 이상합니다: {sha_line:?}");
+        bail!(
+            "체크섬 자산 형식이 이상합니다: {sha_line:?}. 릴리스 체크섬 자산을 확인한 뒤 다시 실행하세요"
+        );
     }
     let bytes = std::fs::read(file)
         .with_context(|| format!("내려받은 파일을 읽지 못했습니다: {}", file.display()))?;
@@ -254,14 +284,15 @@ fn verify_sha256(file: &Path, sha_line: &str) -> Result<()> {
         .collect();
     if got != want {
         bail!(
-            "체크섬 불일치 — 내려받기가 손상됐거나 자산이 바뀌었습니다\n  기대: {want}\n  실제: {got}"
+            "체크섬 불일치 — 내려받기가 손상됐거나 자산이 바뀌었습니다\n  기대: {want}\n  실제: {got}\n릴리스 체크섬과 내려받은 자산을 확인한 뒤 다시 실행하세요"
         );
     }
     Ok(())
 }
 
 /// Download and verify one release through an injectable transport. `false` means the asset
-/// is absent; transport failures remain errors. This seam retains the existing single-name policy.
+/// is absent; transport failures remain errors. Only an absent canonical archive allows the
+/// legacy prefix. Missing/invalid checksums and all transport failures stop the update.
 fn download_release_with(
     tag: &str,
     triple: &str,
@@ -270,22 +301,31 @@ fn download_release_with(
     work: &Path,
     mut transport: impl FnMut(&str, &Path) -> Result<bool>,
 ) -> Result<PathBuf> {
-    let (archive_name, sha_name) = asset_names(tag, triple, archive);
-    let archive_path = work.join(&archive_name);
+    let (mut archive_name, mut sha_name) = asset_names(tag, triple, archive);
+    let mut archive_path = work.join(&archive_name);
     if !transport(&format!("{base}/{archive_name}"), &archive_path)? {
-        bail!("릴리스 아카이브가 없습니다. 릴리스 자산을 확인한 뒤 다시 실행하세요");
+        (archive_name, sha_name) = asset_names_for(LEGACY_BIN, tag, triple, archive);
+        archive_path = work.join(&archive_name);
+        if !transport(&format!("{base}/{archive_name}"), &archive_path)? {
+            bail!(
+                "ahwp와 hwp 릴리스 아카이브가 모두 없습니다. 해당 버전의 플랫폼 자산을 확인한 뒤 다시 실행하세요"
+            );
+        }
     }
     let sha_path = work.join(&sha_name);
     if !transport(&format!("{base}/{sha_name}"), &sha_path)? {
         bail!("릴리스 체크섬 자산이 없습니다. 릴리스 자산을 확인한 뒤 다시 실행하세요");
     }
-    verify_sha256(&archive_path, &std::fs::read_to_string(&sha_path)?)?;
+    let checksum = std::fs::read_to_string(&sha_path).context(
+        "내려받은 체크섬을 읽지 못했습니다. 임시 디렉터리의 권한과 여유 공간을 확인한 뒤 다시 실행하세요",
+    )?;
+    verify_sha256(&archive_path, &checksum)?;
     Ok(archive_path)
 }
 
-/// 아카이브에서 `hwp` 실행 파일을 꺼낸다. tar는 zip도 풀 수 있어(bsdtar/Windows tar.exe)
-/// 형식과 무관하게 같은 커맨드를 쓴다. 아카이브 루트에 바이너리가 있는 구조
-/// (`taiki-e/upload-rust-binary-action` 산출물)를 전제한다.
+/// Extract the canonical `ahwp` executable, falling back to `hwp` for older archives.
+/// Use tar for both formats (bsdtar/Windows tar.exe support ZIP), expecting root-level binaries
+/// as produced by `taiki-e/upload-rust-binary-action`.
 fn extract(archive: &Path, dir: &Path) -> Result<PathBuf> {
     let out = Command::new("tar")
         .arg("-xf")
@@ -301,22 +341,23 @@ fn extract(archive: &Path, dir: &Path) -> Result<PathBuf> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let exe = dir.join(if cfg!(windows) {
-        format!("{BIN}.exe")
-    } else {
-        BIN.to_string()
-    });
-    if !exe.exists() {
-        bail!(
-            "아카이브에 {} 실행 파일이 없습니다: {}",
-            BIN,
-            archive.display()
-        );
+    for bin in [BIN, LEGACY_BIN] {
+        let exe = dir.join(if cfg!(windows) {
+            format!("{bin}.exe")
+        } else {
+            bin.to_string()
+        });
+        if exe.is_file() {
+            return Ok(exe);
+        }
     }
-    Ok(exe)
+    bail!(
+        "아카이브에 ahwp 또는 hwp 실행 파일이 없습니다: {}. 해당 플랫폼의 릴리스 아카이브를 확인한 뒤 다시 실행하세요",
+        archive.display()
+    )
 }
 
-/// 교체된 바이너리가 실제로 기대 버전으로 실행되는지 확인한다.
+/// Verify that the replaced executable reports the expected version.
 fn verify_installed(exe: &Path, want: &str) -> Result<String> {
     let out = Command::new(exe)
         .arg("--version")
@@ -329,7 +370,7 @@ fn verify_installed(exe: &Path, want: &str) -> Result<String> {
     Ok(ver)
 }
 
-/// `hwp update` 진입점.
+/// `ahwp update` entry point, also reached through the legacy command name.
 pub fn run(check: bool, tag: Option<&str>, force: bool, json: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe().context("실행 파일 경로를 찾지 못했습니다")?;
@@ -398,7 +439,7 @@ pub fn run(check: bool, tag: Option<&str>, force: bool, json: bool) -> Result<()
         .ok_or_else(|| {
             anyhow!(
                 "이 플랫폼({}/{})용 사전 빌드 바이너리가 없습니다 — 소스에서 설치하세요:\n  \
-                 cargo install --git https://github.com/{REPO} hwp-cli",
+                 cargo install --git https://github.com/{REPO} agent-hwp",
                 std::env::consts::OS,
                 std::env::consts::ARCH,
             )
@@ -411,11 +452,7 @@ pub fn run(check: bool, tag: Option<&str>, force: bool, json: bool) -> Result<()
     std::fs::create_dir_all(&work).context("임시 작업 디렉터리 생성 실패")?;
 
     eprintln!("{current} → {latest} 내려받는 중… ({archive_name})");
-    let archive_path =
-        download_release_with(&target_tag, triple, archive, &base, &work, |url, dest| {
-            download(url, dest)?;
-            Ok(true)
-        })?;
+    let archive_path = download_release_with(&target_tag, triple, archive, &base, &work, download)?;
 
     let new_exe = extract(&archive_path, &work)?;
     replace_binary(&exe, &new_exe)?;
@@ -482,6 +519,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn bridge_http_absence_requires_explicit_404_and_curl_http_failure() {
+        assert!(!download_result(Some(22), "404", "", BRIDGE_BASE).unwrap());
+        assert!(download_result(Some(0), "200", "", BRIDGE_BASE).unwrap());
+        for (exit_code, http_status) in [
+            (Some(22), "403"),
+            (Some(22), "429"),
+            (Some(22), "503"),
+            (Some(6), "000"),
+            (Some(23), "404"),
+            (None, "404"),
+        ] {
+            let error =
+                download_result(exit_code, http_status, "404 Not Found", BRIDGE_BASE).unwrap_err();
+            let message = error.to_string();
+            assert!(
+                message.contains("내려받기 실패") && message.contains("다시 실행"),
+                "failure must explain the cause and remedy: {message}"
+            );
+        }
     }
 
     #[test]
@@ -703,13 +762,13 @@ mod tests {
         assert!(is_newer("0.3.0", "0.4.0"));
         assert!(is_newer("0.3.0", "0.3.1"));
         assert!(is_newer("0.9.0", "1.0.0"));
-        assert!(is_newer("0.3.0", "v0.4.0")); // v 접두 허용
+        assert!(is_newer("0.3.0", "v0.4.0")); // Accept the v prefix.
         assert!(!is_newer("0.3.0", "0.3.0"));
         assert!(!is_newer("0.4.0", "0.3.9"));
-        // 프리릴리스는 같은 정식판보다 낮다 — rc를 최신으로 오인해 내려깔지 않게.
+        // Prereleases rank below stable versions; do not mistake an RC for an upgrade.
         assert!(is_newer("0.3.0-rc1", "0.3.0"));
         assert!(!is_newer("0.3.0", "0.3.0-rc1"));
-        // 두 자리 이상 버전을 문자열로 비교하면 뒤집힌다("10" < "9").
+        // Lexical ordering would misorder multi-digit components ("10" < "9").
         assert!(is_newer("0.9.0", "0.10.0"));
     }
 
@@ -731,7 +790,7 @@ mod tests {
             target_triple("windows", "x86_64"),
             Some(("x86_64-pc-windows-msvc", Archive::Zip))
         );
-        // 릴리스가 없는 조합은 소스 설치로 안내해야 하므로 None이어야 한다.
+        // Unpublished target combinations must direct users to source installation.
         assert_eq!(
             target_triple("linux", "aarch64"),
             Some(("aarch64-unknown-linux-gnu", Archive::TarGz))
@@ -739,18 +798,18 @@ mod tests {
         assert_eq!(target_triple("freebsd", "x86_64"), None);
     }
 
-    /// 실제 v0.3.0 릴리스에 올라간 자산 이름과 한 글자도 다르면 안 된다.
+    /// Canonical names use ahwp for any tag; older hwp assets use the explicit fallback.
     #[test]
     fn 자산_이름() {
         let (a, s) = asset_names("v0.3.0", "aarch64-apple-darwin", Archive::TarGz);
-        assert_eq!(a, "hwp-v0.3.0-aarch64-apple-darwin.tar.gz");
-        assert_eq!(s, "hwp-v0.3.0-aarch64-apple-darwin.sha256");
+        assert_eq!(a, "ahwp-v0.3.0-aarch64-apple-darwin.tar.gz");
+        assert_eq!(s, "ahwp-v0.3.0-aarch64-apple-darwin.sha256");
         let (a, _) = asset_names("v0.3.0", "x86_64-pc-windows-msvc", Archive::Zip);
-        assert_eq!(a, "hwp-v0.3.0-x86_64-pc-windows-msvc.zip");
+        assert_eq!(a, "ahwp-v0.3.0-x86_64-pc-windows-msvc.zip");
     }
 
-    /// 설치 스크립트와 자체 업데이트가 **같은 자산 이름 규칙**을 써야 한다. 한쪽만
-    /// 바뀌면 설치나 업데이트가 404로 죽는데, 그건 릴리스 후에야 드러난다.
+    /// Installer and updater must share the same target/name rule; drift causes download failures
+    /// that otherwise appear only after publication.
     #[test]
     fn 설치_스크립트_타깃_동기화() {
         let script = std::fs::read_to_string(
@@ -768,7 +827,7 @@ mod tests {
                 "install.sh에 {triple} 없음 (update와 자산 이름 규칙 불일치)"
             );
         }
-        // 아카이브 이름 조립 규칙도 같은 모양이어야 한다.
+        // The archive-name construction must also match.
         assert!(
             script.contains("$BIN-$TAG-$target.tar.gz"),
             "install.sh 아카이브 이름 규칙이 asset_names와 다릅니다"
@@ -780,7 +839,7 @@ mod tests {
         for ok in ["v0.3.0", "0.3.0", "v10.20.30", "v0.3.0-rc1", "v0.3.0-rc.1"] {
             assert!(validate_tag(ok).is_ok(), "{ok} 는 통과해야 함");
         }
-        // URL·파일명에 그대로 들어가므로 경로 탈출·질의 주입을 막아야 한다.
+        // Reject traversal/query injection before tags enter URLs and file names.
         for bad in [
             "../../etc/passwd",
             "v0.3.0/../x",
@@ -842,13 +901,13 @@ mod tests {
             let mode = std::fs::metadata(&target).unwrap().permissions().mode();
             assert_eq!(mode & 0o111, 0o111, "실행 권한 승계 실패: {mode:o}");
         }
-        // 임시/백업 잔재가 남으면 안 된다.
+        // No staged/backup files should remain.
         let dir = target.parent().unwrap();
         let leftovers: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.starts_with(".hwp-update-") || n.starts_with(".hwp-backup-"))
+            .filter(|n| n.starts_with(".ahwp-update-") || n.starts_with(".ahwp-backup-"))
             .collect();
         assert!(leftovers.is_empty(), "잔재: {leftovers:?}");
         let _ = std::fs::remove_file(&target);
@@ -859,7 +918,7 @@ mod tests {
     fn 바이너리_교체_실패시_원본_보존() {
         let target = tmp("bin_keep");
         std::fs::write(&target, b"OLD").unwrap();
-        // 없는 파일을 새 바이너리로 주면 첫 단계에서 실패해야 하고 원본은 그대로여야 한다.
+        // A missing replacement fails at staging and leaves the original untouched.
         let err = replace_binary(&target, Path::new("/nonexistent/hwp")).unwrap_err();
         assert!(format!("{err:#}").contains("놓지 못했습니다"), "{err:#}");
         assert_eq!(std::fs::read(&target).unwrap(), b"OLD");
@@ -878,7 +937,7 @@ mod tests {
         let _ = std::fs::remove_file(&f);
     }
 
-    /// 릴리스 아카이브 구조(루트에 바이너리) 가정을 실제 tar로 고정한다.
+    /// Use a real tar archive to verify the root-level executable layout.
     #[test]
     fn 아카이브_해제() {
         if Command::new("tar").arg("--version").output().is_err() {

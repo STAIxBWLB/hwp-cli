@@ -1,4 +1,4 @@
-//! `hwp` CLI definitions: clap derive command and flag declarations.
+//! `ahwp` CLI definitions: clap derive command and flag declarations.
 //!
 //! This module is exposed by the library target (`hwp_cli::cli`). The binary (`main.rs`)
 //! uses it for parsing and dispatch. `tests/cli_reference.rs` introspects the command tree
@@ -38,7 +38,7 @@ fn parse_margin_mm(value: &str) -> Result<f64, String> {
 }
 
 #[derive(Parser)]
-#[command(name = "hwp", version, about = "HWP/HWPX document toolkit")]
+#[command(name = "ahwp", version, about = "HWP/HWPX document toolkit")]
 pub struct Cli {
     /// Help language (default: from locale, otherwise English). Also settable with HWP_LANG
     #[arg(long, value_enum, global = true)]
@@ -47,14 +47,14 @@ pub struct Cli {
     pub cmd: Cmd,
 }
 
-/// `--lang` 값. 감지 로직은 [`crate::i18n::Lang`]에 있다.
+/// Help-language values; detection lives in [`crate::i18n::Lang`].
 #[derive(Clone, Copy, ValueEnum)]
 pub enum LangArg {
     En,
     Ko,
 }
 
-/// `hwp lint --profile` 값. `hwp_convert::lint::LintProfile`의 clap 미러.
+/// Clap values mirroring `hwp_convert::lint::LintProfile` for `ahwp lint --profile`.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum LintProfileArg {
     Gongmun,
@@ -212,7 +212,7 @@ pub enum Cmd {
         pages: Vec<String>,
         /// Extract one typed range instead of splitting: where it starts, as
         /// "heading:<text>" (the one body paragraph whose own text equals it, as
-        /// `hwp cat` prints it: tabs, line breaks and non-breaking spaces count),
+        /// `ahwp cat` prints it: tabs, line breaks and non-breaking spaces count),
         /// "bookmark:<name>" or "at:<section>.<paragraph>" (both 0-based). The
         /// range is a run of top-level body paragraphs of one section, so a table
         /// is taken whole; the fragment keeps the section setup, the whole header
@@ -640,7 +640,7 @@ pub struct PasswordArgs {
     pub password_stdin: bool,
 }
 
-/// `hwp edit` 입력. 편집 실행 전에 `EditPlan`의 타입화된 작업 목록으로 정규화한다.
+/// Edit inputs, normalized into typed `EditPlan` operations before execution.
 #[derive(Args)]
 pub struct EditArgs {
     /// Input HWP/HWPX file
@@ -678,7 +678,7 @@ pub struct EditArgs {
     /// Restrict every --set-cell-by-label request to this zero-based recursive table index
     #[arg(long = "label-table", requires = "set_cell_by_label")]
     pub label_table: Option<usize>,
-    /// Fill a field, "name=value" (repeatable; list names with hwp fields)
+    /// Fill a field, "name=value" (repeatable; list names with ahwp fields)
     #[arg(long = "set-field")]
     pub set_field: Vec<String>,
     /// Set metadata, "key=value" (keys: title|author|subject|keywords; repeatable)
@@ -753,10 +753,10 @@ pub struct EditArgs {
     /// Delete a table, "n" (0-based index) or "anchor" (table in the anchor paragraph) (repeatable)
     #[arg(long = "delete-table")]
     pub delete_table: Vec<String>,
-    /// Delete a field by name, "name" (repeatable; list names with hwp fields)
+    /// Delete a field by name, "name" (repeatable; list names with ahwp fields)
     #[arg(long = "delete-field")]
     pub delete_field: Vec<String>,
-    /// Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks)
+    /// Delete a bookmark by name, "name" (repeatable; list names with ahwp bookmarks)
     #[arg(long = "delete-bookmark")]
     pub delete_bookmark: Vec<String>,
     /// Style every eligible table (header shade/bold/center, content-proportional widths) under
@@ -780,7 +780,7 @@ pub struct EditArgs {
     #[arg(long = "allow-partial")]
     pub allow_partial: bool,
     /// Write an edit-report-v1 JSON file naming every op's status, how many pieces it touched,
-    /// and the segment ids it changed as before/after pairs. Unlike "hwp compose --report" (a
+    /// and the segment ids it changed as before/after pairs. Unlike "ahwp compose --report" (a
     /// bare flag printing to stdout), this one takes a file path, matching --loss-report's shape
     #[arg(long, value_name = "FILE")]
     pub report: Option<PathBuf>,
@@ -790,7 +790,7 @@ pub struct EditArgs {
     pub dry_run: bool,
 }
 
-/// `hwp skill` subcommand.
+/// `ahwp skill` subcommand.
 #[derive(Subcommand)]
 pub enum SkillCmd {
     /// Write the embedded skill tree (SKILL.md, SKILL.ko.md, the official-documents guide, references/ and templates/) into a directory (default ./hwp)
@@ -841,7 +841,7 @@ pub enum TextFormat {
     Csv,
 }
 
-/// Output format of `hwp styles`.
+/// Output format of `ahwp styles`.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum StylesFormat {
     Text,

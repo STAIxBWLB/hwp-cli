@@ -190,11 +190,11 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash scripts/check-crate-edges.sh --self-test
-      # The doc-surface gate compares the documented tool count against a live `hwp mcp`
+      # The doc-surface gate compares the documented tool count against a live `ahwp mcp`
       # tools/list session, so it needs a runnable binary; clippy only type-checks.
-      - name: Build hwp (the doc-surface gate drives the real MCP server)
+      - name: Build ahwp (the doc-surface gate drives the real MCP server)
         if: ${{ !cancelled() }}
-        run: cargo build --locked -p hwp-cli
+        run: cargo build --locked -p agent-hwp
       # Stubbed: exercises the release gate's refusals and publish protocol, not
       # real HWP bytes, so it needs no release build. Its font-manifest check runs
       # the debug binary's certify, so it follows the build above.
@@ -304,8 +304,8 @@ jobs:
         # a cold cache pays any of it.
         timeout-minutes: 12
         run: bash scripts/fetch-pdf-parity-fonts.sh
-      - name: Build hwp
-        run: cargo build --locked -p hwp-cli
+      - name: Build ahwp
+        run: cargo build --locked -p agent-hwp
       - name: Public PDF parity oracle
         shell: bash
         env:

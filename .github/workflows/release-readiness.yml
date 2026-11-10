@@ -972,7 +972,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/gates/pdf-parity-public"
           {
             bash scripts/fetch-pdf-parity-fonts.sh &&
-              cargo build --locked -p hwp-cli &&
+              cargo build --locked -p agent-hwp &&
               bash scripts/pdf-parity.sh run --oracle-dir fixtures/pdf-parity/public/oracle
           } 2>&1 | tee "$RUNNER_TEMP/gates/pdf-parity-public/log"
           exit "${PIPESTATUS[0]}"

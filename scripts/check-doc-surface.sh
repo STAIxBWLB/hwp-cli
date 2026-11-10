@@ -8,7 +8,7 @@
 #
 # Two independent checks, both reported before the script exits, so one run shows every finding:
 #   1. every tool-count claim in README*.md, docs/manual/*.md and skills/hwp/SKILL*.md equals the
-#      length of the live `hwp mcp` tools/list response;
+#      length of the live `ahwp mcp` tools/list response;
 #   2. skills/hwp/SKILL.md and SKILL.ko.md name every CLI subcommand and every MCP tool.
 #
 # The source of truth is the running server, not a hardcoded list. crates/hwp-cli/tests/
@@ -28,8 +28,8 @@ esac
 ROOT="$PWD"
 if [ -z "${HWP_BIN:-}" ]; then
     # Cargo checks freshness even when a binary from an older checkout exists.
-    cargo build --locked -p hwp-cli --quiet
-    HWP_BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/hwp"
+    cargo build --locked -p agent-hwp --quiet
+    HWP_BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/ahwp"
 fi
 if [ ! -x "$HWP_BIN" ]; then
     echo "[doc-surface] executable not found: $HWP_BIN" >&2
@@ -241,8 +241,8 @@ def coverage_findings(root, tools, exempt):
         if name in exempt:
             continue
         for rel, text in texts.items():
-            if "hwp %s" % name not in text:
-                findings.append((rel, "CLI subcommand", "hwp %s" % name))
+            if "ahwp %s" % name not in text:
+                findings.append((rel, "CLI subcommand", "ahwp %s" % name))
     for tool in tools:
         for rel, text in texts.items():
             if tool not in text:

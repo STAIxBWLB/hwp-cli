@@ -41,12 +41,12 @@ mkdir -p "$DEST"
 
 # Binary: HWP_BIN wins (callers such as scripts/hancom-regression.sh pin the
 # release binary), otherwise reuse debug if present, otherwise build release.
-HWP="${HWP_BIN:-$REPO/target/debug/hwp}"
+HWP="${HWP_BIN:-$REPO/target/debug/ahwp}"
 if [[ ! -x "$HWP" ]]; then
-  HWP="$REPO/target/release/hwp"
+  HWP="$REPO/target/release/ahwp"
   [[ -x "$HWP" ]] || cargo build --release --manifest-path "$REPO/Cargo.toml" -q
 fi
-[[ -x "$HWP" ]] || { echo "hwp 바이너리 없음"; exit 1; }
+[[ -x "$HWP" ]] || { echo "ahwp 바이너리 없음"; exit 1; }
 
 if [[ "$MODE" == "phase-02.2" ]]; then
   # Legacy mode reports individual failures. The Phase 2.2 bundle must stop
@@ -182,10 +182,10 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 FIX="$REPO/fixtures/hwp5"
-# 코퍼스 대표 품의(%fmu 수식+표+쪽번호). 없으면 A5/A6 생략.
+# Representative approval document with %fmu formula, table and page number; skip A5/A6 if absent.
 PUMUI="$(find "$HOME/Documents/hwp_samples" -name "*.hwp" -path "*재료 구입*" 2>/dev/null | head -1)"
 
-# base.md — 앵커 "제목"·"여기에"를 본문에 포함.
+# base.md includes the anchor strings "제목" and "여기에" in its body.
 cat > "$WORK/base.md" <<'MD'
 # 실기 검증 문서
 
@@ -197,7 +197,7 @@ MD
 pass=0; fail=0
 declare -a REPORT
 
-# 파일 생성 후 자체 재읽기 게이트: cat이 경고 없이 내용을 내면 OK.
+# After generation, require a self-reread that produces content without warnings.
 check() {
   local f="$1" label="$2"
   if [[ ! -s "$f" ]]; then REPORT+=("❌ $label — 파일 없음/빈 파일"); ((fail++)); return; fi
@@ -213,8 +213,8 @@ check() {
 echo "생성 대상: $DEST"
 echo "폰트: $HWP_FONT_DIR"
 
-# ── A. 실무 문서 전체 파이프라인 ──
-gen_pipeline() {  # <입력hwp> <접두>
+# A. Full pipeline for real-world documents.
+gen_pipeline() {  # <input-hwp> <prefix>
   local src="$1" pfx="$2"
   [[ -f "$src" ]] || { REPORT+=("⏭  ${pfx} — 입력 없음: $(basename "$src")"); return; }
   "$HWP" convert "$src" -o "$DEST/${pfx}_변환.hwpx" >/dev/null 2>&1
@@ -227,12 +227,12 @@ gen_pipeline "$FIX/annual_report.hwp" "A3A4_annual_report"
 if [[ -n "$PUMUI" ]]; then
   gen_pipeline "$PUMUI" "A5A6_품의"
 else
-  # 코퍼스 품의 문서가 없으면 아무 줄도 남기지 않던 자리. 호출자(회귀 게이트)가
-  # "보고 없음"과 "입력 없음"을 구분할 수 있도록 skip 줄을 명시적으로 남긴다.
+  # An absent approval-document fixture used to leave no result. Emit an explicit
+  # skip row so the regression gate can distinguish missing input from missing reporting.
   REPORT+=("⏭  A5A6_품의 — 입력 없음: 코퍼스 품의 문서(~/Documents/hwp_samples)")
 fi
 
-# ── B. 기능별 최소 파일 ──
+# B. Minimal per-feature files.
 "$HWP" new --from "$WORK/base.md" -o "$WORK/base.hwp" >/dev/null 2>&1
 if [[ -s "$WORK/base.hwp" ]]; then
   "$HWP" edit "$WORK/base.hwp" -o "$DEST/B1_책갈피.hwp"  --create-bookmark "제목=>검증책갈피" >/dev/null 2>&1
@@ -251,9 +251,9 @@ else
   REPORT+=("❌ base.hwp 생성 실패 — B 시리즈 생략")
 fi
 
-# ── C. 글자효과·요약정보 (JSON IR 경유 — tools/gen_effects_cases.py) ──
-# CLI에 효과 플래그가 없어 IR을 python(stdlib)으로 수술해 만든다. 헬퍼가 파일당
-# ✅/❌ 한 줄을 찍고(효과 보존 단언 포함), 여기서 REPORT/pass/fail에 합친다.
+# C. Character effects and summary metadata via JSON IR (tools/gen_effects_cases.py).
+# The CLI has no effect flags, so Python stdlib edits the IR. The helper prints
+# one result per file, with effect-preservation assertions; merge it into REPORT/pass/fail.
 if command -v python3 >/dev/null 2>&1; then
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
@@ -268,7 +268,7 @@ else
   REPORT+=("⏭  C 시리즈 — python3 없음")
 fi
 
-# 체크리스트 사본.
+# Checklist copy.
 cp "$REPO/docs/hancom-verification-checklist.ko.md" "$DEST/README.md" 2>/dev/null || true
 
 echo

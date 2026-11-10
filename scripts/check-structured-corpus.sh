@@ -72,11 +72,11 @@ HWP_CORPUS_MANIFEST_PATH="$runtime_manifest" bash scripts/fetch-corpus-fonts.sh
 
 report_parent=$(mktemp -d)
 report="$report_parent/report"
-cargo run --locked --offline -p hwp-cli -- corpus \
+cargo run --locked --offline -p agent-hwp --bin ahwp -- corpus \
     --manifest "$runtime_manifest" \
     --report "$report"
 
-cargo run --locked --offline -p hwp-cli --example validate_structured_corpus -- \
+cargo run --locked --offline -p agent-hwp --example validate_structured_corpus -- \
     schemas/structured-corpus-v1.schema.json "$runtime_manifest" \
     schemas/structured-corpus-run-v1.schema.json "$report/summary.json" \
     schemas/structured-corpus-artifacts-v1.schema.json "$report/artifacts.json"

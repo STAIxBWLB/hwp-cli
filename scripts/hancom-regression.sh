@@ -3,8 +3,8 @@
 #
 # Regenerates every artifact docs/hancom-verification-checklist.md still
 # verifies, from the release binary, into a private destination OUTSIDE this
-# repository. Every artifact is gated on self-reread (hwp cat, no warning) and
-# structural validation (hwp validate --json, valid with no warnings) before it
+# repository. Every artifact is gated on self-reread (ahwp cat, no warning) and
+# structural validation (ahwp validate --json, valid with no warnings) before it
 # is published. The sha256 index is written last, so an index file existing in
 # the destination means the whole set passed.
 #
@@ -15,15 +15,15 @@
 # Usage:
 #   scripts/hancom-regression.sh [--no-build] [destination]
 #
-#   --no-build  never invoke cargo; if target/release/hwp is absent, print the
+#   --no-build  never invoke cargo; if target/release/ahwp is absent, print the
 #               exact build command and exit instead of building it here.
 #
 # Environment:
-#   HWP_BIN   run this executable instead of target/release/hwp. An explicitly
+#   HWP_BIN   run this executable instead of target/release/ahwp. An explicitly
 #             supplied binary is recorded in the index with "explicit": true and
 #             is exempt from the workspace-version match, because the caller has
 #             taken responsibility for what it points at. With HWP_BIN unset the
-#             gate uses target/release/hwp and nothing else: a debug build has
+#             gate uses target/release/ahwp and nothing else: a debug build has
 #             different optimization and different assertion behaviour, so
 #             certifying its bytes would certify something the release never
 #             ships.
@@ -38,7 +38,7 @@
 #             message. A listed case that fails at another stage, or with a
 #             different message, fails the run closed.
 #   HWP_CERT_FONT_DIR
-#             directory of font files (.ttf/.otf/.ttc) that hwp certify may
+#             directory of font files (.ttf/.otf/.ttc) that ahwp certify may
 #             render with. They are copied into <generation>/fonts/ and every
 #             emitted policy pins them in document.fonts.manifest (sorted paths
 #             plus sha256); the index records the same list as font_manifest.
@@ -171,7 +171,7 @@ mkdir -p "$DEST"
 # The release binary, or an executable the caller took explicit responsibility
 # for. There is no debug fallback: a release gate that silently certifies a
 # debug build certifies bytes the release never produces.
-RELEASE_BIN="$REPO/target/release/hwp"
+RELEASE_BIN="$REPO/target/release/ahwp"
 BUILD_CMD="cargo build --release --locked --manifest-path $REPO/Cargo.toml"
 HWP_EXPLICIT=false
 HWP="${HWP_BIN:-}"
@@ -191,7 +191,7 @@ else
     $BUILD_CMD -q || { echo "release build failed: $BUILD_CMD" >&2; exit 2; }
   fi
 fi
-[[ -x "$HWP" ]] || { echo "hwp binary not found or not executable: $HWP" >&2; exit 2; }
+[[ -x "$HWP" ]] || { echo "ahwp binary not found or not executable: $HWP" >&2; exit 2; }
 
 # Absolute path, version line and content hash of the executable that produced
 # the set: without them an index cannot say which build it is evidence for.
@@ -211,7 +211,7 @@ WORKSPACE_VERSION="$(awk '
   /^\[/                     { in_section = 0 }
   in_section && /^version[[:space:]]*=/ { gsub(/[^0-9.]/, ""); print; exit }
 ' "$REPO/Cargo.toml")"
-if [[ "$HWP_EXPLICIT" != true && "$HWP_VERSION" != "hwp $WORKSPACE_VERSION" ]]; then
+if [[ "$HWP_EXPLICIT" != true && "$HWP_VERSION" != "ahwp $WORKSPACE_VERSION" ]]; then
   echo "binary version mismatch: $HWP_PATH reports '$HWP_VERSION'," >&2
   echo "but the workspace is at $WORKSPACE_VERSION. Rebuild with:" >&2
   echo "  $BUILD_CMD" >&2
@@ -331,7 +331,7 @@ PY
 )" || { echo "HWP_CERT_FONT_DIR could not be pinned; nothing was generated." >&2; exit 2; }
 else
   echo 'WARNING: HWP_CERT_FONT_DIR is not set. The generated policies pin no font' >&2
-  echo 'manifest, so hwp certify resolves every face as missing and the fonts rule' >&2
+  echo 'manifest, so ahwp certify resolves every face as missing and the fonts rule' >&2
   echo 'fails. The index records "font_manifest": "none".' >&2
 fi
 
@@ -374,7 +374,7 @@ EXPECTED_CASES=(
 # reads as complete coverage.
 SKIP_REASONS=(private_input_missing series_not_regenerable)
 
-# A published artifact name may carry a fragment suffix (hwp split emits one
+# A published artifact name may carry a fragment suffix (ahwp split emits one
 # file per section); the case that owns those artifacts is the unsuffixed id.
 case_of() {
   local series="$1"
@@ -425,7 +425,7 @@ if not result.get("valid") or result.get("warnings"):
 index_command() {
   local out='' arg
   for arg in "$@"; do
-    arg="${arg//"$HWP"/hwp}"
+    arg="${arg//"$HWP"/ahwp}"
     arg="${arg//"$WORK"\//}"
     arg="${arg//"$STAGE"\//}"
     arg="${arg//"$DEST"\//}"
@@ -719,7 +719,7 @@ if [[ -s "$STAGE/P1_merge.hwpx" ]]; then
       fragment_name="$(basename "$fragment")"
       mv -f "$fragment" "$STAGE/$fragment_name"
       record "$(printf 'P2_split_%03d' "$fragment_index")" "$STAGE/$fragment_name" \
-        "hwp split P1_merge.hwpx --out-dir <directory> --loss-report <file>"
+        "ahwp split P1_merge.hwpx --out-dir <directory> --loss-report <file>"
     done
     [[ "$fragment_index" -gt 0 ]] || fail P2_split generation "split produced no fragment"
   else
@@ -729,7 +729,7 @@ else
   fail P2_split generation "no merged document to split: P1_merge did not publish"
 fi
 
-# hwp compare is read-only: it never opens in Hancom, so this row carries the
+# ahwp compare is read-only: it never opens in Hancom, so this row carries the
 # comparison report's own hash and no receipt policy. Run it from the working
 # directory with relative arguments so no absolute path lands in the report.
 if [[ -s "$STAGE/P1_merge-001.hwpx" ]]; then
@@ -741,7 +741,7 @@ if [[ -s "$STAGE/P1_merge-001.hwpx" ]]; then
   if [[ "$compare_status" -le 1 && -s "$STAGE/P3_compare.json" ]]; then
     compare_hash="$(shasum -a 256 "$STAGE/P3_compare.json" | awk '{print $1}')"
     push_row P3_compare_readonly "$STAGE/P3_compare.json" \
-      "hwp compare P1_merge-001.hwpx merge_a.hwpx --format json" \
+      "ahwp compare P1_merge-001.hwpx merge_a.hwpx --format json" \
       "$compare_hash" 'n/a (read-only)' 'n/a (read-only)'
   else
     fail P3_compare_readonly generation "compare run failed (exit $compare_status)"
@@ -1107,7 +1107,7 @@ fi
 echo
 echo 'After a real Hancom observation, write that artifact its receipt at the path'
 echo 'its index row names, then prove the binding with one command per artifact:'
-echo "  hwp certify $CURRENT/<artifact> \\"
+echo "  ahwp certify $CURRENT/<artifact> \\"
 echo "    --policy $CURRENT/<artifact>.policy.json \\"
 echo '    --report <a fresh report directory>'
 echo 'The receipt binding is the "hancom_open" check in that report.'

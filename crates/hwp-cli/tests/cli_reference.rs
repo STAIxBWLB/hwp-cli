@@ -5,7 +5,7 @@
 //! test fails when the committed docs and the regenerated ones diverge, which forces a doc
 //! update whenever the CLI definition (flags, help text) changes.
 //!
-//! Bless: `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`.
+//! Bless: `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`.
 
 use clap::builder::StyledStr;
 use clap::{Arg, ArgAction, Command, CommandFactory};
@@ -23,26 +23,26 @@ fn doc_path(lang: Lang) -> std::path::PathBuf {
         .join(name)
 }
 
-const HEADER_COMMENT_KO: &str = "<!-- 자동 생성 문서 — 수동 편집 금지. 재생성: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->";
-const HEADER_COMMENT_EN: &str = "<!-- Generated document. Do not edit by hand. Regenerate with: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->";
+const HEADER_COMMENT_KO: &str = "<!-- 자동 생성 문서 — 수동 편집 금지. 재생성: HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference -->";
+const HEADER_COMMENT_EN: &str = "<!-- Generated document. Do not edit by hand. Regenerate with: HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference -->";
 
-/// StyledStr → 순수 텍스트(ANSI 없음), 앞뒤 공백 제거.
+/// Strip outer whitespace from a plain, ANSI-free styled string.
 fn plain(s: &StyledStr) -> String {
     s.to_string().trim().to_string()
 }
 
-/// 표 셀 안전 이스케이프: 개행→공백(연속 공백 축약), `|`→`\|`.
+/// Escape table cells: collapse whitespace and escape vertical bars.
 fn cell(s: &str) -> String {
     let joined = s.split_whitespace().collect::<Vec<_>>().join(" ");
     joined.replace('|', "\\|")
 }
 
-/// GitHub anchor: `hwp skill export` → `hwp-skill-export` (spaces become hyphens).
+/// GitHub anchor: `ahwp skill export` → `ahwp-skill-export` (spaces become hyphens).
 fn anchor(name: &str) -> String {
-    format!("hwp-{}", name.replace(' ', "-"))
+    format!("ahwp-{}", name.replace(' ', "-"))
 }
 
-/// 값을 갖지 않는 액션(불리언 플래그 등)인지.
+/// Whether an action takes no value, such as a boolean flag.
 fn is_flag(action: &ArgAction) -> bool {
     matches!(
         action,
@@ -56,7 +56,7 @@ fn is_flag(action: &ArgAction) -> bool {
     )
 }
 
-/// 문서 생성에서 제외할 인자(clap 자동 추가 help/version, 숨김 인자).
+/// Omit automatic help/version actions and hidden arguments from generated docs.
 fn skip_arg(arg: &Arg) -> bool {
     arg.is_hide_set()
         || matches!(
@@ -66,7 +66,7 @@ fn skip_arg(arg: &Arg) -> bool {
         || matches!(arg.get_id().as_str(), "help" | "version")
 }
 
-/// 인자의 값 이름 placeholder(예: `<OUTPUT>`). value_name 없으면 id를 대문자화.
+/// Render the value placeholder, using the uppercase ID when value_name is absent.
 fn value_placeholder(arg: &Arg) -> String {
     let name = arg
         .get_value_names()
@@ -76,7 +76,7 @@ fn value_placeholder(arg: &Arg) -> String {
     format!("`<{name}>`")
 }
 
-/// value_enum의 노출 가능한 값 목록(선언 순서). enum이 아니면 빈 Vec.
+/// Visible enum values in declaration order; empty for non-enum arguments.
 fn possible_values(arg: &Arg) -> Vec<String> {
     arg.get_possible_values()
         .iter()
@@ -85,9 +85,9 @@ fn possible_values(arg: &Arg) -> Vec<String> {
         .collect()
 }
 
-/// `render_usage()`를 `hwp <name> …` 형태로 정규화한다.
-/// (서브커맨드를 부모에서 꺼내면 프로그램명이 없어 `Usage: <name> …`로 나올 수 있다 —
-/// 첫 `<name>` 토큰 뒤 본문만 취해 `hwp <name> <본문>`으로 재조립한다.)
+/// Normalize render_usage() to the full canonical command path.
+/// A detached subcommand can omit its parent program name.
+/// Reassemble the portion after its first name under the canonical command path.
 fn usage_line(sub: &Command, path: &str) -> String {
     let raw = sub.clone().render_usage().to_string();
     let after_label = raw
@@ -96,27 +96,27 @@ fn usage_line(sub: &Command, path: &str) -> String {
         .map(str::trim)
         .unwrap_or_else(|| raw.trim());
     // Take the body after the bare name (last path token) and reassemble it with the
-    // full path — nested subcommands (`export`) normalize to `hwp skill export …` too.
+    // full path — nested subcommands (`export`) normalize to `ahwp skill export …` too.
     let bare = path.rsplit(' ').next().unwrap_or(path);
     let body = match after_label.split_once(bare) {
         Some((_, rest)) => rest.trim_start(),
         None => "",
     };
     if body.is_empty() {
-        format!("hwp {path}")
+        format!("ahwp {path}")
     } else {
-        format!("hwp {path} {body}")
+        format!("ahwp {path} {body}")
     }
 }
 
-/// 한 서브커맨드의 인자/플래그 표 행들. 선언 순서 유지.
+/// Argument/flag table rows for a subcommand, in declaration order.
 fn arg_rows(sub: &Command, lang: Lang) -> Vec<String> {
     let mut rows = Vec::new();
     for arg in sub.get_arguments() {
         if skip_arg(arg) {
             continue;
         }
-        // 1열: 인자/플래그 이름.
+        // Column 1: argument or flag name.
         let name_col = if arg.is_positional() {
             value_placeholder(arg)
         } else {
@@ -128,7 +128,7 @@ fn arg_rows(sub: &Command, lang: Lang) -> Vec<String> {
             }
         };
 
-        // 2열: 값 (enum 값 목록 또는 placeholder; 불리언 플래그는 빈칸).
+        // Column 2: enum values or placeholder; empty for boolean flags.
         let value_col = if is_flag(arg.get_action()) {
             String::new()
         } else {
@@ -139,14 +139,14 @@ fn arg_rows(sub: &Command, lang: Lang) -> Vec<String> {
                     .collect::<Vec<_>>()
                     .join(" \\| ")
             } else if arg.is_positional() {
-                // placeholder는 이미 1열에 있으므로 중복 표기하지 않는다.
+                // The first column already contains the placeholder.
                 String::new()
             } else {
                 value_placeholder(arg)
             }
         };
 
-        // 3열: 기본값.
+        // Column 3: default value.
         let default_col = arg
             .get_default_values()
             .iter()
@@ -159,9 +159,9 @@ fn arg_rows(sub: &Command, lang: Lang) -> Vec<String> {
             format!("`{default_col}`")
         };
 
-        // 4열: 설명 (help) + 반복 가능 표기.
-        // help가 이미 "반복 가능"을 담고 있으면(doc comment 관례) 중복을 피한다 —
-        // Append인데 표기가 없는 플래그에만 표준 마커를 덧붙여 일관성을 맞춘다.
+        // Column 4: help text and repeatability marker.
+        // Avoid duplicating an explicit repeatability marker already in the help.
+        // Append the standard marker only to unmarked Append actions.
         let mut help = arg.get_help().map(plain).unwrap_or_default();
         let marker = match lang {
             Lang::Ko => "반복 가능",
@@ -183,7 +183,7 @@ fn arg_rows(sub: &Command, lang: Lang) -> Vec<String> {
     rows
 }
 
-/// clap 정의에서 마크다운 레퍼런스 전문을 생성한다.
+/// Generate the complete Markdown reference from clap definitions.
 fn generate(lang: Lang) -> String {
     let root = i18n::localize(Cli::command(), lang);
     // Flatten exposed subcommands (excluding hidden ones) in declaration order — nested
@@ -205,11 +205,11 @@ fn generate(lang: Lang) -> String {
             out.push_str(HEADER_COMMENT_KO);
             out.push_str(
                 "\n\n[한국어](cli-reference.ko.md) · [English](cli-reference.md)\n\n\
-                 # hwp CLI 명령 레퍼런스\n\n",
+                 # ahwp CLI 명령 레퍼런스\n\n",
             );
             out.push_str(
-                "이 문서는 `hwp` CLI의 clap 정의에서 자동 생성된다. 직접 편집하지 말고, 명령·플래그가 \
-                 바뀌면 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 재생성하라 — \
+                "이 문서는 `ahwp` CLI의 clap 정의에서 자동 생성된다. 직접 편집하지 말고, 명령·플래그가 \
+                 바뀌면 `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`로 재생성하라 — \
                  CI 테스트가 코드와 문서의 동기화를 강제한다.\n\n",
             );
             out.push_str("## 명령 색인\n\n");
@@ -218,27 +218,27 @@ fn generate(lang: Lang) -> String {
             out.push_str(HEADER_COMMENT_EN);
             out.push_str(
                 "\n\n[한국어](cli-reference.ko.md) · [English](cli-reference.md)\n\n\
-                 # hwp CLI command reference\n\n",
+                 # ahwp CLI command reference\n\n",
             );
             out.push_str(
-                "This document is generated from the clap definitions of the `hwp` CLI. Do not edit \
+                "This document is generated from the clap definitions of the `ahwp` CLI. Do not edit \
                  it by hand: when a command or flag changes, regenerate it with \
-                 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`. A CI test enforces \
+                 `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`. A CI test enforces \
                  that it stays in sync with the code.\n\n",
             );
             out.push_str("## Command index\n\n");
         }
     }
     for (name, _) in &subs {
-        out.push_str(&format!("- [`hwp {name}`](#{})\n", anchor(name)));
+        out.push_str(&format!("- [`ahwp {name}`](#{})\n", anchor(name)));
     }
     out.push('\n');
 
-    // 명령별 섹션.
+    // Per-command sections.
     for (name, sub) in &subs {
-        out.push_str(&format!("## `hwp {name}`\n\n"));
+        out.push_str(&format!("## `ahwp {name}`\n\n"));
 
-        // about / long_about (long_about 우선).
+        // Prefer long_about over about.
         let about = sub
             .get_long_about()
             .or_else(|| sub.get_about())
@@ -249,7 +249,7 @@ fn generate(lang: Lang) -> String {
             out.push_str("\n\n");
         }
 
-        // 사용법.
+        // Usage.
         let usage_label = match lang {
             Lang::Ko => "사용법",
             Lang::En => "Usage",
@@ -259,7 +259,7 @@ fn generate(lang: Lang) -> String {
             usage_line(sub, name)
         ));
 
-        // 인자/플래그 표.
+        // Argument/flag table.
         let rows = arg_rows(sub, lang);
         if rows.is_empty() {
             out.push_str(match lang {
@@ -280,7 +280,7 @@ fn generate(lang: Lang) -> String {
         }
     }
 
-    // 파일 끝 개행 1개로 정규화.
+    // Normalize to one final newline.
     while out.ends_with('\n') {
         out.pop();
     }
@@ -292,7 +292,7 @@ fn check_language(lang: Lang) {
     let generated = generate(lang);
     let path = doc_path(lang);
 
-    // bless 모드: 파일을 새로 쓰고 통과.
+    // Bless mode writes the generated files.
     if std::env::var_os("HWP_UPDATE_DOCS").is_some() {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("docs/manual 디렉터리 생성");
@@ -302,11 +302,11 @@ fn check_language(lang: Lang) {
         return;
     }
 
-    // 검증 모드: 커밋본과 비교(Windows CI 대비 CRLF 정규화).
+    // Verification compares committed content, normalizing CRLF for Windows.
     let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "cli-reference를 읽을 수 없음({e}) — \
-             `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 최초 생성하라: {}",
+             `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`로 최초 생성하라: {}",
             path.display()
         )
     });
@@ -315,7 +315,7 @@ fn check_language(lang: Lang) {
     assert_eq!(
         committed, generated,
         "\nCLI 정의가 문서와 어긋남 — \
-         `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 재생성한 뒤 \
+         `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`로 재생성한 뒤 \
          diff를 확인해 커밋하라."
     );
 }
@@ -326,10 +326,10 @@ fn cli_reference_up_to_date() {
     check_language(Lang::En);
 }
 
-/// 한국어 오버레이 누락 게이트.
+/// Gate missing Korean overlay entries.
 ///
-/// 표에 항목이 없으면 그 도움말만 조용히 영문으로 남는다. 새 명령·플래그를 추가하고
-/// i18n 표를 잊는 드리프트를 여기서 막는다.
+/// Missing entries silently leave English help, so require every new command and flag
+/// to have a corresponding localization entry.
 #[test]
 fn korean_overlay_covers_every_command_and_argument() {
     fn ids(command: &Command, path: &str, missing: &mut Vec<String>) {
@@ -364,7 +364,7 @@ fn korean_overlay_covers_every_command_and_argument() {
     );
 }
 
-/// 표에 죽은 항목(더 이상 존재하지 않는 명령·인자)이 남지 않게 한다.
+/// Reject localization entries for commands or arguments that no longer exist.
 #[test]
 fn korean_overlay_has_no_stale_entries() {
     fn exists(command: &Command, path: &str, arg: &str) -> bool {

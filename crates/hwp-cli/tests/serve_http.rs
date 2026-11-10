@@ -184,7 +184,7 @@ fn serve_speaks_the_same_protocol_as_stdio() {
     );
     assert_eq!(status, 200);
     assert_eq!(value["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(value["result"]["serverInfo"]["name"], "hwp-cli");
+    assert_eq!(value["result"]["serverInfo"]["name"], "agent-hwp");
 
     // Notifications have no protocol response.
     let (status, body) = request(
