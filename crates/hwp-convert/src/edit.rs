@@ -3188,12 +3188,8 @@ mod tests {
     #[test]
     fn delete_object_필드와_책갈피() {
         let mut doc = crate::from_markdown::from_markdown("여기 앵커입니다.\n");
-        assert!(crate::field::create_field(&mut doc, "앵커", "이름", "값"));
-        assert!(crate::bookmark::create_bookmark(
-            &mut doc,
-            "앵커",
-            "책갈피1"
-        ));
+        assert!(crate::field::create_field(&mut doc, "앵커", "이름", "값").unwrap());
+        assert!(crate::bookmark::create_bookmark(&mut doc, "앵커", "책갈피1").unwrap());
         assert_eq!(
             delete_object(&mut doc, ObjectKind::Field, "이름").unwrap(),
             1
