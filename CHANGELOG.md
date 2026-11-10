@@ -17,6 +17,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- HWP5 picture synthesis resolves unlisted `ItemRef` values with the model's case-sensitive
+  exact name, path-suffix and filename-stem rules. Partial names such as `image1` no longer
+  select `image10.png`; unresolved references report `BinaryAssetRemoved` instead of embedding
+  another picture. Manifest precedence and native `BinRef::Id` compatibility are preserved
+  ([#453](https://github.com/STAIxBWLB/hwp-cli/issues/453)).
+
 - A numbering template containing `<`, `>` or `&` now survives HWPX output. The HWPX reader
   resolves the XML entity references (`&lt;`, `&gt;`, `&amp;`) inside `paraHead` text instead of
   dropping them, so `hwp compose` writes an ordered-list marker such as `<{n}>` escaped and
