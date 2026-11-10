@@ -878,7 +878,7 @@ fn is_label_letter(ch: char) -> bool {
 }
 
 /// Splice, in each text segment of `para`, the edits `find` returns for it: byte ranges of
-/// the segment, in order and not overlapping, with their replacements. Returns whether it
+/// the segment, in order and not overlapping, with their replacements. Returns whether
 /// an edit was found. With `apply` false, validate the edits without changing the paragraph.
 fn splice_segments(
     para: &mut Paragraph,
