@@ -74,21 +74,23 @@ fn prepare_apply_refuses_intervening_binary_and_preview_changes_omitted_by_json(
 
 #[test]
 fn opaque_paragraph_records_are_visible_but_never_relocated_by_a_binding() {
-    let mut doc = document();
-    doc.sections[0].paragraphs[1] = paragraph("{{ private }}");
-    doc.sections[0].paragraphs[1]
-        .extras
-        .push(hwp_model::OpaqueRecord {
-            tag: u16::MAX,
-            data: vec![1, 2, 3],
-            children: vec![],
-        });
-    let item = occurrence(&doc, "placeholder", "private");
-    assert_unsupported(&item, "rich_target");
-    let (plan, values) = plan(&doc, &item, "replacement", true);
-    let before = doc.clone();
-    assert!(prepare_binding_plan(&doc, &source_hash(), &plan, &values).is_err());
-    assert_eq!(doc, before);
+    for tag in [u16::MAX, 0x46] {
+        let mut doc = document();
+        doc.sections[0].paragraphs[1] = paragraph("{{ private }}");
+        doc.sections[0].paragraphs[1]
+            .extras
+            .push(hwp_model::OpaqueRecord {
+                tag,
+                data: vec![1, 2, 3],
+                children: vec![],
+            });
+        let item = occurrence(&doc, "placeholder", "private");
+        assert_unsupported(&item, "rich_target");
+        let (plan, values) = plan(&doc, &item, "replacement", true);
+        let before = doc.clone();
+        assert!(prepare_binding_plan(&doc, &source_hash(), &plan, &values).is_err());
+        assert_eq!(doc, before);
+    }
 }
 
 fn source_hash() -> String {
@@ -397,12 +399,10 @@ fn captured_xml_generic_list_is_inventory_only() {
 fn native_field_para() -> Paragraph {
     let mut doc = document();
     doc.sections[0].paragraphs[1] = paragraph("FIELD-ANCHOR");
-    assert!(crate::field::create_field(
-        &mut doc,
-        "FIELD-ANCHOR",
-        "owner-native-field",
-        "value"
-    ));
+    assert!(
+        crate::field::create_field(&mut doc, "FIELD-ANCHOR", "owner-native-field", "value")
+            .unwrap()
+    );
     doc.sections[0].paragraphs[1].clone()
 }
 fn assert_native_inventory(doc: &Document, inherited_cause: &str) {

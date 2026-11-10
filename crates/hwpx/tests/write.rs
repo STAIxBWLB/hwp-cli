@@ -1098,8 +1098,11 @@ fn regex_lite_strip_t(xml: &str) -> String {
 #[test]
 fn 필드_생성_hwpx_왕복() {
     let mut doc = hwp_convert::from_markdown("수신: 부서명");
-    assert!(hwp_convert::create_field(&mut doc, "수신:", "수신처", ""));
-    assert_eq!(hwp_convert::set_field(&mut doc, "수신처", "홍길동"), 1);
+    assert!(hwp_convert::create_field(&mut doc, "수신:", "수신처", "").unwrap());
+    assert_eq!(
+        hwp_convert::set_field(&mut doc, "수신처", "홍길동").unwrap(),
+        1
+    );
 
     let out = tmp("field.hwpx");
     let warnings = hwpx::write_document(&doc, &out).unwrap();
@@ -1248,11 +1251,7 @@ fn 확장필드_hwp5출신_hwpx_방출() {
 #[test]
 fn 책갈피_생성_hwpx_왕복() {
     let mut doc = hwp_convert::from_markdown("제목 문단\n\n본문");
-    assert!(hwp_convert::create_bookmark(
-        &mut doc,
-        "제목",
-        "책갈피테스트"
-    ));
+    assert!(hwp_convert::create_bookmark(&mut doc, "제목", "책갈피테스트").unwrap());
 
     let out = tmp("bookmark.hwpx");
     let warnings = hwpx::write_document(&doc, &out).unwrap();
@@ -1285,12 +1284,9 @@ fn 책갈피_생성_hwpx_왕복() {
 #[test]
 fn 하이퍼링크_생성_hwpx_왕복() {
     let mut doc = hwp_convert::from_markdown("문서: 참고");
-    assert!(hwp_convert::create_hyperlink(
-        &mut doc,
-        "문서:",
-        "https://example.com/a",
-        "여기"
-    ));
+    assert!(
+        hwp_convert::create_hyperlink(&mut doc, "문서:", "https://example.com/a", "여기").unwrap()
+    );
 
     let out = tmp("hyperlink.hwpx");
     let warnings = hwpx::write_document(&doc, &out).unwrap();

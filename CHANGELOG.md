@@ -70,6 +70,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   this is a serialized-ID uniqueness fix, with its effect on opening in Hancom unverified
   ([#465](https://github.com/STAIxBWLB/hwp-cli/issues/465)).
 
+- Text edits refuse before mutation when they would shift opaque HWP5 `PARA_RANGE_TAG`
+  positions, including field/slot/form filling and control insertion/removal. Whole-cell
+  replacement also refuses when rebuilding would discard a tagged subtree. Equal-WCHAR-width
+  text splices and exact tagged-cell no-ops preserve the opaque records. Field values and
+  hyperlink displays normalize tabs to their eight-WCHAR serialized width before preflight
+  and insertion; hyperlink style boundaries use that width too. The refusal explains
+  how to use equal-width text or remove the marks in Hangul; reader and identity paths are
+  unchanged ([#470](https://github.com/STAIxBWLB/hwp-cli/issues/470)).
+
 ## [1.5.0]
 
 **Compatibility**

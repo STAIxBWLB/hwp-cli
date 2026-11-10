@@ -1211,7 +1211,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         unapplied.push(format!("--replace {spec:?}"));
                         continue;
                     }
-                    let n = hwp_convert::replace_text(&mut doc, from, to, true);
+                    let n = hwp_convert::replace_text(&mut doc, from, to, true)
+                        .map_err(anyhow::Error::msg)?;
                     eprintln!("치환: {from:?} → {to:?} ({n}건)");
                     record_effect(
                         &before,
@@ -1287,7 +1288,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         )
                     })?;
                     let (name, value) = rest.split_once('=').unwrap_or((rest, ""));
-                    if hwp_convert::create_field(&mut doc, anchor, name, value) {
+                    if hwp_convert::create_field(&mut doc, anchor, name, value)
+                        .map_err(anyhow::Error::msg)?
+                    {
                         eprintln!("누름틀 생성: {anchor:?} 뒤에 이름={name:?} 값={value:?}");
                         edits += 1;
                     } else {
@@ -1301,7 +1304,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let (anchor, name) = spec.split_once("=>").with_context(|| {
                         format!("--create-bookmark 형식은 \"앵커=>이름\" 입니다: {spec:?}")
                     })?;
-                    if hwp_convert::create_bookmark(&mut doc, anchor, name) {
+                    if hwp_convert::create_bookmark(&mut doc, anchor, name)
+                        .map_err(anyhow::Error::msg)?
+                    {
                         eprintln!("책갈피 생성: {anchor:?} 뒤에 이름={name:?}");
                         edits += 1;
                     } else {
@@ -1321,7 +1326,9 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                             "--create-hyperlink 형식은 \"앵커=>URL\" 또는 \"앵커=>표시=>URL\" 입니다: {spec:?}"
                         ),
                     };
-                    if hwp_convert::create_hyperlink(&mut doc, anchor, url, display) {
+                    if hwp_convert::create_hyperlink(&mut doc, anchor, url, display)
+                        .map_err(anyhow::Error::msg)?
+                    {
                         eprintln!("하이퍼링크 생성: {anchor:?} 뒤에 표시={display:?} URL={url:?}");
                         edits += 1;
                     } else {
@@ -1361,7 +1368,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let (name, value) = spec.split_once('=').with_context(|| {
                         format!("--set-field 형식은 \"이름=값\" 입니다: {spec:?}")
                     })?;
-                    let n = hwp_convert::set_field(&mut doc, name, value);
+                    let n = hwp_convert::set_field(&mut doc, name, value)
+                        .map_err(anyhow::Error::msg)?;
                     if n == 0 {
                         eprintln!("경고: 필드 {name:?}를 찾지 못했습니다 (hwp fields로 이름 확인)");
                         unapplied.push(format!("--set-field {spec:?}"));
@@ -1687,7 +1695,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         &mut doc,
                         hwp_convert::ObjectKind::Image,
                         anchor,
-                    );
+                    )
+                    .map_err(anyhow::Error::msg)?;
                     if n == 0 {
                         eprintln!("경고: 그림을 찾지 못했습니다 (앵커 {anchor:?})");
                         unapplied.push(format!("--delete-image {anchor:?}"));
@@ -1705,8 +1714,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                             hwp_convert::ObjectKind::TableNth(nth),
                             "",
                         )
+                        .map_err(anyhow::Error::msg)?
                     } else {
                         hwp_convert::delete_object(&mut doc, hwp_convert::ObjectKind::Table, spec)
+                            .map_err(anyhow::Error::msg)?
                     };
                     if n == 0 {
                         eprintln!("경고: 표를 찾지 못했습니다 ({spec:?})");
@@ -1720,7 +1731,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             EditOperation::DeleteField(specs) => {
                 for name in specs {
                     let n =
-                        hwp_convert::delete_object(&mut doc, hwp_convert::ObjectKind::Field, name);
+                        hwp_convert::delete_object(&mut doc, hwp_convert::ObjectKind::Field, name)
+                            .map_err(anyhow::Error::msg)?;
                     if n == 0 {
                         eprintln!("경고: 필드를 찾지 못했습니다 ({name:?})");
                         unapplied.push(format!("--delete-field {name:?}"));
@@ -1736,7 +1748,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         &mut doc,
                         hwp_convert::ObjectKind::Bookmark,
                         name,
-                    );
+                    )
+                    .map_err(anyhow::Error::msg)?;
                     if n == 0 {
                         eprintln!("경고: 책갈피를 찾지 못했습니다 ({name:?})");
                         unapplied.push(format!("--delete-bookmark {name:?}"));
@@ -3365,7 +3378,8 @@ fn apply_typed_operation(
                 // Structural drift (planner decision 3): an earlier insert/delete/move in this
                 // batch may have shifted this paragraph's position since preflight resolved it.
                 let current_path = offsets.current_path(&target.path)?;
-                let count = hwp_convert::replace_text_at(doc, &current_path, from, to);
+                let count = hwp_convert::replace_text_at(doc, &current_path, from, to)
+                    .map_err(anyhow::Error::msg)?;
                 if count == 0 {
                     unapplied.push(format!(
                         "replace address={current_path} from={from:?} to={to:?}"
@@ -3376,7 +3390,8 @@ fn apply_typed_operation(
                 }
             } else {
                 let before = doc.clone();
-                let count = hwp_convert::replace_text(doc, from, to, true);
+                let count =
+                    hwp_convert::replace_text(doc, from, to, true).map_err(anyhow::Error::msg)?;
                 eprintln!("치환: {from:?} → {to:?} ({count}건)");
                 record_effect(&before, doc, replace_request(from, to), edits, unapplied);
             }
@@ -3426,7 +3441,7 @@ fn apply_typed_operation(
             name,
             value,
         } => {
-            if hwp_convert::create_field(doc, anchor, name, value) {
+            if hwp_convert::create_field(doc, anchor, name, value).map_err(anyhow::Error::msg)? {
                 eprintln!("누름틀 생성: {anchor:?} 뒤에 이름={name:?} 값={value:?}");
                 *edits += 1;
             } else {
@@ -3434,7 +3449,7 @@ fn apply_typed_operation(
             }
         }
         TypedEditOperation::CreateBookmark { anchor, name } => {
-            if hwp_convert::create_bookmark(doc, anchor, name) {
+            if hwp_convert::create_bookmark(doc, anchor, name).map_err(anyhow::Error::msg)? {
                 eprintln!("책갈피 생성: {anchor:?} 뒤에 이름={name:?}");
                 *edits += 1;
             } else {
@@ -3446,7 +3461,9 @@ fn apply_typed_operation(
             display,
             url,
         } => {
-            if hwp_convert::create_hyperlink(doc, anchor, url, display) {
+            if hwp_convert::create_hyperlink(doc, anchor, url, display)
+                .map_err(anyhow::Error::msg)?
+            {
                 eprintln!("하이퍼링크 생성: {anchor:?} 뒤에 표시={display:?} URL={url:?}");
                 *edits += 1;
             } else {
@@ -3479,7 +3496,7 @@ fn apply_typed_operation(
         }
         TypedEditOperation::SetField { name, value } => {
             let before = doc.clone();
-            let count = hwp_convert::set_field(doc, name, value);
+            let count = hwp_convert::set_field(doc, name, value).map_err(anyhow::Error::msg)?;
             if count == 0 {
                 unapplied.push(format!("set_field name={name:?}"));
             } else {
@@ -3921,7 +3938,8 @@ fn apply_typed_operation(
             }
         }
         TypedEditOperation::DeleteImage { anchor } => {
-            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Image, anchor);
+            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Image, anchor)
+                .map_err(anyhow::Error::msg)?;
             if count == 0 {
                 unapplied.push(format!("delete_image anchor={anchor:?}"));
             } else {
@@ -3936,7 +3954,8 @@ fn apply_typed_operation(
                 (None, Some(anchor)) => (hwp_convert::ObjectKind::Table, anchor.as_str()),
                 _ => anyhow::bail!("delete_table은 index와 anchor 중 하나만 지정해야 합니다"),
             };
-            let count = hwp_convert::delete_object(doc, kind, selector);
+            let count =
+                hwp_convert::delete_object(doc, kind, selector).map_err(anyhow::Error::msg)?;
             if count == 0 {
                 unapplied.push(format!("delete_table index={index:?} anchor={anchor:?}"));
             } else {
@@ -3945,7 +3964,8 @@ fn apply_typed_operation(
             }
         }
         TypedEditOperation::DeleteField { name } => {
-            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Field, name);
+            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Field, name)
+                .map_err(anyhow::Error::msg)?;
             if count == 0 {
                 unapplied.push(format!("delete_field name={name:?}"));
             } else {
@@ -3954,7 +3974,8 @@ fn apply_typed_operation(
             }
         }
         TypedEditOperation::DeleteBookmark { name } => {
-            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Bookmark, name);
+            let count = hwp_convert::delete_object(doc, hwp_convert::ObjectKind::Bookmark, name)
+                .map_err(anyhow::Error::msg)?;
             if count == 0 {
                 unapplied.push(format!("delete_bookmark name={name:?}"));
             } else {

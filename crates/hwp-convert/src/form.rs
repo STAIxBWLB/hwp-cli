@@ -210,6 +210,7 @@ pub struct FormFill {
 /// A slot owns its text: a label whose value text or value cell holds a requested slot is left
 /// to the slot, so one place is filled once. When two keys reach one place, the first keeps it
 /// and a warning names the other.
+/// When opaque range tags are present, validate all text and whole-cell edits before mutation.
 pub fn fill_form_fields(
     doc: &mut Document,
     values: &BTreeMap<String, String>,
@@ -302,10 +303,27 @@ pub fn fill_form_fields(
         }
     }
 
+    // Validate both text and whole-cell writes before either pass mutates the document.
+    if crate::edit::document_has_range_tags(doc) {
+        let mut preflight = FillRun {
+            values: &lookup,
+            counts: BTreeMap::new(),
+            warnings: Vec::new(),
+        };
+        for section in &mut doc.sections {
+            for para in &mut section.paragraphs {
+                preflight.fill_text(para, false, false)?;
+            }
+        }
+        for (key, at) in &targets {
+            crate::edit::check_set_cell_edit(doc, at.table, at.row, at.col, &lookup[key])?;
+        }
+    }
+
     // 2. Slots, inline labels and cell blanks, on the unfilled text.
     for section in &mut doc.sections {
         for para in &mut section.paragraphs {
-            run.fill_text(para, false);
+            run.fill_text(para, false, true)?;
         }
     }
 
@@ -376,11 +394,16 @@ struct FillRun<'a> {
 }
 
 impl FillRun<'_> {
-    /// Step 2 of [`fill_form_fields`] on `para` and its nested paragraphs. Returns whether
-    /// anything changed, so a text box on the way drops its now stale raw XML.
-    fn fill_text(&mut self, para: &mut Paragraph, in_cell: bool) -> bool {
+    /// Validate or apply step 2 of [`fill_form_fields`] on `para` and nested paragraphs.
+    /// Return whether an edit was found; only the apply pass invalidates captured XML.
+    fn fill_text(
+        &mut self,
+        para: &mut Paragraph,
+        in_cell: bool,
+        apply: bool,
+    ) -> Result<bool, String> {
         let values = self.values;
-        let mut changed = splice_segments(para, |seg| {
+        let mut changed = splice_segments(para, apply, |seg| {
             let mut edits = Vec::new();
             for candidate in segment_candidates(seg, in_cell, values, &mut self.warnings) {
                 *self.counts.entry(candidate.key).or_default() += candidate.fills;
@@ -389,13 +412,13 @@ impl FillRun<'_> {
             }
             edits.sort_by_key(|(range, _)| range.start);
             edits
-        });
+        })?;
         for ctrl in &mut para.controls {
             match ctrl {
                 Control::Table(table) => {
                     for cell in &mut table.cells {
                         for p in &mut cell.paragraphs {
-                            changed |= self.fill_text(p, true);
+                            changed |= self.fill_text(p, true, apply)?;
                         }
                     }
                 }
@@ -403,10 +426,10 @@ impl FillRun<'_> {
                     let mut inner = false;
                     for list in &mut generic.paragraph_lists {
                         for p in &mut list.paragraphs {
-                            inner |= self.fill_text(p, in_cell);
+                            inner |= self.fill_text(p, in_cell, apply)?;
                         }
                     }
-                    if inner {
+                    if apply && inner {
                         generic.hwpx_raw_xml = None;
                     }
                     changed |= inner;
@@ -414,7 +437,7 @@ impl FillRun<'_> {
                 _ => {}
             }
         }
-        changed
+        Ok(changed)
     }
 }
 
@@ -855,12 +878,13 @@ fn is_label_letter(ch: char) -> bool {
 }
 
 /// Splice, in each text segment of `para`, the edits `find` returns for it: byte ranges of
-/// the segment, in order and not overlapping, with their replacements. Returns whether it
-/// spliced anything.
+/// the segment, in order and not overlapping, with their replacements. Returns whether
+/// an edit was found. With `apply` false, validate the edits without changing the paragraph.
 fn splice_segments(
     para: &mut Paragraph,
+    apply: bool,
     mut find: impl FnMut(&str) -> Vec<(Range<usize>, String)>,
-) -> bool {
+) -> Result<bool, String> {
     let mut edits = Vec::new();
     for (seg_start, seg) in text_segments(para) {
         for (range, replacement) in find(&seg) {
@@ -870,8 +894,12 @@ fn splice_segments(
         }
     }
     let changed = !edits.is_empty();
-    splice_edits(para, edits);
-    changed
+    if apply {
+        splice_edits(para, edits)?;
+    } else {
+        crate::edit::check_splice_edits(para, &edits)?;
+    }
+    Ok(changed)
 }
 
 /// A value cell a fill may write without overwriting content: empty, or one slot.
@@ -1386,7 +1414,7 @@ mod tests {
     #[test]
     fn a_value_cell_with_controls_is_left_alone() {
         let mut doc = from_markdown("| 성명 | 누름 |\n|---|---|\n| 주소 | |\n");
-        assert!(crate::create_field(&mut doc, "누름", "이름란", ""));
+        assert!(crate::create_field(&mut doc, "누름", "이름란", "").unwrap());
         let before = doc.clone();
         let fill = fill_form_fields(&mut doc, &values(&[("성명", "홍길동")])).unwrap();
         assert_eq!(fill.unmatched, ["성명"]);

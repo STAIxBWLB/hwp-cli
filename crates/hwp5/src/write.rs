@@ -5013,7 +5013,7 @@ mod tests {
         let original = crate::read_document(&source).unwrap().document;
         let mut edited = original.clone();
         assert_eq!(
-            hwp_convert::replace_text(&mut edited, "replace", "updated", true),
+            hwp_convert::replace_text(&mut edited, "replace", "updated", true).unwrap(),
             1
         );
 
@@ -5068,7 +5068,7 @@ mod tests {
         let original = crate::read_document(&source).unwrap().document;
         let mut edited = original.clone();
         assert_eq!(
-            hwp_convert::replace_text(&mut edited, "replace", "updated", true),
+            hwp_convert::replace_text(&mut edited, "replace", "updated", true).unwrap(),
             1
         );
 

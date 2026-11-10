@@ -1,8 +1,8 @@
-//! 합성 문서(md/hwpx 출신, tail 없음)가 한글 5.1.0.1 규격을 따르는지 검증.
+//! Verify synthesized documents (from md/hwpx, without tails) follow Hangul 5.1.0.1.
 //!
-//! 한글 실기 게이트에서 합성 문서만 "변조/보안경고"가 났던 5대 결함의
-//! 회귀 방지: 버전-레이아웃 정합(PARA_SHAPE 58B/PARA_HEADER 24B),
-//! TAB_DEF/NUMBERING 존재(dangling reference 방지), secd 필수 자식.
+//! Regressions for the five defects that caused tamper/security warnings only for synthesized
+//! documents in native Hangul checks: version/layout agreement (PARA_SHAPE 58B/PARA_HEADER 24B),
+//! nonempty TAB_DEF/NUMBERING (no dangling references), and required secd children.
 
 use std::path::PathBuf;
 
@@ -13,8 +13,8 @@ fn tmp(name: &str) -> temp_path::TempPath {
     temp_path::TempPath::new("hwp5-synth-tests", name)
 }
 
-/// 신규 HWP 합성은 경로와 실행 시각에 무관하게 바이트가 같고, 모든 CFB directory
-/// entry의 creation/modification FILETIME이 canonical CFB epoch여야 한다.
+/// New HWP synthesis must be byte-identical regardless of path or execution time; every CFB
+/// directory entry creation/modification FILETIME must equal the canonical CFB epoch.
 #[test]
 fn 신규_패키지는_시간과_경로에_무관하게_결정적() {
     let doc = hwp_convert::from_markdown("결정적 HWP");
@@ -65,7 +65,7 @@ fn 신규_패키지는_시간과_경로에_무관하게_결정적() {
     std::fs::remove_file(second).unwrap();
 }
 
-/// markdown→hwp 합성 문서가 한글 무결성 검사 통과 조건을 모두 만족해야 한다.
+/// Markdown-to-HWP synthesis must satisfy every condition checked by Hangul integrity validation.
 #[test]
 fn 합성_문서_한글_규격_충족() {
     let doc = hwp_convert::from_markdown(
@@ -77,20 +77,20 @@ fn 합성_문서_한글_규격_충족() {
     let reread = hwp5::read_document(&out).unwrap();
     let d = reread.document;
 
-    // 1. TAB_DEF/NUMBERING 비어 있지 않음 (PARA_SHAPE의 tab_def_id/numbering_id 참조처)
+    // 1. TAB_DEF/NUMBERING are nonempty (targets of PARA_SHAPE tab_def_id/numbering_id).
     assert!(!d.header.tab_defs.is_empty(), "TAB_DEF dangling reference");
     assert!(
         !d.header.numberings.is_empty(),
         "NUMBERING dangling reference"
     );
 
-    // 1a. char_shape 음영색(shade_color) != 0 — 0이면 한글이 글자 칸마다 불투명
-    //     검정 음영을 그려 '검은 바'가 된다(14차 실기). 정품은 0xFFFFFFFF('없음').
+    // 1a. char_shape shade_color != 0: zero draws opaque black shading in every character cell,
+    //     producing black bars (native check 14). Genuine files use 0xFFFFFFFF (none).
     for cs in &d.header.char_shapes {
         assert_ne!(cs.shade_color, 0, "char_shape 음영색 0 = 검은 바");
     }
 
-    // 1b. COMPATIBLE_DOCUMENT(0x1E) 존재 — 5.1.x 필수 (한글 정품 가나다·hello_world 보유)
+    // 1b. COMPATIBLE_DOCUMENT (0x1E) is required for 5.1.x (genuine 가나다/hello_world samples).
     let mut c0 = hwp5::Hwp5Container::open(&out).unwrap();
     let di0 = c0.read_record_stream("/DocInfo").unwrap();
     let scan = hwp5::record::scan_stream(&di0, hwp5::record::ScanMode::Tolerant).unwrap();
@@ -103,7 +103,7 @@ fn 합성_문서_한글_규격_충족() {
     assert!(child_tags.contains(&0x1F), "LAYOUT_COMPATIBILITY 자식");
     assert!(child_tags.contains(&0x20), "TRACKCHANGE 자식");
 
-    // 2. secd 필수 자식: 각주/미주 모양 + 쪽 테두리 3종
+    // 2. Required secd children: footnote/endnote shapes and all three page border definitions.
     let secd = d.sections[0].section_def().expect("구역 정의");
     let footnotes = secd.extras.iter().filter(|e| e.tag == 0x4A).count();
     let page_borders = secd.extras.iter().filter(|e| e.tag == 0x4B).count();
@@ -111,11 +111,11 @@ fn 합성_문서_한글_규격_충족() {
     assert_eq!(page_borders, 3, "secd 쪽 테두리 3종");
     assert!(secd.page.is_some(), "PAGE_DEF");
 
-    // 3. EncryptVersion=4 (현대 한글 마커)
+    // 3. EncryptVersion=4 (modern Hangul marker).
     let mut c = hwp5::Hwp5Container::open(&out).unwrap();
     assert!(c.file_header().is_compressed());
 
-    // 4. 레코드 길이가 5.1.0.1 규격 (압축 해제 후 직접 측정)
+    // 4. Record lengths follow 5.1.0.1 (measured directly after decompression).
     let di = c.read_record_stream("/DocInfo").unwrap();
     let bt = c.read_record_stream("/BodyText/Section0").unwrap();
     assert!(
@@ -132,10 +132,10 @@ fn 합성_문서_한글_규격_충족() {
     );
 }
 
-/// GI-1/GI-2 왕복 (c): md(각주·순서목록·중첩) → hwp5 저장 → 재읽기.
-/// 합성 각주·번호/글머리 문단이 synth 규격(레코드 크기·dangling 방지) 위반 없이
-/// 저장·복원되는지 검증한다. (취소선 플래그는 hwp5가 바이너리로 쓰지 않아 왕복에서
-/// 소실된다 — DIFFSPEC 회피를 위한 설계상 결정. hwpx 왕복은 보존.)
+/// GI-1/GI-2 round trip (c): md (footnotes, ordered/nested lists) -> HWP5 -> read back.
+/// Synthesized footnotes and numbered/bulleted paragraphs must survive without violating
+/// record-size and reference constraints. Strikethrough is lost because HWP5 does not write
+/// the flag, intentionally avoiding DIFFSPEC. The HWPX round trip preserves it.
 #[test]
 fn 왕복_각주_목록_hwp5_규격() {
     let md = "\
@@ -151,7 +151,7 @@ fn 왕복_각주_목록_hwp5_규격() {
     let doc = hwp_convert::from_markdown(md);
     let out = tmp("synth_notes_list.hwp");
     let warnings = hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
-    // 각주·목록이 DROP 없이 저장돼야 한다.
+    // Footnotes and lists must be saved without DROP losses.
     assert!(
         !warnings.iter().any(|w| w.contains("DROP")),
         "DROP 경고: {warnings:?}"
@@ -160,14 +160,14 @@ fn 왕복_각주_목록_hwp5_규격() {
     let reread = hwp5::read_document(&out).unwrap().document;
     let d = &reread;
 
-    // 1) 각주 컨트롤(fn) + 본문 문단 리스트가 재읽기에서 살아 있다.
+    // 1) The footnote control (fn) and its body paragraphs survive rereading.
     let has_fn = d.sections[0].paragraphs.iter().any(|p| {
         p.controls.iter().any(|c| matches!(c,
             hwp_model::Control::Generic(g) if g.ctrl_id == *b"fn  " && !g.paragraph_lists.is_empty()))
     });
     assert!(has_fn, "각주 컨트롤 왕복");
 
-    // 2) 번호/글머리 머리 문단모양이 살아 있고 참조 테이블이 dangling 아님(defect A10).
+    // 2) Numbering/bullet paragraph shapes survive with valid references (defect A10).
     let has_number = d.header.para_shapes.iter().any(|ps| ps.head_type() == 2);
     let has_bullet = d.header.para_shapes.iter().any(|ps| ps.head_type() == 3);
     assert!(has_number, "번호 머리 문단모양 보존");
@@ -190,7 +190,7 @@ fn 왕복_각주_목록_hwp5_규격() {
         }
     }
 
-    // 3) synth 규격: 레코드 크기(새 취소선 문자모양·목록 문단모양·각주 본문 포함).
+    // 3) Synthesized record sizes include new strike/list shapes and footnote bodies.
     let mut c = hwp5::Hwp5Container::open(&out).unwrap();
     let di = c.read_record_stream("/DocInfo").unwrap();
     let bt = c.read_record_stream("/BodyText/Section0").unwrap();
@@ -207,9 +207,9 @@ fn 왕복_각주_목록_hwp5_규격() {
         "PARA_HEADER 24B (각주 본문 문단 포함)"
     );
 
-    // 4) BULLET 레코드가 정품 필드 패턴과 일치(사업계획서 전수 대조): 25B, [8..12]=글자모양
-    //    id 없음(0xFFFFFFFF), [12..14]=글머리표 문자(IR bullet_chars 순서대로 — 개조식
-    //    사다리라 수준별로 다르다). 오프셋이 어긋나면 한글이 마커를 미표시한다(1차 H2 실기 결함).
+    // 4) BULLET records match genuine field patterns (all business-plan samples): 25B, [8..12]
+    //    has no character-shape ID (0xFFFFFFFF), [12..14] stores the bullet character in IR
+    //    bullet_chars order (different by level). Wrong offsets hide markers (native H2 defect 1).
     let bullets = all_records(&di, 0x18);
     assert_eq!(
         bullets.len(),
@@ -230,10 +230,10 @@ fn 왕복_각주_목록_hwp5_규격() {
         );
     }
 
-    // 5) 취소선: strike CharShape의 on-disk 속성 bit18(취소선 여부=1)이 세워졌는지(바이트).
-    //    CHAR_SHAPE 속성은 오프셋 26(면 ID 14×2=14B + ratios/spacings/rel/offsets 각 7B ×4 =
-    //    28B... → base_size 앞). 여기선 레코드에서 (attr>>18)&1 을 가진 것이 하나라도 있으면
-    //    OK. 속성 오프셋: face_ids(14)+ratios(7)+spacings(7)+rel_sizes(7)+offsets(7)+base_size(4)=46.
+    // 5) Strikethrough: on-disk CharShape attribute bit18 must be set in at least one record.
+    //    The attribute follows face_ids(14), ratios(7), spacings(7), relative sizes(7),
+    //    offsets(7), and base_size(4). Check (attr >> 18) & 1 directly in the record bytes.
+    //    The attribute offset is therefore 46.
     let strike_present = all_records(&di, 0x15).iter().any(|d| {
         d.len() >= 50 && (u32::from_le_bytes([d[46], d[47], d[48], d[49]]) >> 18) & 1 == 1
     });
@@ -243,13 +243,13 @@ fn 왕복_각주_목록_hwp5_규격() {
     );
 }
 
-/// 번호/글머리 numbering_id의 포맷 경계 ±1 변환이 정확한 역이어야 한다.
-/// IR 규약은 0-기반이고 hwp5 on-disk는 1-기반이므로, md(0-기반)→hwp5(write +1)→
-/// 재읽기(read -1)에서 numbering_id가 0으로 보존돼야 한다(왕복 무손실).
+/// Numbering/bullet numbering_id format-boundary +/-1 conversions must be exact inverses.
+/// The IR is zero-based and HWP5 on disk is one-based: md -> HWP5 (write +1) ->
+/// read back (read -1) must preserve numbering_id=0 without loss.
 #[test]
 fn hwp5_numbering_id_0기반_경계왕복() {
     let doc = hwp_convert::from_markdown("1. 하나\n2. 둘\n\n- 가\n- 나\n");
-    // md 출신 IR은 번호/글머리 참조가 0-기반이어야 한다.
+    // The md-derived IR uses zero-based numbering/bullet references.
     for ps in &doc.header.para_shapes {
         if matches!(ps.head_type(), 2 | 3) {
             assert_eq!(ps.numbering_id, 0, "md 출신 IR numbering_id는 0-기반");
@@ -258,8 +258,8 @@ fn hwp5_numbering_id_0기반_경계왕복() {
     let out = tmp("numbering_base.hwp");
     hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
 
-    // on-disk PARA_SHAPE의 numbering_id는 1-기반이어야 한다(head 2/3 문단=1). 오프셋 30:
-    // attr1(4) + i32×6(24) + tab_def_id(2) = 30. write가 +1 복원했는지 바이트로 확인.
+    // On-disk PARA_SHAPE numbering_id must be one-based (head 2/3 paragraphs use 1). Offset 30:
+    // attr1(4) + i32*6(24) + tab_def_id(2). Check the writer restored +1 in the bytes.
     let mut c = hwp5::Hwp5Container::open(&out).unwrap();
     let di = c.read_record_stream("/DocInfo").unwrap();
     let raw_ids: Vec<u16> = all_records(&di, 0x19)
@@ -274,7 +274,7 @@ fn hwp5_numbering_id_0기반_경계왕복() {
         "머리 문단모양 on-disk numbering_id가 1-기반(=1)이어야: {raw_ids:?}"
     );
 
-    // 재읽기에서 다시 0-기반으로 정규화되는지(read -1 == write +1의 역).
+    // Reading normalizes back to zero-based IDs (read -1 inverts write +1).
     let reread = hwp5::read_document(&out).unwrap().document;
     for ps in &reread.header.para_shapes {
         if matches!(ps.head_type(), 2 | 3) {
@@ -283,13 +283,13 @@ fn hwp5_numbering_id_0기반_경계왕복() {
     }
 }
 
-/// GI-3/GI-4 왕복: md(이미지+인라인 코드) → hwp5 저장 → 재읽기에서 Picture·bin·코드 글자모양 생존.
+/// GI-3/GI-4 round trip: md (image/inline code) -> HWP5 -> read preserves Picture/bin/code shapes.
 #[test]
 fn md_이미지_코드_hwp5_왕복() {
     use std::io::Write;
     let dir = std::env::temp_dir().join(format!("hwp5-md-imgcode-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // 최소 PNG(16×16 치수 헤더).
+    // Minimal PNG (16x16 dimension header).
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
     png.extend([0, 0, 0, 13]);
     png.extend(b"IHDR");
@@ -325,7 +325,7 @@ fn md_이미지_코드_hwp5_왕복() {
     );
     let reread = hwp5::read_document(&out).unwrap().document;
 
-    // 이미지 Picture + bin 데이터 생존.
+    // The Picture and binary image data survive.
     let has_pic = reread.sections[0].paragraphs.iter().any(|p| {
         p.controls
             .iter()
@@ -343,7 +343,7 @@ fn md_이미지_코드_hwp5_왕복() {
         });
     assert_eq!(description, Some("제목😀\n\n대체 설명"));
 
-    // 인라인 코드: 함초롬돋움(face_id=1) 글자모양 + 그걸 참조하는 run.
+    // Inline code: HCR Dotum (face_id=1) character shape and a run referencing it.
     let code_ids: std::collections::HashSet<u16> = reread
         .header
         .char_shapes
@@ -362,14 +362,14 @@ fn md_이미지_코드_hwp5_왕복() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 본문 탭이 md→hwp5 경로에서 8 WCHAR 인라인 컨트롤(코드 9)로 저장·복원돼야 한다.
-/// Text('\t')로 1 WCHAR만 나가면 한글이 코드 9를 인라인 컨트롤 선두로 오인해 뒤
-/// 7 WCHAR를 잘못 삼켜 파일이 깨진다(§3.2.3 표 6).
+/// Body tabs must round-trip as eight-WCHAR inline controls (code 9) through md -> HWP5.
+/// Writing Text('\t') as one WCHAR makes Hangul interpret code 9 as an inline-control start
+/// and consume the following seven WCHARs, corrupting the file (section 3.2.3, table 6).
 #[test]
 fn 본문_탭_hwp5_인라인컨트롤_왕복() {
     use hwp_model::HwpChar;
     let doc = hwp_convert::from_markdown("앞\t뒤\n");
-    // IR 불변식: 탭은 InlineCtrl(9), Text('\t') 부재.
+    // IR invariant: tabs use InlineCtrl(9), with no Text('\t').
     let chars = &doc.sections[0].paragraphs[0].chars;
     assert!(
         chars
@@ -385,7 +385,7 @@ fn 본문_탭_hwp5_인라인컨트롤_왕복() {
     let out = tmp("synth_tab.hwp");
     hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
 
-    // PARA_TEXT에 탭 인라인 컨트롤 16바이트(09 00 + 12*0 + 09 00)가 있어야 한다.
+    // PARA_TEXT must contain the 16-byte inline tab control (09 00 + 12*0 + 09 00).
     let mut c = hwp5::Hwp5Container::open(&out).unwrap();
     let bt = c.read_record_stream("/BodyText/Section0").unwrap();
     let pt = first_record(&bt, 0x43).expect("PARA_TEXT");
@@ -395,7 +395,7 @@ fn 본문_탭_hwp5_인라인컨트롤_왕복() {
         "PARA_TEXT에 탭 인라인 컨트롤 16B 없음"
     );
 
-    // 왕복: 다시 읽어도 InlineCtrl(9) + 텍스트 순서 보존.
+    // Round trip: InlineCtrl(9) and text order remain intact after reading.
     let reread = hwp5::read_document(&out).unwrap().document;
     let rc = &reread.sections[0].paragraphs[0].chars;
     assert!(
@@ -406,9 +406,9 @@ fn 본문_탭_hwp5_인라인컨트롤_왕복() {
     assert!(reread.plain_text().contains("앞\t뒤"), "탭 텍스트 복원");
 }
 
-/// 합성 문단의 본문 구조가 정품 한글 문단(가나다.hwp 5.1.1.0)과 동형이어야 한다.
-/// 정품 대조로 확정한 5대 본문 결함의 회귀 방지 — 이 결함들이 합쳐져
-/// "보안 낮춤에도 손상" 경고를 냈다.
+/// Synthesized body structure must match genuine Hangul paragraphs (가나다.hwp 5.1.1.0).
+/// Regressions for the five body defects established by genuine-file comparison; together
+/// they caused corruption warnings even with security settings lowered.
 #[test]
 fn 합성_문단_본문_구조_정품_동형() {
     let doc = hwp_convert::from_markdown("가나다\n");
@@ -417,20 +417,20 @@ fn 합성_문단_본문_구조_정품_동형() {
     let mut c = hwp5::Hwp5Container::open(&out).unwrap();
     let bt = c.read_record_stream("/BodyText/Section0").unwrap();
 
-    // 1. PARA_TEXT는 문단끝 문자(0x0d=13)로 끝나야 한다 (정품 188문단 전수).
+    // 1. PARA_TEXT ends with paragraph terminator 0x0d=13 (all 188 genuine paragraphs).
     let pt = first_record(&bt, 0x43).expect("PARA_TEXT");
     let last = u16::from_le_bytes([pt[pt.len() - 2], pt[pt.len() - 1]]);
     assert_eq!(last, 13, "PARA_TEXT는 문단끝 0x0d로 종료해야");
 
-    // 2. PARA_HEADER nchars 최상위 비트(0x80000000) 세팅 (정품 단일 문단 전수).
+    // 2. PARA_HEADER nchars has its top bit set (0x80000000, all genuine single paragraphs).
     let ph = first_record(&bt, 0x42).expect("PARA_HEADER");
     let nchars = u32::from_le_bytes([ph[0], ph[1], ph[2], ph[3]]);
     assert_ne!(nchars & 0x8000_0000, 0, "nchars bit31");
 
-    // 3. 구역 첫 문단 break_type=0x03 (offset 11) — 정품 동형.
+    // 3. The first section paragraph uses break_type=0x03 (offset 11), matching genuine files.
     assert_eq!(ph[11], 0x03, "구역 첫 문단 break_type");
 
-    // 4. PARA_CHAR_SHAPE run 수 = char_shape_cnt(offset 12, u16), 중복 병합으로 단일.
+    // 4. PARA_CHAR_SHAPE run count equals char_shape_cnt (offset 12, u16), deduplicated to one.
     let cs = first_record(&bt, 0x44).expect("PARA_CHAR_SHAPE");
     let cnt = u16::from_le_bytes([ph[12], ph[13]]);
     assert_eq!(
@@ -440,7 +440,7 @@ fn 합성_문단_본문_구조_정품_동형() {
     );
     assert_eq!(cnt, 1, "단일 문단은 단일 char_shape run (중복 없음)");
 
-    // 5. PAGE_BORDER_FILL attribute 첫 u32 = 1 (hello_world 표본 잔재 garbage 아님).
+    // 5. PAGE_BORDER_FILL begins with attribute u32=1 (not leftover hello_world sample garbage).
     let pbf = first_record(&bt, 0x4B).expect("PAGE_BORDER_FILL");
     assert_eq!(
         u32::from_le_bytes([pbf[0], pbf[1], pbf[2], pbf[3]]),
@@ -449,15 +449,15 @@ fn 합성_문단_본문_구조_정품_동형() {
     );
 }
 
-/// 빈 셀을 포함한 GFM 표 → 모든 표 셀 LIST_HEADER 의 nparas ≥ 1.
+/// GFM tables, including empty cells: every cell LIST_HEADER has nparas >= 1.
 ///
-/// 셀에 PARA_HEADER 가 하나도 안 붙으면(nparas=0) 한글이 문서를 '손상'으로
-/// 거부한다(M6-md생성.hwp 구 산출물의 실제 결함). from_markdown 은 셀 종료 시
-/// flush_paragraph_inner(force=true) 와 누락 칸 vec![Paragraph::default()]
-/// 충전으로 nparas≥1 을 보장한다. 짧은 행·빈 셀·헤더-only 표 모두 검증.
+/// Hangul rejects a document as corrupt when a cell lacks PARA_HEADER (nparas=0),
+/// as observed in the old M6-md생성.hwp output. At cell close, from_markdown calls
+/// flush_paragraph_inner(force=true) and fills missing cells with vec![Paragraph::default()]
+/// to ensure nparas >= 1. Cover short rows, empty cells, and header-only tables.
 #[test]
 fn 표_빈셀_포함_모든_셀_nparas_1이상() {
-    // 빈 셀(`| |`)·짧은 행(2칸 < 3열 헤더)·헤더 only 행을 모두 포함.
+    // Include empty cells (`| |`), a short row (two cells vs. three header columns), and header-only rows.
     let doc =
         hwp_convert::from_markdown("|  |  |  |\n| --- | --- | --- |\n| a |  |  |\n| b | c |\n");
     let out = tmp("synth_empty_cell.hwp");
@@ -477,24 +477,24 @@ fn 표_빈셀_포함_모든_셀_nparas_1이상() {
     }
 }
 
-/// 표 행 추가(add_rows)로 늘린 표가 한글 합성 규격을 만족해야 한다.
+/// Tables extended with add_rows must satisfy the Hangul synthesis constraints.
 ///
-/// 양식 채우기에서 행/칸을 추가(`hwp edit --add-row`, `hwp fill --data tables`)한
-/// 표는 새 셀이 빈 문단이라도 nparas≥1·문단끝·nchars bit31을 지켜야 하고,
-/// row_cell_counts(행별 셀 수)가 행 수·셀 수와 정합해야 한다(hwp5 extract assert).
-/// 어긋나면 한글이 '손상'으로 거부한다.
+/// Tables extended by form filling (`hwp edit --add-row`, `hwp fill --data tables`) must
+/// retain nparas >= 1, paragraph terminators, and nchars bit31 even in new empty cells;
+/// row_cell_counts must agree with row/cell counts (the hwp5 extraction assertion).
+/// Hangul rejects inconsistent output as corrupt.
 #[test]
 fn 행_추가_표_합성_규격_충족() {
     let mut doc = hwp_convert::from_markdown("| 품목 | 수량 |\n| --- | --- |\n| | |\n");
-    // 빈 행 3개 추가 후 일부 채움(양식 변형 시나리오).
+    // Add three empty rows and fill some cells (form modification scenario).
     hwp_convert::add_rows(&mut doc, 0, None, 3).unwrap();
     hwp_convert::set_cell(&mut doc, 0, 1, 0, "노트북").unwrap();
     hwp_convert::set_cell(&mut doc, 0, 1, 1, "5").unwrap();
-    // 행 4는 비워 둔 채(빈 셀 규격 검증).
+    // Leave row 4 empty to check empty-cell constraints.
     let out = tmp("synth_grown_table.hwp");
     hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
 
-    // 1) 재읽기 IR: 표가 5행으로 늘고 row_cell_counts 정합.
+    // 1) Read-back IR: five rows and consistent row_cell_counts.
     let reread = hwp5::read_document(&out).unwrap().document;
     let table = reread.sections[0]
         .paragraphs
@@ -521,7 +521,7 @@ fn 행_추가_표_합성_규격_충족() {
         "row_cell_counts 합 == 셀 수"
     );
 
-    // 2) 모든 셀 LIST_HEADER nparas ≥ 1 (빈 새 셀 포함 — 한글 손상 방지).
+    // 2) Every cell LIST_HEADER has nparas >= 1, including new empty cells.
     let mut c = hwp5::Hwp5Container::open(&out).unwrap();
     let bt = c.read_record_stream("/BodyText/Section0").unwrap();
     let list_headers = all_records(&bt, 0x48);
@@ -538,7 +538,7 @@ fn 행_추가_표_합성_규격_충족() {
         );
     }
 
-    // 3) 채운 셀은 본문에 반영(노트북/5), 빈 새 행은 빈 셀로 남음.
+    // 3) Filled cells appear in the body (노트북/5); the new empty row remains empty.
     let text = reread.plain_text();
     assert!(
         text.contains("노트북") && text.contains('5'),
@@ -546,18 +546,18 @@ fn 행_추가_표_합성_규격_충족() {
     );
 }
 
-/// 빈 문단(빈 표 셀 포함)은 PARA_TEXT 레코드를 갖지 않아야 한다.
+/// Empty paragraphs, including empty table cells, must have no PARA_TEXT record.
 ///
-/// 정품(work_report·한라대 정품) 실측: 빈 문단은 nchars=1 + PARA_CHAR_SHAPE +
-/// PARA_LINE_SEG 를 갖되 PARA_TEXT 레코드가 없다(문단끝은 암묵적). 합성 경로는
-/// 모든 문단에 0x0d 를 붙이는데, 빈 문단을 PARA_TEXT=[0x0d] 로 방출하면 한글이
-/// "파일이 손상되었습니다 + 본문 비어있음"으로 거부한다 — 빈 셀이 있는 표
-/// (제목 박스·목차·구역 헤더) 전부 손상시킨 근본 원인. emit_paragraph 는
-/// char_count>1 일 때만 PARA_TEXT 를 방출해야 한다. (pyhwp 는 빈 PARA_TEXT 를
-/// 관대하게 통과시켜 23라운드 동안 미검출 — 정품 바이트 대조로만 잡힌 결함.)
+/// Measured genuine work_report/university samples: empty paragraphs have nchars=1,
+/// PARA_CHAR_SHAPE and PARA_LINE_SEG, with no PARA_TEXT (the terminator is implicit).
+/// Synthesis appends 0x0d to every paragraph; emitting PARA_TEXT=[0x0d] for empty ones
+/// causes Hangul to reject the file as corrupt with an empty body. This affected tables
+/// with empty cells (title boxes, contents, section headers). emit_paragraph must emit
+/// PARA_TEXT only when char_count>1. pyhwp accepted empty PARA_TEXT for 23 rounds;
+/// only comparison with genuine bytes revealed this defect.
 #[test]
 fn 빈_문단은_para_text_없음() {
-    // 빈 셀(`| |`)을 다수 포함한 표 + 채워진 셀·본문 문단.
+    // A table with several empty cells (`| |`), filled cells, and body paragraphs.
     let doc = hwp_convert::from_markdown(
         "본문 문단입니다.\n\n|  |  |  |\n| --- | --- | --- |\n| 채움 |  |  |\n|  |  |  |\n",
     );
@@ -572,10 +572,10 @@ fn 빈_문단은_para_text_없음() {
     let mut filled_paras = 0;
     for (i, (tag, _lvl, p)) in recs.iter().enumerate() {
         if *tag != 0x42 {
-            continue; // PARA_HEADER 만
+            continue; // PARA_HEADER only.
         }
         let nchars = u32::from_le_bytes([p[0], p[1], p[2], p[3]]) & 0x7FFF_FFFF;
-        // 이 문단의 자식(다음 PARA_HEADER 전까지)에 PARA_TEXT(0x43)가 있는가.
+        // Does this paragraph have a PARA_TEXT (0x43) child before the next PARA_HEADER?
         let has_text = recs[i + 1..]
             .iter()
             .take_while(|(t, _, _)| *t != 0x42)
@@ -598,7 +598,7 @@ fn 빈_문단은_para_text_없음() {
     assert!(filled_paras > 0, "채워진 문단도 있어야 한다(시험 전제)");
 }
 
-/// 스트림의 모든 레코드를 (tag, level, payload) 로 펼친다.
+/// Flatten every stream record into (tag, level, payload).
 fn records_with_level(data: &[u8]) -> Vec<(u16, u16, Vec<u8>)> {
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -618,7 +618,7 @@ fn records_with_level(data: &[u8]) -> Vec<(u16, u16, Vec<u8>)> {
     out
 }
 
-/// 스트림에서 특정 태그 레코드들의 페이로드 목록.
+/// Payloads of all stream records with the requested tag.
 fn all_records(data: &[u8], tag: u16) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -639,7 +639,7 @@ fn all_records(data: &[u8], tag: u16) -> Vec<Vec<u8>> {
     out
 }
 
-/// 스트림에서 특정 태그의 첫 레코드 페이로드.
+/// The first stream record payload with the requested tag.
 fn first_record(data: &[u8], tag: u16) -> Option<Vec<u8>> {
     let mut i = 0usize;
     while i + 4 <= data.len() {
@@ -659,7 +659,7 @@ fn first_record(data: &[u8], tag: u16) -> Option<Vec<u8>> {
     None
 }
 
-/// 레코드 스트림에서 특정 태그 레코드들의 페이로드 크기 목록.
+/// Payload sizes of stream records with the requested tag.
 fn record_sizes(data: &[u8], tag: u16) -> Vec<u32> {
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -680,15 +680,18 @@ fn record_sizes(data: &[u8], tag: u16) -> Vec<u32> {
     out
 }
 
-/// 신규 누름틀(%clk) 생성이 hwp5 이진 왕복을 통과한다 — payload 역순 ctrl_id +
-/// CTRL_DATA 이름 BSTR이 실제 writer→reader를 거쳐 정확히 복원되는지(IR 단정만으론
-/// payload 바이트를 검증 못 함).
+/// New form fields (%clk) survive an HWP5 binary round trip: reversed ctrl_id in the
+/// payload and the CTRL_DATA name BSTR are restored through the actual writer/reader.
+/// IR-only assertions cannot verify the payload bytes.
 #[test]
 fn 누름틀_생성_이진_왕복() {
     let mut doc = hwp_convert::from_markdown("수신: 부서명\n\n참조: 부서명");
-    assert!(hwp_convert::create_field(&mut doc, "수신:", "수신처", ""));
-    // 같은 호출에서 채우기까지.
-    assert_eq!(hwp_convert::set_field(&mut doc, "수신처", "기획팀"), 1);
+    assert!(hwp_convert::create_field(&mut doc, "수신:", "수신처", "").unwrap());
+    // Fill the field in the same operation sequence.
+    assert_eq!(
+        hwp_convert::set_field(&mut doc, "수신처", "기획팀").unwrap(),
+        1
+    );
 
     let out = tmp("field.hwp");
     hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
@@ -702,16 +705,12 @@ fn 누름틀_생성_이진_왕복() {
     assert_eq!(clk[0].value, "기획팀");
 }
 
-/// 신규 책갈피(bokm) 생성이 hwp5 이진 왕복을 통과한다 — code-22 ExtCtrl payload(역순
-/// ctrl_id) + bokm CTRL_DATA 이름 BSTR이 실제 writer→reader를 거쳐 정확히 복원되는지.
+/// New bookmarks (bokm) survive an HWP5 binary round trip: code-22 ExtCtrl payload
+/// (reversed ctrl_id) and bokm CTRL_DATA name BSTR are restored by the writer/reader.
 #[test]
 fn 책갈피_생성_이진_왕복() {
     let mut doc = hwp_convert::from_markdown("제목 문단\n\n다음 문단");
-    assert!(hwp_convert::create_bookmark(
-        &mut doc,
-        "제목",
-        "책갈피테스트"
-    ));
+    assert!(hwp_convert::create_bookmark(&mut doc, "제목", "책갈피테스트").unwrap());
 
     let out = tmp("bookmark.hwp");
     hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
@@ -722,17 +721,14 @@ fn 책갈피_생성_이진_왕복() {
     assert_eq!(bms[0].name, "책갈피테스트");
 }
 
-/// 신규 하이퍼링크(%hlk) 생성이 hwp5 이진 왕복을 통과한다 — 필드 레코드 command(URL)
-/// 바이트가 실제 writer→reader를 거쳐 정확히 복원되는지.
+/// New hyperlinks (%hlk) survive an HWP5 binary round trip: field command (URL)
+/// bytes are restored through the actual writer/reader.
 #[test]
 fn 하이퍼링크_생성_이진_왕복() {
     let mut doc = hwp_convert::from_markdown("문서: 참고\n\n본문");
-    assert!(hwp_convert::create_hyperlink(
-        &mut doc,
-        "문서:",
-        "https://example.com/a",
-        "여기"
-    ));
+    assert!(
+        hwp_convert::create_hyperlink(&mut doc, "문서:", "https://example.com/a", "여기").unwrap()
+    );
 
     let out = tmp("hyperlink.hwp");
     hwp5::write_document(&doc, &out, &hwp5::WriteOptions::default()).unwrap();
@@ -749,9 +745,9 @@ fn 하이퍼링크_생성_이진_왕복() {
     );
 }
 
-/// hwpx-출신 글상자(구조화 도형 + 문단)는 안전 저하된다: SHAPE_COMPONENT 재합성이
-/// 한글 실기에서 손상 판정됐기에(㉕), 글상자 텍스트를 본문으로 hoist해 보존하고 도형
-/// 래퍼는 생략한다. 왕복 결과는 유효(텍스트 보존)하고, gso/도형 레코드는 남지 않는다.
+/// HWPX text boxes (structured shapes plus paragraphs) degrade safely: native Hangul
+/// rejected synthesized SHAPE_COMPONENT records (check 25), so text is hoisted into
+/// the body and the shape wrapper omitted. Text survives; no gso/shape records remain.
 #[test]
 fn 글상자_hwpx출신_안전저하_텍스트보존() {
     use hwp_model::{CharShapeId, Control, GenericControl, HwpChar, Paragraph, ParagraphList};
@@ -781,7 +777,7 @@ fn 글상자_hwpx출신_안전저하_텍스트보존() {
         description: None,
     };
     let gso = GenericControl {
-        ctrl_id: *b"rect", // hwpx reader가 만드는 형태
+        ctrl_id: *b"rect", // The form produced by the HWPX reader.
         data: Vec::new(),
         paragraph_lists: vec![ParagraphList {
             header_data: Vec::new(),
@@ -796,7 +792,7 @@ fn 글상자_hwpx출신_안전저하_텍스트보존() {
         hwpx_raw_xml: None,
         container_box: None,
     };
-    // 둘째 문단에 앵커(ExtCtrl 코드 11) + 컨트롤 부착.
+    // Attach an ExtCtrl code-11 anchor and control to the second paragraph.
     let para = &mut doc.sections[0].paragraphs[1];
     let idx = para.controls.len() as u32;
     para.chars.push(HwpChar::ExtCtrl {
@@ -816,13 +812,13 @@ fn 글상자_hwpx출신_안전저하_텍스트보존() {
     );
 
     let reread = hwp5::read_document(&out).unwrap().document;
-    // 글상자 텍스트가 본문으로 hoist돼 보존된다.
+    // Text-box text is hoisted into the body and preserved.
     assert!(
         reread.plain_text().contains("상자속글"),
         "글상자 텍스트 보존: {}",
         reread.plain_text()
     );
-    // gso/도형 레코드는 남지 않는다(래퍼 생략).
+    // No gso/shape records remain (wrapper omitted).
     let has_gso = reread
         .sections
         .iter()
@@ -830,13 +826,13 @@ fn 글상자_hwpx출신_안전저하_텍스트보존() {
         .flat_map(|p| &p.controls)
         .any(|c| matches!(c, Control::Generic(g) if g.ctrl_id == *b"gso "));
     assert!(!has_gso, "gso 래퍼는 저하로 제거돼야");
-    // 손상 원인이던 "페이로드가 없는 컨트롤 드롭"은 없다(텍스트 hoist로 대체).
+    // The corrupting payload-free control drop is replaced by text hoisting.
     assert!(!reread.plain_text().is_empty(), "유효 문서(빈 본문 아님)");
 }
 
-/// 스타일 사다리(from_markdown): 목록은 네이티브 BULLET/NUMBERING 정의(B7 25B 정답지,
-/// 실기 확정)로, H1~H3 절 번호는 리터럴 접두로 방출된다 — hwp5 출력에서 BULLET
-/// 레코드 수가 IR 글머리 정의 수와 일치하고 절 번호 텍스트가 왕복되는지 단언한다.
+/// Style ladder (from_markdown): lists use native BULLET/NUMBERING definitions
+/// (B7, 25B, verified in native Hangul); H1-H3 section numbers are literal prefixes.
+/// Assert BULLET count equals IR definitions and section-number text round-trips.
 #[test]
 fn 스타일_사다리_hwp5_정의_왕복() {
     let doc = hwp_convert::from_markdown("# 제목\n\n- 항목\n  - 하위\n\n1. 첫\n2. 둘\n");
@@ -852,7 +848,7 @@ fn 스타일_사다리_hwp5_정의_왕복() {
         "BULLET 레코드 수 == IR 글머리 정의 수"
     );
 
-    // 절 번호는 리터럴 접두로, 목록 텍스트는 마커 없는 본문으로 왕복된다.
+    // Section numbers round-trip as literal prefixes; list body text has no markers.
     let reread = hwp5::read_document(&out).unwrap().document;
     let text = reread.plain_text();
     assert!(text.contains("1. 제목"), "{text}");
@@ -1248,10 +1244,10 @@ fn official_hwp5_rejects_sixteenth_level_two_item_in_materializable_control_list
     );
 }
 
-/// 스트림 경로 구분자 회귀: cfb 열거가 플랫폼 구분자(Windows `\`)를 섞어도
-/// list_streams/body_sections는 항상 `/` 정규 경로를 돌려줘야 한다 — 아니면
-/// Windows에서 `/BodyText/Section` 필터가 전부 빗나가 본문이 빈 문서로 읽힌다
-/// (CI windows-latest의 "표 #0 없음"/빈 cat 3건의 근본 원인).
+/// Stream-separator regression: even if cfb enumerates platform separators (Windows `\`),
+/// list_streams/body_sections must return normalized `/` paths. Otherwise the
+/// `/BodyText/Section` filter misses every section and Windows reads an empty body
+/// (the root cause of three windows-latest missing-table/empty-cat failures).
 #[test]
 fn 스트림_경로_구분자_정규화() {
     let doc = hwp_convert::from_markdown("본문\n");
@@ -1266,24 +1262,24 @@ fn 스트림_경로_구분자_정규화() {
     }
     let sections = c.body_sections();
     assert_eq!(sections, vec!["/BodyText/Section0".to_string()]);
-    // 열거 경로로 바로 읽기가 돼야 한다.
+    // Enumerated paths must be readable directly.
     let body = c.read_record_stream(&sections[0]).unwrap();
     assert!(!body.is_empty(), "본문 스트림 읽기");
 }
 
-/// GE-β7/β8: XMLTemplate·DocHistory 스토리지가 read→write 되쓰기에서 원문 바이트
-/// 그대로 통과한다(내용 미해석 pass-through). 합성 .hwp에 두 스토리지를 주입한 뒤
-/// read_document→write_document 후 스트림 존재·바이트 동일을 확인한다.
+/// GE-beta7/beta8: XMLTemplate and DocHistory streams pass through a read/write cycle
+/// with identical bytes, without interpretation. Inject both storages into synthesized
+/// HWP, then check their presence and bytes after read_document/write_document.
 #[test]
 fn xmltemplate_dochistory_스토리지_왕복() {
     use std::io::{Read as _, Write as _};
 
-    // 1. 기본 문서를 저장하고 CFB에 두 스토리지를 주입한다(한글 저장본 모사).
+    // 1. Save a base document and inject both storages into CFB, mimicking Hangul output.
     let doc = hwp_convert::from_markdown("본문");
     let a = tmp("storage_a.hwp");
     hwp5::write_document(&doc, &a, &hwp5::WriteOptions::default()).unwrap();
 
-    let tmpl_bytes: Vec<u8> = (0u8..=255).collect(); // 압축 안 된 임의 바이트
+    let tmpl_bytes: Vec<u8> = (0u8..=255).collect(); // Arbitrary uncompressed bytes.
     let hist_bytes: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02];
     {
         let file = std::fs::OpenOptions::new()
@@ -1305,7 +1301,7 @@ fn xmltemplate_dochistory_스토리지_왕복() {
         cfb.flush().unwrap();
     }
 
-    // 2. read_document이 두 스토리지를 원문 그대로 IR에 올린다.
+    // 2. read_document preserves both storages verbatim in the IR.
     let reread = hwp5::read_document(&a).unwrap().document;
     assert_eq!(
         reread.hwp5_xml_template,
@@ -1318,7 +1314,7 @@ fn xmltemplate_dochistory_스토리지_왕복() {
         "DocHistory 포착"
     );
 
-    // 3. write_document이 두 스토리지를 바이트 동일하게 재방출한다.
+    // 3. write_document re-emits both storages byte-identically.
     let b = tmp("storage_b.hwp");
     hwp5::write_document(&reread, &b, &hwp5::WriteOptions::default()).unwrap();
     let file = std::fs::File::open(&b).unwrap();

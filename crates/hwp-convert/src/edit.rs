@@ -1,11 +1,11 @@
-//! 인메모리 IR 편집 프리미티브.
+//! In-memory IR editing primitives.
 //!
-//! 원본 문서를 읽어 메모리에서 텍스트/표 셀을 바꾼 뒤 다시 쓴다 — 이미지·opaque
-//! 레코드 등 모든 비편집 데이터가 그대로 보존된다(JSON 파일 왕복과 달리 무손실).
+//! Read an original document, edit text/table cells in memory, then rewrite it. Preserve all
+//! unedited data, including images and opaque records, unlike a JSON round-trip.
 //!
-//! 편집된 문단은 줄 배치(PARA_LINE_SEG)·nchars·문단끝 0x0d 캐시가 낡으므로,
-//! 쓸 때 반드시 writer의 합성 경로(hwp5: `WriteOptions.edited=true`)를 거쳐야
-//! 한글이 수용한다. 이 모듈은 IR만 바꾸고, 불변식 재수립은 writer가 담당한다.
+//! Edited paragraph caches (PARA_LINE_SEG, nchars and ending 0x0d) are stale. Write through the
+//! synthesized writer path (HWP5 WriteOptions.edited=true) for Hangul acceptance. This module
+//! changes only the IR; the writer restores invariants.
 
 use hwp_model::{CharShapeId, Control, Document, HwpChar, Paragraph};
 
@@ -174,103 +174,122 @@ fn is_explicit_form_value(cell: &hwp_model::Cell, wanted: &str) -> bool {
             if token.range == (0..normalized.len()) && token.name == wanted)
 }
 
-/// 문서 전체에서 `from`을 `to`로 치환한다(본문·표 셀·글상자 문단 재귀).
-/// `all`이 거짓이면 첫 1건만 바꾼다. 반환값은 치환 횟수.
-///
-/// 한 문단의 연속된 일반 문자(Text) 안에서만 매칭한다 — 컨트롤 문자(표 앵커·
-/// 문단끝 등)가 끼면 그 경계에서 매칭이 끊긴다(서식·구조 보존).
-pub fn replace_text(doc: &mut Document, from: &str, to: &str, all: bool) -> usize {
-    if from.is_empty() {
-        return 0;
-    }
-    let mut budget = if all { usize::MAX } else { 1 };
-    let mut count = 0;
-    for section in &mut doc.sections {
-        for para in &mut section.paragraphs {
-            count += replace_in_para(para, from, to, &mut budget);
-            if budget == 0 {
-                return count;
-            }
-        }
-    }
-    count
+/// Opaque HWP5 range marks (format 5.0 section 4.3.5); no saved layout is available locally.
+pub(crate) const PARA_RANGE_TAG: u16 = 0x10 + 54;
+pub(crate) const RANGE_TAG_SHIFT_REFUSAL: &str = "미해석 PARA_RANGE_TAG 구간 표시가 있어 WCHAR 위치가 바뀌거나 표시를 잃는 문단 재작성을 지원하지 않습니다. 같은 WCHAR 길이의 텍스트 치환을 사용하거나 한글에서 구간 표시를 제거한 파일로 다시 실행하세요.";
+
+pub(crate) fn paragraph_has_range_tags(para: &Paragraph) -> bool {
+    para.extras
+        .iter()
+        .any(|record| record.tag == PARA_RANGE_TAG)
 }
 
-fn replace_in_para(para: &mut Paragraph, from: &str, to: &str, budget: &mut usize) -> usize {
-    let mut n = replace_in_chars(para, from, to, budget);
-    for ctrl in &mut para.controls {
-        if *budget == 0 {
-            break;
-        }
-        match ctrl {
-            Control::Table(t) => {
-                for cell in &mut t.cells {
-                    for p in &mut cell.paragraphs {
-                        if *budget == 0 {
-                            break;
-                        }
-                        n += replace_in_para(p, from, to, budget);
-                    }
-                }
-            }
-            Control::Generic(g) => {
-                let before = n;
-                for list in &mut g.paragraph_lists {
-                    for p in &mut list.paragraphs {
-                        if *budget == 0 {
-                            break;
-                        }
-                        n += replace_in_para(p, from, to, budget);
-                    }
-                }
-                if n > before {
-                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
-                    g.hwpx_raw_xml = None;
-                }
-            }
-            _ => {}
-        }
+pub(crate) fn paragraph_tree_has_range_tags(para: &Paragraph) -> bool {
+    fn raw_has_tags(records: &[hwp_model::OpaqueRecord]) -> bool {
+        records
+            .iter()
+            .any(|record| record.tag == PARA_RANGE_TAG || raw_has_tags(&record.children))
     }
-    n
-}
-
-/// 한 문단의 `chars` 안에서 치환을 반복한다(budget 한도). char_shape_run 위치를
-/// 보정한다. 줄 배치는 비워 두고(낡음) writer가 재합성하게 한다.
-fn replace_in_chars(para: &mut Paragraph, from: &str, to: &str, budget: &mut usize) -> usize {
-    let from_w = utf16_len(from);
-    let from_chars = from.chars().count();
-    let mut count = 0;
-    // 삽입한 `to` 다음부터 이어서 탐색한다 — `to`가 `from`을 포함하면(예:
-    // "한라대학교"→"제주한라대학교") 처음부터 재탐색 시 삽입한 텍스트 안에서
-    // 다시 매칭돼 무한 루프에 빠진다.
-    let mut start = 0usize;
-    while *budget > 0 {
-        let Some((char_idx, wpos)) = find_match(&para.chars, from, start) else {
-            break;
+    if raw_has_tags(&para.extras) {
+        return true;
+    }
+    para.controls.iter().any(|control| {
+        let caption = match control {
+            Control::Table(table) => {
+                if table
+                    .cells
+                    .iter()
+                    .any(|cell| cell.paragraphs.iter().any(paragraph_tree_has_range_tags))
+                {
+                    return true;
+                }
+                &table.caption
+            }
+            Control::Picture(picture) => &picture.caption,
+            Control::Generic(generic) => {
+                if raw_has_tags(&generic.raw_children)
+                    || generic
+                        .paragraph_lists
+                        .iter()
+                        .any(|list| list.paragraphs.iter().any(paragraph_tree_has_range_tags))
+                {
+                    return true;
+                }
+                &generic.caption
+            }
+            Control::SectionDef(_) => return false,
         };
-        let inserted = splice_text(para, char_idx..char_idx + from_chars, wpos, from_w, to);
-        count += 1;
-        *budget -= 1;
-        start = char_idx + inserted;
-    }
-    count
+        caption
+            .as_ref()
+            .is_some_and(|caption| caption.paragraphs.iter().any(paragraph_tree_has_range_tags))
+    })
 }
 
-/// Replace the text characters `range` of `para` (starting at WCHAR offset `wpos`, `from_w`
-/// WCHARs wide) with `to`, and return how many characters went in. The new text takes the char
-/// shape active at `wpos`, later run boundaries shift by the length change, and the now stale
-/// line layout is dropped for the writer to rebuild. `to` is normalized the way markdown import
-/// stores text: CRLF and LF become a line break, a tab the 8-WCHAR inline tab control, and
-/// other C0 controls are dropped.
-pub(crate) fn splice_text(
-    para: &mut Paragraph,
-    range: std::ops::Range<usize>,
-    wpos: u32,
+pub(crate) fn document_has_range_tags(doc: &Document) -> bool {
+    doc.sections
+        .iter()
+        .any(|section| section.paragraphs.iter().any(paragraph_tree_has_range_tags))
+}
+
+pub(crate) fn ensure_range_tag_shift_allowed(
+    para: &Paragraph,
     from_w: u32,
-    to: &str,
-) -> usize {
-    let to_hwp: Vec<HwpChar> = to
-        .replace("\r\n", "\n")
+    to_w: u32,
+) -> Result<(), String> {
+    if from_w != to_w && paragraph_has_range_tags(para) {
+        return Err(RANGE_TAG_SHIFT_REFUSAL.to_string());
+    }
+    Ok(())
+}
+
+/// Matches the existing first-anchor insertion walk: own text, cells and Generic lists.
+/// Captions are not targets of these anchor-based mutators.
+pub(crate) fn ensure_anchor_shift_allowed(
+    doc: &Document,
+    anchor: &str,
+    inserted_w: u32,
+) -> Result<(), String> {
+    fn first<'a>(para: &'a Paragraph, anchor: &str) -> Option<&'a Paragraph> {
+        if find_match(&para.chars, anchor, 0).is_some() {
+            return Some(para);
+        }
+        for control in &para.controls {
+            match control {
+                Control::Table(table) => {
+                    for cell in &table.cells {
+                        for paragraph in &cell.paragraphs {
+                            if let Some(found) = first(paragraph, anchor) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                Control::Generic(generic) => {
+                    for list in &generic.paragraph_lists {
+                        for paragraph in &list.paragraphs {
+                            if let Some(found) = first(paragraph, anchor) {
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            if let Some(found) = first(para, anchor) {
+                return ensure_range_tag_shift_allowed(found, 0, inserted_w);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn replacement_chars(to: &str) -> Vec<HwpChar> {
+    to.replace("\r\n", "\n")
         .chars()
         .filter_map(|c| match c {
             '\n' => Some(HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)),
@@ -281,18 +300,163 @@ pub(crate) fn splice_text(
             c if (c as u32) < 0x20 => None,
             c => Some(HwpChar::Text(c)),
         })
-        .collect();
-    let to_w = to_hwp.iter().map(HwpChar::wchar_width).sum();
-    let inserted = to_hwp.len();
-    para.chars.splice(range, to_hwp);
-    adjust_runs(&mut para.char_shape_runs, wpos, from_w, to_w);
-    para.line_segs.clear();
-    inserted
+        .collect()
 }
 
-/// Apply `edits` (character ranges of `para`, in order and not overlapping, with their
-/// replacements) back to front, so each range still names the original text when it is spliced.
-pub(crate) fn splice_edits(para: &mut Paragraph, edits: Vec<(std::ops::Range<usize>, String)>) {
+/// Validates every original range before any back-to-front splice, including net-zero batches.
+pub(crate) fn check_splice_edits(
+    para: &Paragraph,
+    edits: &[(std::ops::Range<usize>, String)],
+) -> Result<(), String> {
+    if paragraph_has_range_tags(para) {
+        for (range, replacement) in edits {
+            let from_w = para.chars[range.clone()]
+                .iter()
+                .map(HwpChar::wchar_width)
+                .sum();
+            let to_w = replacement_chars(replacement)
+                .iter()
+                .map(HwpChar::wchar_width)
+                .sum();
+            ensure_range_tag_shift_allowed(para, from_w, to_w)?;
+        }
+    }
+    Ok(())
+}
+
+/// Replaces matches in contiguous Text spans across body, cells and text boxes.
+/// With `all=false`, only the first match is changed. A width-changing tagged target
+/// refuses before any target is mutated; the successful result is the replacement count.
+pub fn replace_text(doc: &mut Document, from: &str, to: &str, all: bool) -> Result<usize, String> {
+    if from.is_empty() {
+        return Ok(0);
+    }
+    if document_has_range_tags(doc) {
+        replace_text_pass(doc, from, to, all, false)?;
+    }
+    replace_text_pass(doc, from, to, all, true)
+}
+
+fn replace_text_pass(
+    doc: &mut Document,
+    from: &str,
+    to: &str,
+    all: bool,
+    apply: bool,
+) -> Result<usize, String> {
+    let mut budget = if all { usize::MAX } else { 1 };
+    let mut count = 0;
+    for section in &mut doc.sections {
+        for para in &mut section.paragraphs {
+            count += replace_in_para(para, from, to, &mut budget, apply)?;
+            if budget == 0 {
+                return Ok(count);
+            }
+        }
+    }
+    Ok(count)
+}
+
+fn replace_in_para(
+    para: &mut Paragraph,
+    from: &str,
+    to: &str,
+    budget: &mut usize,
+    apply: bool,
+) -> Result<usize, String> {
+    let mut n = replace_in_chars(para, from, to, budget, apply)?;
+    for ctrl in &mut para.controls {
+        if *budget == 0 {
+            break;
+        }
+        match ctrl {
+            Control::Table(table) => {
+                for cell in &mut table.cells {
+                    for paragraph in &mut cell.paragraphs {
+                        if *budget == 0 {
+                            break;
+                        }
+                        n += replace_in_para(paragraph, from, to, budget, apply)?;
+                    }
+                }
+            }
+            Control::Generic(generic) => {
+                let before = n;
+                for list in &mut generic.paragraph_lists {
+                    for paragraph in &mut list.paragraphs {
+                        if *budget == 0 {
+                            break;
+                        }
+                        n += replace_in_para(paragraph, from, to, budget, apply)?;
+                    }
+                }
+                if apply && n > before {
+                    generic.hwpx_raw_xml = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(n)
+}
+
+fn replace_in_chars(
+    para: &mut Paragraph,
+    from: &str,
+    to: &str,
+    budget: &mut usize,
+    apply: bool,
+) -> Result<usize, String> {
+    let from_w = utf16_len(from);
+    let from_chars = from.chars().count();
+    let to_w = replacement_chars(to).iter().map(HwpChar::wchar_width).sum();
+    let mut count = 0;
+    let mut start = 0usize;
+    while *budget > 0 {
+        let Some((char_idx, wpos)) = find_match(&para.chars, from, start) else {
+            break;
+        };
+        let inserted = if apply {
+            splice_text(para, char_idx..char_idx + from_chars, wpos, from_w, to)?
+        } else {
+            ensure_range_tag_shift_allowed(para, from_w, to_w)?;
+            from_chars
+        };
+        count += 1;
+        *budget -= 1;
+        start = char_idx + inserted;
+    }
+    Ok(count)
+}
+
+/// Replaces one text span after validating its normalized WCHAR width. Range records stay opaque.
+/// CRLF/LF become line breaks, tabs become 8-WCHAR inline controls and other C0 chars are dropped.
+/// Later shape-run boundaries shift by the width delta; stale line layout is cleared.
+pub(crate) fn splice_text(
+    para: &mut Paragraph,
+    range: std::ops::Range<usize>,
+    wpos: u32,
+    from_w: u32,
+    to: &str,
+) -> Result<usize, String> {
+    let to_hwp = replacement_chars(to);
+    let to_w = to_hwp.iter().map(HwpChar::wchar_width).sum();
+    ensure_range_tag_shift_allowed(para, from_w, to_w)?;
+    let inserted = to_hwp.len();
+    if !paragraph_has_range_tags(para) || para.chars[range.clone()] != to_hwp {
+        para.chars.splice(range, to_hwp);
+        adjust_runs(&mut para.char_shape_runs, wpos, from_w, to_w);
+        para.line_segs.clear();
+    }
+    Ok(inserted)
+}
+
+/// Applies disjoint original spans back to front, after validating the whole paragraph batch.
+pub(crate) fn splice_edits(
+    para: &mut Paragraph,
+    edits: Vec<(std::ops::Range<usize>, String)>,
+) -> Result<(), String> {
+    check_splice_edits(para, &edits)?;
     for (range, replacement) in edits.into_iter().rev() {
         let wpos = para.chars[..range.start]
             .iter()
@@ -302,33 +466,36 @@ pub(crate) fn splice_edits(para: &mut Paragraph, edits: Vec<(std::ops::Range<usi
             .iter()
             .map(HwpChar::wchar_width)
             .sum();
-        splice_text(para, range, wpos, from_w, &replacement);
+        splice_text(para, range, wpos, from_w, &replacement)?;
     }
+    Ok(())
 }
 
-/// Address-driven entry point for a text-replace edit (EDT-05, 07-02): resolves the target
-/// paragraph via [`crate::address::paragraph_at_mut`] and applies the same per-paragraph rewrite
-/// [`replace_in_chars`] performs, scoped to that one paragraph — no recursion into child table
-/// cells / generic controls (an address names exactly one paragraph, unlike [`replace_in_para`]'s
-/// document-wide walk). Returns the number of replacements made in that paragraph: 0 when `from`
-/// is empty, the address does not resolve, or no match was found.
-pub fn replace_text_at(doc: &mut Document, path: &SegmentPath, from: &str, to: &str) -> usize {
+/// Addressed replacement touches one writable paragraph and preserves ancestors on refusal.
+pub fn replace_text_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    from: &str,
+    to: &str,
+) -> Result<usize, String> {
     if from.is_empty() {
-        return 0;
+        return Ok(0);
     }
     let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
-        return 0;
+        return Ok(0);
     };
     let mut budget = usize::MAX;
-    let count = replace_in_chars(para, from, to, &mut budget);
+    replace_in_chars(para, from, to, &mut budget, false)?;
+    budget = usize::MAX;
+    let count = replace_in_chars(para, from, to, &mut budget, true)?;
     if count > 0 {
         crate::address::invalidate_ancestors(doc, path);
     }
-    count
+    Ok(count)
 }
 
-/// 연속된 Text 문자열에서 `start_idx` 이후 `from`의 첫 위치를 찾는다.
-/// 반환: (chars 벡터 내 시작 인덱스, 문단 내 WCHAR 오프셋).
+/// Finds the first from match after start_idx in contiguous Text. Returns (character-vector index,
+/// paragraph-relative WCHAR offset).
 pub(crate) fn find_match(chars: &[HwpChar], from: &str, start_idx: usize) -> Option<(usize, u32)> {
     let mut wpos: u32 = chars[..start_idx.min(chars.len())]
         .iter()
@@ -361,9 +528,9 @@ pub(crate) fn find_match(chars: &[HwpChar], from: &str, start_idx: usize) -> Opt
     None
 }
 
-/// 치환 위치 `p`(WCHAR), 옛 길이 `lo`, 새 길이 `ln`에 맞춰 char_shape_run 경계를
-/// 옮긴다. 치환 구간 내부 경계는 제거하고(치환 텍스트는 p에서 활성인 모양을 상속),
-/// 이후 경계는 길이 변화만큼 평행 이동한다.
+/// Adjusts char_shape_run boundaries for replacement at WCHAR position p, old length lo and new
+/// length ln. Remove internal boundaries so replacement text inherits the shape active at p; shift
+/// later boundaries by the length delta.
 pub(crate) fn adjust_runs(runs: &mut Vec<(u32, CharShapeId)>, p: u32, lo: u32, ln: u32) {
     let delta = i64::from(ln) - i64::from(lo);
     let mut out: Vec<(u32, CharShapeId)> = Vec::with_capacity(runs.len());
@@ -373,11 +540,11 @@ pub(crate) fn adjust_runs(runs: &mut Vec<(u32, CharShapeId)>, p: u32, lo: u32, l
         } else if pos >= p + lo {
             (i64::from(pos) + delta).max(0) as u32
         } else {
-            continue; // 치환 구간 내부 경계 제거
+            continue; // Remove boundaries inside the replaced range.
         };
         match out.last() {
-            Some(&(lp, _)) if lp == np => {}   // 같은 위치 중복 — 첫 것 유지
-            Some(&(_, lid)) if lid == id => {} // 같은 모양 연속 — 잉여 경계 제거
+            Some(&(lp, _)) if lp == np => {} // Duplicate position: keep the first.
+            Some(&(_, lid)) if lid == id => {} // Consecutive identical shape: omit the redundant boundary.
             _ => out.push((np, id)),
         }
     }
@@ -387,9 +554,9 @@ pub(crate) fn adjust_runs(runs: &mut Vec<(u32, CharShapeId)>, p: u32, lo: u32, l
     *runs = out;
 }
 
-/// `table_index`번째 표(문서 등장 순서, 0-기반)의 (row, col) 셀 텍스트를 바꾼다.
-/// 셀의 첫 문단 서식을 템플릿으로 보존하고 내용만 교체한다. 빈 줄(LF 두 개 이상)로
-/// 나뉜 값은 블록마다 문단 하나가 된다 — [`split_cell_blocks`] 참고.
+/// Replaces cell (row, col) text in table_index, the zero-based document-order table index. Use the
+/// cell's first paragraph as a formatting template. Values separated by blank lines (two or more
+/// LF) become one paragraph per block; see split_cell_blocks.
 pub fn set_cell(
     doc: &mut Document,
     table_index: usize,
@@ -397,6 +564,9 @@ pub fn set_cell(
     col: u16,
     text: &str,
 ) -> Result<(), String> {
+    if document_has_range_tags(doc) && check_set_cell_edit(doc, table_index, row, col, text)? {
+        return Ok(());
+    }
     // The hwp5-sourced edit path runs the writer with synthesize=false, so neither
     // assign_instance_ids nor set_last_para_flag runs and paragraphs created here
     // must carry their own document-unique ids. Read the global maximum before the
@@ -429,11 +599,11 @@ pub fn set_cell(
     .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
 }
 
-/// `table_index`번째 표(0-기반)에 빈 행을 `count`개 추가한다. `template_row`(0-기반,
-/// 생략 시 마지막의 병합 없는 행)를 복제해 셀 서식(폭·여백·테두리·문자/문단 모양)을
-/// 보존하고 내용은 비운다 — 추가된 행(인덱스 `기존행수`부터)은 이후 [`set_cell`]로
-/// 채운다. hwp5 출력은 반드시 edited 합성 경로(`WriteOptions.edited=true`)를 거쳐야
-/// 한글이 수용한다(줄 배치·문단끝·nchars 불변식 재합성).
+/// Adds count empty rows to zero-based table_index, cloning template_row (zero-based, defaulting to
+/// the last unmerged row) to preserve cell width/margins/borders/list/shape formatting while
+/// clearing contents. Fill new rows, starting at the previous row count, through set_cell. HWP5
+/// output must use WriteOptions.edited=true to restore line-layout, paragraph-end and nchars
+/// invariants for Hangul acceptance.
 pub fn add_rows(
     doc: &mut Document,
     table_index: usize,
@@ -468,14 +638,15 @@ pub fn add_rows_at(
     .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
 }
 
-/// `table_index`번째 표(0-기반)의 (행 수, 열 수)를 반환한다. 데이터 구동 채우기가
-/// 추가할 행 수를 계산할 때 쓴다(현재 행 수 조회). 읽기 전용 — `hwpx_raw_xml`을 건드리지 않는다.
+/// Returns (row count, column count) of zero-based table_index, used by data-driven fills to
+/// determine added rows. Read-only; retain hwpx_raw_xml.
 pub fn table_dims(doc: &mut Document, table_index: usize) -> Option<(u16, u16)> {
     with_nth_table_readonly(doc, table_index, |t| (t.rows, t.cols))
 }
 
-/// `table_index`번째 표(0-기반)의 `row`행을 삭제한다(이후 행 재번호, row_cell_counts
-/// 갱신). 병합 셀이 있거나 세로 병합에 덮인 행은 그리드가 깨지므로 거부한다.
+/// Deletes zero-based row from table_index, renumbering subsequent rows and updating
+/// row_cell_counts. Refuses merged cells or rows covered by vertical merges to avoid breaking the
+/// grid.
 pub fn delete_table_row(doc: &mut Document, table_index: usize, row: u16) -> Result<(), String> {
     with_nth_table(doc, table_index, |t| delete_row_in_table(t, row))
         .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
@@ -506,26 +677,30 @@ fn delete_row_in_table(table: &mut hwp_model::Table, row: u16) -> Result<(), Str
     Ok(())
 }
 
-// ── 표 셀 병합/분할 · 열 추가/삭제 (GK-1 · GK-2) ─────────────────────────────
+// Table-cell merge/split and column insertion/deletion (GK-1/GK-2).
 //
-// 정답지 실측(정품 한글 1,816개 병합 표, hwp5+hwpx 만장일치)으로 확정한 저장 규칙을
-// 유지한다:
-//   1. 병합 영역은 **좌상단 앵커 셀 1개만** 저장하고 피병합(covered) 셀은 목록에서
-//      완전히 생략한다(hwp5 LIST_HEADER·hwpx `<hp:tc>` 공통).
-//   2. Σ(col_span×row_span) == rows×cols (앵커 셀들의 면적이 그리드를 정확히 타일링).
-//   3. 셀 순서는 행 우선(앵커 (row,col) 사전식). 피병합 열은 그 행에서 건너뛴다.
-//   4. row_cell_counts[r] = 앵커 row==r 셀 개수. row_span>1 셀은 앵커 행에만 계상.
-//   5. 병합 셀 cellSz = 영역 전체 폭/높이(구성 열 폭 합·행 높이 합).
-// 조작 후 [`validate_table_invariants`]로 재확인한다(깨지면 Err — 손상 표 미방출).
-// 표 로케이터는 #9의 [`with_nth_table`](재귀·set-cell 인덱스 일치)을 공용한다.
+// Maintain the storage rules confirmed across 1,816 genuine Hangul merged tables, unanimously in
+// HWP5 and HWPX:
+// 1. Store only the upper-left anchor of a merged region; omit covered cells completely, in both
+//    HWP5 LIST_HEADER and HWPX hp:tc.
+// 2. The sum of col_span * row_span equals rows * cols; anchor areas tile the grid exactly.
+// 3. Store cells row-major, lexicographically by anchor (row,col), skipping covered columns.
+// 4. row_cell_counts[r] counts anchors whose row==r; count row_span>1 cells only in their anchor
+//    row.
+// 5. Merged-cell cellSz covers the whole region, summing constituent column widths/row heights.
+// Recheck with validate_table_invariants after editing; return Err rather than emit a corrupt
+// table.
+// Share #9's recursive with_nth_table locator and its set-cell-compatible indices.
 
-/// 완전 미상 표(정상 표엔 안 나옴)의 폭 근사 기준 — A4 본문 폭 대략치.
+/// Fallback width for a completely unknown table, absent from normal samples: approximate A4 body
+/// width.
 const BODY_WIDTH_APPROX: i32 = 42520;
-/// 빈 행 높이 근사 — 10pt 텍스트 + 셀 여백.
+/// Fallback empty-row height: 10pt text plus cell margins.
 const ROW_HEIGHT_APPROX: i32 = 1700;
 
-/// 논리 그리드(rows×cols): 각 위치를 소유한 셀 인덱스(피병합 위치도 앵커 인덱스로 채움).
-/// 셀 겹침·빈칸·범위 초과가 있으면 Err(표 구조 파손 감지).
+/// Logical rows-by-cols grid containing each position's owning cell index, including the anchor for
+/// covered positions. Return Err for overlap, gaps or out-of-bounds cells to detect structural
+/// corruption.
 fn build_grid(table: &hwp_model::Table) -> Result<Vec<Vec<usize>>, String> {
     let rows = table.rows as usize;
     let cols = table.cols as usize;
@@ -558,8 +733,8 @@ fn build_grid(table: &hwp_model::Table) -> Result<Vec<Vec<usize>>, String> {
     Ok(grid)
 }
 
-/// 그리드 열별 폭(HWPUNIT). 단일 열 셀에서 확정하고, 다중 열 셀만 걸친 열은 잔여를
-/// 균등 분배하며, 그래도 미상이면 평균으로 근사한다.
+/// Column widths in HWPUNIT: derive from single-column cells, distribute residual width evenly
+/// where only spanning cells exist, then approximate remaining unknowns by the average.
 fn column_widths(table: &hwp_model::Table) -> Vec<i32> {
     let cols = table.cols as usize;
     let mut w = vec![0i32; cols];
@@ -601,7 +776,7 @@ fn column_widths(table: &hwp_model::Table) -> Vec<i32> {
     w
 }
 
-/// 그리드 행별 높이(HWPUNIT). [`column_widths`]의 세로 대응.
+/// Row heights in HWPUNIT, the vertical counterpart of column_widths.
 fn row_heights(table: &hwp_model::Table) -> Vec<i32> {
     let rows = table.rows as usize;
     let mut h = vec![0i32; rows];
@@ -643,7 +818,8 @@ fn row_heights(table: &hwp_model::Table) -> Vec<i32> {
     h
 }
 
-/// 표 내 최대 instance_id (새 빈 문단에 고유 비-0 id 부여용 — [`add_rows`] 규칙과 동일).
+/// Maximum table-local instance_id, used for unique nonzero IDs in new empty paragraphs, as in
+/// add_rows.
 fn max_instance_id(table: &hwp_model::Table) -> u32 {
     table
         .cells
@@ -654,12 +830,12 @@ fn max_instance_id(table: &hwp_model::Table) -> u32 {
         .unwrap_or(0)
 }
 
-/// 문단에 실제 텍스트(Text 문자)가 있는지 — 병합 시 빈 문단 정리에 쓴다.
+/// Whether a paragraph contains actual Text, used to remove empty paragraphs during cell merges.
 fn has_text(p: &Paragraph) -> bool {
     p.chars.iter().any(|c| matches!(c, HwpChar::Text(_)))
 }
 
-/// 리스트 마지막 문단만 nchars bit31(chars_flags 0x80)을 세운다(B4 규칙).
+/// Sets nchars bit31 (chars_flags 0x80) only on the last paragraph in a list, following B4.
 pub(crate) fn fixup_last_para_flag(paras: &mut [Paragraph]) {
     let n = paras.len();
     for (i, p) in paras.iter_mut().enumerate() {
@@ -671,8 +847,9 @@ pub(crate) fn fixup_last_para_flag(paras: &mut [Paragraph]) {
     }
 }
 
-/// 빈 1×1 셀 — 템플릿에서 여백·테두리·list_attr·모양을 상속하고, 문단 1개·문자모양
-/// run 1개·마지막 문단 비트([`blank_para_like`])·고유 instance_id를 채운다(A5~A7 게이트).
+/// An empty 1x1 cell inherits margins, borders, list_attr and shapes from its template. Populate
+/// one paragraph, one character-shape run, the last-paragraph bit (blank_para_like), and a unique
+/// instance_id (A5..A7 gates).
 fn blank_cell(
     row: u16,
     col: u16,
@@ -698,7 +875,7 @@ fn blank_cell(
     }
 }
 
-/// row_cell_counts를 셀 목록에서 재계산(앵커 row별 셀 수).
+/// Recalculates row_cell_counts from the cell list, counting anchors per row.
 fn recount_rows(table: &mut hwp_model::Table) {
     let mut counts = vec![0u16; table.rows as usize];
     for c in &table.cells {
@@ -709,14 +886,14 @@ fn recount_rows(table: &mut hwp_model::Table) {
     table.row_cell_counts = counts;
 }
 
-/// 셀 목록을 행 우선(앵커 (row,col))으로 정렬(정품 저장 순서 불변식).
+/// Sorts cells row-major by anchor (row,col), the genuine storage-order invariant.
 fn sort_cells_row_major(table: &mut hwp_model::Table) {
     table.cells.sort_by_key(|c| (c.row, c.col));
 }
 
-/// 표 불변식 재검증(조작 후 손상 방지 게이트). 위반이면 Err.
+/// Revalidates table invariants after edits as a corruption gate; return Err on violations.
 pub(crate) fn validate_table_invariants(table: &hwp_model::Table) -> Result<(), String> {
-    build_grid(table)?; // 겹침·빈칸·범위
+    build_grid(table)?; // Overlap, gaps and bounds.
     let area: usize = table
         .cells
         .iter()
@@ -751,9 +928,9 @@ pub(crate) fn validate_table_invariants(table: &hwp_model::Table) -> Result<(), 
     Ok(())
 }
 
-/// N번째 표에서 사각 영역 (r1,c1)-(r2,c2)를 병합한다(0-기반, 경계 포함). 좌상단 앵커가
-/// span을 획득하고 피병합 셀의 문단 내용을 이어받으며, 피병합 셀은 목록에서 제거된다.
-/// 영역이 기존 병합과 부분 겹침이거나 범위 밖이면 Err.
+/// Merges the inclusive zero-based rectangle (r1,c1)..(r2,c2) in the nth table. The upper-left
+/// anchor acquires the span and absorbs paragraphs from covered cells, which leave the list. Return
+/// Err for partial overlap with existing merges or an out-of-bounds region.
 pub fn merge_cells(
     doc: &mut Document,
     table_index: usize,
@@ -858,8 +1035,9 @@ fn merge_cells_in_table(
     validate_table_invariants(table)
 }
 
-/// N번째 표의 (row,col) 앵커 셀(span>1)을 1×1 셀들로 분해한다. 앵커는 좌상단 위치와
-/// 내용을 유지하고, 나머지 커버 위치엔 빈 셀을 만든다(A5~A7). cellSz 균등 분배.
+/// Splits the span>1 anchor at (row,col) in the nth table into 1x1 cells. Preserve the upper-left
+/// anchor's position/content and fill the remaining covered positions with empty cells (A5..A7),
+/// dividing cellSz evenly.
 pub fn split_cell(
     doc: &mut Document,
     table_index: usize,
@@ -942,7 +1120,7 @@ fn split_cell_in_table(table: &mut hwp_model::Table, row: u16, col: u16) -> Resu
     validate_table_invariants(table)
 }
 
-/// `table_index`번째 표(0-기반) **끝에** 열을 하나 추가한다(mcp·기존 CLI 호환).
+/// Appends one column to zero-based table_index, retaining MCP/legacy CLI compatibility.
 /// Total table width is preserved (the append special case of [`add_table_columns`]).
 /// Merged tables are supported.
 pub fn add_col(doc: &mut Document, table_index: usize) -> Result<(), String> {
@@ -1007,10 +1185,10 @@ fn add_table_column_in_table(
     if u32::from(cols) + u32::from(count) > u32::from(u16::MAX) {
         return Err("열 수가 u16 범위를 넘습니다".to_string());
     }
-    build_grid(table)?; // 사전 검증
-    // 병합 없는 표를 **끝에** 추가하는 경우는 #9의 행별 정확 재분배를 그대로 쓴다(각 행의
-    // 총폭을 독립 보존 — 정품 그리드가 아닌 비균일 행도 정확). 병합 표·위치 삽입은 열
-    // 정렬이 필요하므로 아래 열 폭 기반 경로로 처리한다.
+    build_grid(table)?; // Prevalidate.
+    // For appending to an unmerged table, retain #9's exact per-row redistribution, independently
+    // preserving every row's total width, including nonuniform rows unlike genuine grids. Merged
+    // tables and interior insertion require aligned columns and use the column-width path below.
     let has_merge = table
         .cells
         .iter()
@@ -1090,7 +1268,8 @@ fn add_table_column_in_table(
         }
     }
     table.cols += count;
-    // 모든 셀 width = Σ final_colw[셀이 차지하는 열들] (전체·행 총폭 정확 보존).
+    // Each cell width is the sum of final_colw for its spanned columns, preserving
+    // whole-table/per-row totals exactly.
     for c in &mut table.cells {
         let s: i64 = (c.col as usize..(c.col + c.col_span) as usize)
             .map(|j| final_colw.get(j).copied().unwrap_or(0))
@@ -1167,9 +1346,9 @@ fn add_col_append_uniform(table: &mut hwp_model::Table, count: u16) -> Result<()
     Ok(())
 }
 
-/// `table_index`번째 표의 col 열(0-기반)을 삭제한다. 그 열을 가로지르는 병합 셀은
-/// col_span−1로 줄고, 그 열에만 있던 1×1 셀은 제거된다. **전체 표 폭은 유지**(삭제 열
-/// 폭을 남은 열에 비율로 재분배)한다. 마지막 1열이면 Err.
+/// Deletes zero-based col from table_index. Crossing merged cells shrink col_span by one; 1x1 cells
+/// solely in that column are removed. Preserve total table width by redistributing the removed
+/// width proportionally. Refuse deletion of the last remaining column.
 pub fn delete_table_column(doc: &mut Document, table_index: usize, col: u16) -> Result<(), String> {
     with_nth_table(doc, table_index, |t| delete_table_column_in_table(t, col))
         .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
@@ -1182,11 +1361,11 @@ fn delete_table_column_in_table(table: &mut hwp_model::Table, col: u16) -> Resul
     if table.cols <= 1 {
         return Err("마지막 열은 삭제할 수 없습니다".to_string());
     }
-    build_grid(table)?; // 사전 검증
+    build_grid(table)?; // Prevalidate.
     let colw = column_widths(table);
     let total: i64 = colw.iter().map(|&w| i64::from(w)).sum();
     let remain_total = total - i64::from(colw[col as usize]);
-    // 구조: 셀 이동/축소/제거.
+    // Move, shrink or remove cells.
     let mut to_remove: Vec<usize> = Vec::new();
     for (i, c) in table.cells.iter_mut().enumerate() {
         let ac = c.col;
@@ -1194,7 +1373,7 @@ fn delete_table_column_in_table(table: &mut hwp_model::Table, col: u16) -> Resul
         if ac > col {
             c.col -= 1;
         } else if ec <= col {
-            // 삭제 열 왼쪽 — 그대로.
+            // Left of the removed column: unchanged.
         } else if c.col_span > 1 {
             c.col_span -= 1;
         } else {
@@ -1205,7 +1384,7 @@ fn delete_table_column_in_table(table: &mut hwp_model::Table, col: u16) -> Resul
         table.cells.remove(i);
     }
     table.cols -= 1;
-    // 남은 열(옛 인덱스 col 제외) 새 폭: 삭제 열 폭을 비율로 흡수(전체 폭 유지).
+    // Remaining columns absorb the removed column's width proportionally, retaining total width.
     let old_remaining: Vec<usize> = (0..colw.len()).filter(|&j| j != col as usize).collect();
     let ncols = table.cols as usize;
     let mut final_colw = vec![0i64; ncols];
@@ -1231,8 +1410,8 @@ fn delete_table_column_in_table(table: &mut hwp_model::Table, col: u16) -> Resul
     validate_table_invariants(table)
 }
 
-/// `"키=값"` 메타데이터 지정을 문서에 적용한다. 키: `title`|`author`|`subject`|`keywords`.
-/// 값이 비면 해당 필드를 `None`으로 지운다. 알 수 없는 키/형식은 `Err`.
+/// Applies key=value metadata: title, author, subject or keywords. Empty values clear a field to
+/// None. Unknown keys or malformed specifications return Err.
 pub fn apply_meta(doc: &mut Document, spec: &str) -> Result<(), String> {
     let (key, value) = spec
         .split_once('=')
@@ -1252,11 +1431,11 @@ pub fn apply_meta(doc: &mut Document, spec: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 문서 등장 순서 `index`번째 표를 찾아 `f`를 적용한다(0-기반). 본문·표 셀·글상자
-/// 문단을 재귀로 훑는다. 표를 찾으면 `Some(f의 결과)`, 못 찾으면 `None`.
-/// `f`가 개체 원문 XML(`hwpx_raw_xml`)을 품은 Generic 안의 표를 바꾸면 그 원문은
-/// 낡으므로 지운다 — writer가 stale XML을 방출하는 것을 막는다(방출할 emitter가
-/// 없어 fail-closed 보존 오류로 이어진다).
+/// Finds zero-based document-order table index and applies f, recursively through body, cells and
+/// text boxes. Returns Some(f's result) when found, otherwise None.
+/// If f changes a table inside a Generic control with captured hwpx_raw_xml, clear that stale XML.
+/// This prevents stale output and instead produces a fail-closed preservation error if no semantic
+/// emitter exists.
 pub(crate) fn with_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     doc: &mut Document,
     index: usize,
@@ -1265,7 +1444,7 @@ pub(crate) fn with_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     walk_nth_table_root(doc, index, true, f)
 }
 
-/// 읽기 전용 변형([`table_dims`]) — 내용을 바꾸지 않으므로 `hwpx_raw_xml`을 지우지 않는다.
+/// Read-only variant used by table_dims; retain hwpx_raw_xml because content is unchanged.
 pub(crate) fn with_nth_table_readonly<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     doc: &mut Document,
     index: usize,
@@ -1274,9 +1453,9 @@ pub(crate) fn with_nth_table_readonly<R, F: FnOnce(&mut hwp_model::Table) -> R>(
     walk_nth_table_root(doc, index, false, f)
 }
 
-/// #296: 표 배치 요약 — (전체, 인라인, 부유). `placement`를 reader가 채운 표(hwp5/hwpx
-/// 출신)는 그 값을 따르고, 합성 표(placement=None)는 HWPX writer의 폴백과 같은 인라인으로
-/// 센다. 읽기 전용 walker라 문서를 바꾸지 않는다.
+/// #296: table-placement counts (total, inline, floating). Use reader-provided HWP5/HWPX placement
+/// where present; synthesized placement=None follows the HWPX writer's inline fallback. The
+/// read-only walker never mutates the document.
 pub fn table_placement_stats(doc: &mut Document) -> (usize, usize, usize) {
     let (mut total, mut inline, mut floating) = (0usize, 0usize, 0usize);
     let mut i = 0usize;
@@ -1294,7 +1473,7 @@ pub fn table_placement_stats(doc: &mut Document) -> (usize, usize, usize) {
                     ]) & 1
                         == 1
                 } else {
-                    true // 합성 표 — writer 기본값(inline)과 동일
+                    true // Synthesized table: matches the writer's inline default.
                 }
             })
     }) {
@@ -1309,10 +1488,10 @@ pub fn table_placement_stats(doc: &mut Document) -> (usize, usize, usize) {
     (total, inline, floating)
 }
 
-/// #296: 표 배치(글자처럼 취급) 전환. `index`는 문서 등장 순서 0-기반 재귀 인덱스
-/// (`--label-table`과 같은 주소 체계), None이면 문서의 모든 표. 대상 표가 하나도
-/// 없으면 None(미적용), 있으면 실제로 값이 바뀐 표 수 Some(n) — 이미 요청된 배치인
-/// 표는 건드리지 않으므로 재적용은 no-op이다(바이트 안정).
+/// #296: switches treat-as-character table placement. index is the zero-based recursive
+/// document-order index, matching label-table; None selects every table. Return None when there are
+/// no targets, otherwise Some(number changed). Tables already matching the request remain
+/// untouched, so reapplication is a byte-stable no-op.
 pub fn set_table_placement(
     doc: &mut Document,
     index: Option<usize>,
@@ -1326,7 +1505,7 @@ pub fn set_table_placement(
         let needs =
             with_nth_table_readonly(doc, target, |t| !table_placement_matches(t, placement));
         match needs {
-            None => break, // 그 인덱스의 표가 없다 — 탐색 종료
+            None => break, // No table at this index; stop searching.
             Some(false) => found += 1,
             Some(true) => {
                 let did = with_nth_table(doc, target, |t| apply_table_placement(t, placement))
@@ -1343,7 +1522,7 @@ pub fn set_table_placement(
     (found > 0).then_some(changed)
 }
 
-/// 표가 요청된 배치와 이미 일치하는지 — placement와 hwp5 원본 common_data 비트 모두 검사.
+/// Whether requested placement already matches both placement and original HWP5 common_data bits.
 fn table_placement_matches(t: &hwp_model::Table, tp: crate::from_markdown::TablePlacement) -> bool {
     let floating = tp == crate::from_markdown::TablePlacement::Floating;
     let placement_ok = t
@@ -1354,9 +1533,9 @@ fn table_placement_matches(t: &hwp_model::Table, tp: crate::from_markdown::Table
     placement_ok && raw_ok
 }
 
-/// hwp5 공통 속성(common_data)의 배치 비트가 `treat`와 일치하는지. attr은 [0..4] LE,
-/// bit0=글자처럼 취급, bit13=본문과 어울림(GsoPlacement::synth_attr와 같은 레이아웃).
-/// common_data가 없는 합성 표는 비트 검사를 통과한 것으로 본다(placement가 전부다).
+/// Whether HWP5 common_data placement bits match treat. attr is little-endian [0..4],
+/// bit0=treat-as-character, bit13=wrap with body text, matching GsoPlacement::synth_attr.
+/// Synthesized tables without common_data pass this check; placement alone determines them.
 fn common_data_placement_matches(common_data: &[u8], treat: bool) -> bool {
     if common_data.len() < 4 {
         return true;
@@ -1370,8 +1549,8 @@ fn common_data_placement_matches(common_data: &[u8], treat: bool) -> bool {
     (attr & 1 == u32::from(treat)) && ((attr >> 13) & 1 == u32::from(treat))
 }
 
-/// 실제 변환 — `table_placement_matches`가 false일 때만 호출한다. 값이 이미 맞는 필드는
-/// 건드리지 않는다(재적용 바이트 안정).
+/// Applies the change only when table_placement_matches is false. Leave already-correct fields
+/// untouched for byte-stable reapplication.
 fn apply_table_placement(
     t: &mut hwp_model::Table,
     tp: crate::from_markdown::TablePlacement,
@@ -1388,14 +1567,15 @@ fn apply_table_placement(
             }
         }
         None => {
-            // 합성 표(md 출신): placement를 채우면 writer의 synthesized 폴백( pageBreak=CELL,
-            // repeatHeader=1 )이 꺼지므로 그 기본값을 attr(0b110)로 명시한다.
+            // For synthesized Markdown tables, setting placement disables the writer's synthesized
+            // fallback (pageBreak=CELL, repeatHeader=1). Set those defaults explicitly in attr
+            // (0b110).
             t.placement = Some(tp.gso_placement());
             t.attr |= 0b110;
             changed = true;
         }
     }
-    // hwp5 출신은 writer가 raw common_data를 우선하므로 배치 비트도 함께 패치한다.
+    // The HWP5 writer prioritizes raw common_data, so patch its placement bits as well.
     if t.common_data.len() >= 4 {
         let attr = u32::from_le_bytes([
             t.common_data[0],
@@ -1469,7 +1649,8 @@ fn walk_nth_table<R, F: FnOnce(&mut hwp_model::Table) -> R>(
                         walk_nth_table(p, index, mutating, seen, f, out);
                         if out.is_some() {
                             if mutating {
-                                // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                                // The object's content changed; clear captured XML to prevent stale
+                                // output.
                                 g.hwpx_raw_xml = None;
                             }
                             return;
@@ -1500,6 +1681,55 @@ fn split_cell_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
+/// Checks the whole cell subtree before the rebuilding walk can invalidate ancestors.
+/// A tagged exact no-op preserves the existing paragraphs and their opaque records.
+pub(crate) fn check_set_cell_edit(
+    doc: &mut Document,
+    table_index: usize,
+    row: u16,
+    col: u16,
+    text: &str,
+) -> Result<bool, String> {
+    let blocks = split_cell_blocks(text);
+    with_nth_table_readonly(doc, table_index, |table| {
+        let cell = table
+            .cells
+            .iter()
+            .find(|cell| cell.row == row && cell.col == col)
+            .ok_or_else(|| format!("표에 셀 ({row}, {col})이 없습니다"))?;
+        if !cell.paragraphs.iter().any(paragraph_tree_has_range_tags) {
+            return Ok(false);
+        }
+        let identical = cell.paragraphs.len() == blocks.len()
+            && cell.paragraphs.iter().zip(&blocks).all(|(para, block)| {
+                if !para.controls.is_empty() {
+                    return false;
+                }
+                let chars = para
+                    .chars
+                    .strip_suffix(&[HwpChar::CharCtrl(hwp_model::ctrl_char::PARA_BREAK)])
+                    .unwrap_or(&para.chars);
+                let expected: Vec<_> = block
+                    .chars()
+                    .map(|c| {
+                        if c == '\n' {
+                            HwpChar::CharCtrl(hwp_model::ctrl_char::LINE_BREAK)
+                        } else {
+                            HwpChar::Text(c)
+                        }
+                    })
+                    .collect();
+                chars == expected
+            });
+        if identical {
+            Ok(true)
+        } else {
+            Err(RANGE_TAG_SHIFT_REFUSAL.to_string())
+        }
+    })
+    .unwrap_or_else(|| Err(format!("표 #{table_index}를 찾을 수 없습니다")))
+}
+
 /// `next_instance_id` must already be a reserved, overflow-checked range of
 /// `blocks.len() - 1` ids - see [`set_cell`], which refuses before mutating anything.
 fn set_cell_in_table(
@@ -1515,8 +1745,9 @@ fn set_cell_in_table(
         .find(|c| c.row == row && c.col == col)
         .ok_or_else(|| format!("표에 셀 ({row}, {col})이 없습니다"))?;
 
-    // 첫 문단을 서식 템플릿으로 — 문단/스타일/문자 모양/헤더 보존, 내용만 교체.
-    // 셀의 문단 목록은 아래에서 통째로 교체되므로 템플릿을 미리 복제해 둔다.
+    // Clone the first paragraph as a formatting template, preserving paragraph/style/character
+    // shapes and header. The complete paragraph list is replaced below, so capture the template
+    // first.
     let template = cell.paragraphs.first().cloned();
     let mut paras: Vec<Paragraph> = blocks
         .iter()
@@ -1553,22 +1784,20 @@ fn set_cell_in_table(
     Ok(())
 }
 
-/// 표 행 추가/셀 설정용 빈 문단 — 템플릿 문단의 문단/스타일/첫 글자모양/헤더를
-/// 보존하고 내용은 비운다(줄 배치도 비워 writer가 재합성). 한글 합성 게이트는
-/// 셀당 문단 ≥1·문자모양 run ≥1만 요구하므로 빈 chars로 충분하다(writer가
-/// nchars=1·PARA_TEXT 생략을 처리).
+/// Empty paragraph for row insertion/cell replacement: retain the template's paragraph/style/first
+/// character shape/header, clearing contents and line layouts for writer synthesis. Hangul
+/// synthesis requires at least one paragraph per cell and one character-shape run, so empty chars
+/// suffice; the writer handles nchars=1 with omitted PARA_TEXT.
 ///
-/// nchars bit31(리스트 마지막 문단 표식)을 켠 채로 돌려준다 — 대부분의 호출자는
-/// `cell.paragraphs = vec![이 문단]`이라 이 문단이 리스트의 마지막이기 때문이다.
-/// 여러 문단을 만드는 호출자([`set_cell_in_table`])는 리스트를 다 만든 뒤
-/// [`fixup_last_para_flag`]로 마지막 문단에만 비트를 남겨야 한다. hwp5 출신 편집
-/// 경로는 writer가 set_last_para_flag를 돌리지 않으므로(synthesize=false) 이 비트를
-/// 여기서 관리하지 않으면 한글이 셀을 손상으로 판정한다(B4).
+/// Return with nchars bit31 set for the last paragraph in a list: most callers put only this
+/// paragraph in cell.paragraphs. Multi-paragraph callers (set_cell_in_table) must call
+/// fixup_last_para_flag after assembling the list to leave the bit only on its final paragraph.
+/// HWP5 edits use synthesize=false and do not run writer set_last_para_flag; failing to maintain it
+/// here makes Hangul reject the cell as corrupt (B4).
 ///
-/// 템플릿 헤더의 `ctrl_mask`는 지운다 — 마스크는 템플릿이 품고 있던 확장/인라인
-/// 컨트롤을 가리키는데 이 문단은 controls를 비우므로, 그대로 물려주면 writer가
-/// "있다고 표시된 컨트롤이 실제로 없는" 문단을 방출한다(한글 손상 판정). 0이면
-/// writer가 문자 목록에서 다시 계산한다.
+/// Clear the template header's ctrl_mask. It names the template's extended/inline controls, but
+/// this paragraph has no controls; inheriting it would declare nonexistent controls and cause
+/// Hangul corruption. With zero, the writer recalculates from characters.
 fn blank_para_like(template: Option<&Paragraph>) -> Paragraph {
     let mut header = template.map(|p| p.header.clone()).unwrap_or_default();
     header.chars_flags |= 0x80;
@@ -1608,8 +1837,8 @@ fn add_rows_in_table(
             return Err(format!("행 삽입 위치 {a}가 범위를 벗어남 (0..={rows})"));
         }
     };
-    // 행 수는 u16 범위 — 남은 용량을 넘으면 거부(넘으면 count as u16 절단으로 cells/
-    // row_cell_counts가 어긋나 표 레코드가 깨진다).
+    // Row counts are u16: refuse beyond remaining capacity, or truncating count to u16 misaligns
+    // cells/row_cell_counts and corrupts table records.
     let remaining = usize::from(u16::MAX) - usize::from(table.rows);
     if count > remaining {
         return Err(format!(
@@ -1680,9 +1909,10 @@ fn add_rows_in_table_inner(
     }
     let colw = column_widths(table);
     let rowh = row_heights(table);
-    // 복제 문단 instance_id 충돌 방지: hwp5 출신 편집 경로는 writer가 id를 재부여하지
-    // 않으므로(synthesize=false), 표 내 최댓값 위로 고유 id를 부여한다(같은 템플릿
-    // 문단을 N개 셀에 복제하면 비-0 id가 N+1개 중복돼 한글 개체 링크가 깨진다).
+    // Prevent cloned paragraph instance_id collisions. HWP5 edits use synthesize=false and the
+    // writer does not reassign IDs, so assign unique IDs above the table-local maximum. Cloning one
+    // template into N cells otherwise repeats one nonzero ID N+1 times and breaks Hangul object
+    // links.
     let mut next_inst = max_instance_id(table);
     let count16 = count as u16;
     // 1) Positioned insertion: shift cells at/below the boundary, extend vertical
@@ -1758,8 +1988,9 @@ fn add_rows_in_table_inner(
     Ok(())
 }
 
-/// 행 r이 전 열을 1×1 셀로 채우는 '깨끗한' 행인지 — 병합 셀이 없고(row/col_span==1)
-/// 세로 병합에 덮이지도 않음(row_cell_counts==cols). 행 복제·삭제·열 추가 가드 공용.
+/// Whether row r is clean: all columns have 1x1 cells with no merges (row_span/col_span==1) and no
+/// coverage from a vertical merge (row_cell_counts==cols). Shared by row cloning/deletion and
+/// column-insertion guards.
 fn is_clean_row(table: &hwp_model::Table, r: u16) -> bool {
     table.row_cell_counts.get(r as usize).copied() == Some(table.cols)
         && table
@@ -1769,8 +2000,9 @@ fn is_clean_row(table: &hwp_model::Table, r: u16) -> bool {
             .all(|c| c.col_span == 1 && c.row_span == 1)
 }
 
-/// 복제 기본 템플릿: 마지막의 '깨끗한' 행 — 전 열을 채우고(row_cell_counts==cols)
-/// 병합 셀이 없는 행. 세로 병합에 덮인 행은 셀 수가 cols보다 적어 자동 제외된다.
+/// Default clone template: the last clean, unmerged row filling every column
+/// (row_cell_counts==cols). Rows covered by vertical merges have fewer cells than columns and are
+/// excluded automatically.
 fn clean_template_row(table: &hwp_model::Table) -> Option<u16> {
     (0..table.rows).rev().find(|&r| is_clean_row(table, r))
 }
@@ -2382,15 +2614,31 @@ pub enum ObjectKind {
 /// Deletes objects — removes the control together with its anchor chars (through FIELD_END for
 /// fields) and adjusts WCHAR positions (GK-8). Recurses through body, table cells, and text
 /// boxes. Returns the number deleted.
-pub fn delete_object(doc: &mut Document, kind: ObjectKind, selector: &str) -> usize {
+pub fn delete_object(
+    doc: &mut Document,
+    kind: ObjectKind,
+    selector: &str,
+) -> Result<usize, String> {
+    if document_has_range_tags(doc) {
+        delete_object_pass(doc, kind, selector, false)?;
+    }
+    delete_object_pass(doc, kind, selector, true)
+}
+
+fn delete_object_pass(
+    doc: &mut Document,
+    kind: ObjectKind,
+    selector: &str,
+    apply: bool,
+) -> Result<usize, String> {
     let mut count = 0;
     let mut table_seen = 0usize;
     for section in &mut doc.sections {
         for para in &mut section.paragraphs {
-            count += delete_object_in_para(para, kind, selector, &mut table_seen);
+            count += delete_object_in_para(para, kind, selector, &mut table_seen, apply)?;
         }
     }
-    count
+    Ok(count)
 }
 
 fn delete_object_in_para(
@@ -2398,7 +2646,8 @@ fn delete_object_in_para(
     kind: ObjectKind,
     selector: &str,
     table_seen: &mut usize,
-) -> usize {
+    apply: bool,
+) -> Result<usize, String> {
     // Collects the indexes of the controls to delete.
     let targets: Vec<usize> = para
         .controls
@@ -2438,7 +2687,7 @@ fn delete_object_in_para(
             Control::Table(t) => {
                 for cell in &mut t.cells {
                     for p in &mut cell.paragraphs {
-                        n += delete_object_in_para(p, kind, selector, table_seen);
+                        n += delete_object_in_para(p, kind, selector, table_seen, apply)?;
                     }
                 }
             }
@@ -2446,11 +2695,11 @@ fn delete_object_in_para(
                 let before = n;
                 for list in &mut g.paragraph_lists {
                     for p in &mut list.paragraphs {
-                        n += delete_object_in_para(p, kind, selector, table_seen);
+                        n += delete_object_in_para(p, kind, selector, table_seen, apply)?;
                     }
                 }
-                if n > before {
-                    // 내용이 바뀐 개체의 원문 XML은 낡았다 — stale 방출 금지.
+                if apply && n > before {
+                    // The object's content changed; clear captured XML to prevent stale output.
                     g.hwpx_raw_xml = None;
                 }
             }
@@ -2458,30 +2707,30 @@ fn delete_object_in_para(
         }
     }
     if targets.is_empty() {
-        return n;
+        return Ok(n);
     }
-    n += remove_controls(para, &targets);
-    n
+    if apply {
+        n += remove_controls(para, &targets)?;
+    } else {
+        check_control_removal(para, &targets)?;
+        n += targets.len();
+    }
+    Ok(n)
 }
 
 /// Removes the controls at the `targets` indexes and their anchor chars (ExtCtrl + FIELD_END of
-/// a field start), and adjusts char_shape_runs positions. Returns the number removed.
-fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
-    // 1) Remove anchor chars — the ExtCtrl pointing at a target control + the field's FIELD_END.
-    let mut removed: Vec<(u32, u32)> = Vec::new();
-    let mut orig_pos = 0u32;
-    let mut kept = Vec::with_capacity(para.chars.len());
-    // Whether we are looking for the FIELD_END (code 4) matching a deleted FIELD_START (code 3).
-    // Text/CharCtrl in between pass through untouched.
+/// a field start), validating the width change before the removal walk mutates anything.
+fn check_control_removal(para: &Paragraph, targets: &[usize]) -> Result<Vec<(u32, u32)>, String> {
+    let mut removed = Vec::new();
+    let mut orig_pos = 0;
     let mut pending_field_end = false;
-    for ch in std::mem::take(&mut para.chars) {
+    for ch in &para.chars {
         let width = ch.wchar_width();
-        let drop = match &ch {
+        let drop = match ch {
             HwpChar::ExtCtrl {
                 code, ctrl_index, ..
             } => {
                 let hit = ctrl_index.is_some_and(|i| targets.contains(&(i as usize)));
-                // Only a field start (FIELD_START=3) opens FIELD_END tracking — pictures, tables, and bookmarks have none.
                 pending_field_end = hit && *code == 3;
                 hit
             }
@@ -2496,11 +2745,24 @@ fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
         };
         if drop {
             removed.push((orig_pos, width));
-        } else {
-            kept.push(ch);
         }
         orig_pos += width;
     }
+    ensure_range_tag_shift_allowed(para, removed.iter().map(|(_, width)| width).sum(), 0)?;
+    Ok(removed)
+}
+
+fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> Result<usize, String> {
+    let removed = check_control_removal(para, targets)?;
+    let mut orig_pos = 0;
+    let kept = std::mem::take(&mut para.chars)
+        .into_iter()
+        .filter(|ch| {
+            let keep = !removed.iter().any(|(pos, _)| *pos == orig_pos);
+            orig_pos += ch.wchar_width();
+            keep
+        })
+        .collect();
     para.chars = kept;
     // 2) Remove the controls (in reverse order to preserve indexes).
     let mut sorted = targets.to_vec();
@@ -2521,7 +2783,7 @@ fn remove_controls(para: &mut Paragraph, targets: &[usize]) -> usize {
     para.char_shape_runs.dedup();
     // 4) Reconnect ExtCtrl ↔ controls in order of appearance.
     crate::field::relink_ctrl_index(para);
-    n
+    Ok(n)
 }
 
 #[cfg(test)]
@@ -2538,7 +2800,7 @@ mod tests {
             section: 0,
             indices: vec![1],
         };
-        let n = replace_text_at(&mut doc, &path, "같은", "다른");
+        let n = replace_text_at(&mut doc, &path, "같은", "다른").unwrap();
         assert_eq!(n, 1);
         assert_eq!(doc.sections[0].paragraphs[0].plain_text(), "같은 문단");
         assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "다른 문단");
@@ -2553,7 +2815,7 @@ mod tests {
             section: 0,
             indices: vec![99],
         };
-        let n = replace_text_at(&mut doc, &path, "문단", "다른");
+        let n = replace_text_at(&mut doc, &path, "문단", "다른").unwrap();
         assert_eq!(n, 0);
         assert_eq!(doc, before);
     }
@@ -2894,7 +3156,10 @@ mod tests {
         std::fs::write(&tmp, &png).unwrap();
         crate::image::insert_image(&mut doc, "본문", &tmp, crate::image::ImageSize::Natural)
             .unwrap();
-        assert_eq!(delete_object(&mut doc, ObjectKind::Image, "본문"), 1);
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::Image, "본문").unwrap(),
+            1
+        );
         let has_pic = doc.sections[0]
             .paragraphs
             .iter()
@@ -2903,7 +3168,10 @@ mod tests {
         assert!(!has_pic, "그림 삭제됨");
         let _ = std::fs::remove_file(&tmp);
         // Deleting the nth table — removing the 0-th (the GFM table) makes the table disappear.
-        assert_eq!(delete_object(&mut doc, ObjectKind::TableNth(0), ""), 1);
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::TableNth(0), "").unwrap(),
+            1
+        );
         let has_table = doc.sections[0]
             .paragraphs
             .iter()
@@ -2911,20 +3179,25 @@ mod tests {
             .any(|c| matches!(c, Control::Table(_)));
         assert!(!has_table, "표 삭제됨");
         // A missing index deletes 0.
-        assert_eq!(delete_object(&mut doc, ObjectKind::TableNth(3), ""), 0);
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::TableNth(3), "").unwrap(),
+            0
+        );
     }
 
     #[test]
     fn delete_object_필드와_책갈피() {
         let mut doc = crate::from_markdown::from_markdown("여기 앵커입니다.\n");
-        assert!(crate::field::create_field(&mut doc, "앵커", "이름", "값"));
-        assert!(crate::bookmark::create_bookmark(
-            &mut doc,
-            "앵커",
-            "책갈피1"
-        ));
-        assert_eq!(delete_object(&mut doc, ObjectKind::Field, "이름"), 1);
-        assert_eq!(delete_object(&mut doc, ObjectKind::Bookmark, "책갈피1"), 1);
+        assert!(crate::field::create_field(&mut doc, "앵커", "이름", "값").unwrap());
+        assert!(crate::bookmark::create_bookmark(&mut doc, "앵커", "책갈피1").unwrap());
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::Field, "이름").unwrap(),
+            1
+        );
+        assert_eq!(
+            delete_object(&mut doc, ObjectKind::Bookmark, "책갈피1").unwrap(),
+            1
+        );
         // No leftover fields/bookmarks may remain.
         assert!(crate::field::list_fields(&doc).is_empty());
         assert!(crate::bookmark::list_bookmarks(&doc).is_empty());
@@ -2953,13 +3226,13 @@ mod tests {
 
     #[test]
     fn 편집된_문단만_줄배치_무효화() {
-        // 외과적 편집: 편집한 문단의 줄 배치만 비우고, 미편집 문단은 보존해야
-        // (한글이 표 행 높이 등을 그대로 유지하도록).
+        // Surgical editing clears only the edited paragraph's line layout, preserving unedited
+        // caches so Hangul retains table-row heights, etc.
         let mut doc = from_markdown("바꿀문단 있음\n\n그대로 둘 문단\n");
         for p in &mut doc.sections[0].paragraphs {
             p.line_segs.push(dummy_lineseg());
         }
-        let n = replace_text(&mut doc, "바꿀문단", "변경됨", true);
+        let n = replace_text(&mut doc, "바꿀문단", "변경됨", true).unwrap();
         assert_eq!(n, 1);
         let paras = &doc.sections[0].paragraphs;
         let edited = paras
@@ -2977,11 +3250,11 @@ mod tests {
     #[test]
     fn 본문_치환_길이변화_run보정() {
         let mut doc = from_markdown("부서명을 적으세요\n");
-        let n = replace_text(&mut doc, "부서명", "기획팀입니다", true);
+        let n = replace_text(&mut doc, "부서명", "기획팀입니다", true).unwrap();
         assert_eq!(n, 1);
         let text = doc.plain_text();
         assert!(text.contains("기획팀입니다을 적으세요"), "got: {text:?}");
-        // char_shape_run은 0에서 시작하고 단조 증가해야 한다.
+        // Character-shape runs start at zero and increase monotonically.
         for section in &doc.sections {
             for p in &section.paragraphs {
                 if let Some(first) = p.char_shape_runs.first() {
@@ -2997,9 +3270,9 @@ mod tests {
 
     #[test]
     fn 치환문이_찾기문_포함_무한루프_없음() {
-        // "한라대학교" → "제주한라대학교": to가 from을 포함 → 재탐색 무한루프 방지.
+        // "한라대학교" -> "제주한라대학교": replacement contains its search text; prevent infinite rematching.
         let mut doc = from_markdown("한라대학교 보고서\n");
-        let n = replace_text(&mut doc, "한라대학교", "제주한라대학교", true);
+        let n = replace_text(&mut doc, "한라대학교", "제주한라대학교", true).unwrap();
         assert_eq!(n, 1);
         let text = doc.plain_text();
         assert!(text.contains("제주한라대학교 보고서"), "got: {text:?}");
@@ -3009,9 +3282,9 @@ mod tests {
     #[test]
     fn 치환_전체_vs_단일() {
         let mut doc = from_markdown("가 가 가\n");
-        let single = replace_text(&mut doc.clone(), "가", "나", false);
+        let single = replace_text(&mut doc.clone(), "가", "나", false).unwrap();
         assert_eq!(single, 1);
-        let all = replace_text(&mut doc, "가", "나", true);
+        let all = replace_text(&mut doc, "가", "나", true).unwrap();
         assert_eq!(all, 3);
         assert!(doc.plain_text().contains("나 나 나"));
     }
@@ -3022,7 +3295,7 @@ mod tests {
         set_cell(&mut doc, 0, 1, 0, "바뀐값").unwrap();
         let text = doc.plain_text();
         assert!(text.contains("바뀐값"), "got: {text:?}");
-        // 셀이 1개 문단(내용+문단끝)만 갖는지.
+        // The cell contains exactly one paragraph with content plus paragraph end.
         assert!(set_cell(&mut doc, 0, 99, 99, "x").is_err());
         assert!(set_cell(&mut doc, 5, 0, 0, "x").is_err());
     }
@@ -3036,21 +3309,23 @@ mod tests {
 
     #[test]
     fn set_cell_블록_분할_규칙() {
-        // CRLF 정규화 · LF 2개 이상이 경계 · 앞뒤 LF만 제거 · 빈 블록 폐기.
+        // Normalize CRLF; split at two or more LF; trim only leading/trailing LF; discard empty
+        // blocks.
         assert_eq!(split_cell_blocks("A\n\nB"), vec!["A", "B"]);
         assert_eq!(split_cell_blocks("A\r\n\r\nB"), vec!["A", "B"]);
         assert_eq!(split_cell_blocks("A\n\n\nB"), vec!["A", "B"]);
         assert_eq!(split_cell_blocks("A\n\n\n\n\nB"), vec!["A", "B"]);
-        // 블록 안의 단일 LF는 문단 내 줄바꿈으로 남는다.
+        // One LF within a block remains an in-paragraph line break.
         assert_eq!(split_cell_blocks("A\nB"), vec!["A\nB"]);
-        // 빈 값 · 빈 줄뿐인 값은 빈 문단 1개(기존 동작).
+        // An empty value or only blank lines yields one empty paragraph, retaining prior behavior.
         assert_eq!(split_cell_blocks(""), vec![""]);
         assert_eq!(split_cell_blocks("\n\n\n"), vec![""]);
     }
 
     #[test]
     fn set_cell_단일_블록은_문단_1개() {
-        // 분할 도입 전 동작 보존: 블록 1개면 문단 1개, 템플릿 instance_id 그대로.
+        // Preserve behavior before block splitting: one block yields one paragraph with the
+        // template instance_id.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         let before = cell_at(first_table(&doc), 1, 0).paragraphs[0]
             .header
@@ -3067,7 +3342,7 @@ mod tests {
             0x80,
             "마지막 문단 비트"
         );
-        // 문단 내 줄바꿈은 LINE_BREAK로 남는다.
+        // In-paragraph line breaks remain LINE_BREAK controls.
         assert!(
             cell.paragraphs[0]
                 .chars
@@ -3097,7 +3372,7 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, vec!["첫째", "둘째", "셋째"], "블록 순서 보존");
-        // B4: 마지막 문단만 bit31.
+        // B4: only the last paragraph carries bit31.
         for (i, p) in cell.paragraphs.iter().enumerate() {
             let last = i + 1 == cell.paragraphs.len();
             assert_eq!(
@@ -3106,8 +3381,8 @@ mod tests {
                 "문단 {i} 마지막 비트"
             );
         }
-        // A8: 문단마다 고유 instance_id. 문단 0은 템플릿 id를 물려받으므로(여기서는
-        // from_markdown 문서라 0), 새로 만든 1..N만 비-0을 요구한다.
+        // A8: unique instance_id per paragraph. Paragraph 0 inherits the template ID, zero for this
+        // from_markdown fixture, so only new paragraphs 1..N require nonzero IDs.
         let ids: Vec<u32> = cell
             .paragraphs
             .iter()
@@ -3117,8 +3392,8 @@ mod tests {
             ids[1..].iter().all(|id| *id != 0),
             "새 문단 id 비-0: {ids:?}"
         );
-        // 그리고 셀 안이 아니라 **문서 전체**에서 유일해야 한다 — 템플릿 id를 물려받는
-        // 문단 0만 예외이므로 새로 만든 id들만 검사한다.
+        // IDs must be unique document-wide, beyond the cell. Paragraph 0 inherits its template ID
+        // and is the sole exception, so check only newly allocated IDs.
         let mut all = Vec::new();
         collect_instance_ids(&doc, &mut all);
         for id in &ids[1..] {
@@ -3128,7 +3403,7 @@ mod tests {
                 "새 id {id}가 문서에서 유일하지 않다: {all:?}"
             );
         }
-        // 줄 배치는 비워 writer가 재합성한다(B2/B3).
+        // Leave line layouts empty for writer synthesis (B2/B3).
         assert!(cell.paragraphs.iter().all(|p| p.line_segs.is_empty()));
     }
 
@@ -3169,38 +3444,38 @@ mod tests {
         }
     }
 
-    /// A8: instance id 배정이 u32를 넘기면 0으로 감기거나 살아 있는 id와 충돌한다.
-    /// 넘칠 상황이면 아무것도 바꾸지 않고 거절해야 한다(원자적 거부).
+    /// A8: allocating instance IDs beyond u32 would wrap to zero or collide with a live ID. Refuse
+    /// atomically without changing anything when overflow would occur.
     #[test]
     fn set_cell_는_instance_id_넘침을_거절한다() {
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
-        // 문서 최댓값을 u32 끝에 붙여 둔다 — 새 문단 하나도 배정할 수 없다.
+        // Place the document maximum at the u32 limit; no additional paragraph can be allocated.
         doc.sections[0].paragraphs[0].header.instance_id = u32::MAX;
         let before = doc.clone();
         let err = set_cell(&mut doc, 0, 1, 0, "첫째\n\n둘째").unwrap_err();
         assert!(err.contains("instance_id"), "{err}");
         assert_eq!(doc, before, "거절 시 문서 불변");
 
-        // 한 칸만 남으면 새 문단 하나(블록 2개)까지는 배정된다.
+        // One remaining slot permits one new paragraph, i.e. two blocks.
         doc.sections[0].paragraphs[0].header.instance_id = u32::MAX - 1;
         set_cell(&mut doc, 0, 1, 0, "첫째\n\n둘째").unwrap();
         let cell = cell_at(first_table(&doc), 1, 0);
         assert_eq!(cell.paragraphs[1].header.instance_id, u32::MAX);
 
-        // 두 칸이 필요하면(블록 3개) 다시 거절한다.
+        // Two required slots, i.e. three blocks, are refused again.
         let before = doc.clone();
         let err = set_cell(&mut doc, 0, 1, 1, "첫째\n\n둘째\n\n셋째").unwrap_err();
         assert!(err.contains("instance_id"), "{err}");
         assert_eq!(doc, before, "거절 시 문서 불변");
 
-        // 블록 하나짜리 값은 새 id가 필요 없으므로 넘침과 무관하게 통과한다.
+        // A one-block value needs no new ID and succeeds independently of overflow.
         set_cell(&mut doc, 0, 1, 1, "한 문단").unwrap();
     }
 
     #[test]
     fn blank_para_like_는_ctrl_mask를_지운다() {
-        // 템플릿이 품은 컨트롤 마스크를 물려받으면 controls가 빈 문단이 "있다고
-        // 표시된 컨트롤이 없는" 상태로 방출된다 — 한글 손상 판정.
+        // Inheriting the template control mask with an empty controls list declares nonexistent
+        // controls and causes Hangul corruption.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         {
             let t = doc.sections[0]
@@ -3229,7 +3504,7 @@ mod tests {
 
     #[test]
     fn set_cell_반복_적용은_멱등() {
-        // 같은 값을 두 번 넣으면 문단 텍스트·개수가 그대로다(멱등성 프로브).
+        // Setting the same value twice preserves paragraph text/count, an idempotency probe.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         set_cell(&mut doc, 0, 1, 0, "A\n\nB").unwrap();
         let once = cell_at(first_table(&doc), 1, 0).clone();
@@ -3263,7 +3538,7 @@ mod tests {
 
     #[test]
     fn 행_추가_구조_불변식() {
-        // 2행 2열 표 → 3행 추가 → rows=5, cells=10, row_cell_counts 길이=5·합=10.
+        // A 2x2 table plus three rows has rows=5, cells=10, row_cell_counts length 5 and sum 10.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         let before = first_table(&doc);
         let (r0, cells0, cols) = (before.rows, before.cells.len(), before.cols);
@@ -3281,12 +3556,13 @@ mod tests {
             t.cells.len(),
             "row_cell_counts 합 == 셀 수 (hwp5 extract assert)"
         );
-        // 새 행은 기존 최대 행 다음부터, 행 우선 평탄 순서 유지(append만).
+        // New rows follow the old maximum row, retaining append-only row-major order.
         let rows_in_order: Vec<u16> = t.cells.iter().map(|c| c.row).collect();
         let mut sorted = rows_in_order.clone();
         sorted.sort_unstable();
         assert_eq!(rows_in_order, sorted, "cells 행 우선(단조 비감소) 순서");
-        // 새 셀은 빈 문단 1개·문자모양 run 1개(한글 합성 게이트)·span 1.
+        // Each new cell has one empty paragraph, one character-shape run (Hangul synthesis gate),
+        // and span 1.
         for c in t.cells.iter().filter(|c| c.row >= r0) {
             assert_eq!(c.paragraphs.len(), 1, "새 셀 문단 1개");
             assert!(c.paragraphs[0].chars.is_empty(), "새 셀 비어 있음");
@@ -3299,9 +3575,9 @@ mod tests {
     #[test]
     fn 행_추가_후_채우기() {
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
-        let r0 = first_table(&doc).rows; // 2 (헤더+데이터)
+        let r0 = first_table(&doc).rows; // Two rows: header plus data.
         add_rows(&mut doc, 0, None, 1).unwrap();
-        // 새 행 인덱스 = r0, 거기에 값 채움.
+        // The new row index is r0; fill values there.
         set_cell(&mut doc, 0, r0, 0, "새값A").unwrap();
         set_cell(&mut doc, 0, r0, 1, "새값B").unwrap();
         let text = doc.plain_text();
@@ -3313,7 +3589,7 @@ mod tests {
 
     #[test]
     fn 행_추가_서식_보존() {
-        // 새 셀의 폭·여백·테두리·문단모양이 템플릿 행에서 복제되는지.
+        // Cell width/margins/borders/paragraph shapes are copied from the template row.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         let r0 = first_table(&doc).rows;
         let tpl: Vec<_> = {
@@ -3341,32 +3617,33 @@ mod tests {
     #[test]
     fn 행_추가_엣지케이스() {
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
-        // count=0은 무변경.
+        // count=0 leaves everything unchanged.
         let before = first_table(&doc).rows;
         add_rows(&mut doc, 0, Some(0), 0).unwrap();
         assert_eq!(first_table(&doc).rows, before);
-        // 없는 표.
+        // Missing table.
         assert!(add_rows(&mut doc, 9, None, 1).is_err());
-        // 범위 밖 템플릿 행.
+        // Template row out of bounds.
         assert!(add_rows(&mut doc, 0, Some(99), 1).is_err());
     }
 
     #[test]
     fn 행_추가_u16_초과_거부() {
-        // count가 남은 u16 용량을 넘으면 절단 손상 대신 깔끔히 거부(레코드 깨짐 방지).
+        // Refuse counts exceeding remaining u16 capacity instead of truncating and corrupting
+        // records.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         let err = add_rows(&mut doc, 0, None, 70_000).unwrap_err();
         assert!(err.contains("u16"), "u16 범위 안내: {err}");
-        // 표는 변경되지 않아야(거부 전 무변경).
+        // Refusal leaves the table unchanged.
         assert_eq!(first_table(&doc).rows, 2);
     }
 
     #[test]
     fn 행_추가_새문단_고유_instance_id_와_마지막비트() {
-        // 복제 문단은 (1) 서로 다른 비-0 instance_id, (2) nchars bit31(마지막 문단)을
-        // 가져야 한다 — hwp5 출신 편집 경로는 writer가 재부여/세팅하지 않으므로.
+        // Cloned paragraphs need distinct nonzero instance_id values and nchars bit31 for their
+        // final paragraph. The HWP5 edit path neither reassigns IDs nor sets this flag.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
-        // 기존 셀 문단에 비-0 instance_id 부여(hwp5 출신 모사).
+        // Assign nonzero instance_id values to existing cell paragraphs, mimicking HWP5 input.
         for (i, c) in first_table_mut(&mut doc).cells.iter_mut().enumerate() {
             for p in &mut c.paragraphs {
                 p.header.instance_id = (i as u32 + 1) * 100;
@@ -3401,7 +3678,8 @@ mod tests {
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         {
             let t = first_table_mut(&mut doc);
-            // (0,0)을 세로 2행 병합으로, (1,0) 셀 제거 → 행 1은 (1,1)만(셀 1개, cols=2).
+            // Vertically merge (0,0) across two rows and remove cell (1,0). Row 1 then has only
+            // cell (1,1), one anchor with cols=2.
             if let Some(c00) = t.cells.iter_mut().find(|c| c.row == 0 && c.col == 0) {
                 c00.row_span = 2;
             }
@@ -3653,7 +3931,7 @@ mod tests {
         assert_eq!(before.cells.len(), after.cells.len());
     }
 
-    /// 셀 폭을 원하는 대로 갖는 표를 만든다(행별 width 지정, 단순 그리드).
+    /// Builds a simple-grid table with caller-specified cell widths per row.
     fn width_table(widths: &[&[i32]]) -> Document {
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         let t = first_table_mut(&mut doc);
@@ -3677,7 +3955,8 @@ mod tests {
 
     #[test]
     fn 열_추가_구조_불변식() {
-        // 2x2 표 → 열 추가 → cols=3, 셀 6개, row_cell_counts [3,3], 행 우선 순서.
+        // A 2x2 table plus one column has cols=3, six cells, row_cell_counts [3,3], row-major
+        // order.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         let cells0 = first_table(&doc).cells.len();
         add_col(&mut doc, 0).unwrap();
@@ -3689,7 +3968,7 @@ mod tests {
         let mut sorted = rows_in_order.clone();
         sorted.sort_unstable();
         assert_eq!(rows_in_order, sorted, "행 우선 순서 유지");
-        // 새 열(마지막 열) 셀은 빈 문단 1개.
+        // Each cell in the appended last column has one empty paragraph.
         for c in t.cells.iter().filter(|c| c.col == 2) {
             assert_eq!(c.paragraphs.len(), 1);
             assert!(c.paragraphs[0].chars.is_empty());
@@ -3698,7 +3977,8 @@ mod tests {
 
     #[test]
     fn 열_추가_폭_합_정확보존() {
-        // 행 총폭이 열 추가 전후로 정확히 일치해야 한다(균등 몫 + 잔차 마지막 셀).
+        // Every row's total width remains exact after insertion, with equal shares and residual in
+        // the last cell.
         let mut doc = width_table(&[&[100, 50, 51], &[200, 200, 202]]);
         let before: Vec<i64> = (0..2)
             .map(|r| {
@@ -3721,7 +4001,7 @@ mod tests {
                 .sum();
             assert_eq!(&sum, expect, "행 {r} 총폭 보존");
         }
-        // 새 열 폭 = 행총폭/(기존열수+1).
+        // New column width = row total width / (old column count+1).
         assert_eq!(
             t.cells
                 .iter()
@@ -3731,20 +4011,21 @@ mod tests {
                 .0,
             201 / 4
         );
-        // 모든 폭은 양수.
+        // Every width is positive.
         assert!(t.cells.iter().all(|c| c.width.0 > 0));
     }
 
     #[test]
     fn 열_추가_병합표_지원() {
-        // GK-2 통합: 병합 표도 열 추가를 지원한다(과거 #9의 '병합 거부'를 대체).
-        // (0,0)-(0,1) 가로 병합 후 끝에 열 추가 → 병합 유지·구조 유효.
+        // GK-2: merged tables also support added columns, replacing #9's former merged-table
+        // refusal. After horizontally merging (0,0)..(0,1), append a column; retain the merge and
+        // structural validity.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
-        merge_cells(&mut doc, 0, 0, 0, 0, 1).unwrap(); // 헤더 2칸 병합
+        merge_cells(&mut doc, 0, 0, 0, 0, 1).unwrap(); // Merge the two header cells.
         add_col(&mut doc, 0).unwrap();
         let t = first_table(&doc);
         assert_eq!(t.cols, 3, "열 추가됨");
-        // 병합 앵커(0,0)은 유지, 면적 합=rows×cols.
+        // Retain anchor (0,0); total cell area equals rows*cols.
         assert!(
             t.cells
                 .iter()
@@ -3767,7 +4048,8 @@ mod tests {
             let t = first_table_mut(&mut doc);
             t.rows = 3;
             t.row_cell_counts = vec![2, 2, 1];
-            // (2,0)을 덮는 세로 병합: (1,0) rowspan=2, 행 2는 셀 1개(덮인 행).
+            // Vertical merge covering (2,0): row 1 anchor (1,0) has rowspan=2; row 2 has one cell
+            // because it is covered.
             if let Some(c10) = t.cells.iter_mut().find(|c| c.row == 1 && c.col == 0) {
                 c10.row_span = 2;
             }
@@ -3776,10 +4058,10 @@ mod tests {
             c2.col = 1;
             t.cells.push(c2);
         }
-        // 덮인 행(2) 삭제 거부.
+        // Refuse deletion of covered row 2.
         let err = delete_table_row(&mut doc, 0, 2).unwrap_err();
         assert!(err.contains("병합"), "병합 행 거부 안내: {err}");
-        // 깨끗한 행(0)은 삭제 가능… 단 (1,0) rowspan이 행1에서 시작 → 행1도 거부.
+        // Clean row 0 can be deleted, but row 1 is refused because a rowspan starts at (1,0).
         let err1 = delete_table_row(&mut doc, 0, 1).unwrap_err();
         assert!(err1.contains("병합"));
         delete_table_row(&mut doc, 0, 0).unwrap();
@@ -3788,9 +4070,9 @@ mod tests {
 
     #[test]
     fn 표_연산_재귀_인덱싱() {
-        // 중첩 표가 있으면 set-cell과 같은 깊이 우선 인덱스로 행/열 연산이 걸린다.
+        // Nested tables use the same depth-first indices as set-cell for row/column operations.
         let mut doc = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
-        // 바깥 표의 (1,0) 셀 안에 1x1 중첩 표 삽입.
+        // Insert a nested 1x1 table into outer cell (1,0).
         let inner = {
             let t = first_table(&doc);
             let mut inner = t.clone();
@@ -3813,7 +4095,8 @@ mod tests {
                 .unwrap();
             cell.paragraphs[0].controls.push(Control::Table(inner));
         }
-        // 인덱스 1 = 중첩 표(깊이 우선). set-cell과 같은 번호로 행 추가가 걸려야 한다.
+        // Index 1 identifies the nested table in depth-first order; row insertion must use the same
+        // index as set-cell.
         add_rows(&mut doc, 1, None, 1).unwrap();
         let outer = first_table(&doc);
         let inner_t = outer
@@ -3842,7 +4125,7 @@ mod tests {
             .expect("표 없음")
     }
 
-    // ── 병합/분할·열 조작 (GK-1·GK-2) ──────────────────────────────────
+    // Merge/split and column operations (GK-1/GK-2).
 
     fn table_3x3() -> Document {
         from_markdown("| a | b | c |\n|---|---|---|\n| d | e | f |\n| g | h | i |\n")
@@ -3972,7 +4255,8 @@ mod tests {
 
     #[test]
     fn 열_추가_전체폭_유지() {
-        // 전체 표 폭(행별 총폭)이 열 추가 후에도 정확히 보존돼야(#9 tbl9 정책 계승).
+        // Preserve total table width, including per-row totals, exactly after adding a column,
+        // retaining #9's tbl9 policy.
         let mut doc = table_3x3();
         let before = row_widths(first_table(&doc));
         add_table_column(&mut doc, 0, 1).unwrap();
@@ -3987,7 +4271,7 @@ mod tests {
     fn 열_추가_끝에_append() {
         let mut doc = table_3x3();
         let before = row_widths(first_table(&doc));
-        add_col(&mut doc, 0).unwrap(); // 끝에 추가(mcp·기본 CLI 경로)
+        add_col(&mut doc, 0).unwrap(); // Append at the end, the MCP/default CLI path.
         let t = first_table(&doc);
         assert_eq!(t.cols, 4);
         assert_eq!(t.cells.iter().filter(|c| c.col == 3).count(), 3);
@@ -4010,8 +4294,8 @@ mod tests {
     fn 열_삭제_기본_전체폭유지() {
         let mut doc = table_3x3();
         let before = row_widths(first_table(&doc));
-        add_table_column(&mut doc, 0, 3).unwrap(); // 4열
-        delete_table_column(&mut doc, 0, 1).unwrap(); // 3열 복귀
+        add_table_column(&mut doc, 0, 3).unwrap(); // Four columns.
+        delete_table_column(&mut doc, 0, 1).unwrap(); // Back to three columns.
         let t = first_table(&doc);
         assert_eq!(t.cols, 3);
         assert_eq!(t.cells.len(), 9);
@@ -4021,7 +4305,7 @@ mod tests {
 
     #[test]
     fn 열_삭제_병합축소_단일열제거() {
-        // 병합 축소.
+        // Shrink a merge.
         let mut doc = table_3x3();
         merge_cells(&mut doc, 0, 0, 0, 0, 2).unwrap();
         delete_table_column(&mut doc, 0, 1).unwrap();
@@ -4029,13 +4313,13 @@ mod tests {
         assert_eq!(t.cols, 2);
         let a = t.cells.iter().find(|c| c.row == 0 && c.col == 0).unwrap();
         assert_eq!(a.col_span, 2, "병합 셀 축소");
-        // 단일 열 셀 제거.
+        // Remove a single-column cell.
         let mut doc2 = table_3x3();
         delete_table_column(&mut doc2, 0, 1).unwrap();
         let t2 = first_table(&doc2);
         assert_eq!(t2.cols, 2);
         assert_eq!(t2.cells.len(), 6);
-        // 마지막 열 거부.
+        // Refuse deleting the last column.
         let mut doc3 = from_markdown("| a |\n|---|\n| b |\n");
         assert!(
             delete_table_column(&mut doc3, 0, 0).is_err(),
@@ -4053,3 +4337,7 @@ mod tests {
         validate_table_invariants(first_table(&doc)).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "edit_range_tag_tests.rs"]
+mod edit_range_tag_tests;
