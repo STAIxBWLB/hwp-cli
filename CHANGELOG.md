@@ -17,6 +17,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- Section, saved-page and typed-range splits exclude the source's whole HWP5 `/DocHistory`
+  from every fragment and ledger the removed storage and its streams. `--strict` refuses this
+  reported loss before fragment publication. Native XMLTemplate and HWPX extra parts remain
+  unchanged to preserve opaque schema/package dependencies; ordinary convert, edit and identity
+  round-trips retain their existing history behavior ([#449](https://github.com/STAIxBWLB/hwp-cli/issues/449)).
+
 - Shared stage-sync and file-identity helper failures now name their phase and advise checking
   output-directory permissions and free space before rerunning. The helper error values use
   fixed Korean messages without staging/destination paths or underlying I/O error chains,

@@ -468,6 +468,7 @@ pub(crate) fn execute(
         SplitOutcome {
             fragments: vec![extracted.fragment.clone()],
             roundings: Vec::new(),
+            preservation: extracted.preservation.clone(),
         }
     } else if pages.is_empty() {
         hwp_convert::document_split::split_sections(&document)
@@ -531,6 +532,9 @@ pub(crate) fn execute(
         .with_context(|| format!("출력 디렉터리를 만들 수 없습니다: {}", out_dir.display()))?;
 
     let mut report = WriteReport::new();
+    // Writers compare the sanitized fragment with its output and cannot see source history
+    // intentionally excluded by the transform. Carry that evidence into strict/loss reporting.
+    report.preservation.extend(outcome.preservation.clone());
     let mut fragment_bytes: Vec<(PathBuf, Vec<u8>)> = Vec::with_capacity(outcome.fragments.len());
     for (fragment, destination) in outcome.fragments.iter().zip(&destinations) {
         let (write_report, output_document, bytes) =
