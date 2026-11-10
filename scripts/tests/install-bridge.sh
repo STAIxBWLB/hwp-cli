@@ -33,6 +33,7 @@ run_case() {
         canonical-env) mode=env ;;
         latest-redirect) mode=latest ;;
         legacy-only) scenario=legacy; tag=v1.5.0 ;;
+        legacy-bridge) scenario=legacy_bridge ;;
         canonical-transport) scenario=transport; expected_failure=1 ;;
         canonical-http-500) scenario=http500; expected_failure=1 ;;
         checksum-transport) scenario=checksum_transport; expected_failure=1 ;;
@@ -54,6 +55,11 @@ run_case() {
     local legacy_base="hwp-$tag-$target"
     tar -czf "$archive_dir/$canonical_base.tar.gz" -C "$canonical" ahwp hwp
     tar -czf "$archive_dir/$legacy_base.tar.gz" -C "$legacy" hwp
+    if [ "$scenario" = legacy_bridge ]; then
+        # Bridge releases publish the same ahwp + hwp symlink payload under both asset names.
+        # Keep only the legacy download name available, with its own matching checksum below.
+        "$real_cp" "$archive_dir/$canonical_base.tar.gz" "$archive_dir/$legacy_base.tar.gz"
+    fi
     local base digest
     for base in "$canonical_base" "$legacy_base"; do
         if command -v sha256sum >/dev/null 2>&1; then
@@ -120,7 +126,7 @@ case "$name" in
     latest) source_file=/dev/null ;;
     ahwp-*.tar.gz)
         case "$FIXTURE_SCENARIO" in
-            legacy) status=404 ;;
+            legacy|legacy_bridge) status=404 ;;
             transport) status=000; transport=28 ;;
             http500) status=500 ;;
         esac
@@ -245,7 +251,7 @@ STUB
             [ "$(grep -c -F -x "$name" "$scratch/publish.log")" = 1 ] ||
                 fail "$case_name: $name was not published once through an atomic rename"
         done
-        if [ "$scenario" = legacy ]; then
+        if [ "$scenario" = legacy ] || [ "$scenario" = legacy_bridge ]; then
             grep -F -x "$legacy_base.tar.gz" "$scratch/downloads.log" >/dev/null ||
                 fail "$case_name: absent canonical asset must try the legacy archive"
         elif grep -E '^hwp-' "$scratch/downloads.log" >/dev/null; then
@@ -271,7 +277,7 @@ if [ "${1:-}" = --case ]; then
 fi
 
 failures=0
-for case_name in canonical-flags canonical-env latest-redirect legacy-only \
+for case_name in canonical-flags canonical-env latest-redirect legacy-only legacy-bridge \
     canonical-transport canonical-http-500 checksum-transport checksum-missing checksum-mismatch; do
     # A subprocess keeps errexit active inside each fixture and cleanup independent across cases.
     if env BASH_ENV=/dev/null ENV=/dev/null bash "$self" --case "$case_name"; then
