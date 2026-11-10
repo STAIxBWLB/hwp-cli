@@ -5437,23 +5437,30 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         for kind in ["template", "format", "start"] {
-            for nested in [false, true] {
+            for location in ["body", "cell", "header", "footer"] {
                 let level = usize::from(kind == "format");
                 let marker = if kind == "template" { "{n}-" } else { "{n}." };
                 let paragraph = serde_json::json!({"type":"paragraph","style":"body",
                     "list":{"name":"o","level":level},"runs":[{"type":"text","text":"numbered"}]});
-                let blocks = if nested {
-                    serde_json::json!([{"type":"table","width_mm":80,"columns":[{"width_mm":80}],
+                let mut section = serde_json::json!({"blocks":[paragraph]});
+                match location {
+                    "body" => {}
+                    "cell" => {
+                        section["blocks"] = serde_json::json!([{"type":"table","width_mm":80,"columns":[{"width_mm":80}],
                         "rows":[{"cells":[{"blocks":[paragraph]}]}]}])
-                } else {
-                    serde_json::json!([paragraph])
-                };
+                    }
+                    "header" | "footer" => {
+                        section["blocks"] = serde_json::json!([{"type":"paragraph","style":"body","runs":[{"type":"text","text":"body"}]}]);
+                        section[location] = serde_json::json!({"default":[paragraph]});
+                    }
+                    _ => unreachable!(),
+                }
                 let mut levels = vec![serde_json::json!({"marker":marker,"start":1}); level + 1];
                 if kind == "start" {
                     levels[level]["start"] = serde_json::json!(7);
                 }
                 let spec = serde_json::json!({"version":"1.0","styles":{"body":{"font_size_pt":10}},
-                    "lists":{"o":{"kind":"ordered","levels":levels}},"sections":[{"blocks":blocks}]});
+                    "lists":{"o":{"kind":"ordered","levels":levels}},"sections":[section]});
                 let spec = hwp_cli::document_spec::parse_spec(
                     &spec.to_string(),
                     hwp_cli::document_spec::SpecInputFormat::Json,
@@ -5471,12 +5478,12 @@ mod tests {
                 .document;
                 for origin in ["document-spec-v1", "document-spec-v2"] {
                     expected.meta.source_format = origin.into();
-                    let output = dir.join(format!("{kind}-{nested}-{origin}.hwp"));
+                    let output = dir.join(format!("{kind}-{location}-{origin}.hwp"));
                     crate::commands::convert::write_hwp_structural(&expected, &output).unwrap();
                     let result = verify_document_quiet(&output, &expected);
                     assert!(
                         result.is_err(),
-                        "{origin}/{kind}/nested={nested}: compose verification must detect substituted used numbering"
+                        "{origin}/{kind}/{location}: compose verification must detect substituted used numbering"
                     );
                     assert!(
                         result.unwrap_err().to_string().contains("HWPX"),
