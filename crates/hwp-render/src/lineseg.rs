@@ -28,11 +28,38 @@ const TABLE_BLOCK_PADDING: i32 = 566;
 /// cacheless fragment anchors/page-start flags with restored genuine caches. The base path
 /// still restarts its cursor at an explicit page break, as genuine caches do.
 /// To match Hangul's line breaks, store must have HCR Batang loaded.
+///
+/// A floating-table section reads its anchors from the prepass. If that pass did not finish
+/// (a page or display-item budget stop, or a paragraph it never visited), the section is laid
+/// out by the base cursor path instead and reports `anchor_prepass_incomplete`: default zero
+/// anchors are never published as measured positions (#426).
 pub fn synthesize_linesegs(
     doc: &mut Document,
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) {
+    synthesize_linesegs_inner(doc, store, warnings, None);
+}
+
+/// [`synthesize_linesegs`] with an explicit prepass page budget, so a test can prove how an
+/// interrupted prepass is reported and where layout falls back to. Production passes no limit.
+/// Returns the prepass result the section policies were decided from.
+#[cfg(test)]
+fn synthesize_linesegs_with_prepass_page_limit(
+    doc: &mut Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    page_limit: usize,
+) -> Option<crate::layout::BodyAnchors> {
+    synthesize_linesegs_inner(doc, store, warnings, Some(page_limit))
+}
+
+fn synthesize_linesegs_inner(
+    doc: &mut Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    prepass_page_limit: Option<usize>,
+) -> Option<crate::layout::BodyAnchors> {
     let snap = doc.clone();
     let use_fragment_flow = doc.meta.source_format != "hwp5";
     let floating_sections: Vec<bool> = doc
@@ -72,12 +99,27 @@ pub fn synthesize_linesegs(
                 para.line_segs.clear();
             }
         }
-        Some(crate::layout::synthesized_body_anchors(&flow, store))
+        Some(match prepass_page_limit {
+            Some(limit) => crate::layout::synthesized_body_anchors_with_page_limit(
+                &flow, store, warnings, limit,
+            ),
+            None => crate::layout::synthesized_body_anchors(&flow, store, warnings),
+        })
     } else {
         None
     };
-    for si in 0..doc.sections.len() {
-        let section_anchors = flow_anchors.as_ref().filter(|_| floating_sections[si]);
+    for (si, floating) in floating_sections.iter().copied().enumerate() {
+        // An incomplete prepass must not publish its default entries as measured anchors:
+        // that section keeps the base cursor path and reports the fallback once.
+        let section_anchors = flow_anchors
+            .as_ref()
+            .filter(|prepass| floating && prepass.section_complete(si));
+        if floating && flow_anchors.is_some() && section_anchors.is_none() {
+            warnings.push(
+                crate::issues::RenderIssueCode::AnchorPrepassIncomplete,
+                format!("section={si}"),
+            );
+        }
         let page = snap.sections[si]
             .section_def()
             .and_then(|d| d.page.as_ref());
@@ -145,15 +187,16 @@ pub fn synthesize_linesegs(
             }
             // A table anchor's cache starts at the incoming cursor after the preceding paragraph.
             // Genuine first-paragraph sample: body advance 1600, then table-anchor v_pos=1600.
-            if let Some(anchors) = section_anchors {
-                v_pos = anchors[si][pi].v_pos;
+            let anchor = section_anchors.and_then(|prepass| prepass.slot(si, pi));
+            if let Some(anchor) = anchor {
+                v_pos = anchor.v_pos;
             }
             let anchor_v = v_pos;
             let src = &snap.sections[si].paragraphs[pi];
             let mut segs = compute_linesegs(
                 store, &snap, src, body_width, content_h, &mut v_pos, warnings,
             );
-            if section_anchors.is_some_and(|anchors| anchors[si][pi].starts_page)
+            if anchor.is_some_and(|anchor| anchor.starts_page)
                 && let Some(first) = segs.first_mut()
             {
                 // HWP 5.0 §4.3.4 (PARA_LINE_SEG): bit0 marks the first line of a page.
@@ -171,6 +214,7 @@ pub fn synthesize_linesegs(
             v_pos += sp_bottom;
         }
     }
+    flow_anchors
 }
 
 /// Synthesize every nested paragraph list: table captions/cells, controls within cells
@@ -667,5 +711,284 @@ mod tests {
         // With no paragraphs, the cell line block is zero; only margins remain and fallback does not panic.
         let h = table_height(&table_with(cell_with(&[])));
         assert_eq!(h, 141 + 141 + TABLE_BLOCK_PADDING);
+    }
+}
+
+/// Regression coverage for #426: an anchor prepass that stops before it collected every
+/// paragraph must not publish its unvisited slots as measured positions.
+///
+/// Every fixture paginates from geometry that exists without any font: a body paragraph
+/// advances 1600 HWPUNIT plus 300 of space-after, an empty cell paragraph is one 1000-HWPUNIT
+/// line, and a line's baseline sits 1200 below its top with a 400 descent. The store is
+/// isolated, so no host face is consulted and no assertion counts pages or reads glyph metrics.
+#[cfg(test)]
+mod anchor_prepass_tests {
+    use super::*;
+    use crate::issues::{RenderIssueAccumulator, RenderIssueCode};
+    use hwp_model::{Cell, HwpUnit, ids::BorderFillId};
+
+    /// Body height that holds two paragraph lines (0 and 1900) and moves the third to page 2.
+    const TWO_LINE_BODY: i32 = 4000;
+    /// Body height that holds one paragraph line, so a three-row table cannot share the page.
+    const ONE_LINE_BODY: i32 = 2400;
+
+    /// Zero-margin page of `height_hu` HWPUNIT: the body box is the whole page, so pagination
+    /// follows flow geometry alone.
+    fn set_body_height(doc: &mut Document, height_hu: i32) {
+        for control in &mut doc.sections[0].paragraphs[0].controls {
+            let Control::SectionDef(definition) = control else {
+                continue;
+            };
+            let page = definition
+                .page
+                .as_mut()
+                .expect("from_markdown defines a page");
+            page.height = HwpUnit(height_hu);
+            page.margin_top = HwpUnit(0);
+            page.margin_bottom = HwpUnit(0);
+            page.margin_header = HwpUnit(0);
+            page.margin_footer = HwpUnit(0);
+            page.margin_left = HwpUnit(0);
+            page.margin_right = HwpUnit(0);
+        }
+    }
+
+    /// A body-flow table (`treat_as_char == false`), the shape that makes a section read
+    /// prepass anchors. Its cells hold one empty paragraph each.
+    fn floating_table(rows: u16, row_height: i32) -> Table {
+        let cells = (0..rows)
+            .map(|row| Cell {
+                list_attr: 0,
+                col: 0,
+                row,
+                col_span: 1,
+                row_span: 1,
+                width: HwpUnit(20000),
+                height: HwpUnit(row_height),
+                margins: [0; 4],
+                border_fill: BorderFillId(1),
+                header_tail: Vec::new(),
+                paragraphs: vec![Paragraph::default()],
+            })
+            .collect();
+        Table {
+            common_data: Vec::new(),
+            placement: Some(hwp_model::GsoPlacement {
+                treat_as_char: false,
+                vert_rel_to: 2,
+                horz_rel_to: 3,
+                ..Default::default()
+            }),
+            attr: 1,
+            rows,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1; usize::from(rows)],
+            border_fill: BorderFillId(1),
+            table_tail: Vec::new(),
+            cells,
+            caption: None,
+            extras: Vec::new(),
+        }
+    }
+
+    fn issue_count(report: &crate::issues::RenderIssueReport, code: RenderIssueCode) -> u64 {
+        report
+            .issues
+            .iter()
+            .filter(|issue| issue.code == code)
+            .map(|issue| issue.count)
+            .sum()
+    }
+
+    fn synthesize_complete(
+        doc: &mut Document,
+    ) -> (crate::layout::BodyAnchors, crate::issues::RenderIssueReport) {
+        let mut store = FontStore::new_isolated();
+        let mut warnings = RenderIssueAccumulator::new();
+        let anchors = synthesize_linesegs_inner(doc, &mut store, &mut warnings, None)
+            .expect("a floating-table section runs the prepass");
+        (anchors, warnings.finish())
+    }
+
+    fn synthesize_with_prepass_limit(
+        doc: &mut Document,
+        page_limit: usize,
+    ) -> (crate::layout::BodyAnchors, crate::issues::RenderIssueReport) {
+        let mut store = FontStore::new_isolated();
+        let mut warnings = RenderIssueAccumulator::new();
+        let anchors =
+            synthesize_linesegs_with_prepass_page_limit(doc, &mut store, &mut warnings, page_limit)
+                .expect("a floating-table section runs the prepass");
+        (anchors, warnings.finish())
+    }
+
+    /// Ordinary complete pass: measured anchors drive the section, including the page-top anchor
+    /// whose `starts_page` still has to reach the synthesized first line.
+    #[test]
+    fn complete_prepass_publishes_every_measured_anchor_and_its_page_start() {
+        let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n");
+        set_body_height(&mut doc, TWO_LINE_BODY);
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Table(floating_table(1, 1000)));
+
+        let (anchors, warnings) = synthesize_complete(&mut doc);
+        assert!(anchors.completed(), "an unconstrained prepass completes");
+        assert!(anchors.section_complete(0));
+        assert_eq!(
+            issue_count(&warnings, RenderIssueCode::AnchorPrepassIncomplete),
+            0,
+            "a complete pass reports no fallback"
+        );
+
+        let page_top = anchors.slot(0, 2).expect("third paragraph visited");
+        assert!(
+            page_top.starts_page,
+            "fixture: the third paragraph's first line opens page 2"
+        );
+        for pi in 0..3 {
+            let anchor = anchors
+                .slot(0, pi)
+                .unwrap_or_else(|| panic!("paragraph {pi} visited"));
+            let first = &doc.sections[0].paragraphs[pi].line_segs[0];
+            assert_eq!(
+                first.v_pos, anchor.v_pos,
+                "paragraph {pi} publishes its measured anchor, not a base-cursor position"
+            );
+            assert_eq!(
+                first.flags & 0x1 != 0,
+                anchor.starts_page,
+                "paragraph {pi} keeps the measured page-start bit"
+            );
+        }
+    }
+
+    /// Stop inside a paragraph's own line pagination: the third paragraph's first line opens
+    /// page 2, which is the document's first page transition, so the fourth paragraph is never
+    /// visited and its slot stays empty.
+    #[test]
+    fn prepass_stop_during_paragraph_pagination_never_publishes_a_default_zero_anchor() {
+        let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n\nD\n");
+        set_body_height(&mut doc, TWO_LINE_BODY);
+        doc.sections[0].paragraphs[3]
+            .controls
+            .push(Control::Table(floating_table(1, 500)));
+
+        let (anchors, warnings) = synthesize_with_prepass_limit(&mut doc, 0);
+        let opening = anchors.slot(0, 2).expect("third paragraph visited");
+        assert!(
+            opening.starts_page,
+            "fixture: the stop happens where the third paragraph's first line opens page 2"
+        );
+        assert!(
+            anchors.slot(0, 3).is_none(),
+            "the fourth paragraph was never visited"
+        );
+        assert!(
+            !anchors.completed(),
+            "a page-budget stop is not a complete pass"
+        );
+        assert!(!anchors.section_complete(0));
+        assert_eq!(
+            issue_count(&warnings, RenderIssueCode::AnchorPrepassIncomplete),
+            1,
+            "the section reports its fallback once, not once per paragraph"
+        );
+        assert_eq!(
+            issue_count(&warnings, RenderIssueCode::LayoutBudgetExceeded),
+            1,
+            "the prepass's own budget diagnostic reaches the caller"
+        );
+
+        let first = &doc.sections[0].paragraphs[3].line_segs[0];
+        assert_ne!(
+            first.v_pos, 0,
+            "an unvisited anchor must not be published as a default-zero position"
+        );
+    }
+
+    /// Stop inside the floating table's own page transition, after every paragraph's anchor was
+    /// already recorded: the slots cannot reveal this stop, so the completion result has to.
+    #[test]
+    fn prepass_stop_during_floating_table_continuation_still_reports_incomplete() {
+        let mut doc = hwp_convert::from_markdown("A\n\nB\n");
+        set_body_height(&mut doc, ONE_LINE_BODY);
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(Control::Table(floating_table(3, 1000)));
+
+        let (anchors, warnings) = synthesize_with_prepass_limit(&mut doc, 0);
+        assert!(
+            anchors.slot(0, 0).is_some() && anchors.slot(0, 1).is_some(),
+            "every paragraph's anchor was recorded before the table needed its next page"
+        );
+        assert!(
+            !anchors.completed(),
+            "a stop after the last anchor still leaves the prepass incomplete"
+        );
+        assert!(!anchors.section_complete(0));
+        assert_eq!(
+            issue_count(&warnings, RenderIssueCode::AnchorPrepassIncomplete),
+            1
+        );
+        assert_eq!(
+            issue_count(&warnings, RenderIssueCode::LayoutBudgetExceeded),
+            1
+        );
+
+        let measured = anchors.slot(0, 1).expect("second paragraph visited");
+        assert!(
+            measured.starts_page,
+            "fixture: the second paragraph opens a page once the table continues"
+        );
+        let first = &doc.sections[0].paragraphs[1].line_segs[0];
+        assert_eq!(
+            first.flags & 0x1,
+            0,
+            "the base cursor fallback must not apply a page-start flag it did not measure"
+        );
+    }
+
+    /// Stop inside the first section leaves a later floating-table section unvisited; it must be
+    /// reported and laid out by the base cursor, not from empty slots.
+    #[test]
+    fn prepass_stop_leaves_a_later_section_unvisited_and_reported() {
+        let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n\nD\n");
+        set_body_height(&mut doc, TWO_LINE_BODY);
+        let mut later = hwp_convert::from_markdown("E\n\nF\n");
+        set_body_height(&mut later, TWO_LINE_BODY);
+        later.sections[0].paragraphs[1]
+            .controls
+            .push(Control::Table(floating_table(1, 500)));
+        doc.sections.push(later.sections.remove(0));
+
+        let (anchors, warnings) = synthesize_with_prepass_limit(&mut doc, 0);
+        assert!(
+            anchors.slot(0, 2).is_some(),
+            "fixture: the stop happens inside section 0's paragraph pagination"
+        );
+        assert!(
+            anchors.slot(1, 0).is_none() && anchors.slot(1, 1).is_none(),
+            "the later section is never visited"
+        );
+        assert!(!anchors.completed());
+        assert!(!anchors.section_complete(1));
+        assert_eq!(
+            issue_count(&warnings, RenderIssueCode::AnchorPrepassIncomplete),
+            1,
+            "only the floating-table section consumes anchors and reports"
+        );
+
+        assert!(
+            !doc.sections[1].paragraphs[0].line_segs.is_empty(),
+            "the fallback still synthesizes the unvisited section"
+        );
+        let first = &doc.sections[1].paragraphs[1].line_segs[0];
+        assert_ne!(
+            first.v_pos, 0,
+            "an unvisited later section is not published as default-zero anchors"
+        );
     }
 }

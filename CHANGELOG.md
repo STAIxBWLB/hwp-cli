@@ -23,6 +23,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   another picture. Manifest precedence and native `BinRef::Id` compatibility are preserved
   ([#453](https://github.com/STAIxBWLB/hwp-cli/issues/453)).
 
+- A floating-table section's line-layout prepass now reports whether it collected every
+  paragraph's anchor instead of returning default zero positions. An interrupted pass (a refused
+  page transition, or a paragraph it never reached) no longer publishes its empty entries as
+  measured anchors: that section falls back to the base cursor and reports the new
+  `anchor_prepass_incomplete` code once per section, with the prepass's own budget refusal
+  propagated as `layout_budget_exceeded`. Ordinary documents are unchanged, because the prepass
+  itself sets no budget
+  ([#426](https://github.com/STAIxBWLB/hwp-cli/issues/426)).
+
 - A numbering template containing `<`, `>` or `&` now survives HWPX output. The HWPX reader
   resolves the XML entity references (`&lt;`, `&gt;`, `&amp;`) inside `paraHead` text instead of
   dropping them, so `hwp compose` writes an ordered-list marker such as `<{n}>` escaped and
