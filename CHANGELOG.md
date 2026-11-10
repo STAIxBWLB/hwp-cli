@@ -23,6 +23,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   unchanged to preserve opaque schema/package dependencies; ordinary convert, edit and identity
   round-trips retain their existing history behavior ([#449](https://github.com/STAIxBWLB/hwp-cli/issues/449)).
 
+- Anchored `insert_para` and `move_para` now refuse to place a paragraph in front of a section's
+  definition paragraph, with the same cause and remedy as the addressed `insert_blocks` guard:
+  the native writers cannot move the setup, so HWPX would inject a second default `secPr` and
+  HWP5 would leave the section without secd/cold. Insert with `before=false` and move behind the
+  owner instead ([#451](https://github.com/STAIxBWLB/hwp-cli/issues/451)).
+
 - Shared stage-sync and file-identity helper failures now name their phase and advise checking
   output-directory permissions and free space before rerunning. The helper error values use
   fixed Korean messages without staging/destination paths or underlying I/O error chains,

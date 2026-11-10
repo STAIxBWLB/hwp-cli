@@ -81,8 +81,9 @@ fn table_has_text(table: &Table, text: &str) -> bool {
     })
 }
 
-const TRACER_MD: &str =
-    "generated edit ops tracer fixture\n\na=>b\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n";
+/// The trailing paragraph is the tracer's `insert_para` anchor: `before:true` on the first
+/// paragraph would now be refused, because that paragraph owns the section definition (#451).
+const TRACER_MD: &str = "generated edit ops tracer fixture\n\na=>b\n\n| 가 | 나 |\n|---|---|\n| 1 | 2 |\n\ntracer tail paragraph\n";
 
 /// The tracer fixture through `edit --ops` is lossless end to end: the "=>", "="
 /// and ":" payloads inside the replace strings are data and land verbatim ("a=>b"
@@ -128,7 +129,7 @@ fn tracer_ops_end_to_end_lossless() {
         .collect();
     let anchor = texts
         .iter()
-        .position(|text| text == "generated edit ops tracer fixture")
+        .position(|text| text == "tracer tail paragraph")
         .expect("the anchor paragraph must survive");
     let inserted = texts
         .iter()
@@ -138,6 +139,11 @@ fn tracer_ops_end_to_end_lossless() {
         inserted + 1,
         anchor,
         "before:true must insert immediately before the anchor"
+    );
+    assert_eq!(
+        texts.first().map(String::as_str),
+        Some("generated edit ops tracer fixture"),
+        "the section owner must stay the first paragraph"
     );
     assert!(
         texts.contains(&"c=d:e".to_string()),

@@ -1267,6 +1267,185 @@ fn insert_para_before_section_definition_refuses_and_after_succeeds() {
     section_owner_case(false);
 }
 
+/// A base built by `hwp new --from` so the paragraph owning `Control::SectionDef` also carries
+/// text the anchored selector can find. The composed fixture above keeps its section setup on an
+/// empty first paragraph, which no anchor search can name, so it cannot show this boundary.
+fn text_owner_base(label: &str, extension: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "hwp-section-owner-text-{}-{label}-{extension}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let markdown = dir.join("base.md");
+    std::fs::write(&markdown, format!("{PREFIX}\n\n{ANCHOR}\n\n{TAIL}\n")).unwrap();
+    let base = dir.join(format!("base.{extension}"));
+    success(
+        hwp()
+            .arg("new")
+            .arg("--from")
+            .arg(&markdown)
+            .arg("-o")
+            .arg(&base)
+            .output()
+            .unwrap(),
+        "markdown fixture with a text-owning section paragraph",
+    );
+    (dir, base)
+}
+
+/// Runs `hwp edit --ops` for a base this file built itself, mirroring `Fixture::edit`.
+fn edit_file(base: &Path, dir: &Path, stem: &str, ops: Value) -> (PathBuf, Output) {
+    let ops_path = dir.join(format!("{stem}-ops.json"));
+    std::fs::write(&ops_path, serde_json::to_vec(&ops).unwrap()).unwrap();
+    let output = base.with_file_name(format!(
+        "{stem}.{}",
+        base.extension().unwrap().to_string_lossy()
+    ));
+    let run = hwp()
+        .arg("edit")
+        .arg(base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(ops_path)
+        .output()
+        .unwrap();
+    (output, run)
+}
+
+/// The anchored `insert_para` form (an `anchor` selector instead of an `address`) must refuse a
+/// `before` insertion on the paragraph owning `Control::SectionDef`, with the same cause and
+/// remedy as the addressed guard, in both native formats. Only the anchor search differs from
+/// `insert_para_before_section_definition_refuses_and_after_succeeds`, so a search that inserts
+/// without consulting the matched paragraph's controls fails at the diagnostic assertion.
+#[test]
+fn anchored_insert_para_before_section_definition_refuses_in_both_formats() {
+    for extension in ["hwp", "hwpx"] {
+        let (dir, base) = text_owner_base("anchor", extension);
+        let before = read(&base);
+        assert!(
+            before.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::SectionDef(_))),
+            "fixture must exercise the real section definition owner"
+        );
+        assert_eq!(
+            index(&before, PREFIX),
+            0,
+            "the anchor must name the section definition owner itself"
+        );
+        let base_bytes = std::fs::read(&base).unwrap();
+
+        let (refused, run) = edit_file(
+            &base,
+            &dir,
+            "anchor-section-before",
+            json!([{"op":"insert_para","anchor":PREFIX,"before":true,"text":"Before section owner."}]),
+        );
+        assert!(
+            !run.status.success(),
+            "insertion before the section definition owner must refuse"
+        );
+        let diagnostic = String::from_utf8_lossy(&run.stderr).into_owned();
+        assert!(
+            diagnostic.contains("구역")
+                && diagnostic.contains("앞")
+                && diagnostic.contains("before=false"),
+            "anchored refusal must carry the addressed guard's cause and remedy: {diagnostic}"
+        );
+        assert!(
+            std::fs::read(&base).unwrap() == base_bytes,
+            "the refusal must not change the source document"
+        );
+        assert!(
+            !refused.exists(),
+            "the refusal must not publish an output document"
+        );
+
+        let (output, run) = edit_file(
+            &base,
+            &dir,
+            "anchor-section-after",
+            json!([{"op":"insert_para","anchor":PREFIX,"before":false,"text":"After section owner."}]),
+        );
+        success(run, "anchored insertion after the section definition owner");
+        let after = read(&output);
+        assert_eq!(index(&after, "After section owner."), 1);
+        assert!(
+            after.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::SectionDef(_)))
+        );
+    }
+}
+
+/// `move_para` refuses a destination that would put another paragraph in front of the section
+/// owner. Moving the owner itself already refused; this is the second path, so a destination
+/// index of 0 on a section body must refuse before the source paragraph is removed.
+#[test]
+fn move_para_before_section_definition_refuses_in_both_formats() {
+    for extension in ["hwp", "hwpx"] {
+        let (dir, base) = text_owner_base("move", extension);
+        let before = read(&base);
+        assert!(
+            before.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::SectionDef(_))),
+            "fixture must exercise the real section definition owner"
+        );
+        let base_bytes = std::fs::read(&base).unwrap();
+        let (refused, run) = edit_file(
+            &base,
+            &dir,
+            "move-section-before",
+            json!([{"op":"move_para","address":{"at":{"section":0,"paragraph":2}},
+                    "to":{"address":{"at":{"section":0,"paragraph":0}},"position":"before"}}]),
+        );
+        assert!(
+            !run.status.success(),
+            "a move in front of the section definition owner must refuse"
+        );
+        let diagnostic = String::from_utf8_lossy(&run.stderr).into_owned();
+        assert!(
+            diagnostic.contains("구역") && diagnostic.contains("앞"),
+            "move refusal must explain the boundary: {diagnostic}"
+        );
+        assert!(
+            std::fs::read(&base).unwrap() == base_bytes && !refused.exists(),
+            "the move refusal must leave the source and destination untouched"
+        );
+
+        let (output, run) = edit_file(
+            &base,
+            &dir,
+            "move-section-behind",
+            json!([{"op":"move_para","address":{"at":{"section":0,"paragraph":1}},
+                    "to":{"address":{"at":{"section":0,"paragraph":2}},"position":"after"}}]),
+        );
+        success(
+            run,
+            "move to a position behind the section definition owner",
+        );
+        let after = read(&output);
+        assert!(
+            after.sections[0].paragraphs[0]
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::SectionDef(_))),
+            "the owner must stay first after a permitted move"
+        );
+        assert_eq!(
+            index(&after, ANCHOR),
+            2,
+            "the permitted move must have happened behind the owner"
+        );
+    }
+}
+
 fn ordered_custom_case(label: &str, marker: &str, start: u32, template: &str) {
     for extension in ["hwp", "hwpx"] {
         let fixture = Fixture::new(&format!("ordered-{label}"), extension);

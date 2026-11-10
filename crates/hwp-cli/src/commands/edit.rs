@@ -1448,7 +1448,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let (anchor, text) = spec.split_once("=>").with_context(|| {
                         format!("--insert-para-before 형식은 \"앵커=>텍스트\" 입니다: {spec:?}")
                     })?;
-                    if hwp_convert::insert_paragraph(&mut doc, anchor, text, true) {
+                    let inserted =
+                        hwp_convert::insert_paragraph_checked(&mut doc, anchor, text, true)
+                            .map_err(|error| anyhow::anyhow!(error))?;
+                    if inserted {
                         eprintln!("문단 삽입(앞): {anchor:?} 앞에 {text:?}");
                         edits += 1;
                     } else {
@@ -1462,7 +1465,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let (anchor, text) = spec.split_once("=>").with_context(|| {
                         format!("--insert-para 형식은 \"앵커=>텍스트\" 입니다: {spec:?}")
                     })?;
-                    if hwp_convert::insert_paragraph(&mut doc, anchor, text, false) {
+                    let inserted =
+                        hwp_convert::insert_paragraph_checked(&mut doc, anchor, text, false)
+                            .map_err(|error| anyhow::anyhow!(error))?;
+                    if inserted {
                         eprintln!("문단 삽입(뒤): {anchor:?} 뒤에 {text:?}");
                         edits += 1;
                     } else {
@@ -3664,12 +3670,18 @@ fn apply_typed_operation(
                 eprintln!("문단 삽입(주소): {current_path} before={before} text={text:?}");
                 offsets.record_insert(&new_path);
                 *edits += 1;
-            } else if hwp_convert::insert_paragraph(doc, anchor, text, *before) {
-                eprintln!("문단 삽입: {anchor:?}, before={before}, text={text:?}");
-                *edits += 1;
             } else {
-                eprintln!("{}", paragraph_miss_message(doc, anchor, "앵커"));
-                unapplied.push(format!("insert_para anchor={anchor:?}"));
+                match hwp_convert::insert_paragraph_checked(doc, anchor, text, *before) {
+                    Ok(true) => {
+                        eprintln!("문단 삽입: {anchor:?}, before={before}, text={text:?}");
+                        *edits += 1;
+                    }
+                    Ok(false) => {
+                        eprintln!("{}", paragraph_miss_message(doc, anchor, "앵커"));
+                        unapplied.push(format!("insert_para anchor={anchor:?}"));
+                    }
+                    Err(error) => return Err(anyhow::anyhow!(error)),
+                }
             }
         }
         TypedEditOperation::DeletePara { matching, address } => {

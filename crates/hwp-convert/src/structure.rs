@@ -168,6 +168,14 @@ pub fn text_in_unwritable_object(doc: &Document, text: &str) -> bool {
         .any(|s| in_list(&s.paragraphs, text, false))
 }
 
+/// Cause and remedy shared by every entry point that would place another paragraph in front of a
+/// section's setup paragraph, so `insert_blocks`, addressed `insert_para`, anchored `insert_para`
+/// and `move_para` explain the same boundary the same way.
+const SECTION_OWNER_INSERT_REFUSAL: &str = "구역 정의 문단 앞에는 삽입할 수 없습니다. insert_blocks는 position=after, insert_para는 before=false로 이 문단 뒤에 삽입하세요";
+
+/// Cause and remedy for a move that would land in front of a section's setup paragraph.
+const SECTION_OWNER_MOVE_REFUSAL: &str = "구역 정의 문단 앞으로는 이동할 수 없습니다. 이동 대상 위치를 구역 정의 문단 뒤(본문 인덱스 1 이상)로 지정하세요";
+
 /// Insert a text paragraph after or before the first paragraph containing anchor; return whether inserted.
 /// The new paragraph inherits the anchor's character/paragraph shapes. Search body,
 /// table-cell, nested-table and caption paragraphs.
@@ -177,10 +185,26 @@ pub fn text_in_unwritable_object(doc: &Document, text: &str) -> bool {
 /// preorder walk would let a section-0 cell beat a section-1 body, silently changing
 /// which paragraph a previously working call selects.
 pub fn insert_paragraph(doc: &mut Document, anchor: &str, text: &str, before: bool) -> bool {
-    // Both stages share the closure, so keep completion state in Cell and capture only &done.
+    insert_paragraph_checked(doc, anchor, text, before).unwrap_or(false)
+}
+
+/// [`insert_paragraph`] with the one refusal that a `bool` cannot express: `before` on a paragraph
+/// owning `Control::SectionDef` would make it stop being the section's setup paragraph, which the
+/// native writers cannot repair (HWPX would inject a second, default `secPr`; HWP5 would leave the
+/// section without secd/cold). Returns `Ok(false)` when no anchor matched, exactly like the `bool`
+/// form, and refuses before any mutation.
+pub fn insert_paragraph_checked(
+    doc: &mut Document,
+    anchor: &str,
+    text: &str,
+    before: bool,
+) -> Result<bool, String> {
+    // Both stages share the closure, so keep completion and refusal state in Cell and capture only
+    // &done and &refused.
     let done = std::cell::Cell::new(false);
+    let refused = std::cell::Cell::new(false);
     let mut visit = |list: &mut Vec<Paragraph>| -> bool {
-        if done.get() {
+        if done.get() || refused.get() {
             return false;
         }
         let Some(i) = list
@@ -189,6 +213,15 @@ pub fn insert_paragraph(doc: &mut Document, anchor: &str, text: &str, before: bo
         else {
             return false;
         };
+        if before
+            && list[i]
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::SectionDef(_)))
+        {
+            refused.set(true);
+            return false;
+        }
         let (ps, sty, cs) = para_template(&list[i]);
         let new = make_paragraph(text, ps, sty, cs);
         let at = if before { i } else { i + 1 };
@@ -199,17 +232,23 @@ pub fn insert_paragraph(doc: &mut Document, anchor: &str, text: &str, before: bo
     };
     for section in &mut doc.sections {
         visit(&mut section.paragraphs);
+        if refused.get() {
+            return Err(SECTION_OWNER_INSERT_REFUSAL.to_string());
+        }
         if done.get() {
-            return true;
+            return Ok(true);
         }
     }
     for section in &mut doc.sections {
         walk_nested_para_lists(&mut section.paragraphs, &mut visit);
+        if refused.get() {
+            return Err(SECTION_OWNER_INSERT_REFUSAL.to_string());
+        }
         if done.get() {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Delete matching paragraphs from body, cell, nested-table and caption lists. Retain
@@ -397,6 +436,19 @@ pub fn move_paragraph(
     let dst_len = {
         let (dst_list, _) = list_at_mut(doc, to_list)
             .ok_or_else(|| "이동 대상 위치를 찾을 수 없습니다".to_string())?;
+        // A section body list's first paragraph owns the section/column setup, so landing at index
+        // 0 would displace it exactly as an insert-before does (#451). Nested lists (cells,
+        // captions) carry no section setup and stay allowed.
+        if to_index == 0
+            && to_list.indices.len() == 1
+            && dst_list.first().is_some_and(|p| {
+                p.controls
+                    .iter()
+                    .any(|c| matches!(c, Control::SectionDef(_)))
+            })
+        {
+            return Err(SECTION_OWNER_MOVE_REFUSAL.to_string());
+        }
         dst_list.len()
     };
     let effective_dst_len = if same_list { dst_len - 1 } else { dst_len };
@@ -480,7 +532,7 @@ pub fn insert_paragraphs_at(
             .iter()
             .any(|control| matches!(control, Control::SectionDef(_)))
     {
-        return Err("구역 정의 문단 앞에는 삽입할 수 없습니다. insert_blocks는 position=after, insert_para는 before=false로 이 문단 뒤에 삽입하세요".into());
+        return Err(SECTION_OWNER_INSERT_REFUSAL.into());
     }
     let at_idx = if before { idx } else { idx + 1 };
     list.splice(at_idx..at_idx, paragraphs);
@@ -824,21 +876,52 @@ mod tests {
             section: 0,
             indices: vec![0],
         };
-        move_paragraph(&mut doc, &from, &to_list, 0).unwrap();
+        move_paragraph(&mut doc, &from, &to_list, 1).unwrap();
         let n: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
         assert_eq!(n, 3, "길이 불변");
-        let moved = &doc.sections[0].paragraphs[0];
+        // Index 0 belongs to the section definition owner, so the move lands behind it (#451);
+        // what this test pins is that the moved paragraph keeps its identity, not its depth.
+        let moved = &doc.sections[0].paragraphs[1];
         assert!(
             moved.plain_text().contains("셋째"),
-            "맨 앞으로 이동: {:?}",
+            "구역정의 뒤로 이동: {:?}",
             moved.plain_text()
         );
         assert_eq!(moved.header.instance_id, 777, "instance_id 불변(복제 아님)");
     }
 
     #[test]
+    fn move_paragraph_구역정의_앞으로는_거부() {
+        let mut doc = from_markdown("첫 문단\n\n둘째 문단\n\n셋째 문단");
+        let from = SegmentPath {
+            section: 0,
+            indices: vec![2],
+        };
+        let to_list = SegmentPath {
+            section: 0,
+            indices: vec![0],
+        };
+        let refusal = move_paragraph(&mut doc, &from, &to_list, 0)
+            .expect_err("구역정의 문단 앞으로의 이동은 거부되어야 함");
+        assert!(
+            refusal.contains("구역") && refusal.contains("앞"),
+            "거부 사유와 경계를 설명해야 함: {refusal}"
+        );
+        let texts: Vec<_> = doc.sections[0]
+            .paragraphs
+            .iter()
+            .map(|p| p.plain_text())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["첫 문단", "둘째 문단", "셋째 문단"],
+            "거부는 어떤 문단도 움직이지 않아야 함"
+        );
+    }
+
+    #[test]
     fn move_paragraph_앵커_컨트롤도_함께_이동() {
-        let mut doc = from_markdown("본문\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n\n마지막 문단");
+        let mut doc = from_markdown("본문\n\n마지막 문단\n\n| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         let table_para_idx = doc.sections[0]
             .paragraphs
             .iter()
@@ -852,8 +935,8 @@ mod tests {
             section: 0,
             indices: vec![0],
         };
-        move_paragraph(&mut doc, &from, &to_list, 0).unwrap();
-        let moved = &doc.sections[0].paragraphs[0];
+        move_paragraph(&mut doc, &from, &to_list, 1).unwrap();
+        let moved = &doc.sections[0].paragraphs[1];
         assert!(
             moved
                 .controls
