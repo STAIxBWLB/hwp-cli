@@ -73,6 +73,14 @@ fn layout(doc: &Document) -> DisplayList {
     hwp_render::layout::layout_document(doc, &mut store, &mut issues)
 }
 
+/// The same layout with the host's fonts, for the one assertion that needs a drawn list marker.
+/// Every other assertion in this file is geometry-only and stays font-free.
+fn layout_with_fonts(doc: &Document) -> DisplayList {
+    let mut store = FontStore::new();
+    let mut issues = RenderIssueAccumulator::new();
+    hwp_render::layout::layout_document(doc, &mut store, &mut issues)
+}
+
 fn rectangles(list: &DisplayList, color: u32) -> Vec<(f32, f32, f32, f32)> {
     list.pages
         .iter()
@@ -321,19 +329,39 @@ fn glyph_texts(list: &DisplayList) -> Vec<String> {
 /// visible items keep `1.` and `2.` instead of skipping to `3.` (#422 review P2).
 #[test]
 fn empty_cell_paragraph_does_not_consume_a_list_number() {
-    use hwp_model::{ParaShape, ParaShapeId};
-
     let mut source = hwp_convert::from_markdown("Anchor\n");
     let fill_color = 0x0034_567B;
     let fill = add_fill(&mut source, fill_color);
-    let outline = ParaShapeId(source.header.para_shapes.len() as u16);
-    source.header.para_shapes.push(ParaShape {
-        attr1: (1 << 23) | (1 << 25),
-        ..ParaShape::default()
-    });
+    // The converter's ordering list carries its own numbering definition, so the marker text is
+    // the list's own `1.` rather than a guessed shape.
+    let numbering = hwp_convert::from_markdown("1. First\n");
+    let numbered = numbering.sections[0]
+        .paragraphs
+        .iter()
+        .find(|para| {
+            numbering
+                .header
+                .para_shapes
+                .get(para.para_shape.0 as usize)
+                .is_some_and(|shape| shape.head_type() == 2)
+        })
+        .expect("the ordering list has a numbered paragraph")
+        .clone();
     let mut text = paragraph(&source);
-    text.para_shape = outline;
+    text.para_shape = numbered.para_shape;
     text.line_segs.clear();
+    if let Some(shape) = numbering
+        .header
+        .para_shapes
+        .get(numbered.para_shape.0 as usize)
+    {
+        let index = source.header.para_shapes.len();
+        source.header.para_shapes.push(shape.clone());
+        text.para_shape = hwp_model::ParaShapeId(index as u16);
+    }
+    for numbering_list in &numbering.header.numberings {
+        source.header.numberings.push(numbering_list.clone());
+    }
     let mut empty = text.clone();
     empty.chars.clear();
     let cell = table(vec![text.clone(), empty, text], fill, 1);
@@ -341,7 +369,7 @@ fn empty_cell_paragraph_does_not_consume_a_list_number() {
         .controls
         .push(Control::Table(cell));
 
-    let texts = glyph_texts(&layout(&source));
+    let texts = glyph_texts(&layout_with_fonts(&source));
     if texts.is_empty() {
         fixture_skip::resource_unavailable(
             "host font for the cell list-marker precondition",
