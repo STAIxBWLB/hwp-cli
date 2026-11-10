@@ -106,13 +106,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - An empty cache-less body paragraph now consumes the position its own flow anchor records: its
   space-before plus the one line synthesis writes for it, instead of a fixed 16 pt that skipped
-  that space-before and ignored non-default base sizes and line spacing. A wholly cache-less cell
-  or text-box list draws its empty paragraphs through the same ephemeral synthesis as their
-  neighbours instead of adding a fixed 12 pt, so the row the flow measures equals the cache the
-  writer stores and following cell content no longer moves once that cache exists. Default
-  documents keep their 16 pt step; the empty paragraph's space-after and the raw-vs-half spacing
-  unit stay with #415, and no native geometry value is introduced
-  ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
+  that space-before and ignored non-default base sizes and line spacing. In a wholly cache-less cell
+  or text-box list an empty paragraph keeps that one line but stays out of the ephemeral synthesis,
+  so it draws no marker and consumes no invisible list number, and both the row the flow measures
+  and the cache floor behind a stored row count its line: a trailing blank, or a cell holding only
+  an empty paragraph, no longer collapses to its margins and stored minimum, and cell content after
+  the blank no longer moves once the cache exists. Default documents keep their 16 pt step; the
+  empty paragraph's space-after and the raw-vs-half spacing unit stay with #415, and no native
+  geometry value is introduced ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
 
 ## [1.5.0]
 

@@ -3391,7 +3391,9 @@ fn cell_margins(table: &Table, cell: &hwp_model::Cell) -> (f32, f32, f32, f32) {
 /// always advances between paragraphs; equal `v_pos` inside a paragraph is one
 /// line split into several segments) — which is Hancom continuing the cell on a
 /// later page (#233); each run's extent is its last line bottom minus its first
-/// line top. A trailing empty cache record is legal and adds no height.
+/// line top. A record whose text range is empty adds no height — except an empty
+/// paragraph's own line, which occupies a line in the cell even though it carries
+/// no text, so a trailing blank keeps contributing its line to the row (#422).
 ///
 /// The stored row height is only a lower bound on this. Hancom's HWPX export
 /// keeps the declared minimum height while the cache runs past it, and an edit
@@ -3410,7 +3412,7 @@ fn cell_cache_total(cell: &hwp_model::Cell) -> f32 {
                 .line_segs
                 .get(index + 1)
                 .map_or(wchar_len, |next| next.text_start);
-            if line_end <= seg.text_start {
+            if line_end <= seg.text_start && !para.chars.is_empty() {
                 continue;
             }
             let restarts = previous_v.is_some_and(|previous| {
@@ -4875,10 +4877,7 @@ fn layout_box_para_iter<'a>(
         }
         let synthesized;
         let was_uncached = para.line_segs.is_empty();
-        // An empty paragraph takes the same ephemeral synthesis as its neighbours: it owns one
-        // line from its base height, so placing it through this cursor keeps the row it measures
-        // equal to the cache the writer stores for the whole list (#422).
-        let line_segs = if synthesize_uncached {
+        let line_segs = if synthesize_uncached && !para.chars.is_empty() {
             let mut v = (((content_bottom - origin_y) * 100.0).round() as i32 + v_origin)
                 .max(uncached_next_v);
             synthesized = compute_cell_render_linesegs(
@@ -4906,11 +4905,21 @@ fn layout_box_para_iter<'a>(
 
         if line_segs.is_empty() {
             if para.chars.is_empty() {
-                // An empty cacheless paragraph still owns one line: synthesis writes it from the
-                // paragraph's base height and advances by its line-spacing rule, so the flow must
-                // advance by that same line instead of a height of its own (#422).
-                content_bottom +=
-                    crate::lineseg::paragraph_metrics(doc, para).advance as f32 / 100.0;
+                // An empty cacheless paragraph still owns the one line synthesis writes for it
+                // (#422). It is not synthesized here, so it stays out of the list counter and
+                // draws no marker, but it has to contribute that line: its own line bottom is
+                // what the row measures, including when it is the last paragraph, and the
+                // transient cursor steps by its line spacing for whatever follows.
+                let metrics = crate::lineseg::paragraph_metrics(doc, para);
+                if synthesize_uncached {
+                    let line_bottom = origin_y
+                        + (uncached_next_v.saturating_add(metrics.height) - v_origin) as f32
+                            / 100.0;
+                    content_bottom = content_bottom.max(line_bottom);
+                    uncached_next_v = uncached_next_v.saturating_add(metrics.advance);
+                } else {
+                    content_bottom += metrics.height as f32 / 100.0;
+                }
             } else {
                 let end = para.wchar_len();
                 let items = shape_range_page(
@@ -4989,6 +4998,22 @@ fn layout_box_para_iter<'a>(
                 }
                 BoxParaSelection::Empty => unreachable!("empty selections are skipped above"),
             };
+            if para.chars.is_empty() {
+                // An empty paragraph's cache carries the one line synthesis writes for it, but
+                // every segment of it is zero length, so the loop below skips it and the row
+                // measured as if the blank were not there: a trailing blank stopped adding its
+                // line, and a cell holding only an empty paragraph collapsed to its margins and
+                // stored minimum. Its line bottom is the paragraph's whole contribution (#422
+                // review P2), taken at the same floor the placed lines below obey.
+                if let Some(seg) = line_segs.last() {
+                    let gap_pt = seg.baseline_gap as f32 / 100.0;
+                    let v_pos = seg.v_pos.saturating_sub(v_origin);
+                    let stored = origin_y + (v_pos + seg.baseline_gap) as f32 / 100.0;
+                    let baseline_y = stored.max(flow_floor + gap_pt);
+                    content_bottom = content_bottom
+                        .max(baseline_y + (seg.line_height as f32 / 100.0 - gap_pt).max(0.0));
+                }
+            }
             // A paragraph whose cached position starts above the flow floor is
             // moved down as a whole, by the one offset its first line needs.
             // Clamping each line to the floor on its own would fold every line
