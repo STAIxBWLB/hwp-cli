@@ -2658,14 +2658,42 @@ fn report_changed_ids(
             // A run an inline block control interrupts is published in pieces that share one
             // id; the blocks `insert_blocks` compiles keep their controls in separate
             // paragraphs, so each id appears once here.
-            segments
+            let inserted: Vec<hwp_convert::Segment> = segments
                 .into_iter()
                 .filter(|segment| inside_inserted(&segment.path))
-                .map(|segment| IdPair {
+                .collect();
+            // An empty inserted paragraph publishes no `para` segment, yet `move_para` and
+            // `delete_para` address it by its paragraph id all the same. Report that id in the
+            // paragraph's place so every inserted top-level paragraph is named (#521).
+            let mut pairs = Vec::with_capacity(inserted.len());
+            for idx in first..first + request.blocks.len() {
+                let mut indices = parent.to_vec();
+                indices.push(idx);
+                let path = hwp_convert::SegmentPath {
+                    section: anchor_path.section,
+                    indices,
+                };
+                let own: Vec<&hwp_convert::Segment> = inserted
+                    .iter()
+                    .filter(|segment| segment.path.indices.get(parent.len()) == Some(&idx))
+                    .collect();
+                let has_para = own.iter().any(|segment| {
+                    segment.path == path && segment.kind == hwp_convert::SegmentKind::Para
+                });
+                if !has_para
+                    && let Some(paragraph) = hwp_convert::address::paragraph_at_mut(doc, &path)
+                {
+                    pairs.push(IdPair {
+                        before: None,
+                        after: Some(hwp_convert::paragraph_id(&path, paragraph)),
+                    });
+                }
+                pairs.extend(own.into_iter().map(|segment| IdPair {
                     before: None,
-                    after: Some(segment.id),
-                })
-                .collect()
+                    after: Some(segment.id.clone()),
+                }));
+            }
+            pairs
         }
         TypedEditOperation::DeletePara {
             address: Some(_), ..
