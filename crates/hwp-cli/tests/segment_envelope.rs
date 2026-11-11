@@ -37,6 +37,11 @@ fn sample() -> PathBuf {
 /// content hash, matching the pins edit-ops-v1 and edit-report-v1 already carry in edit_ops.rs.
 /// Any schema edit — even a description tweak — must consciously update this constant, because
 /// hwp-editor parses this contract from a separate repository and silent drift is an API break.
+/// Re-pinned deliberately for the #518 nit: only the `$defs/segment` `$comment` and the
+/// `source_chars` description changed, so that neither claims the converse rule (`kind = run`
+/// implies the field) that `dependentSchemas` does not enforce. No field, kind, required entry or
+/// `schema_version` moved, so the content hash changes while the contract a consumer parses does
+/// not.
 #[test]
 fn schema_hash_frozen() {
     use sha2::{Digest, Sha256};
@@ -50,7 +55,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "d75641bc1041666bc6e6a14a0ee3dbe119f64b5e24eab229480105dddc7c1a97",
+        actual, "87bccd13de89efddc986b695712ada51630e82d04c6365b8bc3a23595f6c0991",
         "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -963,6 +968,35 @@ fn kind_specific_fields_are_rejected_on_a_kind_that_cannot_carry_them() {
     assert!(
         validator.is_valid(&representative_envelope()),
         "run, field and bookmark segments must keep the fields their kinds allow"
+    );
+}
+
+/// The one-way shape `dependentSchemas` has, as a test rather than a promise (#518 nit on #517):
+/// the field implies the kind, and nothing makes the kind imply the field. A `run` segment
+/// without `source_chars` therefore validates, which is why the description attributes "every
+/// published run piece carries one" to the emitter - and to the walk not publishing a textless
+/// piece - instead of to this schema. Enforcing the converse later must fail here, so the
+/// description cannot be left claiming a constraint the schema lost or gained.
+#[test]
+fn the_kind_restriction_is_enforced_in_one_direction_only() {
+    let validator = v2_validator();
+
+    let mut envelope = representative_envelope();
+    let run = envelope["segments"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|s| s["kind"] == "run")
+        .expect("the fixture carries a run segment");
+    assert!(
+        run.get("source_chars").is_some(),
+        "the fixture's run segment must carry source_chars, or removing it proves nothing"
+    );
+    run.as_object_mut().unwrap().remove("source_chars");
+
+    assert!(
+        validator.is_valid(&envelope),
+        "the schema does not require source_chars on a run segment; only the reverse is enforced"
     );
 }
 
