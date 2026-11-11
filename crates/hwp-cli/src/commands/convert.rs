@@ -2363,4 +2363,215 @@ mod tests {
             "a section that starts with the edit needs no seed"
         );
     }
+
+    fn context_table() -> hwp_model::Table {
+        hwp_convert::from_markdown("| A | B |\n|---|---|\n| C | D |")
+            .sections
+            .into_iter()
+            .flat_map(|section| section.paragraphs)
+            .flat_map(|paragraph| paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("synthetic Markdown creates a table")
+    }
+
+    fn context_parent(control: hwp_model::Control) -> hwp_model::Paragraph {
+        let mut parent = hwp_model::Paragraph::default();
+        parent.controls.push(control);
+        parent
+    }
+
+    fn context_cell(parent: &mut hwp_model::Paragraph) -> &mut hwp_model::Cell {
+        let hwp_model::Control::Table(table) = &mut parent.controls[0] else {
+            panic!("table fixture")
+        };
+        &mut table.cells[0]
+    }
+
+    fn cell_context_fixture() -> hwp_model::Paragraph {
+        let mut parent = context_parent(hwp_model::Control::Table(context_table()));
+        let paragraph = &mut context_cell(&mut parent).paragraphs[0];
+        paragraph.header.instance_id = 1;
+        paragraph.line_segs = vec![cached_segment(100)];
+        parent
+    }
+
+    fn assert_changed_cell_context(case: usize) {
+        // Change only parent metadata, with identical paragraph text and styles.
+        let original = cell_context_fixture();
+        let mut edited = original.clone();
+        let cell = context_cell(&mut edited);
+        match case {
+            0..=3 => cell.margins[case] += 1,
+            4 => cell.list_attr ^= 1,
+            5 => cell.header_tail.push(1),
+            _ => unreachable!(),
+        }
+        let mut synthesized = edited.clone();
+        restore_unchanged_controls(&original, &edited, &mut synthesized, SuffixCache::Drop);
+        assert!(
+            context_cell(&mut synthesized).paragraphs[0]
+                .line_segs
+                .is_empty(),
+            "changed cell context {case} must invalidate its own saved lines"
+        );
+        context_cell(&mut synthesized).paragraphs[0].line_segs = vec![cached_segment(999)];
+        restore_unchanged_controls(&original, &edited, &mut synthesized, SuffixCache::Keep);
+        assert_eq!(
+            context_cell(&mut synthesized).paragraphs[0].line_segs[0].v_pos,
+            999,
+            "changed cell context {case} must retain newly synthesized lines"
+        );
+    }
+
+    #[test]
+    fn changed_cell_left_margin_invalidates_saved_lines() {
+        assert_changed_cell_context(0);
+    }
+
+    #[test]
+    fn changed_cell_right_margin_invalidates_saved_lines() {
+        assert_changed_cell_context(1);
+    }
+
+    #[test]
+    fn changed_cell_top_margin_invalidates_saved_lines() {
+        assert_changed_cell_context(2);
+    }
+
+    #[test]
+    fn changed_cell_bottom_margin_invalidates_saved_lines() {
+        assert_changed_cell_context(3);
+    }
+
+    #[test]
+    fn changed_cell_list_attr_invalidates_saved_lines() {
+        assert_changed_cell_context(4);
+    }
+
+    #[test]
+    fn changed_cell_header_tail_invalidates_saved_lines() {
+        assert_changed_cell_context(5);
+    }
+
+    #[test]
+    fn cell_position_and_border_changes_keep_cell_local_lines() {
+        for case in 0..3 {
+            let original = cell_context_fixture();
+            let mut edited = original.clone();
+            let cell = context_cell(&mut edited);
+            match case {
+                0 => cell.row += 1,
+                1 => cell.col += 1,
+                2 => cell.border_fill = hwp_model::BorderFillId(cell.border_fill.0 + 1),
+                _ => unreachable!(),
+            }
+            let mut synthesized = edited.clone();
+            context_cell(&mut synthesized).paragraphs[0]
+                .line_segs
+                .clear();
+            restore_unchanged_controls(&original, &edited, &mut synthesized, SuffixCache::Drop);
+            assert_eq!(
+                context_cell(&mut synthesized).paragraphs[0].line_segs,
+                context_cell(&mut original.clone()).paragraphs[0].line_segs,
+                "cell-local cache does not depend on position/border case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn changed_outer_cell_context_preserves_an_unchanged_nested_tall_cell() {
+        let mut original = cell_context_fixture();
+        let mut nested = context_table();
+        nested.cells[0].paragraphs[0].line_segs = vec![cached_segment(12000)];
+        context_cell(&mut original).paragraphs[0]
+            .controls
+            .push(hwp_model::Control::Table(nested));
+        let mut edited = original.clone();
+        context_cell(&mut edited).width.0 += 1;
+        let mut synthesized = edited.clone();
+        context_cell(&mut context_cell(&mut synthesized).paragraphs[0]).paragraphs[0].line_segs =
+            vec![cached_segment(777)];
+        restore_unchanged_controls(&original, &edited, &mut synthesized, SuffixCache::Drop);
+        assert_eq!(
+            context_cell(&mut context_cell(&mut synthesized).paragraphs[0]).paragraphs[0].line_segs
+                [0]
+            .v_pos,
+            12000,
+            "an outer width change must not recompute a valid nested cell"
+        );
+        assert!(
+            context_cell(&mut synthesized).paragraphs[0]
+                .line_segs
+                .is_empty()
+        );
+    }
+
+    fn context_generic(parent: &mut hwp_model::Paragraph) -> &mut hwp_model::GenericControl {
+        let hwp_model::Control::Generic(generic) = &mut parent.controls[0] else {
+            panic!("generic fixture")
+        };
+        generic
+    }
+
+    fn assert_changed_generic_context(change_width: bool) {
+        let mut paragraph = hwp_model::Paragraph::default();
+        paragraph.header.instance_id = 1;
+        paragraph.line_segs = vec![cached_segment(100)];
+        let shape = serde_json::from_value(serde_json::json!({
+            "kind": "Rect", "x": 0, "y": 0, "w": 10000, "h": 10000,
+            "fill": 0, "border_color": 0, "border_width": 0
+        }))
+        .unwrap();
+        let original = context_parent(hwp_model::Control::Generic(hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: vec![0; 8],
+                paragraphs: vec![paragraph],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: vec![shape],
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }));
+        let mut edited = original.clone();
+        let generic = context_generic(&mut edited);
+        if change_width {
+            generic.gso_shapes[0].w += 1;
+        } else {
+            generic.paragraph_lists[0].header_data[0] = 1;
+        }
+        let mut synthesized = edited.clone();
+        restore_unchanged_controls(&original, &edited, &mut synthesized, SuffixCache::Drop);
+        assert!(
+            context_generic(&mut synthesized).paragraph_lists[0].paragraphs[0]
+                .line_segs
+                .is_empty(),
+            "changed Generic context (width={change_width}) must invalidate saved lines"
+        );
+        context_generic(&mut synthesized).paragraph_lists[0].paragraphs[0].line_segs =
+            vec![cached_segment(999)];
+        restore_unchanged_controls(&original, &edited, &mut synthesized, SuffixCache::Keep);
+        assert_eq!(
+            context_generic(&mut synthesized).paragraph_lists[0].paragraphs[0].line_segs[0].v_pos,
+            999,
+            "changed Generic context (width={change_width}) keeps newly synthesized lines"
+        );
+    }
+    #[test]
+    fn changed_generic_shape_width_invalidates_saved_lines() {
+        assert_changed_generic_context(true);
+    }
+
+    #[test]
+    fn changed_generic_list_header_invalidates_saved_lines() {
+        assert_changed_generic_context(false);
+    }
 }

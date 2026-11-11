@@ -567,3 +567,224 @@ fn golden_edited_table_renders_on_one_page() {
         }
     }
 }
+
+fn write_cached_geometry_source(document: &mut Document, name: &str) -> (PathBuf, Document) {
+    // Recompute from parent geometry before writing, so source caches are valid rather than
+    // arbitrary sentinels. Width assertions below depend only on the cell box and its margins.
+    let mut fonts = hwp_render::FontStore::new_isolated();
+    let mut issues = hwp_render::RenderIssueAccumulator::new();
+    hwp_render::lineseg::synthesize_linesegs(document, &mut fonts, &mut issues);
+    let source = work_dir().join(name);
+    hwp5::write_document(
+        document,
+        &source,
+        &hwp5::WriteOptions {
+            preserve_linesegs: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let read = hwp5::read_document(&source).unwrap().document;
+    (source, read)
+}
+
+fn cell_at(table: &hwp_model::Table, row: u16, col: u16) -> &hwp_model::Cell {
+    table
+        .cells
+        .iter()
+        .find(|cell| cell.row == row && cell.col == col)
+        .expect("target cell exists")
+}
+
+fn cell_content_width(cell: &hwp_model::Cell) -> i32 {
+    (cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1])).max(1)
+}
+
+fn assert_same_paragraph_refs(before: &Paragraph, after: &Paragraph) {
+    assert_eq!(
+        after.chars, before.chars,
+        "geometry edit leaves text unchanged"
+    );
+    assert_eq!(
+        after.style, before.style,
+        "geometry edit leaves style IDs unchanged"
+    );
+    assert_eq!(
+        after.para_shape, before.para_shape,
+        "geometry edit leaves paragraph shape IDs unchanged"
+    );
+    assert_eq!(
+        after.char_shape_runs, before.char_shape_runs,
+        "geometry edit leaves character shape references unchanged"
+    );
+}
+
+#[test]
+fn split_cell_recomputes_the_retained_anchor_cache_for_its_narrower_box() {
+    let mut document = input();
+    let original_table = table(&body(&document)[TABLE_PARAGRAPH], 0);
+    let (row, col) = original_table
+        .cells
+        .iter()
+        .filter(|cell| cell.row_span == 1 && cell.col_span == 1)
+        .find_map(|cell| {
+            original_table
+                .cells
+                .iter()
+                .any(|next| {
+                    next.row == cell.row
+                        && next.col == cell.col + 1
+                        && next.row_span == 1
+                        && next.col_span == 1
+                })
+                .then_some((cell.row, cell.col))
+        })
+        .expect("fixture has two adjacent unmerged cells");
+    // The body owner at index 4 is document-order table 1; table 0 is the earlier title frame.
+    hwp_convert::merge_cells(&mut document, 1, row, col, row, col + 1).unwrap();
+    let (source, before) = write_cached_geometry_source(&mut document, "split-width-source.hwp");
+    let before_cell = cell_at(table(&body(&before)[TABLE_PARAGRAPH], 0), row, col);
+    assert_eq!(
+        before_cell.col_span, 2,
+        "source must really contain the merged anchor"
+    );
+    assert!(
+        !before_cell.paragraphs[0].line_segs.is_empty(),
+        "source anchor has a saved cache"
+    );
+    let old_width = before_cell.paragraphs[0].line_segs[0].seg_width;
+    assert_eq!(
+        old_width,
+        cell_content_width(before_cell),
+        "source cache must match the merged box"
+    );
+
+    let (_, edited) = edit_path(
+        &source,
+        "split-width-output.hwp",
+        &["--split-cell", &format!("1:{row}:{col}")],
+    );
+    let after_cell = cell_at(table(&body(&edited)[TABLE_PARAGRAPH], 0), row, col);
+    assert_eq!(
+        after_cell.col_span, 1,
+        "CLI must actually split the merged anchor"
+    );
+    assert!(
+        after_cell.width.0 < before_cell.width.0,
+        "the retained anchor must become narrower"
+    );
+    assert_same_paragraph_refs(&before_cell.paragraphs[0], &after_cell.paragraphs[0]);
+    let expected_width = cell_content_width(after_cell);
+    assert_ne!(
+        expected_width, old_width,
+        "fixture must require a new cache width"
+    );
+    assert_eq!(
+        after_cell.paragraphs[0].line_segs[0].seg_width, expected_width,
+        "split-cell must not restore the anchor's cache measured for the old merged width"
+    );
+}
+
+#[test]
+fn width_only_style_tables_recomputes_caches_without_changing_paragraph_refs() {
+    let mut document = input();
+    let (eligible, _) = hwp_convert::style_tables(&mut document);
+    assert!(eligible > 0, "fixture has a styleable table");
+    assert_eq!(
+        hwp_convert::style_tables(&mut document).1,
+        0,
+        "settle styles before modifying only geometry"
+    );
+    let target = table_mut(&mut document.sections[0].paragraphs[TABLE_PARAGRAPH], 0);
+    let mut column_widths: Vec<i32> = (0..target.cols)
+        .map(|col| {
+            target
+                .cells
+                .iter()
+                .find(|cell| cell.col == col && cell.col_span == 1)
+                .expect("fixture exposes each grid column")
+                .width
+                .0
+        })
+        .collect();
+    assert!(column_widths.len() >= 2);
+    let original_total: i32 = column_widths.iter().sum();
+    let shift = (column_widths[1] / 4).max(1);
+    assert!(
+        column_widths[1] > shift,
+        "redistribution keeps every column positive"
+    );
+    column_widths[0] += shift;
+    column_widths[1] -= shift;
+    assert_eq!(
+        column_widths.iter().sum::<i32>(),
+        original_total,
+        "redistribution retains total table width"
+    );
+    for cell in &mut target.cells {
+        cell.width.0 = column_widths
+            .iter()
+            .skip(cell.col as usize)
+            .take(cell.col_span as usize)
+            .sum();
+    }
+    let (row, col) = target
+        .cells
+        .iter()
+        .find(|cell| cell.col == 0 && cell.col_span == 1)
+        .map(|cell| (cell.row, cell.col))
+        .expect("a single-column anchor observes the changed width");
+    let (source, before) = write_cached_geometry_source(&mut document, "restyle-width-source.hwp");
+    let before_table = table(&body(&before)[TABLE_PARAGRAPH], 0);
+    let before_cell = cell_at(before_table, row, col);
+    let old_width = before_cell.paragraphs[0].line_segs[0].seg_width;
+    assert_eq!(
+        old_width,
+        cell_content_width(before_cell),
+        "source cache matches the redistributed column width"
+    );
+
+    let (_, edited) = edit_path(
+        &source,
+        "restyle-width-output.hwp",
+        &["--style-tables", "official"],
+    );
+    let after_table = table(&body(&edited)[TABLE_PARAGRAPH], 0);
+    assert_eq!(after_table.cells.len(), before_table.cells.len());
+    for (before_cell, after_cell) in before_table.cells.iter().zip(&after_table.cells) {
+        assert_eq!(
+            (
+                after_cell.row,
+                after_cell.col,
+                after_cell.row_span,
+                after_cell.col_span
+            ),
+            (
+                before_cell.row,
+                before_cell.col,
+                before_cell.row_span,
+                before_cell.col_span
+            )
+        );
+        assert_eq!(after_cell.paragraphs.len(), before_cell.paragraphs.len());
+        for (before_paragraph, after_paragraph) in
+            before_cell.paragraphs.iter().zip(&after_cell.paragraphs)
+        {
+            assert_same_paragraph_refs(before_paragraph, after_paragraph);
+        }
+    }
+    let after_cell = cell_at(after_table, row, col);
+    assert!(
+        after_cell.width.0 < before_cell.width.0,
+        "CLI restyling must restore the narrower official column"
+    );
+    let expected_width = cell_content_width(after_cell);
+    assert_ne!(
+        expected_width, old_width,
+        "width-only edit must invalidate this cache"
+    );
+    assert_eq!(
+        after_cell.paragraphs[0].line_segs[0].seg_width, expected_width,
+        "style-tables must not restore an unchanged paragraph's cache measured for its old parent width"
+    );
+}
