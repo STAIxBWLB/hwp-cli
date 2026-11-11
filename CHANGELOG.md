@@ -10,6 +10,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `hwp cat --with-segments --segments v2` publishes an optional `source_chars` on `run` segments
+  in both envelope formats, as a minor `1.1` bump of `segment-envelope-v2`. The range is absolute
+  UTF-16 code units into the source paragraph, the same unit and origin as `edit-ops-v1`
+  `address.chars` and `render-layout-v1` `source_chars`, so a caller copies the two numbers into a
+  run-range op with no conversion; `char_range` still counts Unicode scalars into the emitted
+  markdown, emphasis markers included. A run a block control interrupts carries one range per
+  contiguous piece, each paired with that piece's `char_range`, and a piece that emitted no source
+  text is not published as a segment, so there is no empty range to hand to an op. The envelope
+  and the address resolver read one rule for a run's bounds, so every published range is one
+  `set_format` accepts
+  ([#517](https://github.com/STAIxBWLB/hwp-cli/issues/517)).
+
 **Fixed**
 
 - An HWP5 edit now continues the re-synthesized body flow from the saved paragraphs it keeps

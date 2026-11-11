@@ -19,7 +19,7 @@
 use hwp_model::control::GenericControl;
 use hwp_model::{Control, Document, Paragraph};
 
-use crate::segment_id::{SegmentPath, canonical_char_shape_runs, paragraph_id, run_id};
+use crate::segment_id::{SegmentPath, paragraph_id, run_id};
 
 /// Maximum index-chain depth (T-07-03): documents nest far shallower than this, and the
 /// resolver iterates rather than recurses over the chain, so this bounds parse-time and
@@ -167,13 +167,9 @@ pub fn resolve(
         }
         Granularity::Run => {
             let run_index = addr.indices[addr.indices.len() - 1];
-            let runs = canonical_char_shape_runs(paragraph);
-            let Some(&(start, _)) = runs.get(run_index) else {
+            let Some((start, end)) = crate::segment::run_wchar_bounds(paragraph, run_index) else {
                 return Err(ResolveError::NoSuchRun);
             };
-            let end = runs
-                .get(run_index + 1)
-                .map_or_else(|| paragraph.wchar_len(), |&(next, _)| next);
             let found = run_id(&path, paragraph, run_index);
             check_checksum(&addr.checksum, &found)?;
             let (w_start, w_end) = match addr.chars {
@@ -385,6 +381,7 @@ pub(crate) fn invalidate_ancestors(doc: &mut Document, path: &SegmentPath) {
 mod tests {
     use super::*;
     use crate::from_markdown::from_markdown;
+    use crate::segment_id::canonical_char_shape_runs;
 
     fn sample_doc() -> Document {
         from_markdown("첫 문단\n\n둘째 문단\n\nplain **bold** tail\n")

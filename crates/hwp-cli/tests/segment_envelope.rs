@@ -50,7 +50,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "ad2ac26c36207d90b5d8647135ebe0dce72ea191ede1470a3226aeb54572ee0a",
+        actual, "d75641bc1041666bc6e6a14a0ee3dbe119f64b5e24eab229480105dddc7c1a97",
         "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -240,7 +240,7 @@ fn resolved_level() -> serde_json::Value {
 
 /// A representative envelope: all seven kinds, both style levels, an unresolvable level, a
 /// `null` face slot, an omitted `ctrl_id`, and — the point of the fixture — a run a block
-/// interrupted, reported as two pieces that SHARE ONE ID.
+/// interrupted, reported as two pieces that SHARE ONE ID, each with its own `source_chars`.
 ///
 /// This is the shape the CLI is written to in task 2. Keeping it here as well means the schema
 /// is pinned against the intended shape even where the CLI happens not to produce one of these
@@ -270,6 +270,14 @@ fn representative_envelope() -> serde_json::Value {
         seg("image", "ffffffff.0.1", vec![1], 40, 45),
     ];
 
+    // One `source_chars` per run piece, in the source paragraph's UTF-16 coordinates, each paired
+    // with that piece's `char_range`. The interrupting table's own characters belong to no piece,
+    // which is why the second piece resumes past them instead of continuing where the first
+    // stopped (#517).
+    segments[1]["source_chars"] = serde_json::json!({ "start": 0, "end": 8 });
+    segments[4]["source_chars"] = serde_json::json!({ "start": 8, "end": 14 });
+    segments[5]["source_chars"] = serde_json::json!({ "start": 16, "end": 24 });
+
     let mut field = seg("field", "11111111.0.2", vec![2], 45, 50);
     field["ctrl_id"] = serde_json::json!("%clk");
     segments.push(field);
@@ -288,7 +296,7 @@ fn representative_envelope() -> serde_json::Value {
 
     serde_json::json!({
         "contract": "hwp-segment-envelope-v2",
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "markdown": "본문",
         "segments": segments,
     })
@@ -303,7 +311,7 @@ fn the_v2_schema_accepts_the_published_shape() {
         panic!("the v2 schema rejected the published shape: {e}");
     }
     assert_eq!(value["contract"], "hwp-segment-envelope-v2");
-    assert_eq!(value["schema_version"], "1.0");
+    assert_eq!(value["schema_version"], "1.1");
 }
 
 /// The tripwire for the reflex this contract is most likely to lose to. Segment ids are NOT
@@ -383,6 +391,10 @@ fn the_load_bearing_descriptions_are_published() {
             "UNICODE SCALAR OFFSETS INTO THIS ENVELOPE'S OWN `markdown` STRING",
         ),
         (
+            "the second coordinate space",
+            "ABSOLUTE UTF-16 CODE UNITS INTO THE SOURCE PARAGRAPH",
+        ),
+        (
             "the checksum is not tamper evidence",
             "IS NOT TAMPER EVIDENCE",
         ),
@@ -455,7 +467,7 @@ fn the_v2_markdown_envelope_validates_against_the_published_schema() {
         panic!("the schema rejected a real v2 markdown envelope: {e}");
     }
     assert_eq!(value["contract"], "hwp-segment-envelope-v2");
-    assert_eq!(value["schema_version"], "1.0");
+    assert_eq!(value["schema_version"], "1.1");
     assert!(
         value["markdown"].is_string(),
         "the markdown carrier must be present for --format markdown"
@@ -893,11 +905,11 @@ fn a_reserved_alignment_value_is_reported_and_still_validates() {
     }
 }
 
-/// F6. `ctrl_id` and `name` describe themselves as belonging to particular kinds, and the
-/// schema enforces that rather than only asserting it: a description that claims a constraint
-/// the schema does not have is a claim no gate can keep true.
+/// F6. `ctrl_id`, `name` and `source_chars` describe themselves as belonging to particular
+/// kinds, and the schema enforces that rather than only asserting it: a description that claims
+/// a constraint the schema does not have is a claim no gate can keep true.
 #[test]
-fn ctrl_id_and_name_are_rejected_on_a_kind_that_cannot_carry_them() {
+fn kind_specific_fields_are_rejected_on_a_kind_that_cannot_carry_them() {
     let validator = v2_validator();
 
     let mut para_with_ctrl_id = representative_envelope();
@@ -906,6 +918,32 @@ fn ctrl_id_and_name_are_rejected_on_a_kind_that_cannot_carry_them() {
     assert!(
         !validator.is_valid(&para_with_ctrl_id),
         "a para segment must not be allowed to carry a ctrl_id"
+    );
+
+    // `source_chars` is the second coordinate space and belongs to `run` alone. It is the field
+    // most likely to be read as "any segment's source range", so the ban is enforced, not just
+    // described (#517).
+    let mut para_with_source_chars = representative_envelope();
+    para_with_source_chars["segments"][0]["source_chars"] =
+        serde_json::json!({ "start": 0, "end": 4 });
+    assert_eq!(para_with_source_chars["segments"][0]["kind"], "para");
+    assert!(
+        !validator.is_valid(&para_with_source_chars),
+        "a para segment must not be allowed to carry source_chars"
+    );
+
+    // The same for a bookmark, which is a point marker and has no source text at all.
+    let mut bookmark_with_source_chars = representative_envelope();
+    let bookmark = bookmark_with_source_chars["segments"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|s| s["kind"] == "bookmark")
+        .expect("the fixture carries a bookmark segment");
+    bookmark["source_chars"] = serde_json::json!({ "start": 3, "end": 3 });
+    assert!(
+        !validator.is_valid(&bookmark_with_source_chars),
+        "a bookmark segment must not be allowed to carry source_chars"
     );
 
     let mut field_with_name = representative_envelope();
@@ -924,7 +962,7 @@ fn ctrl_id_and_name_are_rejected_on_a_kind_that_cannot_carry_them() {
     // The legitimate carriers still validate, so the constraint is not merely a blanket ban.
     assert!(
         validator.is_valid(&representative_envelope()),
-        "field and bookmark segments must keep their ctrl_id and name"
+        "run, field and bookmark segments must keep the fields their kinds allow"
     );
 }
 

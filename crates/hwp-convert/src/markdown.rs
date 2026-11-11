@@ -217,6 +217,10 @@ struct Body {
     open_run: Option<RawSeg>,
     /// Field spans opened at `FIELD_START` and closed at `FIELD_END`.
     open_fields: Vec<RawSeg>,
+    /// The source-paragraph WCHAR offset of the character being emitted, kept by the walk so a
+    /// run piece can close at the right source offset wherever the flush happens. One cursor,
+    /// assigned once per character, so the segment path and the text path cannot drift.
+    source_pos: u32,
 }
 
 impl Deref for Body {
@@ -279,9 +283,16 @@ impl Body {
 
     /// Closes the open run at `at`, which the run boundary logic places between the previous
     /// run's closing emphasis marker and the next one's opening marker.
+    ///
+    /// The piece's source span ends at the character the walk is on, so a flush triggered BY a
+    /// block control closes the piece before that control's own characters: the control is not
+    /// this piece's source text, and the next piece resumes after it.
     fn close_run_at(&mut self, at: usize) {
         if let Some(mut seg) = self.open_run.take() {
             seg.end = at.max(seg.start);
+            if let Some((source_start, _)) = seg.source {
+                seg.source = Some((source_start, self.source_pos));
+            }
             self.segs.push(seg);
         }
     }
@@ -1092,6 +1103,12 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
     let mut boundary: Option<usize> = None;
 
     for ch in &para.chars {
+        // The source cursor every run piece closes against: the offset of the character about to
+        // be consumed. Assigned first, before anything in this iteration can end a piece, so a
+        // run that ends because the shape changed here, or because a block flushes the output,
+        // ends at THIS character rather than the previous one - and a control's own characters
+        // belong to no piece.
+        body.source_pos = wchar_pos;
         // 현재 위치의 문자 모양으로 효과 전환
         // (중첩 정합성을 위해 변경 시 전부 닫고 다시 연다)
         if let HwpChar::Text(_) = ch {
@@ -1117,7 +1134,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
             let at = boundary.unwrap_or(body.s.len());
             while next_run < runs.len() && runs[next_run].0 <= wchar_pos {
                 let shape = runs[next_run].1.0;
-                open_run_segment(doc, para, ctx, &mut body, next_run, shape, at);
+                open_run_segment(doc, para, ctx, &mut body, next_run, shape, at, wchar_pos);
                 current_run = Some(next_run);
                 next_run += 1;
             }
@@ -1129,7 +1146,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
             // 나눠 가진다(모듈 문서의 "조각난 런" 참조).
             let shape = runs[index].1.0;
             let at = body.s.len();
-            open_run_segment(doc, para, ctx, &mut body, index, shape, at);
+            open_run_segment(doc, para, ctx, &mut body, index, shape, at, wchar_pos);
         }
         boundary = None;
         match ch {
@@ -1216,6 +1233,9 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
         wchar_pos += ch.wchar_width();
     }
     close_span(&mut body, marks, span, ctx.html_mode);
+    // The walk has consumed the whole paragraph, so the last piece's source span ends at the
+    // paragraph's end — the same bound `run_wchar_bounds` gives the last canonical run.
+    body.source_pos = wchar_pos;
     body.close_open();
     flush_inline(&mut body, &mut fragments);
     fragments
@@ -1248,11 +1268,16 @@ fn para_segment(
         start,
         end,
         point,
+        source: None,
     })
 }
 
 /// 열려 있던 런을 닫고 새 런을 연다(v2 전용). id는 이 크레이트의 `segment_id` 진입점에서만
 /// 나오며 이 모듈은 아무것도 해시하지 않는다.
+///
+/// `at` is the emitted-markdown offset the piece starts at and `source_at` the source-paragraph
+/// offset it starts at: the two coordinate spaces the walk carries side by side (#517).
+#[allow(clippy::too_many_arguments)]
 fn open_run_segment(
     doc: &Document,
     para: &Paragraph,
@@ -1261,6 +1286,7 @@ fn open_run_segment(
     index: usize,
     shape: u16,
     at: usize,
+    source_at: u32,
 ) {
     body.close_run_at(at);
     body.open_run = Some(RawSeg {
@@ -1273,6 +1299,8 @@ fn open_run_segment(
         start: at,
         end: 0,
         point: false,
+        // Filled in by `close_run_at`: the end is only known when the piece ends.
+        source: Some((source_at, source_at)),
     });
 }
 
@@ -1301,6 +1329,7 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             start: at,
             end: at,
             point: false,
+            source: None,
         });
     } else if code == ctrl_char::FIELD_START && crate::field::is_field_ctrl_id(&g.ctrl_id) {
         body.open_fields.push(RawSeg {
@@ -1313,6 +1342,7 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             start: body.s.len(),
             end: 0,
             point: false,
+            source: None,
         });
     }
 }
@@ -1398,6 +1428,7 @@ fn render_control(
                     start,
                     end,
                     point: false,
+                    source: None,
                 });
             }
         }
@@ -1427,6 +1458,7 @@ fn render_control(
                     start: 0,
                     end,
                     point: false,
+                    source: None,
                 });
             }
             push_block(body, marks, ctx.html_mode, fragments, block, span);
@@ -1675,6 +1707,7 @@ fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body
                 start: 0,
                 end,
                 point: false,
+                source: None,
             });
         }
         if let Some(slot) = grid[row].get_mut(cell.col as usize) {
@@ -1798,6 +1831,7 @@ fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Bod
                     start,
                     end,
                     point: false,
+                    source: None,
                 });
             }
         }

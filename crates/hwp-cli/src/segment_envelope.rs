@@ -11,7 +11,11 @@
 use hwp_convert::{Segment, StyleLevel};
 
 /// The version of the envelope contract, carried in every envelope.
-pub const SEGMENT_ENVELOPE_SCHEMA_VERSION: &str = "1.0";
+///
+/// `1.1` adds the optional `source_chars` on `run` segments (issue #517). An additive optional
+/// field is a minor bump: a consumer that ignores unknown fields keeps working, and no existing
+/// field changed. Removing or renaming one is still a new major.
+pub const SEGMENT_ENVELOPE_SCHEMA_VERSION: &str = "1.1";
 /// The contract name, carried in every envelope.
 pub const SEGMENT_ENVELOPE_CONTRACT: &str = "hwp-segment-envelope-v2";
 
@@ -46,6 +50,14 @@ pub fn segment_json(s: &Segment) -> serde_json::Value {
     }
     if let Some(name) = &s.name {
         v["name"] = serde_json::Value::String(name.clone());
+    }
+    // Present only on a run piece that emitted source text: a piece with none is not published at
+    // all, so there is no empty range here to publish (issue #517).
+    if let Some(chars) = &s.source_chars {
+        v["source_chars"] = serde_json::json!({
+            "start": chars.start,
+            "end": chars.end,
+        });
     }
     v
 }
