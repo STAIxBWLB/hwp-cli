@@ -522,6 +522,10 @@ jobs:
             || ! grep -q '"$dir/ahwp.exe" "$dir/hwp.exe"' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml no longer adds the hwp compatibility name beside ahwp (and hwp.exe beside ahwp.exe) inside the archive, so the 1.x command name would disappear from an extracted archive'
+          elif ! grep -q '"\$stem\.sha256"' .github/workflows/release.yml \
+            || ! grep -q '"\$legacy_stem\.sha256"' .github/workflows/release.yml; then
+            status=fail
+            evidence='.github/workflows/release.yml no longer writes the checksum asset as <archive-without-extension>.sha256 (canonical and legacy), which is the name upload-rust-binary-action, scripts/install.sh, update and update_formula.sh all use; a sidecar named after the archive file pairs an archive with the wrong bytes'
           fi
           printf '%s\t%s\t%s\n' release-archive-fonts "$status" "$evidence" >>"$GATES_FILE"
           {

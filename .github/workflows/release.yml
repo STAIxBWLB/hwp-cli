@@ -328,28 +328,35 @@ jobs:
           archives=(ahwp-"$tag"-*.tar.gz ahwp-"$tag"-*.zip)
           [ "${#archives[@]}" -gt 0 ] || { echo "::error::no ahwp archive was published for $tag"; exit 1; }
           for archive in "${archives[@]}"; do
+            # The checksum asset drops the archive extension: `ahwp-<tag>-<target>.sha256`, which
+            # is what upload-rust-binary-action publishes, scripts/install.sh fetches, `update`
+            # composes from its asset name and scripts/update_formula.sh reads. Writing it here
+            # with --clobber replaces the action's hash of the pre-repack bytes; leaving that one
+            # in place would fail every checksum check on the release.
             case "$archive" in
-            *.tar.gz) repack_tar "$archive" ;;
-            *.zip) repack_zip "$archive" ;;
+            *.tar.gz) repack_tar "$archive"; stem="${archive%.tar.gz}" ;;
+            *.zip) repack_zip "$archive"; stem="${archive%.zip}" ;;
             esac
-            sha256sum "$archive" >"$archive.sha256"
+            sha256sum "$archive" >"$stem.sha256"
             if [ "$major" = "1" ]; then
               legacy="${archive/ahwp-/hwp-}"
+              legacy_stem="${stem/ahwp-/hwp-}"
               cp "$archive" "$legacy"
               cmp "$archive" "$legacy"
-              sha256sum "$legacy" >"$legacy.sha256"
+              sha256sum "$legacy" >"$legacy_stem.sha256"
             else
               echo "$archive: major $major, no legacy hwp- asset (#510 Phase 4)"
             fi
           done
 
-          # --clobber replaces the archives upload-assets just published with the repacked
-          # bytes, so a release never carries an archive without the compatibility name.
+          # --clobber replaces the archives and their checksums with the repacked bytes, so a
+          # release never pairs an archive with the other bytes' hash. `*.sha256` also picks up
+          # the legacy sidecars, which upload-assets never publishes.
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
-            ahwp-"$tag"-*.tar.gz ahwp-"$tag"-*.tar.gz.sha256 \
-            ahwp-"$tag"-*.zip ahwp-"$tag"-*.zip.sha256 \
-            hwp-"$tag"-*.tar.gz hwp-"$tag"-*.tar.gz.sha256 \
-            hwp-"$tag"-*.zip hwp-"$tag"-*.zip.sha256
+            ahwp-"$tag"-*.tar.gz ahwp-"$tag"-*.sha256 \
+            ahwp-"$tag"-*.zip \
+            hwp-"$tag"-*.tar.gz hwp-"$tag"-*.sha256 \
+            hwp-"$tag"-*.zip
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name' | sort
 
