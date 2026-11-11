@@ -10,6 +10,33 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.6.0]
+
+**Compatibility**
+
+- The command is now `ahwp` and the Cargo package is `agent-hwp` (`cargo install --git ... agent-hwp`).
+  `hwp` keeps working through 1.x as a compatibility name with identical behavior; it prints one
+  deprecation line only when stderr is a terminal, so piped output is byte-identical. 2.0.0 removes
+  it ([#510](https://github.com/STAIxBWLB/hwp-cli/issues/510)).
+- MCP `initialize` now reports `serverInfo.name` `agent-hwp` instead of `hwp-cli`. Tool names
+  (`hwp_*`), the skill name `hwp`, `HWP_*` environment variables, schema `$id`s and contract names are
+  unchanged.
+- Homebrew: the formula is now `ahwp`; `formula_renames.json` moves an installed `hwp` formula on
+  `brew update && brew upgrade`. Release archives are published as `ahwp-<tag>-<target>` and, through
+  1.x, also as `hwp-<tag>-<target>`, so an installed 1.5 `hwp update` keeps upgrading.
+- Newly refused operations, each before anything is written: an anchored `insert_para` before, or a
+  `move_para` to the front of, a section's setup paragraph (#451); a text edit that would shift an
+  opaque HWP5 `PARA_RANGE_TAG` range (#470); `--strict` split of an HWP5 source carrying
+  `/DocHistory`, which fragments now drop and report (#449); and a same-format HWPX conversion, or
+  `--strict`, of a document whose border fill or shape uses an `imgBrush` image fill (#452).
+- Report enums gain values: `render-report-v1` and `certification-report-v1` add
+  `anchor_prepass_incomplete`, and the preservation report adds `image_fill_unrepresentable`.
+  Consumers that reject unknown codes need updating; no field was removed.
+- Rendering geometry changes for cache-less input: an empty paragraph takes its synthesized line
+  instead of a fixed 12pt/16pt step (#422), and synthesized body lines paginate inside the header and
+  footer bands (#423). Saved native line caches, HWP5 identity and default-style body text are
+  unchanged.
+
 **Changed**
 
 - Upgrade quick-xml to 0.42 and migrate XML consumers to its UTF-8 string API while retaining
