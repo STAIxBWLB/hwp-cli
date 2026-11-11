@@ -1555,8 +1555,8 @@ fn restore_unchanged_paragraph_list(
     }
 }
 
-/// Compare the local cell inputs before reusing native paragraph caches. Position and border
-/// styling do not change the cell-local line box; width, margins and raw list properties do.
+/// Require matching local geometry and raw list metadata before reusing native caches.
+/// Position and border styling are not inputs to the existing cell-local line-box calculation.
 /// Compare raw values rather than declaring different clamped boxes equivalent.
 fn cell_layout_matches(original: &hwp_model::Cell, edited: &hwp_model::Cell) -> bool {
     original.width == edited.width

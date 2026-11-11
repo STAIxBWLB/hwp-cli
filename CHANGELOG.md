@@ -33,7 +33,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   only the part before its first moved paragraph, a shifted index included, because a cache left
   below an earlier insertion, deletion or growth holds a `v_pos` measured against a block the edit
   changed, and a paragraph added under a retained table anchor resumes no higher than the bottom of
-  the line the anchor keeps. An edited table therefore stays on its page and the content after it
+  the line the anchor keeps. Nested-list restoration also checks local parent context: cell width,
+  all four margins, `list_attr` and opaque `header_tail`; for Generic lists, the first shape's width
+  and opaque list `header_data`. A changed context re-synthesizes that list's own lines even when
+  text and paragraph styles match, covering `split_cell` and width-only `style_tables` edits, while
+  valid unchanged descendant controls retain their saved caches. Cell row/column movement and
+  border-only changes preserve cell-local caches. These checks add no native geometry rule or
+  Hancom-open claim. An edited table therefore stays on its page and the content after it
   flows below the table again, instead of the edited paragraph sitting above its kept predecessor
   and opening a new page. Unedited documents never enter this path, so HWP5 identity stays
   byte-identical; the seed continues the synthesizer's own spacing rule, so the seam can still sit

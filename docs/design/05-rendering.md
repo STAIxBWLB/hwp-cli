@@ -361,7 +361,7 @@ the diagnostics that can invalidate an anchor are propagated.
 
 ### 2.2.2 An edited HWP5 document seeds the suffix from the kept prefix
 
-`hwp edit` on an HWP5 source re-synthesizes the document and then puts every paragraph the edit did
+`ahwp edit` on an HWP5 source re-synthesizes the document and then puts every paragraph the edit did
 not change back as its saved record (`convert::restore_unchanged_native_paragraphs`), so new
 PARA_LINE_SEG records are limited to what the edit moved. Both sides of that seam carry page-relative
 `v_pos`, and a re-synthesis that restarts the section at 0 puts the first edited paragraph *above* the
@@ -420,6 +420,19 @@ included, which is what stops a retained sibling from keeping a `v_pos` measured
 edit changed. "Content" is the fields that decide the paragraph's lines: the line cache is the answer
 being computed, and PARA_TEXT's "last paragraph in the list" bit follows the list rather than the
 paragraph, so inserting a sibling flips it on a paragraph nobody edited.
+
+Paragraph equality is sufficient only when its local parent context still matches. Before restoring
+cell paragraphs, the writer compares the cell's width, all four margins, `list_attr` and opaque
+`header_tail`. For a Generic paragraph list it compares the first `gso_shapes` entry's width
+(including whether that entry exists) and the list's opaque `header_data`. A mismatch puts that
+list's seam at its first paragraph: the pre-synthesis pass drops its own saved lines, and the
+post-synthesis pass keeps its new lines. This prevents `split_cell` and width-only `style_tables`
+edits from restoring a cache measured for the old box even when text and paragraph styles match.
+Cell row/column coordinates and border-only changes do not invalidate cell-local lines. Valid
+unchanged descendant controls still retain their saved records, so changing an outer cell's context
+does not require re-synthesizing an unchanged nested table's tall cells. These are local validity
+comparisons, not new interpretations of opaque list headers or new native geometry rules; the
+regressions do not establish Hancom-open behavior.
 
 A kept table anchor keeps the table inside its own line block, so `saved_body_cursor` is floored at
 the last kept line's bottom: the anchor line's height can exceed the summed cell heights (a 4412 HU
