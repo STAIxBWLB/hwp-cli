@@ -29,15 +29,15 @@
   },
   "interfaces": {
     "extraction": {
-      "cli": "hwp split --from --to --source-sha256 --range-report",
+      "cli": "ahwp split --from --to --source-sha256 --range-report",
       "mcp": "hwp_split"
     },
     "discovery": {
-      "cli": "hwp slots --forms --occurrences --json",
+      "cli": "ahwp slots --forms --occurrences --json",
       "mcp": "hwp_slots"
     },
     "binding": {
-      "cli": "hwp edit --ops",
+      "cli": "ahwp edit --ops",
       "mcp": "hwp_edit.apply_form_bindings",
       "mcp_shape": "exclusive object, not array; no verify property",
       "requires_reviewed_json": true
@@ -47,7 +47,7 @@
       "mcp": "hwp_edit.set_break_before / set_indent_level"
     },
     "certification": {
-      "cli": "hwp certify --policy --report",
+      "cli": "ahwp certify --policy --report",
       "mcp": "hwp_certify"
     }
   },
@@ -242,7 +242,7 @@
         "retained_image_controls": 1,
         "mcp_calls_passed": 4,
         "mcp_native_bytes_identical_to_cli": true,
-        "reentry_cli": "hwp new --from",
+        "reentry_cli": "ahwp new --from",
         "reentry_mcp": "hwp_new.json"
       }
     }

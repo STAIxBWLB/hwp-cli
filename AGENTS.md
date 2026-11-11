@@ -16,7 +16,7 @@ HWP library. Background for revising these rules: [docs/agents-background.md](do
   commit**.
 - `docs/manual/cli-reference.md` (English) and `cli-reference.ko.md` (Korean) are generated from the
   clap definitions. Do not hand-edit them; regenerate with
-  `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`.
+  `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`.
 
 ## CLI help localization
 

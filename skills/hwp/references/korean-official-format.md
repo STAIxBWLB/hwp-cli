@@ -5,7 +5,7 @@
 **Purpose.** This file is the rule source the `hwp` skill's official-document output is judged
 against: the statutory item-mark sequence, indent and notation rules, and the per-document
 skeletons for 기안문·보고서·계획서·회의록·공고문·보도자료. Phase 2.2 (numbering presets) and
-Phase 2.3 (`hwp lint`) cite this file as their rule source, so every rule here is written to be
+Phase 2.3 (`ahwp lint`) cite this file as their rule source, so every rule here is written to be
 refutable: statute article + 2020 행정업무운영 편람 page where known + a per-section confidence
 tag (D-12).
 
@@ -470,7 +470,7 @@ is used or implied.
   관리에 관한 법률 시행령」 제18조, 2020 행정업무운영 편람 (p.43 for 단모음).
 - **한국공공언어진흥원, 「공문서 작성법 길라잡이」 (2025-01-08)** — secondary source, read
   2026-08-22. Cited in §1 for a recorded conflict on levels 5-6 and in §3 for the `□ ○ - ㆍ`
-  rung order. Its 제2장-제5장 ○/× notation tables are the labelled corpus behind the `hwp lint`
+  rung order. Its 제2장-제5장 ○/× notation tables are the labelled corpus behind the `ahwp lint`
   rule set (GN-3). It ranks below 시행규칙 and the 편람 and
   above field convention; where it conflicts with either, the conflict is recorded, not resolved
   in its favour. Not committed to this repository — cited by 장·절 only.
@@ -488,8 +488,8 @@ Before dispatching an official document:
 - [ ] 수신, 시행번호·시행일자, 공개구분 filled (기안문)
 - [ ] 회의록 carries all 9 statutory elements (§7)
 - [ ] Sections tagged practice above are conventions — check the agency's own convention
-- [ ] `hwp validate` passes
+- [ ] `ahwp validate` passes
 - [ ] Opened once in Hancom Office with no layout breakage (manual — cannot be automated)
 
-Phase 2.3 adds **`hwp lint`**, which automates the mechanical half of this checklist —
+Phase 2.3 adds **`ahwp lint`**, which automates the mechanical half of this checklist —
 until it lands, run the checklist by hand.

@@ -47,7 +47,7 @@ silently choose a semantic key or apply the legacy form fill's normalization/fir
 
 Caption, raw-preserved and rich targets are inventory-only with cause/next-step evidence. Native
 named fields are listed individually as `native_field`, never bindable in this contract; callers
-are directed to `hwp fields` and the existing name-based field workflow. A field name is evidence,
+are directed to `ahwp fields` and the existing name-based field workflow. A field name is evidence,
 not an occurrence address. No caption/raw/native-field mutation is promised by this inventory.
 
 ## Source identity and literal keys

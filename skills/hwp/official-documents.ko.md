@@ -1,6 +1,6 @@
 [한국어](official-documents.ko.md) · [English](official-documents.md)
 
-# hwp-cli로 작성하는 한국 공문서
+# agent-hwp로 작성하는 한국 공문서
 
 이 하위 안내서는 `hwp`로 한국 공문서(공문)를 작성하기 위한 독립 완결 참조입니다:
 마크다운 계약, 여섯 가지 문서 유형별 레시피, 템플릿 슬롯 표, 한국어 별칭 표, 채우기/검증
@@ -57,17 +57,17 @@
 **표 배치.** 마크다운 표는 "글자처럼 취급"이 켜진 상태로 생성되며, 이러면 표가 글자
 하나로 배치되어 쪽 경계에서 나뉘지 못합니다 — 긴 표나 쪽 하단에 걸린 표가 다음 쪽으로
 이어지지 않고 넘칩니다. 수신 측이 쪽 나눔을 요구하는 경우(긴 표를 담는 심의요청서류
-양식) `hwp new --from <md> --table-placement floating`으로 생성하거나, 기존 파일은
-`hwp edit in.hwpx -o out.hwpx --table-placement floating`으로 전환하세요(`--table <n>`은
-표 하나만 바꿉니다). 현재 인라인/부유 수는 `hwp info <파일> --body-stats`로 확인합니다.
+양식) `ahwp new --from <md> --table-placement floating`으로 생성하거나, 기존 파일은
+`ahwp edit in.hwpx -o out.hwpx --table-placement floating`으로 전환하세요(`--table <n>`은
+표 하나만 바꿉니다). 현재 인라인/부유 수는 `ahwp info <파일> --body-stats`로 확인합니다.
 
 ## 2. 문서 유형별 레시피
 
 여섯 유형 모두 `templates/` 아래의 같은 마크다운 골격을 공유합니다(이 파일 옆에 납출됨).
-이 골격에 이르는 경로는 둘입니다: `hwp new --template <슬러그-또는-별칭> -o out.hwpx`는
-골격을 바로 불러오고(전체 별칭 표는 §4), `hwp new --from <골격> --preset <프리셋>` 다음
-`hwp fill`은 슬롯을 하나씩 채웁니다. 아래 레시피는 문서 유형별 참고사항이 필요하므로
-`--from` + `hwp fill` 경로를 씁니다. 기본값으로 충분하면 `--template`이 지름길입니다.
+이 골격에 이르는 경로는 둘입니다: `ahwp new --template <슬러그-또는-별칭> -o out.hwpx`는
+골격을 바로 불러오고(전체 별칭 표는 §4), `ahwp new --from <골격> --preset <프리셋>` 다음
+`ahwp fill`은 슬롯을 하나씩 채웁니다. 아래 레시피는 문서 유형별 참고사항이 필요하므로
+`--from` + `ahwp fill` 경로를 씁니다. 기본값으로 충분하면 `--template`이 지름길입니다.
 
 | 문서 유형 | 오늘의 프리셋 | 템플릿 골격 | 비고 |
 |---|---|---|---|
@@ -93,12 +93,12 @@
   `붙임  … 1부.` 목록 뒤에). 붙임이 하나면 항목 번호를 붙이지 않고, 둘 이상이면 `1.`, `2.`로
   번호를 매깁니다. 규정 참고 문서 §6을 따릅니다.
 - **`--doc-foot`으로 만드는 발신명의.** 가운데 정렬 22pt 볼드 발신명의 줄
-  (예: `예시대학교총장`)은 `hwp new`가 직접 만드는 네이티브 결문 프레임입니다 — HTML
+  (예: `예시대학교총장`)은 `ahwp new`가 직접 만드는 네이티브 결문 프레임입니다 — HTML
   조각을 이어 붙일 필요가 없습니다. 생성 시점에 반복 가능한 `key=value` 프레임 인자로
   넘기세요:
 
   ```bash
-  hwp new --from templates/gian-external.md --preset official \
+  ahwp new --from templates/gian-external.md --preset official \
     --doc-foot "발신명의=예시대학교총장" -o draft.hwpx
   ```
 
@@ -115,12 +115,12 @@
 
 ## 3. 슬롯 표
 
-템플릿별 슬롯 목록입니다. `hwp new --template <슬러그>` 산출물에 `hwp slots`를 실행한
+템플릿별 슬롯 목록입니다. `ahwp new --template <슬러그>` 산출물에 `ahwp slots`를 실행한
 결과를 그대로 옮겼으므로 다시 유도하지 마세요. 슬롯은 본문 마크다운 아니면 템플릿이
-갖춘 네이티브 프레임 안에 있는데, `hwp slots`와 `hwp fill`은 양쪽 모두에 닿기 때문에
+갖춘 네이티브 프레임 안에 있는데, `ahwp slots`와 `ahwp fill`은 양쪽 모두에 닿기 때문에
 아래 목록이 채울 수 있는 자리의 전부입니다.
 
-**템플릿에 없는 슬롯은 오류입니다.** `hwp fill`은 실패-폐쇄로
+**템플릿에 없는 슬롯은 오류입니다.** `ahwp fill`은 실패-폐쇄로
 동작해 `--allow-partial` 없이는 아무것도 게시하지 않으므로, 공유 `--set` 목록을 여러
 템플릿에 재사용하려면 `--allow-partial`이 필요합니다. 실패-폐쇄는 의도한 설계입니다.
 오타 난 슬롯 이름이 조용히 무시되면 빈칸이 그대로 발송되기 때문입니다.
@@ -142,18 +142,18 @@
   (`--set "본문=@body.md"`)는 앵커 문단이 정확히 `{{본문}}`만 담고 있을 때만 블록
   교체가 성립합니다.
 - **그래도 슬롯을 볼드·이탤릭 범위 안에 두지 마세요.** 슬롯 이름 안에 서식이 들어가면
-  이름이 여러 텍스트 런으로 쪼개집니다. `hwp fill`은 치환 전에 조각을 첫 런으로 모으므로
+  이름이 여러 텍스트 런으로 쪼개집니다. `ahwp fill`은 치환 전에 조각을 첫 런으로 모으므로
   채워지기는 하지만, 값이 그 첫 런의 글자 모양을 물려받기 때문에 의도한 모양이 아닌
   경우가 대부분입니다. `{{na*me*}}`가 아니라 `*{{name}}*`으로 쓰세요.
 - **슬롯은 줄 바꿈이나 문단 경계를 넘을 수 없습니다.** 이 둘은 슬롯을 실제로 끝냅니다.
-  한쪽에 `{{`가 있고 다른 쪽에 `}}`가 있는 것은 슬롯이 아니며, `hwp slots`도 `hwp fill`도
+  한쪽에 `{{`가 있고 다른 쪽에 `}}`가 있는 것은 슬롯이 아니며, `ahwp slots`도 `ahwp fill`도
   그렇게 다루지 않습니다.
 
 ## 4. 한국어 별칭 표
 
-템플릿 파일은 영어 슬러그를 쓰고, `hwp new --template`은 슬러그와 아래 한국어 별칭을
-모두 받아들입니다 (D-11). 예를 들면 `hwp new --template 기안문-내부결재 -o draft.hwpx`
-또는 `hwp new --template gian-internal -o draft.hwpx`처럼 사용합니다.
+템플릿 파일은 영어 슬러그를 쓰고, `ahwp new --template`은 슬러그와 아래 한국어 별칭을
+모두 받아들입니다 (D-11). 예를 들면 `ahwp new --template 기안문-내부결재 -o draft.hwpx`
+또는 `ahwp new --template gian-internal -o draft.hwpx`처럼 사용합니다.
 
 템플릿은 세 가지를 함께 담고 있습니다. 본문 마크다운, 그 템플릿이 전제하는 정본 프로필,
 그리고 자기 `{{슬롯}}` 토큰을 기본값으로 갖는 네이티브 두문·결문 프레임입니다. 따라서 한
@@ -182,13 +182,13 @@
 
 ```bash
 # 1. 템플릿 골격으로 문서 생성
-hwp new --from templates/gian-internal.md --preset official -o draft.hwpx
+ahwp new --from templates/gian-internal.md --preset official -o draft.hwpx
 
 # 2. 문서가 실제로 담고 있는 슬롯 나열
-hwp slots draft.hwpx
+ahwp slots draft.hwpx
 
 # 3. 일반 값 채우기와 본문 부분 이어 붙이기
-hwp fill draft.hwpx -o out.hwpx \
+ahwp fill draft.hwpx -o out.hwpx \
   --set "기관명=예시대학교" \
   --set "제목=AI 교육센터 운영계획(안)" \
   --set "본문=@body.md" \
@@ -196,19 +196,19 @@ hwp fill draft.hwpx -o out.hwpx \
   --set "발신명의=AI학과장"
 
 # 4. 파일을 넘기기 전에 검증 (종료 코드 0 필수)
-hwp validate out.hwpx
+ahwp validate out.hwpx
 
 # 선택: 레이아웃을 눈으로 확인하려면 페이지 렌더링 (CJK 폰트 필요)
-hwp render out.hwpx -o page1.png --pages 1 --font-dir fonts/
+ahwp render out.hwpx -o page1.png --pages 1 --font-dir fonts/
 ```
 
 `body.md`는 §1 계약을 따르는 마크다운입니다 (필요하면 HTML 표 블록 포함). 값 안의
 리터럴 `@`는 `@@`로 이스케이프합니다. JSON 파일 하나로 일괄 채우려면
-`hwp fill --data data.json` (`"parts": {...}`는 이어 붙이기, `"tables": [...]`는 행
+`ahwp fill --data data.json` (`"parts": {...}`는 이어 붙이기, `"tables": [...]`는 행
 채우기). 변경은 실패-폐쇄적임을 기억하세요 — `DROP:` 경고는 아무것도 발행되지 않음을
 뜻하고, 일치하지 않는 슬롯은 `--allow-partial`이 없으면 명령 전체를 실패시킵니다.
 
-`hwp slots`와 `hwp fill`은 문서에 무엇이 들어 있는지에 대해 서로 일치합니다. `slots`가
+`ahwp slots`와 `ahwp fill`은 문서에 무엇이 들어 있는지에 대해 서로 일치합니다. `slots`가
 나열하는 이름은 모두 `fill`이 채울 수 있으며, 서식 때문에 쪼개진 이름도 포함됩니다.
 여러 텍스트 런에 나뉜 슬롯은 치환 전에 첫 런으로 모이므로, 값은 그 런의 글자 모양을
 물려받습니다.
@@ -216,8 +216,8 @@ hwp render out.hwpx -o page1.png --pages 1 --font-dir fonts/
 ## 6. MCP
 
 위의 모든 레시피는 `hwp`가 MCP stdio 서버로 실행될 때 MCP 도구와 일대일로 대응됩니다:
-`hwp new` → `hwp_new`, `hwp fill` → `hwp_fill`, `hwp render` → `hwp_render`,
-`hwp validate` → `hwp_validate`, 그리고 `hwp lint` → `hwp_lint`. 서버는 항상 최소
+`ahwp new` → `hwp_new`, `ahwp fill` → `hwp_fill`, `ahwp render` → `hwp_render`,
+`ahwp validate` → `hwp_validate`, 그리고 `ahwp lint` → `hwp_lint`. 서버는 항상 최소
 하나의 `--root`를 지정해 시작해 도구가 샌드박스 작업 공간만 접근하게 하세요. 도구
 상세, 샌드박스 의미, 클라이언트 설정은 SKILL.md의 MCP 절에 있습니다.
 
@@ -226,16 +226,16 @@ hwp render out.hwpx -o page1.png --pages 1 --font-dir fonts/
 `hwp_lint`는 마크다운 파일 `path` 하나만 받고(인라인 텍스트 없음) 서버의 `--root`
 샌드박스를 따릅니다. 반환값은 권고성 hwp-lint-report-v1 findings JSON — finding마다
 `rule_id`/`severity`/`line`/`col`/`message`, 원문 발췌 없음 — 입니다. CLI 쌍은
-`hwp lint <file.md> [--profile gongmun|report] [--json] [--strict]`입니다.
+`ahwp lint <file.md> [--profile gongmun|report] [--json] [--strict]`입니다.
 
-`hwp new --from` 전에 마크다운 골격을 린트하세요. 오류 심각도 구조 finding
+`ahwp new --from` 전에 마크다운 골격을 린트하세요. 오류 심각도 구조 finding
 (`struct-item-mark`, `struct-roman-heading`)을 먼저 고치세요 — `--strict`에서는 이들이
 명령을 실패시킵니다. 표기법 경고는 수동으로 적용하는 권고로 다루세요. 린트는 파일을
 다시 쓰지 않습니다.
 
 ## 7. 한컴 오피스 최종 확인
 
-자체 검증 (`hwp validate`, `hwp render`)은 회귀를 잡아내지만, 최종 판정은 **한컴
+자체 검증 (`ahwp validate`, `ahwp render`)은 회귀를 잡아내지만, 최종 판정은 **한컴
 오피스가 파일을 여는가** — 손상, 변조, 복구 대화 상자 없이 — 그리고 보여주는 내용이
 의도와 일치하는가입니다. 문서가 도구 고리를 벗어날 때는 출력을 한컴 오피스에서 열어
 확인한 뒤 전달하세요.

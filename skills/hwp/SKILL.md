@@ -1,50 +1,50 @@
 ---
 name: hwp
-description: Read, create, edit, convert, render and validate Hancom HWP 5.0 / HWPX documents with the hwp CLI or its MCP stdio server. Use whenever a task touches .hwp or .hwpx files — extracting text, searching, filling templates, editing content, converting to docx/pdf/html/md/json/odt/txt/csv, or rendering pages to images. Also use for Korean official documents (공문) — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — their markdown contract, templates and 표기법 (notation rules) are covered by the official-documents sub-guide.
+description: Read, create, edit, convert, render and validate Hancom HWP 5.0 / HWPX documents with the ahwp CLI or its MCP stdio server. Use whenever a task touches .hwp or .hwpx files — extracting text, searching, filling templates, editing content, converting to docx/pdf/html/md/json/odt/txt/csv, or rendering pages to images. Also use for Korean official documents (공문) — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — their markdown contract, templates and 표기법 (notation rules) are covered by the official-documents sub-guide.
 ---
 
 [한국어](SKILL.ko.md) · [English](SKILL.md)
 
-# hwp — HWP/HWPX document toolkit
+# ahwp — HWP/HWPX document toolkit
 
-`hwp` is a single-binary toolkit for Hancom HWP documents. It reads and writes the binary
+`ahwp` is a single-binary toolkit for Hancom HWP documents. It reads and writes the binary
 HWP 5.0 format and the XML-based HWPX format, and exports to docx, pdf, html, markdown, json,
 odt, txt and csv. No Hancom Office installation is required.
 
 English is canonical; `SKILL.ko.md` is the full Korean mirror and both are always exported
 together.
 
-Install: `brew install staixbwlb/hwp/hwp`, or
+Install: `brew install staixbwlb/hwp/ahwp`, or
 `curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh`.
-`hwp skill export [-o DIR] [--install claude-code|codex|amazon-quick]` materializes this
+`ahwp skill export [-o DIR] [--install claude-code|codex|amazon-quick]` materializes this
 skill from the binary. Amazon Quick Desktop profiles can be selected with
 `--quick-profile ID_OR_ABSOLUTE_PATH`.
 
 ## Command quick reference
 
-Full flag reference: `hwp {command} --help` (generated docs: docs/manual/cli-reference.md).
+Full flag reference: `ahwp {command} --help` (generated docs: docs/manual/cli-reference.md).
 Output formats are inferred from the output extension unless `--to`/`--format` is given.
 In the usage lines below, single-brace tokens such as `{file}` and `{output}` are placeholders
 to replace with your own values. Only the doubled form `{{name}}` is literal HWPX template-slot
 syntax (used by `fill`, `slots` and the template tools).
 
-- `hwp info {file} [--json]` — format, version, properties, stream list.
-- `hwp cat {file} [--format plain|markdown|json|html|csv]` — extract text. Useful flags:
+- `ahwp info {file} [--json]` — format, version, properties, stream list.
+- `ahwp cat {file} [--format plain|markdown|json|html|csv]` — extract text. Useful flags:
   `--preview` (PrvText only, no body parse), `--with-header-footer`, `--with-hidden`
   (hidden comments), `--with-segments` (markdown + source coordinates as a one-line JSON
   envelope). `--format json` exports the full IR (tables, images, formatting). For a supported
   password-protected HWP5/HWPX file, prefer `--password-stdin`; `--password {value}` is also
   available when process-argument visibility is acceptable.
-- `hwp grep {pattern} {file} [--ignore-case]` — paragraph substring search over body, table
+- `ahwp grep {pattern} {file} [--ignore-case]` — paragraph substring search over body, table
   cells and text boxes. grep convention: exit code 1 when nothing matches.
-- `hwp convert {inputs...} -o {output}` — format conversion (`--to hwp|hwpx|md|json|html|pdf|
+- `ahwp convert {inputs...} -o {output}` — format conversion (`--to hwp|hwpx|md|json|html|pdf|
   odt|txt|csv|docx`). `-` reads stdin / writes stdout (stdout for text formats only). Multiple
   inputs require `--out-dir {dir}`. `--strict` fails without publishing when unpreservable
   (opaque) data is found. PDF output delegates to the render path and needs CJK fonts:
   `--font-dir {dir}` (repeatable; default `HWP_FONT_DIR` or `fonts/`). Markdown export flags:
   `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json). Protected inputs
   accept the same `--password` / `--password-stdin` pair as `cat`.
-- `hwp merge {inputs...} -o {output}` — combine two or more documents into one, one Section per
+- `ahwp merge {inputs...} -o {output}` — combine two or more documents into one, one Section per
   input in argument order. The writer comes from the output extension (`.hwp`/`.hwpx`); standard
   input `-` is not accepted. `--strict` fails without publishing when unpreservable (opaque) data
   is found; `--loss-report {file.json}` writes the typed `hwp-preservation-report-v1` ledger even
@@ -55,14 +55,14 @@ syntax (used by `fill`, `slots` and the template tools).
   missing targets to another input's image; the first reference namespace stays unchanged
   during grafting, including its declared missing targets.
   Removed images are reported as `BinaryAssetRemoved`; `--strict` refuses their publication.
-- `hwp split {input} --out-dir {dir}` — divide one document into fragments, one per Section by
+- `ahwp split {input} --out-dir {dir}` — divide one document into fragments, one per Section by
   default (named `{stem}-NNN.{lowercased ext}`). `--pages "N"|"N-M"` (repeatable) splits on page
   ranges instead; those boundaries come from the layout cache Hancom saved, so they are an
   estimate that may not match Hancom's own pagination. `--from` with `heading:TEXT`,
   `bookmark:NAME` or `at:SECTION.PARAGRAPH` (0-based), plus optional `--to`, `--end-exclusive` and
   `--source-sha256 HEX`, instead extracts ONE typed range: top-level body paragraphs of one section (a table is taken
   whole), with the section setup and every binary the range uses. A heading must equal the
-  paragraph's own text as `hwp cat` prints it (tabs, line breaks and non-breaking spaces count),
+  paragraph's own text as `ahwp cat` prints it (tabs, line breaks and non-breaking spaces count),
   so cell text is not an anchor, and an anchor matching twice is refused. Nothing
   is written on a refusal. `--range-report FILE` publishes `hwp-range-extraction-v1` (source
   hash, source-to-output addresses, kept, kept-unverified, excluded and dropped-by-format
@@ -71,7 +71,7 @@ syntax (used by `fill`, `slots` and the template tools).
   anchors by kind and address, never by their text.
   `--strict` and `--loss-report` behave as
   in `merge`.
-- `hwp new -o {out.hwpx|out.hwp}` — create a document. `--from {file.md|file.json}` imports
+- `ahwp new -o {out.hwpx|out.hwp}` — create a document. `--from {file.md|file.json}` imports
   markdown or a JSON IR (empty document when omitted); `--set-meta key=value` (title/author/
   subject/keywords, repeatable); `--preset official|report|plan|notice|minutes|press`
   (Korean official-document profiles, markdown input only); `gian` and other documented
@@ -79,7 +79,7 @@ syntax (used by `fill`, `slots` and the template tools).
   prints a one-time deprecation note. Per-side overrides are
   `--margin-top`, `--margin-bottom`, `--margin-left` and `--margin-right` in millimetres.
   `--strict` fails when markdown import drops content.
-- `hwp edit {input} -o {output} [flags...]` — edit an existing document; images, formatting
+- `ahwp edit {input} -o {output} [flags...]` — edit an existing document; images, formatting
   and unparsed records are preserved. String flags (all repeatable): `--replace "find=>repl"`,
   `--set-cell "t:r:c=value"` (0-based; a value split by blank lines writes one paragraph per
   block), `--set-field "name=value"`, `--set-meta "k=v"`,
@@ -104,7 +104,7 @@ syntax (used by `fill`, `slots` and the template tools).
   and page setup `--set-page "key:value"`
   (width/height/margin-*/orientation). `--verify` re-reads the output; `--allow-partial`
   relaxes the all-or-nothing rule (see Safety rules).
-- `hwp fill {template.hwpx} -o {output}` — fidelity-preserving `{{name}}` template fill
+- `ahwp fill {template.hwpx} -o {output}` — fidelity-preserving `{{name}}` template fill
   (package preserved). `--set "name=value"` (repeatable); `--set "name=@part.md"` splices a
   part file (markdown + HTML table blocks) into the anchor paragraph — part-based composition
   for large documents (`@@` escapes a literal `@`; a name holding `=` goes through `--data`);
@@ -113,57 +113,57 @@ syntax (used by `fill`, `slots` and the template tools).
   `--allow-partial` publishes the matched subset (nothing matched: the input unchanged, counts
   0). A slot name is any text without braces or control characters; `{{ name }}` padding
   and requested names are trimmed, and values are inserted literally. List slots first with
-  `hwp slots`.
+  `ahwp slots`.
   `--forms` also fills Korean form fields from the same values (hwpx): the cell next to or below
   a label cell, inline `라벨: 값`, `라벨(  )` blanks, `□옵션` checkboxes, `(라벨:  )` blanks;
   keys match with spaces, colons and parentheses ignored, and `--json` adds `unmatched`.
   A non-empty value cell and the text after `라벨:` are overwritten (each overwrite is warned);
   cells holding a field, picture or table are never written, and values are inserted literally.
-- `hwp compose {spec.json|yaml} -o {output}` — deterministic composition from DocumentSpec
+- `ahwp compose {spec.json|yaml} -o {output}` — deterministic composition from DocumentSpec
   v1/v2. `--dry-run` validates without writing; `--report` prints the run report as JSON.
-- `hwp template {template} --data {data} -o {output}` — typed native HWP/HWPX generation from
+- `ahwp template {template} --data {data} -o {output}` — typed native HWP/HWPX generation from
   TemplateSpec/Data v1. `--dry-run` runs expansion + writer + validation without publishing;
   `--report` prints the preservation/expansion report as JSON.
-- `hwp render {input} -o {output.png|svg|pdf}` — render pages. `--pages "1"|"1-3"|"all"`,
+- `ahwp render {input} -o {output.png|svg|pdf}` — render pages. `--pages "1"|"1-3"|"all"`,
   `--dpi 36..=600` (default 96), `--format png|svg|pdf`, `--font-dir {dir}` (repeatable).
   PNG/SVG write one file per page; PDF writes a single multi-page file. Needs CJK fonts.
   Protected inputs accept `--password` or `--password-stdin`.
-- `hwp fields {file} [--json]` / `hwp bookmarks {file} [--json]` / `hwp slots {file} [--json]`
-  — list fields (name/kind/value), bookmarks (bokm), `{{name}}` template slots. `hwp slots
+- `ahwp fields {file} [--json]` / `ahwp bookmarks {file} [--json]` / `ahwp slots {file} [--json]`
+  — list fields (name/kind/value), bookmarks (bokm), `{{name}}` template slots. `ahwp slots
   --forms` adds Korean form fields (label cells, inline `라벨: 값`) with key, label, source,
   confidence, occurrences and required.
-- `hwp styles {file} [--format text|json]` — list named styles: id, name, kind (`null` when the
+- `ahwp styles {file} [--format text|json]` — list named styles: id, name, kind (`null` when the
   document omits it or gives an unsupported value), resolved char/para attrs and `used_by`, the `para`
-  segment ids `hwp cat --with-segments --segments v2` publishes. `--format json` is `hwp-styles-v1`.
-- `hwp validate {file} [--json]` — structural validation (mimetype, required entries, XML
+  segment ids `ahwp cat --with-segments --segments v2` publishes. `--format json` is `hwp-styles-v1`.
+- `ahwp validate {file} [--json]` — structural validation (mimetype, required entries, XML
   parsing); exit code 0 when valid.
-- `hwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
-  low-level record and stream diagnostics for a single file. Reach for it only when `hwp info`
-  and `hwp validate` do not explain a defect; it prints format internals, not document content.
-- `hwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` — ten
+- `ahwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
+  low-level record and stream diagnostics for a single file. Reach for it only when `ahwp info`
+  and `ahwp validate` do not explain a defect; it prints format internals, not document content.
+- `ahwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` — ten
   official-document notation and structure rules (`-` reads stdin as markdown). Advisory: it
   always exits 0 unless `--strict` finds an error-severity finding. `--json` prints the
   `hwp-lint-report-v1` contract (`rule_id`/`severity`/`line`/`col`/`message`).
-- `hwp certify {input} --policy {policy.json|yaml} --report {dir}` — certify package,
+- `ahwp certify {input} --policy {policy.json|yaml} --report {dir}` — certify package,
   semantics, native render and independent import under a versioned policy; publishes the
   report directory atomically.
-- `hwp diff {input} --ref {hancom.png} [--page N] [--dpi N] [--tolerance N] [-o diff.png]` —
+- `ahwp diff {input} --ref {hancom.png} [--page N] [--dpi N] [--tolerance N] [-o diff.png]` —
   compare a render against a Hancom reference PNG (offset, pixel difference).
-- `hwp compare {a} {b} [--format text|json]` — report paragraph and structural differences
-  between two documents, leaving both untouched. This is not `hwp diff`, which compares a render
+- `ahwp compare {a} {b} [--format text|json]` — report paragraph and structural differences
+  between two documents, leaving both untouched. This is not `ahwp diff`, which compares a render
   against a Hancom reference PNG. `--format json` prints the `hwp-compare-report-v1` contract.
   Its exit codes follow diff(1) — see Exit codes below.
 
 ## Official documents
 
-`hwp` ships the Korean official-document (공문) surface natively. Six profiles are available,
+`ahwp` ships the Korean official-document (공문) surface natively. Six profiles are available,
 one per document type: `official` (기안문), `report` (보고서), `plan` (계획서), `notice`
 (공고문), `minutes` (회의록) and `press` (보도자료). The canonical official profile accepts
 `gian` and `gongmun` as semantic compatibility aliases; aliases select the same profile, not a
 raw-byte identity promise, and the `gian` alias still works but prints a one-time deprecation
 note. Korean aliases are also accepted. Each type is authored as a markdown
-skeleton, created with `hwp new --from ... --preset official` (or its matching profile), and
-filled with `hwp fill`.
+skeleton, created with `ahwp new --from ... --preset official` (or its matching profile), and
+filled with `ahwp fill`.
 
 개조식 is a writing style, not a profile: it is the noun-form sentence ending used inside
 보고서·계획서 and 내부결재 bodies. Choose the profile by document type and apply the style in the
@@ -211,7 +211,7 @@ The analyze, edit-one-section and guard workflows below were run verbatim agains
 ### Original-form workflow
 
 When a native HWP/HWPX form is supplied, edit that form; use Markdown when reauthoring is
-intended. Before starting, check `hwp --version` against the
+intended. Before starting, check `ahwp --version` against the
 [versioned capability evidence](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/original-form-capabilities-v1.json).
 The complete #417-#420 workflow first ships in v1.5.0; v1.4.0 and earlier releases do not support
 `document.original_form` certification.
@@ -241,7 +241,7 @@ export typed layout/report artifacts through the CLI. MCP `hwp_certify` still pu
 policy/render evidence.
 
 If this installation contains only `SKILL.md` (Quick/web), use the absolute recipe link above,
-or run `hwp skill export -o ./hwp-guide` to materialize the bundled references and capability JSON.
+or run `ahwp skill export -o ./hwp-guide` to materialize the bundled references and capability JSON.
 Full exports also provide the [local recipe](references/editing-recipes.md#original-form-workflow).
 
 ### Analyze a document
@@ -250,10 +250,10 @@ One "what is in this document" pass: package inventory, then text with source co
 then the programmatic handles (fields and template slots):
 
 ```bash
-hwp info doc.hwpx --json
-hwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
-hwp fields doc.hwpx --json
-hwp slots doc.hwpx --json
+ahwp info doc.hwpx --json
+ahwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
+ahwp fields doc.hwpx --json
+ahwp slots doc.hwpx --json
 ```
 
 `--with-segments` prints a one-line JSON envelope `{"markdown": ..., "segments": [...]}` where
@@ -268,10 +268,10 @@ Segments locate the paragraph; the edit itself anchors on the visible text of th
 there is no raw `sec` index contract. Work on a copy until the result passes validation:
 
 ```bash
-hwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
-hwp edit doc.hwpx -o edited.hwpx --insert-para "anchor text=>new paragraph" --verify
-hwp edit edited.hwpx -o reverted.hwpx --delete-para "new paragraph" --verify
-hwp validate edited.hwpx
+ahwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
+ahwp edit doc.hwpx -o edited.hwpx --insert-para "anchor text=>new paragraph" --verify
+ahwp edit edited.hwpx -o reverted.hwpx --delete-para "new paragraph" --verify
+ahwp validate edited.hwpx
 ```
 
 Read the `(section, para)` coordinate of the segment whose markdown range contains the target
@@ -285,9 +285,9 @@ all-or-nothing by default and re-read the output under `--verify`.
 Before/after structural-drift check: structural validation plus renderer page counts.
 
 ```bash
-hwp validate edited.hwpx
-hwp render doc.hwpx -o before.png --report before.render.json
-hwp render edited.hwpx -o after.png --report after.render.json
+ahwp validate edited.hwpx
+ahwp render doc.hwpx -o before.png --report before.render.json
+ahwp render edited.hwpx -o after.png --report after.render.json
 ```
 
 Compare `total_pages` in the two render reports (the report also carries `font_coverage` and
@@ -304,8 +304,8 @@ page-count change as a reason to inspect the rendered pages, not to weaken valid
 List the current styles and paragraph addresses before editing:
 
 ```bash
-hwp styles doc.hwpx --format json
-hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
+ahwp styles doc.hwpx --format json
+ahwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
 ```
 
 Select a style with `kind: "paragraph"`. In this example, `body` is an existing primary style
@@ -323,16 +323,16 @@ Save this array as `restyle.json`:
 ```
 
 ```bash
-hwp edit doc.hwpx -o styled.hwpx --ops restyle.json
+ahwp edit doc.hwpx -o styled.hwpx --ops restyle.json
 ```
 
-The same array can be piped to `hwp edit doc.hwpx -o styled.hwpx --ops -`; named-style
+The same array can be piped to `ahwp edit doc.hwpx -o styled.hwpx --ops -`; named-style
 operations have no dedicated flags. MCP executes named-style arrays in create/update/apply
 order, before the other edit arrays. Use the ordered `--ops` array for a different interleaving.
 
 To update the new style's users together, save
 `[{"op":"update_style","style":"Body restyled","size":"14pt"}]` as `update-style.json`, then run
-`hwp edit styled.hwpx -o updated.hwpx --ops update-style.json`. Style selectors accept an exact
+`ahwp edit styled.hwpx -o updated.hwpx --ops update-style.json`. Style selectors accept an exact
 primary name or an integer ID. `update_style` allocates changed definitions with copy-on-write;
 other styles and direct formatting keep their own shapes. `apply_style` preserves direct
 character and paragraph formatting by default; `clear_direct: true` explicitly resets both to
@@ -351,11 +351,11 @@ Equivalent `hwp_edit` MCP arguments for the two calls are:
 Repeated identical apply/update requests succeed without a semantic change. Repeating creation
 refuses the duplicate name atomically. Stale IDs also refuse before publication. If an affected
 user is inside raw-preserved records or XML that cannot be regenerated, the edit refuses with
-locations; use `hwp styles` to select another style or repair the source first.
+locations; use `ahwp styles` to select another style or repair the source first.
 
 ```bash
-hwp validate updated.hwpx
-hwp certify updated.hwpx --policy policy.json --report ./style-certification
+ahwp validate updated.hwpx
+ahwp certify updated.hwpx --policy policy.json --report ./style-certification
 ```
 
 Supply a policy appropriate for the document and a report directory that does not exist.
@@ -367,7 +367,7 @@ format constraints and refusal diagnostics still apply.
 
 ### Insert a component
 
-Take the paragraph address from `hwp cat doc.hwpx --format json --with-segments --segments v2`.
+Take the paragraph address from `ahwp cat doc.hwpx --format json --with-segments --segments v2`.
 Save the blocks (DocumentSpec v1: paragraph, table, image, field, equation, page or column
 break) as `component.json` and run it with `--report`:
 
@@ -378,7 +378,7 @@ break) as `component.json` and run it with `--report`:
 ```
 
 ```bash
-hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
+ahwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
 ```
 
 - Style names resolve against the document first; a missing one is created from `styles`
@@ -398,16 +398,16 @@ hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.js
 Before binding supplied forms, read the [canonical binding recipe](https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/ai-integrations.md#review-and-apply-native-form-bindings) for the closed plan schema, copy maps and refusal boundaries.
 
 ```bash
-hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
-hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify --dry-run
-hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
-hwp validate bound.hwpx
+ahwp slots source.hwpx --json --forms --occurrences > local-catalog.json
+ahwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify --dry-run
+ahwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
+ahwp validate bound.hwpx
 ```
 
 - Build and review one exclusive `apply_form_bindings` request in `OPS.json` from that exact source catalogue. Select explicit nonoverlapping occurrence IDs and per-target budgets; do not infer ownership from repeated labels.
 - Keep the catalogue and optional exact preview local. Use the mandatory content-free receipt; do not combine this operation with `--report` or `--allow-partial`.
 - Inspect the dry-run preview and copy maps before applying. Replay revisions against the same original bytes; discover and review again after source edits or conversion.
-- Use `hwp fields` for inventoried native fields. Do not bypass raw/rich/caption refusals with broad text replacement.
+- Use `ahwp fields` for inventoried native fields. Do not bypass raw/rich/caption refusals with broad text replacement.
 - For MCP, use `hwp_slots` with `forms`/`occurrences` true and `hwp_edit` with one `apply_form_bindings` object, following the same recipe and advertised schemas. Do not send a `verify` property.
 - Collect render/font and person-run Hancom evidence separately under #419; the semantic receipt does not establish it.
 
@@ -416,7 +416,7 @@ hwp validate bound.hwpx
 Use `set_break_before` (`value` is `on` or `off`) to start one body paragraph on a new page and
 `set_indent_level` (`level` 0 to 7, `step`, optional `hanging`, such as `5mm`) to replace
 leading spaces with real indentation. Both take a paragraph `address` from
-`hwp cat doc.hwpx --format json --with-segments --segments v2`:
+`ahwp cat doc.hwpx --format json --with-segments --segments v2`:
 
 ```json
 [{"op":"set_break_before","address":{"at":{"section":0,"paragraph":5}},"value":"on"},
@@ -439,7 +439,7 @@ leading spaces with real indentation. Both take a paragraph `address` from
 
 ## MCP server
 
-`hwp mcp` speaks synchronous JSON-RPC 2.0 over stdio (line-delimited; stdout carries the
+`ahwp mcp` speaks synchronous JSON-RPC 2.0 over stdio (line-delimited; stdout carries the
 protocol, logs go to stderr). Protocol version is negotiated at `initialize`: a client
 `protocolVersion` of `2025-06-18`, `2025-03-26` or `2024-11-05` is echoed back, anything else
 gets the latest supported version.
@@ -450,7 +450,7 @@ Always start it with at least one sandbox root:
 {
   "mcpServers": {
     "hwp": {
-      "command": "hwp",
+      "command": "ahwp",
       "args": ["mcp", "--root", "/path/to/workspace", "--font-dir", "/path/to/fonts"]
     }
   }
@@ -501,7 +501,7 @@ Tools (23):
 | `hwp_styles` | `path` | List named styles with resolved attributes and `used_by` segment ids, as an `hwp-styles-v1` listing |
 | `hwp_slots` | `path` | List `{{name}}` placeholders |
 | `hwp_render` | `path` | Render pages (optional per-call `password`; `format`: png/svg/pdf, `pages` range); single-page PNG returns base64, larger results write files via `output_path` |
-| `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations (mirrors every `hwp edit` flag, incl. `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*`) |
+| `hwp_edit` | `input`, `output` | Strict atomic editing through typed JSON operations (mirrors every `ahwp edit` flag, incl. `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*`) |
 | `hwp_convert` | `input`, `output` | Format conversion (optional per-call `password`; `strict` defaults to true over MCP) |
 | `hwp_new` | `output` | Create a document from markdown or JSON IR plus metadata, official profile and `margin_top`/`margin_bottom`/`margin_left`/`margin_right` overrides |
 | `hwp_compose` | `output`, `spec`/`spec_path` | Compose DocumentSpec v1/v2 through the same path as the CLI |
@@ -519,13 +519,13 @@ Tools (23):
 
 ## HTTP mode for containers
 
-`hwp serve` speaks the same protocol as `hwp mcp`, over HTTP instead of stdio, so the same
+`ahwp serve` speaks the same protocol as `ahwp mcp`, over HTTP instead of stdio, so the same
 23 tools are reachable from a container. It is meant to sit behind a trusted edge that has already
 terminated TLS, authenticated the caller and capped the request body — not to face the internet
 directly.
 
 ```bash
-hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/nanum
+ahwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/nanum
 ```
 
 | Route | Behavior |
@@ -535,11 +535,11 @@ hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/
 | `GET /healthz` | `200` once the listener is bound; container platforms probe this |
 | `POST\|GET /files/{name}` | Only with `--files`. Names must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`; 64 MiB per file, 256 MiB per workspace |
 
-`--root` is mandatory here, unlike `hwp mcp` where omitting it only warns: a remote deployment must
+`--root` is mandatory here, unlike `ahwp mcp` where omitting it only warns: a remote deployment must
 never run with unrestricted filesystem access. An inbound `Mcp-Session-Id` is accepted and ignored,
 because session affinity belongs to the platform in front.
 
-`hwp serve` stops on SIGTERM and SIGINT, finishing the request in flight first, so a platform that
+`ahwp serve` stops on SIGTERM and SIGINT, finishing the request in flight first, so a platform that
 stops idle containers that way can stop it even when it runs as PID 1 — where the kernel delivers
 no signal that still has its default disposition. A second signal exits immediately. If you pin a
 release older than this behavior, run it under an init such as `tini` or with `docker run --init`.
@@ -547,7 +547,7 @@ release older than this behavior, run it under an init such as `tini` or with `d
 ## Safety rules (must follow)
 
 1. **Validate after every write.** After `new` / `edit` / `fill` / `compose` / `template` /
-   `convert` to hwp/hwpx (or the MCP equivalents), run `hwp validate {output}` (or
+   `convert` to hwp/hwpx (or the MCP equivalents), run `ahwp validate {output}` (or
    `hwp_validate`) and check exit code 0 before handing the file on.
 2. **Mutations are fail-closed.** Authoring commands (`new`, `edit`, `fill`) treat `DROP:`
    warnings — content that cannot be preserved in the output — as hard failures and do not

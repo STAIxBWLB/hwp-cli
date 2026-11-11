@@ -29,10 +29,10 @@ bookmark (hwp5), minimal (hwpx).
 
 | Check | What it does | What it catches |
 |---|---|---|
-| Generation | `hwp new --from md` succeeds | Crashes generating a document from markdown |
+| Generation | `ahwp new --from md` succeeds | Crashes generating a document from markdown |
 | Structure | hwpx uses `validate` (mimetype, entries, XML); hwp5 uses CFB/olefile | Structural corruption |
 | External parser | hwpx via zip + ElementTree; hwp5 via olefile streams | External tool compatibility |
-| Render | `hwp render` does not crash | Render pipeline errors |
+| Render | `ahwp render` does not crash | Render pipeline errors |
 | Strict conversion | `convert --strict` (fails on opaque loss) | DROP and non-preservation |
 | Text preservation | The original markdown text appears in `cat` of the generated file (≥90%) | Text loss |
 | Cross-conversion | hwp5 → hwpx (or the reverse), then the structure, render and strict check of the result (four columns of the matrix) | Conversion pipeline |

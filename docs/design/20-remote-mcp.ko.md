@@ -2,7 +2,7 @@
 
 # Remote MCP transport 설계
 
-> **상태:** 설계 전용. 현재 릴리스는 stdio 기반 `hwp mcp`만 구현한다. HTTP listener,
+> **상태:** 설계 전용. 현재 릴리스는 stdio 기반 `ahwp mcp`만 구현한다. HTTP listener,
 > OAuth resource server, hosted workspace, artifact service는 포함하지 않는다.
 
 이 문서는 로컬 프로세스를 실행할 수 없는 Web client를 위한 향후 Remote MCP service를 정의한다.
@@ -13,7 +13,7 @@
 
 ### 1.1 범위
 
-- `hwp mcp` stdio를 기본 local transport로 유지하고 20개 tool 동작의 호환성을 보존.
+- `ahwp mcp` stdio를 기본 local transport로 유지하고 20개 tool 동작의 호환성을 보존.
 - hosted deployment용 Streamable HTTP mode를 명시적 별도 설정으로 추가.
 - 두 adapter가 하나의 transport-independent JSON-RPC/tool dispatch core를 공유.
 - 모든 remote request 인증 및 tenant, principal, session별 workspace 격리.
@@ -239,7 +239,7 @@ maintained protocol/HTTP primitive를 우선한다. no tokio/no SDK 유지는 un
    deletion verification, backup 정책, cost control 정의.
 
 **Deployment tier.** [Doc 22](22-remote-mcp-deployment.ko.md)는 위 1번, 3번, 4번 항목을 무엇으로
-만들고 어디에 올리는지 규정한다. 추출한 protocol core 위의 공유 `hwp serve` HTTP adapter, 이
+만들고 어디에 올리는지 규정한다. 추출한 protocol core 위의 공유 `ahwp serve` HTTP adapter, 이
 문서 §8이 요구하는 dependency 결정, 그리고 두 hosting tier(Cloudflare Workers + Containers,
 Amazon Quick connector 뒤의 AgentCore)가 그 내용이다. doc 22는 이 문서에 대한 amendment 두 건을
 기록한다. §3.1의 "library-visible module"은 두 adapter가 공유하는 binary 내부 module로 바뀌고,
@@ -265,6 +265,6 @@ Remote MCP 구현은 다음을 모두 입증해야 통과한다.
 - tenant-isolated test environment에서 Quick Web이 initialize, 의도한 20개 remote-safe tool list,
   upload-to-download edit workflow를 완료.
 
-어느 기준이든 미검증이면 release gate 실패다. HTTP가 unrestricted `hwp mcp`를 단순 shell-out하거나,
+어느 기준이든 미검증이면 release gate 실패다. HTTP가 unrestricted `ahwp mcp`를 단순 shell-out하거나,
 local path schema를 remote에서 writable하게 유지하거나, public deployment에서 인증이 optional이면
 출시하지 않는다.

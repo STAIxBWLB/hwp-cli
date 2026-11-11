@@ -272,7 +272,7 @@ markdown→hwpx 전체 흐름: `new`/`convert` 커맨드가 `from_markdown`으�
 
 ### 7.3 3중 대조
 
-세 관점을 교차: (1) **우리 리더**(cat 텍스트/fields JSON), (2) **우리 렌더**(PNG/PDF), (3) **한글 export**(기준 PNG/hwpx). `hwp diff <in> --ref <한글 PNG> --dpi <n>`이 우리 렌더를 한글 기준 PNG와 픽셀·프로파일 비교: `ink_ratio`(잉크 적용률=완전성), `dx/dy`(위치 오프셋), `bad_pixel_pct`(픽셀 차이율=글리프/AA), `MAE`. 폰트를 한글과 동일하게(`HWP_FONT_DIR`) 고정해야 같은 줄바꿈. `golden` 테스트(`HWP_GOLDEN=1`)가 `*.ref.png` 자동 대조. `validate` 커맨드는 exit code 계약(mimetype·필수 엔트리·XML 파싱, `valid:false`면 exit 1).
+세 관점을 교차: (1) **우리 리더**(cat 텍스트/fields JSON), (2) **우리 렌더**(PNG/PDF), (3) **한글 export**(기준 PNG/hwpx). `ahwp diff <in> --ref <한글 PNG> --dpi <n>`이 우리 렌더를 한글 기준 PNG와 픽셀·프로파일 비교: `ink_ratio`(잉크 적용률=완전성), `dx/dy`(위치 오프셋), `bad_pixel_pct`(픽셀 차이율=글리프/AA), `MAE`. 폰트를 한글과 동일하게(`HWP_FONT_DIR`) 고정해야 같은 줄바꿈. `golden` 테스트(`HWP_GOLDEN=1`)가 `*.ref.png` 자동 대조. `validate` 커맨드는 exit code 계약(mimetype·필수 엔트리·XML 파싱, `valid:false`면 exit 1).
 
 ---
 

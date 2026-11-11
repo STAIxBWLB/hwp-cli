@@ -1,50 +1,50 @@
 ---
 name: hwp
-description: hwp CLI 또는 MCP stdio 서버로 한컴 HWP 5.0 / HWPX 문서를 읽고, 만들고, 편집하고, 변환하고, 렌더링하고, 검증합니다. .hwp 또는 .hwpx 파일을 다루는 모든 작업 — 텍스트 추출, 검색, 템플릿 채우기, 내용 편집, docx/pdf/html/md/json/odt/txt/csv 변환, 페이지 이미지 렌더링 — 에 사용하세요. 한국 공문서(공문) — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — 작업에도 사용하세요. 마크다운 계약, 템플릿, 표기법은 official-documents 하위 안내서가 다룹니다.
+description: ahwp CLI 또는 MCP stdio 서버로 한컴 HWP 5.0 / HWPX 문서를 읽고, 만들고, 편집하고, 변환하고, 렌더링하고, 검증합니다. .hwp 또는 .hwpx 파일을 다루는 모든 작업 — 텍스트 추출, 검색, 템플릿 채우기, 내용 편집, docx/pdf/html/md/json/odt/txt/csv 변환, 페이지 이미지 렌더링 — 에 사용하세요. 한국 공문서(공문) — 기안문, 보고서, 계획서, 회의록, 공고문, 보도자료 — 작업에도 사용하세요. 마크다운 계약, 템플릿, 표기법은 official-documents 하위 안내서가 다룹니다.
 ---
 
 [한국어](SKILL.ko.md) · [English](SKILL.md)
 
-# hwp — HWP/HWPX 문서 도구 모음
+# ahwp — HWP/HWPX 문서 도구 모음
 
-`hwp`는 한컴 HWP 문서를 위한 단일 바이너리 도구입니다. 바이너리 HWP 5.0 형식과 XML 기반
+`ahwp`는 한컴 HWP 문서를 위한 단일 바이너리 도구입니다. 바이너리 HWP 5.0 형식과 XML 기반
 HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 납출합니다.
 한컴 오피스 설치가 필요 없습니다.
 
 영어판이 원본이며, `SKILL.ko.md`(이 파일)가 완전한 한국어 미러입니다. 두 파일은 항상 함께
 납출됩니다.
 
-설치: `brew install staixbwlb/hwp/hwp`, 또는
+설치: `brew install staixbwlb/hwp/ahwp`, 또는
 `curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh`.
-`hwp skill export [-o DIR] [--install claude-code|codex|amazon-quick]`으로 이 스킬을
+`ahwp skill export [-o DIR] [--install claude-code|codex|amazon-quick]`으로 이 스킬을
 바이너리에서 꺼낼 수 있습니다. Amazon Quick Desktop 프로필은
 `--quick-profile ID_OR_ABSOLUTE_PATH`로 선택합니다.
 
 ## 명령어 빠른 참조
 
-전체 플래그 참조: `hwp {command} --help` (생성 문서: docs/manual/cli-reference.md).
+전체 플래그 참조: `ahwp {command} --help` (생성 문서: docs/manual/cli-reference.md).
 출력 형식은 `--to`/`--format`이 없으면 출력 확장자로 추론합니다.
 아래 사용법에서 `{file}`, `{output}` 같은 단일 중괄호 토큰은 실제 값으로 바꿔야 할
 자리 표시자입니다. 이중 중괄호 `{{name}}`만 리터럴 HWPX 템플릿 슬롯 문법입니다
 (`fill`, `slots`, 템플릿 도구에서 사용).
 
-- `hwp info {file} [--json]` — 형식, 버전, 속성, 스트림 목록.
-- `hwp cat {file} [--format plain|markdown|json|html|csv]` — 텍스트 추출. 유용한 플래그:
+- `ahwp info {file} [--json]` — 형식, 버전, 속성, 스트림 목록.
+- `ahwp cat {file} [--format plain|markdown|json|html|csv]` — 텍스트 추출. 유용한 플래그:
   `--preview` (PrvText만, 본문 파싱 없음), `--with-header-footer`, `--with-hidden`
   (숨은 주석), `--with-segments` (마크다운 + 소스 좌표를 한 줄 JSON 봉투로).
   `--format json`은 전체 IR(표, 이미지, 서식)을 납출합니다. 지원 암호 보호 HWP5/HWPX는
   `--password-stdin` 사용을 우선하고, 프로세스 인수 노출을 감수할 때만 `--password {value}`를
   사용하세요.
-- `hwp grep {pattern} {file} [--ignore-case]` — 본문, 표 셀, 텍스트 상자를 대상으로 한
+- `ahwp grep {pattern} {file} [--ignore-case]` — 본문, 표 셀, 텍스트 상자를 대상으로 한
   문단 부분 문자열 검색. grep 관례: 일치 항목이 없으면 종료 코드 1.
-- `hwp convert {inputs...} -o {output}` — 형식 변환 (`--to hwp|hwpx|md|json|html|pdf|
+- `ahwp convert {inputs...} -o {output}` — 형식 변환 (`--to hwp|hwpx|md|json|html|pdf|
   odt|txt|csv|docx`). `-`는 stdin 읽기 / stdout 쓰기 (stdout은 텍스트 형식만). 입력이
   여러 개면 `--out-dir {dir}` 필요. `--strict`는 보존 불가능한(불투명) 데이터가 있으면
   발행하지 않고 실패합니다. PDF 출력은 렌더 경로에 위임되며 CJK 폰트가 필요합니다:
   `--font-dir {dir}` (반복 가능; 기본값 `HWP_FONT_DIR` 또는 `fonts/`). 마크다운 납출
   플래그: `--media-dir`, `--with-header-footer`, `--with-hidden`, `--embed-bin` (json).
   보호 입력은 `cat`과 같은 `--password` / `--password-stdin` 쌍을 받습니다.
-- `hwp merge {inputs...} -o {output}` — 문서 두 개 이상을 인자 순서대로 하나로 합칩니다.
+- `ahwp merge {inputs...} -o {output}` — 문서 두 개 이상을 인자 순서대로 하나로 합칩니다.
   입력 하나가 Section 하나가 되고, writer는 출력 확장자(`.hwp`/`.hwpx`)로 정해지며,
   표준 입력 `-`는 받지 않습니다. `--strict`는 보존 불가(opaque) 데이터가 있으면 발행하지
   않고 실패하며, `--loss-report {file.json}`은 손실이 없어도
@@ -54,27 +54,27 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   후속 HWPX의 그림 항목 참조는 각 원본에서 해석합니다. ID가 같아도 누락된 대상을 다른
   입력의 이미지로 연결하지 않으며, 병합 중 첫 참조 규칙과 선언된 누락 대상을 유지합니다.
   제거된 이미지는 `BinaryAssetRemoved`로 보고하고 `--strict`는 발행을 거부합니다.
-- `hwp split {input} --out-dir {dir}` — 문서 하나를 조각으로 나눕니다. 기본은 Section
+- `ahwp split {input} --out-dir {dir}` — 문서 하나를 조각으로 나눕니다. 기본은 Section
   하나당 조각 하나이며 이름은 `{stem}-NNN.{소문자 확장자}`입니다. `--pages "N"|"N-M"`
   (반복 가능)을 주면 쪽 범위로 나누는데, 그 경계는 한컴이 저장한 레이아웃 캐시에서 얻은
   추정값이라 한컴 자체 페이지 나눔과 다를 수 있습니다. `--from`에 `heading:텍스트`,
   `bookmark:이름` 또는 `at:구역.문단`(0부터)을 주고 선택적 `--to`, `--end-exclusive`,
   `--source-sha256 HEX`를 더하면 형식 있는 범위 하나를 대신 추출합니다. 범위는 한 구역의
   최상위 본문 문단이며(표는 통째로 포함) 구역 설정과 범위가 쓰는 모든 바이너리가 함께
-  들어갑니다. 제목은 `hwp cat`이 출력하는 문단 자신의 텍스트(탭·줄바꿈·고정 공백 포함)와 같아야 하므로 셀 텍스트는 지점이 될 수 없고, 두 곳과
+  들어갑니다. 제목은 `ahwp cat`이 출력하는 문단 자신의 텍스트(탭·줄바꿈·고정 공백 포함)와 같아야 하므로 셀 텍스트는 지점이 될 수 없고, 두 곳과
   일치하는 지점은 거부됩니다. 거부되면 아무것도 쓰지 않습니다. `--range-report 파일`은
   `hwp-range-extraction-v1`(원본 해시, 원본→출력 주소, 유지·미검증 유지·제외·형식이 버린
   바이너리)을 조각과 함께 게시합니다. 바이너리는 조각이 쓰지 않음이 증명될 때에만 제외되며,
   도구가 읽을 수 없는 참조가 있으면 모두 유지되고 그 자리가 보고됩니다. 보고서는 지점을
   텍스트가 아니라 종류와 주소로만 가리킵니다. `--strict`와 `--loss-report`는
   `merge`와 같습니다.
-- `hwp new -o {out.hwpx|out.hwp}` — 문서 생성. `--from {file.md|file.json}`은 마크다운
+- `ahwp new -o {out.hwpx|out.hwp}` — 문서 생성. `--from {file.md|file.json}`은 마크다운
   또는 JSON IR을 가져옵니다 (생략 시 빈 문서); `--set-meta key=value` (title/author/
   subject/keywords, 반복 가능); `--preset official|report|plan|notice|minutes|press`
   (한국 공문서 프로필, 마크다운 입력 전용); `gian`과 문서화된 호환 별칭은 표준 프로필로
   정규화합니다 — `gian` 별칭은 계속 동작하지만 한 번의 지원 중단 안내를 출력합니다. 변별 여백은 mm 단위 `--margin-top`, `--margin-bottom`, `--margin-left`,
   `--margin-right`로 지정합니다. `--strict`는 마크다운 가져오기가 내용을 유실하면 실패합니다.
-- `hwp edit {input} -o {output} [flags...]` — 기존 문서 편집; 이미지, 서식, 미파싱
+- `ahwp edit {input} -o {output} [flags...]` — 기존 문서 편집; 이미지, 서식, 미파싱
   레코드는 보존합니다. 문자열 플래그 (모두 반복 가능): `--replace "find=>repl"`,
   `--set-cell "t:r:c=value"` (0-기반; 빈 줄로 나뉜 값은 블록마다 문단 하나가 됩니다),
   `--set-field "name=value"`, `--set-meta "k=v"`,
@@ -98,52 +98,52 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
   적용하며, 한 번의 실행에서 `--set-cell` 뒤에 돕니다)와 페이지 설정 `--set-page "key:value"`
   (width/height/margin-*/orientation). `--verify`는 출력을 다시 읽습니다;
   `--allow-partial`은 전부 아니면 전무 규칙을 완화합니다 (안전 규칙 참조).
-- `hwp fill {template.hwpx} -o {output}` — 충실도 보존 `{{name}}` 템플릿 채우기
+- `ahwp fill {template.hwpx} -o {output}` — 충실도 보존 `{{name}}` 템플릿 채우기
   (패키지 보존). `--set "name=value"` (반복 가능); `--set "name=@part.md"`는 부분 파일
   (마크다운 + HTML 표 블록)을 앵커 문단에 이어 붙입니다 — 큰 문서를 위한 부분 기반
   조립 (`@@`는 리터럴 `@` 이스케이프, `=`가 든 이름은 `--data`로); `--data {file.json}` 일괄 채우기
   (`"parts": {...}` 이어 붙이기, `"tables": [...]` 행 채우기); `--json`은 요약 출력;
   `--allow-partial`은 일치한 부분만 발행 (하나도 없으면 입력 그대로, 건수 0). 슬롯 이름은
   중괄호·제어문자를 뺀 임의 텍스트이며, `{{ name }}`의 공백과 요청한 이름의 앞뒤 공백은
-  제거하고, 값은 그대로 삽입합니다. 먼저 `hwp slots`로 슬롯을 확인하세요.
+  제거하고, 값은 그대로 삽입합니다. 먼저 `ahwp slots`로 슬롯을 확인하세요.
   `--forms`는 같은 값으로 한국 공문서 양식 필드도 채웁니다 (hwpx): 레이블 셀 옆·아래 칸,
   본문의 `라벨: 값`, `라벨(  )` 빈칸, `□항목` 확인란, `(라벨:  )` 빈칸. 키는 공백·쌍점·괄호를
   무시하고 비교하며, `--json`에 `unmatched`가 추가됩니다. 비어 있지 않은 값 칸과 `라벨:` 뒤
   텍스트는 덮어쓰고(덮어쓸 때마다 경고), 누름틀·그림·표가 든 칸은 쓰지 않으며, 값은 그대로
   넣습니다.
-- `hwp compose {spec.json|yaml} -o {output}` — DocumentSpec v1/v2로부터의 결정적 조립.
+- `ahwp compose {spec.json|yaml} -o {output}` — DocumentSpec v1/v2로부터의 결정적 조립.
   `--dry-run`은 쓰기 없이 검증만; `--report`는 실행 보고서를 JSON으로 출력.
-- `hwp template {template} --data {data} -o {output}` — TemplateSpec/Data v1로부터의
+- `ahwp template {template} --data {data} -o {output}` — TemplateSpec/Data v1로부터의
   타입화된 네이티브 HWP/HWPX 생성. `--dry-run`은 발행 없이 확장 + 라이터 + 검증을
   실행; `--report`는 보존/확장 보고서를 JSON으로 출력.
-- `hwp render {input} -o {output.png|svg|pdf}` — 페이지 렌더링. `--pages "1"|"1-3"|"all"`,
+- `ahwp render {input} -o {output.png|svg|pdf}` — 페이지 렌더링. `--pages "1"|"1-3"|"all"`,
   `--dpi 36..=600` (기본 96), `--format png|svg|pdf`, `--font-dir {dir}` (반복 가능).
   PNG/SVG는 페이지당 파일 하나; PDF는 단일 다중 페이지 파일. CJK 폰트 필요.
   보호 입력은 `--password` 또는 `--password-stdin`을 받습니다.
-- `hwp fields {file} [--json]` / `hwp bookmarks {file} [--json]` / `hwp slots {file} [--json]`
-  — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열. `hwp slots --forms`는
+- `ahwp fields {file} [--json]` / `ahwp bookmarks {file} [--json]` / `ahwp slots {file} [--json]`
+  — 필드 (이름/종류/값), 책갈피 (bokm), `{{name}}` 템플릿 슬롯 나열. `ahwp slots --forms`는
   한국 공문서 양식 필드(레이블 셀, 본문의 `라벨: 값`)를 키·레이블·출처·신뢰도·등장 횟수·필수
   여부와 함께 추가.
-- `hwp styles {file} [--format text|json]` — 이름 있는 스타일 목록: id, 이름, 종류(문서에 없거나 지원하지 않는 값이면
-  `null`), 해석된 글자/문단 속성, `used_by`(`hwp cat --with-segments --segments v2`가 내는
+- `ahwp styles {file} [--format text|json]` — 이름 있는 스타일 목록: id, 이름, 종류(문서에 없거나 지원하지 않는 값이면
+  `null`), 해석된 글자/문단 속성, `used_by`(`ahwp cat --with-segments --segments v2`가 내는
   `para` 세그먼트 id). `--format json`은 `hwp-styles-v1`.
-- `hwp validate {file} [--json]` — 구조 검증 (mimetype, 필수 엔트리, XML 파싱);
+- `ahwp validate {file} [--json]` — 구조 검증 (mimetype, 필수 엔트리, XML 파싱);
   유효하면 종료 코드 0.
-- `hwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
-  파일 하나의 저수준 레코드·스트림 진단. `hwp info`와 `hwp validate`로 결함이 설명되지
+- `ahwp dump {file} [--stream DocInfo|BodyText/Section0|Contents/header.xml] [--raw] [--json]`:
+  파일 하나의 저수준 레코드·스트림 진단. `ahwp info`와 `ahwp validate`로 결함이 설명되지
   않을 때만 사용합니다. 문서 내용이 아니라 포맷 내부 구조를 출력합니다.
-- `hwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` —
+- `ahwp lint {file.md|file.hwp|file.hwpx} [--json] [--strict] [--profile gongmun|report]` —
   공문서 표기·구조 규칙 열 가지를 검사합니다 (`-`는 표준 입력을 markdown으로 읽습니다).
   기본은 조언용이라 항상 종료 코드 0이며, `--strict`가 error 등급 지적을 찾았을 때만
   1로 끝납니다. `--json`은 `hwp-lint-report-v1` 계약
   (`rule_id`/`severity`/`line`/`col`/`message`)을 출력합니다.
-- `hwp certify {input} --policy {policy.json|yaml} --report {dir}` — 버전 관리된 정책에
+- `ahwp certify {input} --policy {policy.json|yaml} --report {dir}` — 버전 관리된 정책에
   따라 패키지, 의미, 네이티브 렌더, 독립 임포트를 인증; 보고서 디렉터리를 원자적으로
   발행.
-- `hwp diff {input} --ref {hancom.png} [--page N] [--dpi N] [--tolerance N] [-o diff.png]` —
+- `ahwp diff {input} --ref {hancom.png} [--page N] [--dpi N] [--tolerance N] [-o diff.png]` —
   렌더를 한컴 참조 PNG와 비교 (오프셋, 픽셀 차이).
-- `hwp compare {a} {b} [--format text|json]` — 문서 두 개의 문단·구조 차이를 보고하며 두
-  입력 모두 수정하지 않습니다. 렌더를 한컴 참조 PNG와 비교하는 `hwp diff`와는 다른
+- `ahwp compare {a} {b} [--format text|json]` — 문서 두 개의 문단·구조 차이를 보고하며 두
+  입력 모두 수정하지 않습니다. 렌더를 한컴 참조 PNG와 비교하는 `ahwp diff`와는 다른
   명령입니다. `--format json`은 `hwp-compare-report-v1` 계약을 출력합니다. 종료 코드는
   diff(1) 관례를 따르므로 아래 안전 규칙의 종료 코드 항목을 확인하세요.
 
@@ -155,7 +155,7 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
 `gongmun`을 의미상 호환 별칭으로 받습니다. 별칭은 같은 프로필을 선택할 뿐 raw-byte
 동일성을 약속하지 않으며, `gian` 별칭은 계속 동작하지만 한 번의 지원 중단 안내를
 출력합니다. 한국어 별칭도 사용할 수 있습니다. 각 유형을 마크다운 골격으로
-작성하고, `hwp new --from ... --preset official`(또는 맞는 프로필)로 생성한 뒤 `hwp fill`로
+작성하고, `ahwp new --from ... --preset official`(또는 맞는 프로필)로 생성한 뒤 `ahwp fill`로
 채웁니다.
 
 개조식은 프로필이 아니라 문체입니다. 보고서·계획서와 내부결재 문서의 본문에서 사용하는
@@ -204,7 +204,7 @@ retired `hwpx` 워크플로우의 정직한 한계를 포함한 이중 언어 �
 ### 원본 양식 워크플로
 
 네이티브 HWP/HWPX 양식이 제공되면 그 양식을 편집한다. Markdown은 재작성하려는 경우에
-사용한다. 시작 전에 `hwp --version`을
+사용한다. 시작 전에 `ahwp --version`을
 [버전별 기능 증거](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/original-form-capabilities-v1.json)와
 대조한다. #417-#420 전체 워크플로는 v1.5.0부터 포함된다. v1.4.0 이하 릴리스는
 `document.original_form` 인증을 지원하지 않는다.
@@ -234,7 +234,7 @@ MCP `insert_para`에는 인라인 `style`/`char`가 없다. 삽입한 제목 문
 정책·렌더 증거를 계속 발행한다.
 
 Quick/web처럼 `SKILL.md`만 설치된 경우 위 절대 URL을 읽거나
-`hwp skill export -o ./hwp-guide`로 번들 참고 문서와 기능 JSON을 풀어낸다. 전체 export에는
+`ahwp skill export -o ./hwp-guide`로 번들 참고 문서와 기능 JSON을 풀어낸다. 전체 export에는
 [로컬 절차](references/editing-recipes.ko.md#원본-양식-워크플로)도 포함된다.
 
 ### 문서 분석 (analyze)
@@ -243,10 +243,10 @@ Quick/web처럼 `SKILL.md`만 설치된 경우 위 절대 URL을 읽거나
 그다음 프로그램적 핸들(필드와 템플릿 슬롯) 순서입니다:
 
 ```bash
-hwp info doc.hwpx --json
-hwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
-hwp fields doc.hwpx --json
-hwp slots doc.hwpx --json
+ahwp info doc.hwpx --json
+ahwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
+ahwp fields doc.hwpx --json
+ahwp slots doc.hwpx --json
 ```
 
 `--with-segments`는 한 줄 JSON 봉투 `{"markdown": ..., "segments": [...]}`를 출력하며 각
@@ -261,10 +261,10 @@ markdown 문자열 기준 문자 오프셋입니다. 문서에 필드나 `{{slot
 작업하십시오:
 
 ```bash
-hwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
-hwp edit doc.hwpx -o edited.hwpx --insert-para "anchor text=>new paragraph" --verify
-hwp edit edited.hwpx -o reverted.hwpx --delete-para "new paragraph" --verify
-hwp validate edited.hwpx
+ahwp cat doc.hwpx --format markdown --with-segments > doc.segments.json
+ahwp edit doc.hwpx -o edited.hwpx --insert-para "anchor text=>new paragraph" --verify
+ahwp edit edited.hwpx -o reverted.hwpx --delete-para "new paragraph" --verify
+ahwp validate edited.hwpx
 ```
 
 대상 텍스트가 들어 있는 markdown 범위의 세그먼트에서 `(section, para)` 좌표를 읽고, 그
@@ -277,9 +277,9 @@ anchor 문단 뒤에 삽입하고(`--insert-para-before`는 앞에), `--delete-p
 편집 전후 구조 드리프트 검사: 구조 검증과 렌더러 페이지 수 비교입니다.
 
 ```bash
-hwp validate edited.hwpx
-hwp render doc.hwpx -o before.png --report before.render.json
-hwp render edited.hwpx -o after.png --report after.render.json
+ahwp validate edited.hwpx
+ahwp render doc.hwpx -o before.png --report before.render.json
+ahwp render edited.hwpx -o after.png --report after.render.json
 ```
 
 두 렌더 보고서의 `total_pages`를 비교하십시오 (보고서에는 `font_coverage`와
@@ -296,8 +296,8 @@ hwp render edited.hwpx -o after.png --report after.render.json
 편집 전에 현재 스타일과 문단 주소를 확인한다.
 
 ```bash
-hwp styles doc.hwpx --format json
-hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
+ahwp styles doc.hwpx --format json
+ahwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
 ```
 
 `kind: "paragraph"`인 스타일을 선택한다. 아래 예시의 `body`는 기존 기본 이름이고,
@@ -316,17 +316,17 @@ hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
 ```
 
 ```bash
-hwp edit doc.hwpx -o styled.hwpx --ops restyle.json
+ahwp edit doc.hwpx -o styled.hwpx --ops restyle.json
 ```
 
-같은 배열을 `hwp edit doc.hwpx -o styled.hwpx --ops -`의 stdin으로 전달할 수도 있다.
+같은 배열을 `ahwp edit doc.hwpx -o styled.hwpx --ops -`의 stdin으로 전달할 수도 있다.
 이름 있는 스타일 연산에는 별도 플래그가 없다. MCP는 다른 편집 배열보다 먼저
 create/update/apply 순서로 스타일 배열을 실행한다. 다른 순서가 필요하면 순서가 있는
 `--ops` 배열을 사용한다.
 
 새 스타일의 사용 문단을 함께 바꾸려면
 `[{"op":"update_style","style":"Body restyled","size":"14pt"}]`를 `update-style.json`으로
-저장하고 `hwp edit styled.hwpx -o updated.hwpx --ops update-style.json`을 실행한다.
+저장하고 `ahwp edit styled.hwpx -o updated.hwpx --ops update-style.json`을 실행한다.
 스타일 선택자는 정확한 기본 이름 또는 정수 ID를 받는다. `update_style`은 바뀐 정의를
 copy-on-write로 추가하므로 다른 스타일과 직접 서식은 자체 모양을 유지한다.
 `apply_style`은 기본적으로 직접 지정한 글자·문단 서식을 보존한다. `clear_direct: true`를
@@ -345,12 +345,12 @@ copy-on-write로 추가하므로 다른 스타일과 직접 서식은 자체 모
 
 동일한 적용·갱신 요청을 반복하면 의미 변경 없이 성공한다. 생성을 반복하면 중복 이름으로
 원자적으로 거부한다. 오래된 ID도 발행 전에 거부한다. 영향을 받는 사용 문단이 재생성할 수
-없는 원본 레코드나 XML 안에 있으면 위치를 알리고 거부한다. `hwp styles`로 다른 스타일을
+없는 원본 레코드나 XML 안에 있으면 위치를 알리고 거부한다. `ahwp styles`로 다른 스타일을
 선택하거나 원본을 복구한 뒤 다시 시도한다.
 
 ```bash
-hwp validate updated.hwpx
-hwp certify updated.hwpx --policy policy.json --report ./style-certification
+ahwp validate updated.hwpx
+ahwp certify updated.hwpx --policy policy.json --report ./style-certification
 ```
 
 문서에 맞는 정책 파일과 아직 없는 리포트 디렉터리를 지정한다. 현재 `certify`에는
@@ -361,7 +361,7 @@ hwp certify updated.hwpx --policy policy.json --report ./style-certification
 
 ### 구성 요소 삽입
 
-문단 주소는 `hwp cat doc.hwpx --format json --with-segments --segments v2`에서 얻는다.
+문단 주소는 `ahwp cat doc.hwpx --format json --with-segments --segments v2`에서 얻는다.
 블록(DocumentSpec v1: 문단, 표, 이미지, 필드, 수식, 쪽·단 나누기)을 `component.json`으로
 저장하고 `--report`와 함께 실행한다.
 
@@ -372,7 +372,7 @@ hwp certify updated.hwpx --policy policy.json --report ./style-certification
 ```
 
 ```bash
-hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
+ahwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
 ```
 
 - 스타일 이름은 문서에서 먼저 찾고, 없으면 `styles`로 만들거나(`missing_style: "create"`,
@@ -392,16 +392,16 @@ hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.js
 제공된 양식을 바인딩하기 전에 [정본 바인딩 절차](https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/ai-integrations.ko.md#네이티브-양식-바인딩-검토와-적용)에서 닫힌 계획 스키마, 복제 주소 맵, 거부 범위를 읽는다.
 
 ```bash
-hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
-hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify --dry-run
-hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
-hwp validate bound.hwpx
+ahwp slots source.hwpx --json --forms --occurrences > local-catalog.json
+ahwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify --dry-run
+ahwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
+ahwp validate bound.hwpx
 ```
 
 - 해당 원본 목록으로 `OPS.json`에 단독 `apply_form_bindings` 요청을 만들고 검토한다. 겹치지 않는 occurrence ID와 대상별 허용 범위를 명시하며 반복 라벨로 값의 소유권을 추측하지 않는다.
 - 목록과 선택적 정확한 preview는 로컬에 둔다. 필수 content-free receipt를 사용하고 `--report`나 `--allow-partial`과 함께 쓰지 않는다.
 - 실제 적용 전에 dry-run preview와 복제 맵을 확인한다. 수정 값은 같은 원본 바이트에 재적용하며 원본 수정이나 형식 변환 뒤에는 discovery와 검토를 다시 한다.
-- 목록에 나온 native field는 `hwp fields`로 다룬다. raw/rich/caption 거부를 광범위 텍스트 치환으로 우회하지 않는다.
+- 목록에 나온 native field는 `ahwp fields`로 다룬다. raw/rich/caption 거부를 광범위 텍스트 치환으로 우회하지 않는다.
 - MCP에서는 같은 절차와 advertised schema에 따라 `forms`/`occurrences`가 true인 `hwp_slots`와 단일 `apply_form_bindings` 객체를 담은 `hwp_edit`를 쓴다. `verify` 속성을 보내지 않는다.
 - 렌더·폰트와 사람이 수행한 한컴 증거는 #419에서 별도로 수집한다. 의미 영수증만으로 해당 결과를 주장하지 않는다.
 
@@ -409,7 +409,7 @@ hwp validate bound.hwpx
 
 본문 문단 하나를 새 쪽에서 시작하려면 `set_break_before`(`value`는 `on` 또는 `off`)를, 앞쪽
 공백을 실제 들여쓰기로 바꾸려면 `set_indent_level`(`level` 0~7, `step`, 선택 `hanging`, 예
-`5mm`)을 쓴다. 둘 다 `hwp cat doc.hwpx --format json --with-segments --segments v2`의 문단
+`5mm`)을 쓴다. 둘 다 `ahwp cat doc.hwpx --format json --with-segments --segments v2`의 문단
 `address`를 받는다.
 
 ```json
@@ -433,7 +433,7 @@ hwp validate bound.hwpx
 
 ## MCP 서버
 
-`hwp mcp`는 stdio 위에서 동기 JSON-RPC 2.0을 사용합니다 (줄 구분; stdout이 프로토콜을
+`ahwp mcp`는 stdio 위에서 동기 JSON-RPC 2.0을 사용합니다 (줄 구분; stdout이 프로토콜을
 전달하고 로그는 stderr로). 프로토콜 버전은 `initialize`에서 협상됩니다: 클라이언트의
 `protocolVersion`이 `2025-06-18`, `2025-03-26`, `2024-11-05` 중 하나면 그대로 에코하고,
 그 외에는 지원하는 최신 버전을 돌려줍니다.
@@ -444,7 +444,7 @@ hwp validate bound.hwpx
 {
   "mcpServers": {
     "hwp": {
-      "command": "hwp",
+      "command": "ahwp",
       "args": ["mcp", "--root", "/path/to/workspace", "--font-dir", "/path/to/fonts"]
     }
   }
@@ -496,7 +496,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 | `hwp_styles` | `path` | 이름 있는 스타일 목록 (해석된 속성, `used_by` 세그먼트 id), `hwp-styles-v1` 형식 |
 | `hwp_slots` | `path` | `{{name}}` 자리 표시자 나열 |
 | `hwp_render` | `path` | 페이지 렌더링 (선택적 호출별 `password`; `format`: png/svg/pdf, `pages` 범위); 단일 페이지 PNG는 base64 반환, 더 큰 결과는 `output_path`로 파일 기록 |
-| `hwp_edit` | `input`, `output` | 타입화된 JSON 연산을 통한 엄격한 원자적 편집 (모든 `hwp edit` 플래그 미러, `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*` 포함) |
+| `hwp_edit` | `input`, `output` | 타입화된 JSON 연산을 통한 엄격한 원자적 편집 (모든 `ahwp edit` 플래그 미러, `add_table`, `clone_table`, `set_para`, `set_page`, `delete_*` 포함) |
 | `hwp_convert` | `input`, `output` | 형식 변환 (선택적 호출별 `password`; MCP에서는 `strict` 기본값 true) |
 | `hwp_new` | `output` | 마크다운 또는 JSON IR과 메타데이터, 공문서 프로필, `margin_top`/`margin_bottom`/`margin_left`/`margin_right` override로 문서 생성 |
 | `hwp_compose` | `output`, `spec`/`spec_path` | CLI와 동일한 경로로 DocumentSpec v1/v2 조립 |
@@ -514,12 +514,12 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 
 ## 컨테이너용 HTTP 모드
 
-`hwp serve`는 `hwp mcp`와 같은 프로토콜을 stdio 대신 HTTP로 제공하므로, 같은 23종 도구를
+`ahwp serve`는 `ahwp mcp`와 같은 프로토콜을 stdio 대신 HTTP로 제공하므로, 같은 23종 도구를
 컨테이너에서 사용할 수 있습니다. 인터넷에 직접 노출하는 용도가 아니라, TLS 종단·인증·본문
 크기 제한을 이미 수행한 신뢰된 edge 뒤에 두는 것을 전제로 합니다.
 
 ```bash
-hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/nanum
+ahwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/nanum
 ```
 
 | 경로 | 동작 |
@@ -529,11 +529,11 @@ hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/
 | `GET /healthz` | listener가 bind되면 `200`. container platform이 확인하는 지점입니다 |
 | `POST\|GET /files/{name}` | `--files`로만 활성화. 이름은 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`를 만족해야 하며, 파일당 64 MiB·workspace당 256 MiB |
 
-`--root`는 여기서 필수입니다. 생략하면 경고만 하는 `hwp mcp`와 달리, 원격 배포는 파일 접근이
+`--root`는 여기서 필수입니다. 생략하면 경고만 하는 `ahwp mcp`와 달리, 원격 배포는 파일 접근이
 제한되지 않은 상태로 실행되어서는 안 되기 때문입니다. 들어오는 `Mcp-Session-Id`는 받아들이되
 무시합니다. session affinity는 앞단 platform의 책임입니다.
 
-`hwp serve`는 SIGTERM과 SIGINT를 받으면 처리 중인 요청을 끝낸 뒤 종료합니다. 커널은 기본 처리
+`ahwp serve`는 SIGTERM과 SIGINT를 받으면 처리 중인 요청을 끝낸 뒤 종료합니다. 커널은 기본 처리
 방식이 그대로인 시그널을 PID 1에 전달하지 않지만, 이 서버는 핸들러를 등록하므로 PID 1로 실행해도
 유휴 컨테이너를 그 방식으로 정지시키는 플랫폼이 정상적으로 정지시킬 수 있습니다. 두 번째 시그널은
 즉시 종료로 처리합니다. 이 동작이 없는 이전 릴리스를 고정해 쓰는 경우에는 `tini` 같은 init 아래에서,
@@ -542,7 +542,7 @@ hwp serve --addr 0.0.0.0:8080 --root /work --font-dir /usr/share/fonts/truetype/
 ## 안전 규칙 (반드시 준수)
 
 1. **쓰기 후에는 항상 검증하세요.** `new` / `edit` / `fill` / `compose` / `template` /
-   `convert`로 hwp/hwpx를 만든 후 (또는 MCP 해당 도구 후) `hwp validate {output}`
+   `convert`로 hwp/hwpx를 만든 후 (또는 MCP 해당 도구 후) `ahwp validate {output}`
    (또는 `hwp_validate`)을 실행해 종료 코드 0을 확인한 뒤 파일을 넘기세요.
 2. **변경은 실패-폐쇄적입니다.** 작성 명령 (`new`, `edit`, `fill`)은 `DROP:` 경고 —
    출력에 보존할 수 없는 내용 — 를 하드 실패로 처리하고 발행하지 않습니다. 실패한

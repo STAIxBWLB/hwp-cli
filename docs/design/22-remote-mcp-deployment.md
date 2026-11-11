@@ -3,7 +3,7 @@
 # Remote MCP deployment design
 
 > **Status:** design only. No HTTP adapter, container image, Worker, or cloud runtime exists yet.
-> The shipped product is still `hwp mcp` over stdio.
+> The shipped product is still `ahwp mcp` over stdio.
 
 [Doc 20](20-remote-mcp.md) defines *what* a Remote MCP service must guarantee: endpoint contract,
 authentication, isolation, limits, and release gates. This document defines *how* it gets built
@@ -19,7 +19,7 @@ accompanies it is the activation record.
 
 | Question | Decision |
 |---|---|
-| Where does document work run? | A native `hwp serve` HTTP mode inside a container, not a bridge that shells out to `hwp mcp`, and not wasm |
+| Where does document work run? | A native `ahwp serve` HTTP mode inside a container, not a bridge that shells out to `ahwp mcp`, and not wasm |
 | HTTP dependency (doc 20 §8) | Synchronous `httparse` head parsing with a close-per-request server, keeping the workspace's no-tokio, no-SDK stance |
 | Where does the service run? | Two tiers sharing one binary: **Tier A** Cloudflare Workers + Containers, **Tier B** AWS Bedrock AgentCore behind an Amazon Quick Suite connector |
 | Who issues tokens? | Tier A: the Worker itself, via `@cloudflare/workers-oauth-provider`, with Google as upstream IdP. Tier B: Amazon Cognito, with Google as a federated IdP |
@@ -67,7 +67,7 @@ begins, as required by doc 20 §3.1:
 | `commands/mcp/mod.rs` | Protocol core: `handle_request`, protocol negotiation, tool registry, schemas, dispatch |
 | `commands/mcp/authority.rs` | `FileAuthority` trait plus `LocalFsContext`, the existing canonical-root and font-directory checks |
 | `commands/mcp/stdio.rs` | The existing newline-framed loop, including the zeroizing read buffer and password scrubbing |
-| `commands/mcp/http.rs` | The `hwp serve` adapter |
+| `commands/mcp/http.rs` | The `ahwp serve` adapter |
 
 **Amendment to doc 20 §3.1.** Doc 20 asks for a "library-visible module". The protocol core
 reaches into 16 binary-private command modules across roughly 70 call sites, so making it
@@ -80,7 +80,7 @@ happens when a consumer outside the binary actually exists.
 The stdio adapter keeps its present behavior byte for byte. The existing stdio process test,
 which asserts exactly 20 tools, is the regression gate for the whole split.
 
-### 3.2 `hwp serve` contract
+### 3.2 `ahwp serve` contract
 
 A new subcommand runs the protocol core over HTTP. It is a private hop: in both tiers a trusted
 edge terminates TLS, authenticates the caller, validates origin, and caps the request body before
@@ -200,7 +200,7 @@ Worker (TypeScript)
 Durable Object HwpSession, named tenant-principal plus session
    |  Container class: idle sleep, maximum-lifetime alarm, deadlines, no egress
    v
-microVM: hwp serve --addr 0.0.0.0:8080 --root /work --files --font-dir <fonts>
+microVM: ahwp serve --addr 0.0.0.0:8080 --root /work --files --font-dir <fonts>
 ```
 
 ### 5.1 Signup, login, and token issuance
@@ -311,7 +311,7 @@ Amazon Cognito user pool: self-service signup, Google federation, JWT issuance
 AgentCore Runtime: validates the JWT, injects and routes Mcp-Session-Id,
    gives each session its own microVM
    v
-arm64 container: hwp serve --addr 0.0.0.0:8000 --root /work --font-dir <fonts>
+arm64 container: ahwp serve --addr 0.0.0.0:8000 --root /work --font-dir <fonts>
 ```
 
 ### 6.1 Platform contract
@@ -347,7 +347,7 @@ administrative act, whereas Tier A's self-service clients need it.
 - Verification before committing to a region: whether AgentCore and Quick MCP integration are both
   available in the intended region, and the runtime's current idle and maximum session lifetimes
   against the values in doc 20 §7.
-- A go-live gate on request framing (#318), **passed on 2026-09-26**. Since v0.20.1 `hwp serve`
+- A go-live gate on request framing (#318), **passed on 2026-09-26**. Since v0.20.1 `ahwp serve`
   frames request bodies with `Content-Length` only and answers `411` to any `Transfer-Encoding`, and
   AWS does not document how `InvokeAgentRuntime` frames the body it forwards to `/mcp`. The check
   ran against real runtimes on platforms V1 and V2: `initialize` and `tools/list` through
@@ -384,13 +384,13 @@ Satisfied by the first implementation, with the point that enforces each:
 | stdio stays the default and exposes the same tools as the HTTP adapter | The existing stdio process test gates the core split |
 | Authentication precedes tool execution | Tier A: the OAuth provider and the token middleware both reject before the handler. Tier B: the runtime's JWT authorizer rejects before the container |
 | Sessions bind to a principal and cross-principal access fails closed | Tier A: the object name derives from the principal, so a foreign session identifier yields an uninformative `404`. Tier B: the platform scopes sessions to the authorized caller |
-| Request, upload, workspace, and deadline limits with deterministic cleanup | Body rejection before parsing at the edge and again in `hwp serve`; file and workspace caps in the adapter; deadlines and termination at the edge |
+| Request, upload, workspace, and deadline limits with deterministic cleanup | Body rejection before parsing at the edge and again in `ahwp serve`; file and workspace caps in the adapter; deadlines and termination at the edge |
 | Tenants cannot read or overwrite each other's data | One microVM per session, no shared filesystem, plus the existing root containment inside the process |
 | Termination leaves no published partial output and no reusable authority | The workspace dies with the microVM and the session identifier is marked dead |
 | No tokens, document content, or paths in logs | The audit schema stores metadata only; tokens are stored hashed |
-| The backend cannot be reached by bypassing the edge | Neither runtime exposes the container publicly, and `hwp serve` additionally refuses to run without a root |
+| The backend cannot be reached by bypassing the edge | Neither runtime exposes the container publicly, and `ahwp serve` additionally refuses to run without a root |
 | Document workers have no network egress | Egress disabled on the container in Tier A; the runtime's network configuration in Tier B |
-| The service is not an unrestricted `hwp mcp` behind a proxy | There is no shell-out. A native adapter shares the protocol core and runs confined in a single-session microVM |
+| The service is not an unrestricted `ahwp mcp` behind a proxy | There is no shell-out. A native adapter shares the protocol core and runs confined in a single-session microVM |
 
 Deferred, and listed here so no reader mistakes the first implementation for a complete one: the
 full artifact model of §3.2; SSE and resumable streams; per-request cancellation, since a deadline

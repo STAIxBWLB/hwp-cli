@@ -1,47 +1,47 @@
-<!-- 자동 생성 문서 — 수동 편집 금지. 재생성: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->
+<!-- 자동 생성 문서 — 수동 편집 금지. 재생성: HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference -->
 
 [한국어](cli-reference.ko.md) · [English](cli-reference.md)
 
-# hwp CLI 명령 레퍼런스
+# ahwp CLI 명령 레퍼런스
 
-이 문서는 `hwp` CLI의 clap 정의에서 자동 생성된다. 직접 편집하지 말고, 명령·플래그가 바뀌면 `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`로 재생성하라 — CI 테스트가 코드와 문서의 동기화를 강제한다.
+이 문서는 `ahwp` CLI의 clap 정의에서 자동 생성된다. 직접 편집하지 말고, 명령·플래그가 바뀌면 `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`로 재생성하라 — CI 테스트가 코드와 문서의 동기화를 강제한다.
 
 ## 명령 색인
 
-- [`hwp info`](#hwp-info)
-- [`hwp cat`](#hwp-cat)
-- [`hwp grep`](#hwp-grep)
-- [`hwp convert`](#hwp-convert)
-- [`hwp merge`](#hwp-merge)
-- [`hwp split`](#hwp-split)
-- [`hwp render`](#hwp-render)
-- [`hwp new`](#hwp-new)
-- [`hwp compose`](#hwp-compose)
-- [`hwp template`](#hwp-template)
-- [`hwp diff`](#hwp-diff)
-- [`hwp compare`](#hwp-compare)
-- [`hwp edit`](#hwp-edit)
-- [`hwp fields`](#hwp-fields)
-- [`hwp bookmarks`](#hwp-bookmarks)
-- [`hwp styles`](#hwp-styles)
-- [`hwp slots`](#hwp-slots)
-- [`hwp fill`](#hwp-fill)
-- [`hwp validate`](#hwp-validate)
-- [`hwp lint`](#hwp-lint)
-- [`hwp certify`](#hwp-certify)
-- [`hwp corpus`](#hwp-corpus)
-- [`hwp mcp`](#hwp-mcp)
-- [`hwp serve`](#hwp-serve)
-- [`hwp update`](#hwp-update)
-- [`hwp skill`](#hwp-skill)
-- [`hwp skill export`](#hwp-skill-export)
-- [`hwp dump`](#hwp-dump)
+- [`ahwp info`](#ahwp-info)
+- [`ahwp cat`](#ahwp-cat)
+- [`ahwp grep`](#ahwp-grep)
+- [`ahwp convert`](#ahwp-convert)
+- [`ahwp merge`](#ahwp-merge)
+- [`ahwp split`](#ahwp-split)
+- [`ahwp render`](#ahwp-render)
+- [`ahwp new`](#ahwp-new)
+- [`ahwp compose`](#ahwp-compose)
+- [`ahwp template`](#ahwp-template)
+- [`ahwp diff`](#ahwp-diff)
+- [`ahwp compare`](#ahwp-compare)
+- [`ahwp edit`](#ahwp-edit)
+- [`ahwp fields`](#ahwp-fields)
+- [`ahwp bookmarks`](#ahwp-bookmarks)
+- [`ahwp styles`](#ahwp-styles)
+- [`ahwp slots`](#ahwp-slots)
+- [`ahwp fill`](#ahwp-fill)
+- [`ahwp validate`](#ahwp-validate)
+- [`ahwp lint`](#ahwp-lint)
+- [`ahwp certify`](#ahwp-certify)
+- [`ahwp corpus`](#ahwp-corpus)
+- [`ahwp mcp`](#ahwp-mcp)
+- [`ahwp serve`](#ahwp-serve)
+- [`ahwp update`](#ahwp-update)
+- [`ahwp skill`](#ahwp-skill)
+- [`ahwp skill export`](#ahwp-skill-export)
+- [`ahwp dump`](#ahwp-dump)
 
-## `hwp info`
+## `ahwp info`
 
 파일 정보 표시: 포맷/버전/속성/스트림 목록
 
-**사용법:** `hwp info [OPTIONS] <FILE>`
+**사용법:** `ahwp info [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -49,11 +49,11 @@
 | `--json` |  |  | JSON으로 출력 |
 | `--body-stats` |  |  | 본문을 파싱해 표 배치 수(전체/인라인/부유)도 출력. 기본은 컨테이너만 읽음(본문이 깨진 파일도 진단 가능) |
 
-## `hwp cat`
+## `ahwp cat`
 
 텍스트 추출
 
-**사용법:** `hwp cat [OPTIONS] <FILE>`
+**사용법:** `ahwp cat [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -67,11 +67,11 @@
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
-## `hwp grep`
+## `ahwp grep`
 
 문단 텍스트 검색 (grep 의미 — 일치 없으면 종료 코드 1)
 
-**사용법:** `hwp grep [OPTIONS] <PATTERN> <FILE>`
+**사용법:** `ahwp grep [OPTIONS] <PATTERN> <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -79,11 +79,11 @@
 | `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--ignore-case` |  |  | 대소문자 무시 일치 |
 
-## `hwp convert`
+## `ahwp convert`
 
 포맷 변환
 
-**사용법:** `hwp convert [OPTIONS] <INPUTS>...`
+**사용법:** `ahwp convert [OPTIONS] <INPUTS>...`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -102,11 +102,11 @@
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
-## `hwp merge`
+## `ahwp merge`
 
 여러 HWP5/HWPX 입력을 하나로 병합 (입력마다 구역 하나, 인자 순서대로 이어붙임; 쪽/각주/차례 번호는 각 입력의 시작/이어달기 설정을 그대로 유지하므로 병합 후 수동 조정이 필요할 수 있음)
 
-**사용법:** `hwp merge [OPTIONS] --output <OUTPUT> <INPUTS> <INPUTS>...`
+**사용법:** `ahwp merge [OPTIONS] --output <OUTPUT> <INPUTS> <INPUTS>...`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -117,18 +117,18 @@
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
-## `hwp split`
+## `ahwp split`
 
 문서 하나를 여러 출력으로 분할 (기본은 구역 단위; 페이지 범위는 --pages로 opt-in하며 한글 자체 쪽 나누기와 다를 수 있는 추정치)
 
-**사용법:** `hwp split [OPTIONS] --out-dir <OUT_DIR> <INPUT>`
+**사용법:** `ahwp split [OPTIONS] --out-dir <OUT_DIR> <INPUT>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `<INPUT>` |  |  | 입력 HWP/HWPX 파일 |
 | `--out-dir` | `<OUT_DIR>` |  | 출력 디렉터리 (파일명은 "<입력 stem>-NNN.<소문자 입력 확장자>") |
 | `--pages` | `<PAGES>` |  | 구역 대신 나눌 페이지 범위, "N" 또는 "N-M" (1부터 시작, 포함, 반복 가능). 경계는 한글이 문서 레이아웃 캐시에 저장한 페이지 시작 지점에서 가져오며, 문단 중간에 걸치면 다음 문단 시작으로 보정됩니다 — 한글 자체 쪽 나누기와 다를 수 있는 추정치입니다 |
-| `--from` | `<FROM>` |  | 분할 대신 형식 있는 범위 하나를 추출 — 시작 지점: "heading:<제목>"(`hwp cat`이 출력하는 문단 자신의 텍스트와 같은 본문 문단 하나. 탭·줄바꿈·고정 공백 포함), "bookmark:<이름>", "at:<구역>.<문단>"(둘 다 0부터). 범위는 한 구역의 최상위 본문 문단 연속 구간이라 표는 통째로 포함되며, 조각은 구역 설정·전체 머리·조각이 쓰는 바이너리를 모두 유지합니다. 바이너리는 조각 어디에서도 쓰이지 않음이 증명될 때에만 빠지며, 도구가 읽을 수 없는 참조(이미지 채움, 원본 도형·OLE 개체)가 있으면 모두 유지하고 그 자리를 보고합니다 |
+| `--from` | `<FROM>` |  | 분할 대신 형식 있는 범위 하나를 추출 — 시작 지점: "heading:<제목>"(`ahwp cat`이 출력하는 문단 자신의 텍스트와 같은 본문 문단 하나. 탭·줄바꿈·고정 공백 포함), "bookmark:<이름>", "at:<구역>.<문단>"(둘 다 0부터). 범위는 한 구역의 최상위 본문 문단 연속 구간이라 표는 통째로 포함되며, 조각은 구역 설정·전체 머리·조각이 쓰는 바이너리를 모두 유지합니다. 바이너리는 조각 어디에서도 쓰이지 않음이 증명될 때에만 빠지며, 도구가 읽을 수 없는 참조(이미지 채움, 원본 도형·OLE 개체)가 있으면 모두 유지하고 그 자리를 보고합니다 |
 | `--to` | `<TO>` |  | 범위 끝 지점, --from과 같은 문법 (기본: 시작 지점이 속한 구역의 끝) |
 | `--end-exclusive` |  |  | --to 문단을 범위에서 제외 (기본은 포함) |
 | `--source-sha256` | `<SOURCE_SHA256>` |  | 선택을 만든 원본 파일의 SHA-256(16진수) — 다른 파일이면 아무것도 쓰기 전에 거부 |
@@ -138,11 +138,11 @@
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
-## `hwp render`
+## `ahwp render`
 
 페이지 렌더링
 
-**사용법:** `hwp render [OPTIONS] --output <OUTPUT> <INPUT>`
+**사용법:** `ahwp render [OPTIONS] --output <OUTPUT> <INPUT>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -157,11 +157,11 @@
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
-## `hwp new`
+## `ahwp new`
 
 새 문서 생성
 
-**사용법:** `hwp new [OPTIONS]`
+**사용법:** `ahwp new [OPTIONS]`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -183,11 +183,11 @@
 | `--press-head` | `<PRESS_HEAD>` |  | 보도자료 머리 블록 "키=값" (키: 기관명\|보도시점\|배포일\|담당부서\|담당자\|연락처, 반복 가능) |
 | `--table-placement` | `inline` \| `floating` |  | 표 배치: inline은 글자처럼 취급(기존 동작), floating은 문단에 고정해 긴 표가 페이지를 넘어 나뉠 수 있게 함. 입력이 만드는 모든 표에 적용, 그림은 영향 없음. 생략 시 기존 기본(명시적 배치 없음) |
 
-## `hwp compose`
+## `ahwp compose`
 
 DocumentSpec v1/v2(JSON/YAML)에서 구조 문서를 deterministic 합성
 
-**사용법:** `hwp compose [OPTIONS] --output <OUTPUT> <SPEC>`
+**사용법:** `ahwp compose [OPTIONS] --output <OUTPUT> <SPEC>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -198,11 +198,11 @@ DocumentSpec v1/v2(JSON/YAML)에서 구조 문서를 deterministic 합성
 | `--report` |  |  | 실행 보고서를 JSON으로 출력 |
 | `--allow-visual-fallback` |  |  | [deprecated] v1 호환 전용 — v2는 이 정책 덮어쓰기를 거부한다 |
 
-## `hwp template`
+## `ahwp template`
 
 TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 
-**사용법:** `hwp template [OPTIONS] --data <DATA> --output <OUTPUT> <TEMPLATE>`
+**사용법:** `ahwp template [OPTIONS] --data <DATA> --output <OUTPUT> <TEMPLATE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -214,11 +214,11 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--dry-run` |  |  | 실제 확장·writer·검증 경로를 실행하되 결과 파일은 게시하지 않음 |
 | `--report` |  |  | preservation/expansion 보고서를 JSON으로 출력 |
 
-## `hwp diff`
+## `ahwp diff`
 
 렌더 결과를 한글 기준 PNG와 비교해 오차 측정 (위치 오프셋·픽셀 차이율)
 
-**사용법:** `hwp diff [OPTIONS] --ref <REF> <INPUT>`
+**사용법:** `ahwp diff [OPTIONS] --ref <REF> <INPUT>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -232,11 +232,11 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--format` | `text` \| `json` | `text` | 리포트 출력 형식 (json = 기계 판독, parity 배치 러너용) |
 | `--ours-png` | `<OURS_PNG>` |  | 문서 렌더 대신 이 래스터(우리 PDF의 pdftoppm 결과)를 --ref와 비교; 입력 경로는 리포트 기록용 |
 
-## `hwp compare`
+## `ahwp compare`
 
 두 문서의 텍스트·구조 차이를 보고하고 둘 다 수정하지 않음 (한글 기준 PNG와 비교하는 diff와 다름). 종료 코드는 diff(1) 관례를 따름: 0 동일, 1 차이 발견, 2 실행 자체 실패 — --strict 없이는 항상 0을 반환하는 lint와 의도적으로 다름
 
-**사용법:** `hwp compare [OPTIONS] <A> <B>`
+**사용법:** `ahwp compare [OPTIONS] <A> <B>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -246,11 +246,11 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--password` | `<PASSWORD>` |  | 명령줄에서 직접 입력할 암호 |
 | `--password-stdin` |  |  | 표준 입력에서 UTF-8 암호 한 줄 읽기 |
 
-## `hwp edit`
+## `ahwp edit`
 
 기존 문서 편집 (텍스트 치환·표 셀 설정) — 이미지·서식 보존
 
-**사용법:** `hwp edit [OPTIONS] --output <OUTPUT> <INPUT>`
+**사용법:** `ahwp edit [OPTIONS] --output <OUTPUT> <INPUT>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -261,7 +261,7 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--set-cell` | `<SET_CELL>` |  | 표 셀 설정 "표:행:열=값" (반복 가능, 0-기반 인덱스) |
 | `--set-cell-by-label` | `<SET_CELL_BY_LABEL>` |  | 양식 레이블의 값 셀 설정 "레이블=값" (반복 가능, 정확 일치) |
 | `--label-table` | `<LABEL_TABLE>` |  | 모든 --set-cell-by-label 요청을 이 0-기반 재귀 표 인덱스로 제한 |
-| `--set-field` | `<SET_FIELD>` |  | 필드/누름틀 채우기 "이름=값" (반복 가능 — hwp fields로 이름 확인) |
+| `--set-field` | `<SET_FIELD>` |  | 필드/누름틀 채우기 "이름=값" (반복 가능 — ahwp fields로 이름 확인) |
 | `--set-meta` | `<SET_META>` |  | 메타데이터 설정 "키=값" (키: title\|author\|subject\|keywords, 반복 가능) |
 | `--create-field` | `<CREATE_FIELD>` |  | 누름틀 생성 "앵커=>이름" 또는 "앵커=>이름=값" — 앵커 텍스트 뒤에 %clk 필드 삽입 (반복 가능) |
 | `--create-bookmark` | `<CREATE_BOOKMARK>` |  | 책갈피 생성 "앵커=>이름" — 앵커 텍스트 뒤에 bokm 지점 표식 삽입 (반복 가능) |
@@ -286,54 +286,54 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--set-page` | `<SET_PAGE>` |  | 페이지 설정 "키:값" — 키: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape) (반복 가능) |
 | `--delete-image` | `<DELETE_IMAGE>` |  | 그림 삭제 "앵커" — 앵커 문단의 그림 삭제 (반복 가능) |
 | `--delete-table` | `<DELETE_TABLE>` |  | 표 삭제 "n"(0-기반 인덱스) 또는 "앵커"(앵커 문단의 표) (반복 가능) |
-| `--delete-field` | `<DELETE_FIELD>` |  | 필드 삭제 "이름" (반복 가능; 이름은 hwp fields로 확인) |
-| `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | 책갈피 삭제 "이름" (반복 가능; 이름은 hwp bookmarks로 확인) |
+| `--delete-field` | `<DELETE_FIELD>` |  | 필드 삭제 "이름" (반복 가능; 이름은 ahwp fields로 확인) |
+| `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | 책갈피 삭제 "이름" (반복 가능; 이름은 ahwp bookmarks로 확인) |
 | `--style-tables` | `<STYLE_TABLES>` |  | 공문서 프리셋으로 모든 적용 대상 표 스타일링(헤더 셰이딩·굵게·가운데 정렬, 내용비례 폭) — official\|report\|plan\|notice\|minutes\|press. 1열 표(테두리 블록)는 건너뜀. 두 번 적용해도 바이트 동일 |
 | `--table-placement` | `inline` \| `floating` |  | 표 배치 설정: inline은 글자처럼 취급 복원, floating은 문단 고정으로 긴 표가 페이지를 넘어 나뉠 수 있게 함. 모든 표 또는 --table로 한 표만. 두 번 적용해도 바이트 동일 |
 | `--table` | `<TABLE>` |  | --table-placement를 이 0-기반 재귀 표 인덱스 하나로 제한 (--label-table과 같은 주소 체계) |
 | `--verify` |  |  | 쓰기 후 재읽기로 검증 |
 | `--allow-partial` |  |  | 일부 요청이 대상을 찾지 못해도 일치한 편집만 게시 (기본: 하나라도 미적용이면 실패) |
-| `--report` | `<FILE>` |  | 각 연산의 상태·건드린 조각 수·변경된 segment id(전/후 쌍)를 담은 edit-report-v1 JSON 파일을 이 경로에 씀 — "hwp compose --report"(표준 출력으로만 찍는 플래그)와 달리 파일 경로를 받으며, --loss-report와 같은 모양 |
+| `--report` | `<FILE>` |  | 각 연산의 상태·건드린 조각 수·변경된 segment id(전/후 쌍)를 담은 edit-report-v1 JSON 파일을 이 경로에 씀 — "ahwp compose --report"(표준 출력으로만 찍는 플래그)와 달리 파일 경로를 받으며, --loss-report와 같은 모양 |
 | `--dry-run` |  |  | 배치 전체를 메모리에서 실제 writer·검증 경로로 적용하되 출력 파일은 게시하지 않음. --report가 없으면 edit-report-v1 보고서를 표준 출력에 찍음 |
 
-## `hwp fields`
+## `ahwp fields`
 
 필드/누름틀 목록 표시 (이름·종류·값)
 
-**사용법:** `hwp fields [OPTIONS] <FILE>`
+**사용법:** `ahwp fields [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
 
-## `hwp bookmarks`
+## `ahwp bookmarks`
 
 책갈피 목록 표시 (이름)
 
-**사용법:** `hwp bookmarks [OPTIONS] <FILE>`
+**사용법:** `ahwp bookmarks [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
 
-## `hwp styles`
+## `ahwp styles`
 
 이름 있는 스타일 목록 표시 (해석된 속성, used_by는 cat --with-segments --segments v2가 내는 문단 세그먼트 id)
 
-**사용법:** `hwp styles [OPTIONS] <FILE>`
+**사용법:** `ahwp styles [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--format` | `text` \| `json` | `text` | 출력 포맷 |
 
-## `hwp slots`
+## `ahwp slots`
 
 `{{name}}` 텍스트 자리표시자(템플릿 슬롯) 목록 표시 (이름은 중괄호·제어문자를 뺀 임의 텍스트, 중괄호 안 공백은 제거)
 
-**사용법:** `hwp slots [OPTIONS] <FILE>`
+**사용법:** `ahwp slots [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -342,11 +342,11 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--forms` |  |  | 한국 공문서 양식 필드도 나열 — 레이블 셀, 본문의 "라벨: 값", 자리표시자를 키·레이블·출처·신뢰도·등장 횟수·필수 여부와 함께 (JSON "fields"; kordoc 규칙) |
 | `--occurrences` |  |  | 원본 해시에 묶인 개별 양식 위치와 지원하지 않는 대상을 JSON으로 표시 (--forms --json 필요) |
 
-## `hwp fill`
+## `ahwp fill`
 
 충실도 보존 템플릿 채우기 (hwpx의 `{{name}}`·공백을 넣은 `{{ name }}` 치환, 패키지 보존, 값은 그대로 삽입)
 
-**사용법:** `hwp fill [OPTIONS] --output <OUTPUT> <INPUT>`
+**사용법:** `ahwp fill [OPTIONS] --output <OUTPUT> <INPUT>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -358,22 +358,22 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--allow-partial` |  |  | 일부 요청이 자리를 찾지 못해도 일치한 값만 게시 (기본: 하나라도 미치환이면 실패). 하나도 일치하지 않으면 입력을 그대로 게시하고 모든 건수를 0으로 보고 |
 | `--forms` |  |  | 같은 값으로 한국 공문서 양식 필드도 채움 (hwpx) — 레이블 셀 옆·아래 칸, 본문의 "라벨: 값", "라벨( )" 빈칸, "□항목" 확인란, "(라벨: )" 빈칸. 비어 있지 않은 값 칸과 "라벨:" 뒤 본문 텍스트는 덮어씀(덮어쓸 때마다 경고), 누름틀·그림·표가 든 칸은 쓰지 않으며 값은 그대로 넣음. 키는 공백·쌍점·괄호를 무시하고 비교하며, 보고서에 "unmatched"가 추가됨. 출력은 .hwpx |
 
-## `hwp validate`
+## `ahwp validate`
 
 구조 검증 (mimetype/필수 엔트리/XML 파싱) — 유효하면 종료코드 0
 
-**사용법:** `hwp validate [OPTIONS] <FILE>`
+**사용법:** `ahwp validate [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `<FILE>` |  |  | 대상 HWP/HWPX 파일 |
 | `--json` |  |  | JSON으로 출력 |
 
-## `hwp lint`
+## `ahwp lint`
 
 공문서 표기법·구조 규칙 검사 — 기본은 권고(advisory)이며 항상 종료코드 0. --strict는 오류 심각도 지적이 있을 때만 종료코드 1. diff(1) 관례(1 = 차이 발견)를 따르는 compare와 의도적으로 다름
 
-**사용법:** `hwp lint [OPTIONS] <FILE>`
+**사용법:** `ahwp lint [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -382,11 +382,11 @@ TemplateSpec/Data v1에서 typed native HWP/HWPX 생성
 | `--json` |  |  | hwp-lint-report-v1 JSON 리포트로 출력 |
 | `--strict` |  |  | 오류 심각도 지적이 있으면 종료 코드 1 (기본: 항상 종료 코드 0) |
 
-## `hwp certify`
+## `ahwp certify`
 
 versioned policy로 package/semantic/native render/independent import 인증
 
-**사용법:** `hwp certify --policy <POLICY> --report <REPORT> <INPUT>`
+**사용법:** `ahwp certify --policy <POLICY> --report <REPORT> <INPUT>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -394,33 +394,33 @@ versioned policy로 package/semantic/native render/independent import 인증
 | `--policy` | `<POLICY>` |  | hwp-certification-policy-v1 JSON/YAML |
 | `--report` | `<REPORT>` |  | 새로 만들 원자적 artifact 디렉터리(기존 경로 거부) |
 
-## `hwp corpus`
+## `ahwp corpus`
 
 버전 고정 구조 문서 코퍼스를 2회 생성·재개방·native 인증
 
-**사용법:** `hwp corpus --manifest <MANIFEST> --report <REPORT>`
+**사용법:** `ahwp corpus --manifest <MANIFEST> --report <REPORT>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `--manifest` | `<MANIFEST>` |  | hwp-structured-corpus-v1 manifest JSON |
 | `--report` | `<REPORT>` |  | 새로 만들 원자적 실행 보고서 디렉터리(기존 경로 거부) |
 
-## `hwp mcp`
+## `ahwp mcp`
 
 MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페이스
 
-**사용법:** `hwp mcp [OPTIONS]`
+**사용법:** `ahwp mcp [OPTIONS]`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
 | `--font-dir` | `<FONT_DIR>` |  | 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능) |
 | `--root` | `<ROOT>` |  | 모든 파일 접근을 이 디렉터리 아래로 제한 (반복 가능). 기본: 제한 없음 |
 
-## `hwp serve`
+## `ahwp serve`
 
 컨테이너 배포용 MCP HTTP 서버 — 같은 도구를 POST /mcp로 제공
 
-**사용법:** `hwp serve [OPTIONS] --root <ROOT>`
+**사용법:** `ahwp serve [OPTIONS] --root <ROOT>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -429,11 +429,11 @@ MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페
 | `--font-dir` | `<FONT_DIR>` |  | 렌더/diff 도구의 기본 폰트 디렉터리 (반복 가능) |
 | `--files` |  |  | root 아래에서 POST/GET /files/{name} 업로드·다운로드 활성화 |
 
-## `hwp update`
+## `ahwp update`
 
-자체 업데이트 — GitHub 릴리스에서 최신 `hwp`를 받아 실행 중인 바이너리를 교체
+자체 업데이트 — GitHub 릴리스에서 최신 `ahwp`를 받아 실행 중인 바이너리를 교체
 
-**사용법:** `hwp update [OPTIONS]`
+**사용법:** `ahwp update [OPTIONS]`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -442,19 +442,19 @@ MCP(Model Context Protocol) stdio 서버 — AI 에이전트용 도구 인터페
 | `--force` |  |  | 같은 버전이어도 다시 받아 교체 (손상된 설치 복구용) |
 | `--json` |  |  | JSON으로 출력 |
 
-## `hwp skill`
+## `ahwp skill`
 
 번들된 에이전트 스킬(AI 코딩 어시스턴트용 SKILL.md) 관리
 
-**사용법:** `hwp skill <COMMAND>`
+**사용법:** `ahwp skill <COMMAND>`
 
 _인자·플래그 없음_
 
-## `hwp skill export`
+## `ahwp skill export`
 
 임베드된 스킬 트리(SKILL.md, SKILL.ko.md, 공문서 안내, references/, templates/)를 디렉터리에 기록 (기본 ./hwp)
 
-**사용법:** `hwp skill export [OPTIONS]`
+**사용법:** `ahwp skill export [OPTIONS]`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|
@@ -462,11 +462,11 @@ _인자·플래그 없음_
 | `--install` | `claude-code` \| `codex` \| `amazon-quick` |  | 대신 알려진 에이전트 스킬 디렉터리에 설치 |
 | `--quick-profile` | `<ID_OR_ABSOLUTE_PATH>` |  | Amazon Quick 프로필 ID 또는 절대 프로필 디렉터리 (Amazon Quick 설치 전용) |
 
-## `hwp dump`
+## `ahwp dump`
 
 [개발자용] 레코드/패키지 구조 덤프
 
-**사용법:** `hwp dump [OPTIONS] <FILE>`
+**사용법:** `ahwp dump [OPTIONS] <FILE>`
 
 | 인자/플래그 | 값 | 기본값 | 설명 |
 |---|---|---|---|

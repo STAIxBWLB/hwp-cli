@@ -182,7 +182,7 @@ source 모드와 리터럴 `strict_unsupported_objects: true`를 요구한다. c
 CLI:
 
 ```text
-hwp template TEMPLATE --data DATA -o OUTPUT
+ahwp template TEMPLATE --data DATA -o OUTPUT
   [--template-format json|yaml] [--data-format json|yaml]
   [--dry-run] [--report]
 ```

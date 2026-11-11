@@ -2,17 +2,17 @@
 
 # AI client integrations
 
-`hwp` ships two integration surfaces for AI clients:
+`ahwp` ships two integration surfaces for AI clients:
 
-- an **MCP stdio server** (`hwp mcp`, 23 tools) for clients that speak the Model Context
+- an **MCP stdio server** (`ahwp mcp`, 23 tools) for clients that speak the Model Context
   Protocol, and
 - an **agent skill** (the `skills/hwp/` tree in this repo) that teaches an agent the CLI and
-  MCP usage. It is embedded in the binary, and `hwp skill export` materializes it as a
+  MCP usage. It is embedded in the binary, and `ahwp skill export` materializes it as a
   directory: `SKILL.md`, `SKILL.ko.md`, the official-document guide
   (`official-documents(.ko).md`), `references/` and `templates/`.
 
-Whichever surface you use, prefer `hwp mcp --root {dir}` so every file path the tools touch
-stays under the given directories, and run `hwp validate` on any file the agent writes.
+Whichever surface you use, prefer `ahwp mcp --root {dir}` so every file path the tools touch
+stays under the given directories, and run `ahwp validate` on any file the agent writes.
 
 ## Conventions every client needs
 
@@ -61,13 +61,13 @@ Read each policy result and its limitations. Structural validity, preservation, 
 diagnostics, visual acceptance and person-run Hancom evidence remain separate. A bounded native
 render or PDF success is evidence only for the tested fixture, font environment and selected
 policy. Quick/web installations that start with only `SKILL.md` can materialize the full bundled
-recipe and capability JSON with `hwp skill export -o ./hwp-guide`.
+recipe and capability JSON with `ahwp skill export -o ./hwp-guide`.
 
 ### Document-level workflows
 
 Since v0.13.0 the toolkit works on whole documents, not just one at a time:
 
-- `hwp merge {inputs...} -o {out}` / `hwp_merge` — concatenate two or more documents, one Section
+- `ahwp merge {inputs...} -o {out}` / `hwp_merge` — concatenate two or more documents, one Section
   per input in argument order. Page, footnote and outline numbering keep each input's own
   start/continue settings, so re-check them afterwards.
   Later HWPX picture item references keep their own source meaning; reused ids do
@@ -75,10 +75,10 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
   manifest's reference namespace; later inputs cannot supply its declared missing targets.
   Native output reports removed images as `BinaryAssetRemoved`;
   use `--strict` to refuse publication when that loss is unacceptable.
-- `hwp split {in} --out-dir {dir}` / `hwp_split` — one fragment per Section by default; `--pages`
+- `ahwp split {in} --out-dir {dir}` / `hwp_split` — one fragment per Section by default; `--pages`
   splits on page ranges instead, estimated from the layout cache Hancom saved rather than
   recomputed, so it may not match Hancom's own pagination. `--from`/`--to` (`from`/`to` in
-  `hwp_split`) extract one typed range instead, anchored on a heading (the paragraph's own text as `hwp cat` prints it), a bookmark or a
+  `hwp_split`) extract one typed range instead, anchored on a heading (the paragraph's own text as `ahwp cat` prints it), a bookmark or a
   `section.paragraph` address, with the binaries the range uses. The `hwp-range-extraction-v1`
   report of where each paragraph and table went and which binaries were kept, kept unverified,
   excluded or dropped by the output format (HWP5 writes only the binaries its BIN_DATA table
@@ -94,8 +94,8 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
   footer, page-number and new-number controls. When the range starts after the section's first
   paragraph, a hide or odd/even adjust control on that paragraph acts on its own source page, so
   it stays behind; a range that starts at the first paragraph takes it whole.
-- `hwp compare {a} {b}` / `hwp_compare` — paragraph and structural differences between two
-  documents, leaving both untouched. This is not `hwp diff`, which compares a render against a
+- `ahwp compare {a} {b}` / `hwp_compare` — paragraph and structural differences between two
+  documents, leaving both untouched. This is not `ahwp diff`, which compares a render against a
   Hancom reference PNG.
 
 ### Restyle named paragraphs
@@ -103,8 +103,8 @@ Since v0.13.0 the toolkit works on whole documents, not just one at a time:
 List the current styles and paragraph addresses before editing:
 
 ```bash
-hwp styles doc.hwpx --format json
-hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
+ahwp styles doc.hwpx --format json
+ahwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
 ```
 
 Select a style with `kind: "paragraph"`. In this example, `body` is an existing primary style
@@ -122,16 +122,16 @@ Save this array as `restyle.json`:
 ```
 
 ```bash
-hwp edit doc.hwpx -o styled.hwpx --ops restyle.json
+ahwp edit doc.hwpx -o styled.hwpx --ops restyle.json
 ```
 
-The same array can be piped to `hwp edit doc.hwpx -o styled.hwpx --ops -`; named-style
+The same array can be piped to `ahwp edit doc.hwpx -o styled.hwpx --ops -`; named-style
 operations have no dedicated flags. MCP executes named-style arrays in create/update/apply
 order, before the other edit arrays. Use the ordered `--ops` array for a different interleaving.
 
 To update the new style's users together, save
 `[{"op":"update_style","style":"Body restyled","size":"14pt"}]` as `update-style.json`, then run
-`hwp edit styled.hwpx -o updated.hwpx --ops update-style.json`. Style selectors accept an exact
+`ahwp edit styled.hwpx -o updated.hwpx --ops update-style.json`. Style selectors accept an exact
 primary name or an integer ID. `update_style` allocates changed definitions with copy-on-write;
 other styles and direct formatting keep their own shapes. `apply_style` preserves direct
 character and paragraph formatting by default; `clear_direct: true` explicitly resets both to
@@ -150,11 +150,11 @@ Equivalent `hwp_edit` MCP arguments for the two calls are:
 Repeated identical apply/update requests succeed without a semantic change. Repeating creation
 refuses the duplicate name atomically. Stale IDs also refuse before publication. If an affected
 user is inside raw-preserved records or XML that cannot be regenerated, the edit refuses with
-locations; use `hwp styles` to select another style or repair the source first.
+locations; use `ahwp styles` to select another style or repair the source first.
 
 ```bash
-hwp validate updated.hwpx
-hwp certify updated.hwpx --policy policy.json --report ./style-certification
+ahwp validate updated.hwpx
+ahwp certify updated.hwpx --policy policy.json --report ./style-certification
 ```
 
 Supply a policy appropriate for the document and a report directory that does not exist.
@@ -168,7 +168,7 @@ format constraints and refusal diagnostics still apply.
 
 `insert_blocks` places DocumentSpec v1 blocks (paragraphs, lists, tables, images, fields,
 equations, page and column breaks) before or after an addressed paragraph, styled like the
-document. Take the paragraph address from `hwp cat doc.hwpx --format json --with-segments
+document. Take the paragraph address from `ahwp cat doc.hwpx --format json --with-segments
 --segments v2`, then save the component as `component.json`:
 
 ```json
@@ -185,7 +185,7 @@ document. Take the paragraph address from `hwp cat doc.hwpx --format json --with
 ```
 
 ```bash
-hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
+ahwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
 ```
 
 Rules that matter:
@@ -206,18 +206,18 @@ Rules that matter:
 
 The report's entry for the op lists the ids of what was inserted, so the next call does not have
 to guess indices. `pieces_touched` is the number of inserted paragraphs; `changed` holds one
-creation pair (`before` is null) for every segment `hwp cat` would publish inside them: each
+creation pair (`before` is null) for every segment `ahwp cat` would publish inside them: each
 paragraph id, then its run ids, and for a table or image block the table, cell and image ids.
 If a very large component publishes more than the report's 10,000-pair cap, `changed` holds
 the first 10,000 in document order and `changed_total` gives the real count; the omitted ids are
-the ones `hwp cat` shows. A run id is what `set_format` takes:
+the ones `ahwp cat` shows. A run id is what `set_format` takes:
 
 ```json
 [{"op":"set_format","address":{"id":"RUN_ID_FROM_THE_REPORT"},"bold":"on"}]
 ```
 
 Ids describe the document right after that op. Obtain fresh ones after any later edit.
-`hwp validate` and `hwp certify` apply to the result as to any document; a field block makes
+`ahwp validate` and `ahwp certify` apply to the result as to any document; a field block makes
 the native render report an omitted control, which is a renderer limit, not an insertion fault.
 
 Equivalent `hwp_edit` MCP arguments (the item is the op without its `op` tag):
@@ -231,7 +231,7 @@ Equivalent `hwp_edit` MCP arguments (the item is the op without its `op` tag):
 Discover exact occurrences on the source that will actually be edited:
 
 ```bash
-hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
+ahwp slots source.hwpx --json --forms --occurrences > local-catalog.json
 ```
 
 The version 1 catalogue contains `source_sha256`, the parsed-IR `structural_sha256` and
@@ -239,7 +239,7 @@ source-bound occurrence IDs. It contains document text: keep it local for explic
 Cell paragraphs are inventory targets; neighboring labels are evidence, not automatic value
 ownership. Select explicit, nonoverlapping bindable claims. Captions, raw-preserved/rich targets
 and native named fields remain visible but unsupported; native fields direct callers to
-`hwp fields`. Do not replace that refusal with a broad text replacement.
+`ahwp fields`. Do not replace that refusal with a broad text replacement.
 `label_occurrences` counts exact same-kind label matches and `label_ambiguous` marks repeated
 labels. These expose ambiguity for review; they never select one occurrence automatically.
 
@@ -282,8 +282,8 @@ with the exact catalogue values, selecting the intended claim and reviewing its 
 ```
 
 ```bash
-hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
-hwp validate bound.hwpx
+ahwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
+ahwp validate bound.hwpx
 ```
 
 `apply_form_bindings` must be the only operation in its batch. The receipt is mandatory and
@@ -335,7 +335,7 @@ See [the binding design](../design/25-form-binding-plan.md) and the versioned `s
 
 ### Start a paragraph on a new page, and replace typed indentation
 
-Three paragraph-level ops handle form pagination. Take the paragraph address from `hwp cat
+Three paragraph-level ops handle form pagination. Take the paragraph address from `ahwp cat
 doc.hwpx --format json --with-segments --segments v2`; each op is a flat `--ops` entry, or an
 array of `hwp_edit` of the same name.
 
@@ -396,7 +396,7 @@ a clean run.
 
 ### Linting official documents
 
-`hwp lint {file}` / `hwp_lint` runs ten Korean official-document notation and structure rules over
+`ahwp lint {file}` / `hwp_lint` runs ten Korean official-document notation and structure rules over
 a `.md`, `.hwp` or `.hwpx` source and emits the `hwp-lint-report-v1` contract
 (`rule_id`/`severity`/`line`/`col`/`message`) under `--json`. Use it as the gate before an
 official document leaves the agent, and `--strict` when a finding should stop the pipeline.
@@ -441,7 +441,7 @@ Register the MCP server (Claude Code: `.mcp.json` or `claude mcp add`; Claude De
 {
   "mcpServers": {
     "hwp": {
-      "command": "hwp",
+      "command": "ahwp",
       "args": ["mcp", "--root", "/path/to/workspace"]
     }
   }
@@ -454,7 +454,7 @@ unrestricted and prints a one-line warning to stderr at startup.
 Claude Code additionally consumes the agent skill directly:
 
 ```sh
-hwp skill export --install claude-code   # installs the skill tree under ~/.claude/skills/hwp/
+ahwp skill export --install claude-code   # installs the skill tree under ~/.claude/skills/hwp/
 ```
 
 ## Codex CLI
@@ -463,14 +463,14 @@ Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.hwp]
-command = "hwp"
+command = "ahwp"
 args = ["mcp", "--root", "/path/to/workspace"]
 ```
 
 And install the agent skill:
 
 ```sh
-hwp skill export --install codex         # installs the skill tree under ~/.codex/skills/hwp/
+ahwp skill export --install codex         # installs the skill tree under ~/.codex/skills/hwp/
 ```
 
 ## Codex cloud
@@ -492,7 +492,7 @@ Both accept a standard stdio MCP server registration, with the same shape as Cla
 {
   "mcpServers": {
     "hwp": {
-      "command": "hwp",
+      "command": "ahwp",
       "args": ["mcp", "--root", "/path/to/workspace"]
     }
   }
@@ -501,7 +501,7 @@ Both accept a standard stdio MCP server registration, with the same shape as Cla
 
 Put it in the client's MCP config (Kiro: `.kiro/settings/mcp.json`; Kimi: the MCP section of
 its config). The skill directory conventions differ per client, so export the tree anywhere and
-point the client at it with `hwp skill export -o {dir}` (the command writes `SKILL.md`,
+point the client at it with `ahwp skill export -o {dir}` (the command writes `SKILL.md`,
 `SKILL.ko.md`, `official-documents(.ko).md`, `references/` and `templates/` under `{dir}`;
 without `-o` it writes `./hwp`). The export refuses a symlinked destination, publishes the tree
 as one directory replacement, and restores the previous tree if the publish fails, so installing
@@ -511,7 +511,7 @@ over an existing skill directory is safe.
 
 The claude.ai code-execution sandbox has a registry-restricted network, so the binary cannot
 be downloaded at runtime. Every release therefore attaches `hwp-skill-claude-web.zip`, which
-contains `SKILL.md` at the zip root, `bootstrap.sh`, the Linux x86_64 `bin/hwp`, and the
+contains `SKILL.md` at the zip root, `bootstrap.sh`, the Linux x86_64 `bin/ahwp`, and the
 license files (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`):
 
 1. Download `hwp-skill-claude-web.zip` from the
@@ -519,14 +519,14 @@ license files (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`):
    `hwp-skill-claude-web.zip.sha256` published beside it, and check the archive against it.
 2. In claude.ai, open Settings → Capabilities → Skills and upload the zip.
 3. In a chat with code execution, run `bash bootstrap.sh` once per session. It installs the
-   bundled binary into `~/.local/bin` (override with `HWP_BIN_DIR`), runs `hwp --version` as a
-   smoke check, and prints the MCP registration snippet. Claude then drives `hwp` as a CLI
+   bundled binary into `~/.local/bin` (override with `HWP_BIN_DIR`), runs `ahwp --version` as a
+   smoke check, and prints the MCP registration snippet. Claude then drives `ahwp` as a CLI
    inside the sandbox. Only the CLI is available here, so `merge`, `split` and `compare` run as
    commands rather than as MCP tools.
 
 ## Amazon Quick Desktop
 
-Amazon Quick Desktop can launch `hwp mcp` as a local stdio connector. The connector has been
+Amazon Quick Desktop can launch `ahwp mcp` as a local stdio connector. The connector has been
 verified with all 20 HWP tools available. Quick UI labels may change between releases; the
 following names match the current Desktop flow.
 
@@ -541,15 +541,15 @@ Use an absolute executable path in the connector. This prevents a stale installa
 Quick's PATH from being selected.
 
 ```sh
-command -v hwp
-hwp --version
+command -v ahwp
+ahwp --version
 # zsh/bash: show duplicate installations, if any
-type -a hwp
+type -a ahwp
 ```
 
-On Apple Silicon Homebrew commonly resolves to `/opt/homebrew/bin/hwp`. Treat that as an example,
-not a portable constant. If `~/.cargo/bin/hwp` is an older duplicate and Homebrew is the intended
-installation, remove the Cargo registration with `cargo uninstall hwp-cli`; then rerun the checks.
+On Apple Silicon Homebrew commonly resolves to `/opt/homebrew/bin/ahwp`. Treat that as an example,
+not a portable constant. If `~/.cargo/bin/ahwp` is an older duplicate and Homebrew is the intended
+installation, remove the Cargo registration with `cargo uninstall agent-hwp`; then rerun the checks.
 
 ### 2. Add the local MCP connector
 
@@ -558,7 +558,7 @@ Open **Settings → Capabilities → Connectors → + Create → MCP server → 
 | Field | Value |
 |---|---|
 | Name | `hwp` |
-| Command | the absolute path from `command -v hwp` |
+| Command | the absolute path from `command -v ahwp` |
 | Arguments (macOS example) | `mcp --font-dir /System/Library/Fonts --root /path/to/workspace` |
 | Description | `Read, write, edit, render, validate, and convert HWP/HWPX documents.` |
 | Timeout | `30` seconds (the default is normally sufficient) |
@@ -579,7 +579,7 @@ Equivalent import JSON:
 {
   "mcpServers": {
     "hwp": {
-      "command": "/absolute/path/to/hwp",
+      "command": "/absolute/path/to/ahwp",
       "args": [
         "mcp",
         "--font-dir",
@@ -611,7 +611,7 @@ variables:
 {
   "mcpServers": {
     "hwp": {
-      "command": "C:\\absolute\\path\\to\\hwp.exe",
+      "command": "C:\\absolute\\path\\to\\ahwp.exe",
       "args": [
         "mcp",
         "--font-dir",
@@ -626,7 +626,7 @@ variables:
 
 Keep each argument as a separate JSON array item; do not add shell quotes around Windows paths.
 Quick's **Local folders and access permissions** control its built-in read/search tools, not the
-write integrity of a local MCP child. Quick starts `hwp.exe` at Low mandatory integrity
+write integrity of a local MCP child. Quick starts `ahwp.exe` at Low mandatory integrity
 (`S-1-16-4096`), while `C:\TEMP` and `%LOCALAPPDATA%\Temp` are normally Medium. That mismatch allows
 connector discovery but rejects the first atomic output staging directory with
 `Access is denied (os error 5)`. A child of `AppData\LocalLow` inherits the required Low label
@@ -639,7 +639,7 @@ reports **Connected** and **23 tools available** and remains enabled after refre
 ### 3. Install the publish-safe HWP skill
 
 ```sh
-hwp skill export --install amazon-quick
+ahwp skill export --install amazon-quick
 ```
 
 The command reads `~/.quickwork/profiles.json`, prefers its valid `last_active` profile, and falls
@@ -651,8 +651,8 @@ It does not create agents, connectors, or publish anything.
 For multiple or ambiguous profiles, provide a profile ID or an absolute profile directory:
 
 ```sh
-hwp skill export --install amazon-quick --quick-profile enterprise-example
-hwp skill export --install amazon-quick --quick-profile /absolute/path/to/quick/profile
+ahwp skill export --install amazon-quick --quick-profile enterprise-example
+ahwp skill export --install amazon-quick --quick-profile /absolute/path/to/quick/profile
 ```
 
 Restart or refresh Quick if it was already running when the skill was installed.
@@ -683,12 +683,12 @@ and respect the configured roots. OneDrive or SharePoint connectors are optional
 only when the source or destination is there.
 
 If publishing fails with `assetDescriptor contains prohibited HTML/script content`, reinstall the
-skill from a current `hwp` binary. Current skill exports use brace placeholders such as `{file}` and
+skill from a current `ahwp` binary. Current skill exports use brace placeholders such as `{file}` and
 contain no angle-bracket markup that Quick can misclassify as HTML.
 
 ### Desktop acceptance checklist
 
-- `hwp --version` reports the intended current binary.
+- `ahwp --version` reports the intended current binary.
 - Connector test reports **Connected** and **23 tools available**.
 - After refresh, the connector remains enabled and reports **23 tools, Connected**.
 - `hwp_new`, `hwp_read`, `hwp_validate`, and `hwp_render` succeed on a test HWPX document (under
@@ -703,11 +703,11 @@ Quick Web runs in the cloud and cannot launch the local stdio process or access 
 filesystem. Today, convert the document to a format Quick can read, then upload the result:
 
 ```bash
-hwp convert input.hwp -o output.docx   # or: -o output.pdf
+ahwp convert input.hwp -o output.docx   # or: -o output.pdf
 ```
 
-Download edited results and convert them back with `hwp convert` as needed. A Desktop/Outpost
-execution path can substitute when available. Do not expose a local `hwp mcp` process directly to
+Download edited results and convert them back with `ahwp convert` as needed. A Desktop/Outpost
+execution path can substitute when available. Do not expose a local `ahwp mcp` process directly to
 the network.
 
 Native Web integration requires an authenticated Streamable HTTP MCP service, tenant-isolated

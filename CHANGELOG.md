@@ -15,6 +15,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Upgrade quick-xml to 0.42 and migrate XML consumers to its UTF-8 string API while retaining
   existing text normalization and entity resolution ([#490](https://github.com/STAIxBWLB/hwp-cli/issues/490)).
 
+- Rename the CLI package to `agent-hwp` and its canonical command to `ahwp`. The `hwp`
+  compatibility command remains through 1.x and emits one deprecation line only on terminal
+  stderr; piped output stays identical. Self-update prefers `ahwp-` release assets and supports
+  older `hwp-` assets, while MCP initialization names the server `agent-hwp`. Help, both document
+  languages and the bundled `hwp` skill use the canonical command. Existing tool names,
+  environment variables and schema contracts remain unchanged
+  ([#510](https://github.com/STAIxBWLB/hwp-cli/issues/510)).
+
 **Fixed**
 
 - Section, saved-page and typed-range splits exclude the source's whole HWP5 `/DocHistory`

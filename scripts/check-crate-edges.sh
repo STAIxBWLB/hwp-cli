@@ -59,8 +59,8 @@ forbid() {
 
 if [ "${1:-}" = "--self-test" ]; then
     # The gate must be able to fail: a dependency that demonstrably exists has to be caught.
-    if ! has_dep hwp-cli hwp-render; then
-        echo "FAIL: self-test could not see hwp-cli -> hwp-render, so the matcher is broken" >&2
+    if ! has_dep agent-hwp hwp-render; then
+        echo "FAIL: self-test could not see agent-hwp -> hwp-render, so the matcher is broken" >&2
         exit 1
     fi
     # No internal crate reaches another only transitively today, so a throwaway workspace
@@ -106,7 +106,7 @@ forbid hwp-render hwp-convert
 forbid hwp-convert hwp-render
 forbid hwp5 hwpx
 forbid hwpx hwp5
-forbid hwp-model 'hwp5|hwpx|hwp-convert|hwp-render|hwp-cli'
+forbid hwp-model 'hwp5|hwpx|hwp-convert|hwp-render|agent-hwp'
 
 if [ "$fail" -ne 0 ]; then
     echo "== crate-edges: FAILED ==" >&2

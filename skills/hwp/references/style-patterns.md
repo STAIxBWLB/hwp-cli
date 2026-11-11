@@ -17,7 +17,7 @@ tallied + 11 deep-dives + 6 bundled templates).
 
 ## Body styles — two regimes
 
-### Regime A — official documents, drafts, minutes, regulations (default; matches the `hwp new` default)
+### Regime A — official documents, drafts, minutes, regulations (default; matches the `ahwp new` default)
 
 - Margins L/R/T/B/H/F = `8504/8504/5668/4252/4252/4252` = **30/30/20/15/15/15mm**
 - Body **함초롬바탕 10pt**, alignment **JUSTIFY**, line spacing **PERCENT 160**

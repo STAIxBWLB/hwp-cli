@@ -3,7 +3,7 @@
 # Remote MCP deployment 설계
 
 > **상태:** 설계 전용. HTTP adapter, container image, Worker, cloud runtime 중 어느 것도 아직
-> 존재하지 않는다. 출시된 제품은 여전히 stdio 기반 `hwp mcp`뿐이다.
+> 존재하지 않는다. 출시된 제품은 여전히 stdio 기반 `ahwp mcp`뿐이다.
 
 [Doc 20](20-remote-mcp.ko.md)은 Remote MCP service가 *무엇을* 보장해야 하는지를 정의한다.
 endpoint 계약, 인증, 격리, limit, release gate가 거기에 해당한다. 이 문서는 그것을 *어떻게*
@@ -20,7 +20,7 @@ delivery issue가 activation record가 된다.
 
 | 질문 | 결정 |
 |---|---|
-| 문서 처리는 어디에서 실행하는가 | container 안에서 동작하는 native `hwp serve` HTTP mode. `hwp mcp`를 shell-out하는 bridge도 아니고 wasm도 아니다 |
+| 문서 처리는 어디에서 실행하는가 | container 안에서 동작하는 native `ahwp serve` HTTP mode. `ahwp mcp`를 shell-out하는 bridge도 아니고 wasm도 아니다 |
 | HTTP dependency (doc 20 §8) | close-per-request server 위에 동기 방식 `httparse` 헤드 parsing. workspace의 no-tokio, no-SDK 기조를 유지한다 |
 | service는 어디에서 실행하는가 | 하나의 binary를 공유하는 두 tier. **Tier A**는 Cloudflare Workers + Containers, **Tier B**는 Amazon Quick Suite connector 뒤의 AWS Bedrock AgentCore |
 | token은 누가 발행하는가 | Tier A는 `@cloudflare/workers-oauth-provider`를 사용해 Worker 자신이 발행하며 Google은 upstream IdP다. Tier B는 Amazon Cognito가 발행하며 Google은 federated IdP다 |
@@ -68,7 +68,7 @@ doc 20 §3.1이 요구하는 사항이다.
 | `commands/mcp/mod.rs` | protocol core. `handle_request`, protocol negotiation, tool registry, schema, dispatch |
 | `commands/mcp/authority.rs` | `FileAuthority` trait와 `LocalFsContext`. 기존 canonical root 검사와 font directory 처리 |
 | `commands/mcp/stdio.rs` | 기존 newline framing loop. zeroizing read buffer와 password scrubbing 포함 |
-| `commands/mcp/http.rs` | `hwp serve` adapter |
+| `commands/mcp/http.rs` | `ahwp serve` adapter |
 
 **doc 20 §3.1에 대한 amendment.** doc 20은 "library-visible module"을 요구한다. 그런데 protocol
 core는 binary-private command module 16개를 약 70개 지점에서 참조하므로, 이를 library로 올리면
@@ -80,7 +80,7 @@ public API"라고 서술하고 있다. library로의 승격은 binary 밖의 con
 stdio adapter는 현재 동작을 byte 단위로 그대로 유지한다. tool이 정확히 20개임을 확인하는 기존
 stdio process test가 이 분리 작업 전체의 regression gate 역할을 한다.
 
-### 3.2 `hwp serve` 계약
+### 3.2 `ahwp serve` 계약
 
 새 subcommand가 protocol core를 HTTP로 노출한다. 이 server는 private hop이다. 두 tier 모두에서
 신뢰된 edge가 TLS를 종단하고, 호출자를 인증하고, origin을 검증하며, request body 크기를 제한한
@@ -196,7 +196,7 @@ Worker (TypeScript)
 Durable Object HwpSession. 이름은 principal과 session 식별자에서 파생
    |  Container class: idle sleep, 최대 수명 alarm, deadline, egress 차단
    v
-microVM: hwp serve --addr 0.0.0.0:8080 --root /work --files --font-dir <fonts>
+microVM: ahwp serve --addr 0.0.0.0:8080 --root /work --files --font-dir <fonts>
 ```
 
 ### 5.1 가입, 로그인, token 발행
@@ -306,7 +306,7 @@ Amazon Cognito user pool: 셀프서비스 가입, Google federation, JWT 발행
 AgentCore Runtime: JWT를 검증하고 Mcp-Session-Id를 주입 및 라우팅하며
    session마다 전용 microVM을 제공한다
    v
-arm64 container: hwp serve --addr 0.0.0.0:8000 --root /work --font-dir <fonts>
+arm64 container: ahwp serve --addr 0.0.0.0:8000 --root /work --font-dir <fonts>
 ```
 
 ### 6.1 Platform 계약
@@ -342,7 +342,7 @@ A의 셀프서비스 client에는 dynamic registration이 필요하다.
 - region을 확정하기 전에 확인할 사항. 의도한 region에서 AgentCore와 Quick MCP integration이 모두
   제공되는지, 그리고 runtime의 현재 유휴 및 최대 session 수명이 doc 20 §7의 값과 어떻게
   대비되는지 확인한다.
-- request framing에 대한 go-live gate(#318), **2026-09-26 통과**. v0.20.1부터 `hwp serve`는 request
+- request framing에 대한 go-live gate(#318), **2026-09-26 통과**. v0.20.1부터 `ahwp serve`는 request
   body를 `Content-Length`로만 framing하고 `Transfer-Encoding`이 있으면 `411`로 답한다. AWS는
   `InvokeAgentRuntime`이 `/mcp`로 전달하는 body를 어떻게 framing하는지 문서화하지 않았다. 플랫폼 V1과
   V2의 실제 runtime에서 확인한 결과, `InvokeAgentRuntime`으로 보낸 `initialize`와 `tools/list`는 도구
@@ -378,13 +378,13 @@ store를 기반으로 하는 두 번째 `FileAuthority` 구현, tenant가 소유
 | stdio가 기본으로 유지되고 tool이 정확히 20개로 노출된다 | 기존 stdio process test가 core 분리를 gate한다 |
 | 인증이 tool 실행보다 먼저 수행된다 | Tier A는 OAuth provider와 token middleware가 handler 이전에 거부한다. Tier B는 runtime의 JWT authorizer가 container 이전에 거부한다 |
 | session이 principal에 묶이고 다른 principal의 접근은 닫힌 채 실패한다 | Tier A는 object 이름이 principal에서 파생되므로 남의 session 식별자는 정보를 주지 않는 `404`가 된다. Tier B는 platform이 session을 인가된 호출자 범위로 한정한다 |
-| request, upload, workspace, deadline limit이 결정적 정리와 함께 강제된다 | edge에서 parsing 이전에 body를 거부하고 `hwp serve`에서 한 번 더 거부한다. 파일과 workspace 상한은 adapter가, deadline과 종료는 edge가 담당한다 |
+| request, upload, workspace, deadline limit이 결정적 정리와 함께 강제된다 | edge에서 parsing 이전에 body를 거부하고 `ahwp serve`에서 한 번 더 거부한다. 파일과 workspace 상한은 adapter가, deadline과 종료는 edge가 담당한다 |
 | tenant끼리 서로의 데이터를 읽거나 덮어쓸 수 없다 | session마다 microVM이 하나씩이고 공유 filesystem이 없으며, process 내부의 기존 root containment가 함께 동작한다 |
 | 종료가 부분 산출물이나 재사용 가능한 권한을 남기지 않는다 | workspace가 microVM과 함께 파기되고 session 식별자는 dead로 표시된다 |
 | log에 token, 문서 내용, path가 남지 않는다 | audit schema가 metadata만 저장하고 token은 hash로만 보관한다 |
-| edge를 우회해 backend에 도달할 수 없다 | 두 runtime 모두 container를 공개하지 않으며, `hwp serve`는 root 없이는 기동조차 거부한다 |
+| edge를 우회해 backend에 도달할 수 없다 | 두 runtime 모두 container를 공개하지 않으며, `ahwp serve`는 root 없이는 기동조차 거부한다 |
 | 문서 worker에 network egress가 없다 | Tier A는 container의 egress를 비활성화하고, Tier B는 runtime의 network 설정으로 처리한다 |
-| proxy 뒤에 놓인 무제한 `hwp mcp`가 아니다 | shell-out이 없다. native adapter가 protocol core를 공유하며 단일 session microVM 안에서 제한된 상태로 동작한다 |
+| proxy 뒤에 놓인 무제한 `ahwp mcp`가 아니다 | shell-out이 없다. native adapter가 protocol core를 공유하며 단일 session microVM 안에서 제한된 상태로 동작한다 |
 
 미루는 항목은 다음과 같으며, 첫 구현을 완성본으로 오해하지 않도록 여기에 명시한다. §3.2의 완전한
 artifact model, SSE와 resumable stream, 요청 단위 cancellation(현재는 deadline이 session 자체를

@@ -11,7 +11,7 @@ or proof that Hancom Office opens the output.
 ## Scope and delivery boundary
 
 P0 supplies a deterministic authoring specification, expected values, shared test helpers and
-negative self-checks. Range extraction (#417) is implemented separately as `hwp split --from`,
+negative self-checks. Range extraction (#417) is implemented separately as `ahwp split --from`,
 and its tests use these helpers as the oracle. P0 does not implement production binding plans
 (#418), original-form certification (#419), pagination/style operations (#420), or the complete
 CLI/MCP workflow (#421). Existing production edit, compose, compare and render operations remain
@@ -48,7 +48,7 @@ From the repository root:
 
 ```sh
 python3 tools/generate_original_form_fixture.py target/original-form-fixture
-hwp compose target/original-form-fixture/original-form.spec.json \
+ahwp compose target/original-form-fixture/original-form.spec.json \
   -o target/original-form-fixture/original-form.hwpx
 ```
 

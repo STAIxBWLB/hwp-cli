@@ -7,7 +7,7 @@
 > definition the parity harness reads: metric set, thresholds, data policy and non-goals. The
 > issue body sequences the work (PR 1–9); this document defines what "par" means.
 
-The goal: `hwp convert --to pdf` and `hwp render --format pdf` emit a PDF that a Korean office
+The goal: `ahwp convert --to pdf` and `ahwp render --format pdf` emit a PDF that a Korean office
 worker accepts as interchangeable with Hancom Office 2024 한글's own **파일 → PDF로 저장하기**
 for general documents (공문, 보고서, 표, 양식, 이미지, 도형, 수식) — visually faithful and with
 selectable, searchable, copyable text.
@@ -97,7 +97,7 @@ antialiasing — engine artifacts, not fidelity. The decisive metrics need no pi
 | 2 | Page count delta | `pdfinfo` | Table splitting, overflow, furniture regressions |
 | 3 | Per-page extracted text equality | `pdftotext -layout`, normalized | Missing content, wrong pagination, broken ToUnicode |
 | 4 | Ink bbox delta (`dx`, `dy`) | Rasterize once at 150 DPI | Systematic margin/baseline offset |
-| 5 | `bad_pixel_pct` / `MAE` | `hwp diff` | Tiebreaker only |
+| 5 | `bad_pixel_pct` / `MAE` | `ahwp diff` | Tiebreaker only |
 
 Rasterization for metrics 4–5 uses the same pinned Poppler (`pdftoppm -png -r 150`) for both the
 Hancom PDF and our PDF.
@@ -105,7 +105,7 @@ Hancom PDF and our PDF.
 **Implementation status 2026-08-14 (PR 4):** the batch runner exists —
 `scripts/pdf-parity.sh run` scores every manifest case into the committable numeric scoreboard
 under `fixtures/pdf-parity/public/scoreboard/` (schema-validated, names + SHA-256 + numbers
-only), `selftest` verifies the harness without an oracle, and `hwp diff --format json` /
+only), `selftest` verifies the harness without an oracle, and `ahwp diff --format json` /
 `--ours-png` is the per-page raster metric source. Scoring fails closed unless the manifest,
 Poppler version, font files, and source/oracle digests match their pins; validated outputs are
 published as one rollback-protected set. The public corpus now contains one owner-authored,

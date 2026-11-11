@@ -13,7 +13,7 @@
 FROM rust:1.93-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release -p hwp-cli --bin hwp
+RUN cargo build --release -p agent-hwp --bin hwp
 
 FROM debian:bookworm-slim
 # Rendering and PDF output need real font files; fonts-nanum matches the font

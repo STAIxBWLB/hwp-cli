@@ -2,16 +2,16 @@
 
 # AI 클라이언트 연동
 
-`hwp`는 AI 클라이언트용 연동 표면을 두 가지 제공한다.
+`ahwp`는 AI 클라이언트용 연동 표면을 두 가지 제공한다.
 
-- MCP를 구사하는 클라이언트용 **MCP stdio 서버**(`hwp mcp`, 23개 도구)
+- MCP를 구사하는 클라이언트용 **MCP stdio 서버**(`ahwp mcp`, 23개 도구)
 - CLI와 MCP 사용법을 에이전트에게 가르치는 **에이전트 스킬**(이 저장소의 `skills/hwp/` 트리).
-  바이너리에 임베드되어 있으며 `hwp skill export`로 디렉터리 형태로 풀어낼 수 있다:
+  바이너리에 임베드되어 있으며 `ahwp skill export`로 디렉터리 형태로 풀어낼 수 있다:
   `SKILL.md`, `SKILL.ko.md`, 공문서 가이드(`official-documents(.ko).md`), `references/`,
   `templates/`.
 
-어느 표면을 쓰든 `hwp mcp --root {dir}`로 도구가 만지는 파일 경로를 지정 디렉터리 아래로
-제한하고, 에이전트가 쓴 파일은 `hwp validate`로 검증하는 것을 권장한다.
+어느 표면을 쓰든 `ahwp mcp --root {dir}`로 도구가 만지는 파일 경로를 지정 디렉터리 아래로
+제한하고, 에이전트가 쓴 파일은 `ahwp validate`로 검증하는 것을 권장한다.
 
 ## 모든 클라이언트에 공통인 규약
 
@@ -56,13 +56,13 @@ MCP `hwp_render`에는 `report`나 `layout_json` 인자가 없다. 타입이 있
 정책 결과와 제한을 각각 읽는다. 구조적 유효성·보존·렌더 진단의 완전성·시각적 수용·사람이
 수행한 한컴 증거는 구분한다. 한정된 네이티브 렌더나 PDF 성공은 시험한 fixture·글꼴 환경·선택한
 정책 범위의 증거다. `SKILL.md`만으로 시작하는 Quick/web 설치에서는
-`hwp skill export -o ./hwp-guide`로 전체 번들 절차와 기능 JSON을 풀어낼 수 있다.
+`ahwp skill export -o ./hwp-guide`로 전체 번들 절차와 기능 JSON을 풀어낼 수 있다.
 
 ### 문서 단위 작업
 
 v0.13.0부터 문서 하나씩이 아니라 문서 전체를 다루는 작업을 지원한다.
 
-- `hwp merge {inputs...} -o {out}` / `hwp_merge` — 문서 두 개 이상을 인자 순서대로 이어 붙이며
+- `ahwp merge {inputs...} -o {out}` / `hwp_merge` — 문서 두 개 이상을 인자 순서대로 이어 붙이며
   입력 하나가 Section 하나가 된다. 쪽·각주·개요 번호는 각 입력의 시작·계속 설정을 그대로
   유지하므로 병합한 뒤 다시 확인해야 한다.
   후속 HWPX의 그림 항목 참조는 각 원본의 의미를 유지하며, ID가 같아도 누락된 대상을
@@ -70,10 +70,10 @@ v0.13.0부터 문서 하나씩이 아니라 문서 전체를 다루는 작업을
   선언된 누락 대상을 다른 입력으로 채우지 않는다.
   native 출력에서 제거된 이미지는 `BinaryAssetRemoved`로 보고한다. 이 손실을 허용할 수
   없으면 `--strict`로 발행을 거부한다.
-- `hwp split {in} --out-dir {dir}` / `hwp_split` — 기본은 Section 하나당 조각 하나이고,
+- `ahwp split {in} --out-dir {dir}` / `hwp_split` — 기본은 Section 하나당 조각 하나이고,
   `--pages`를 주면 쪽 범위로 나눈다. 쪽 경계는 다시 계산한 값이 아니라 한컴이 저장한 레이아웃
   캐시에서 얻은 추정값이라 한컴 자체 페이지 나눔과 다를 수 있다. `--from`/`--to`(`hwp_split`은
-  `from`/`to`)를 주면 제목(`hwp cat`이 출력하는 문단 자신의 텍스트), 책갈피, `구역.문단` 주소를 지점으로 하는 형식 있는 범위 하나를
+  `from`/`to`)를 주면 제목(`ahwp cat`이 출력하는 문단 자신의 텍스트), 책갈피, `구역.문단` 주소를 지점으로 하는 형식 있는 범위 하나를
   대신 추출하며, 범위가 쓰는 바이너리가 함께 들어간다. 문단·표의 이동 위치와 바이너리의 유지·
   미검증 유지·제외·출력 형식이 버린 것(HWP5는 BIN_DATA 표가 이름 붙인 바이너리만 기록한다)을
   담은 `hwp-range-extraction-v1` 보고서는 `--range-report {file.json}`를
@@ -86,16 +86,16 @@ v0.13.0부터 문서 하나씩이 아니라 문서 전체를 다루는 작업을
   해석된 주소로만 가리킨다. 조각은 구역의 쪽·단·머리말·꼬리말·쪽 번호·새 번호 컨트롤을 가져오며,
   범위가 구역 첫 문단 뒤에서 시작하면 그 문단의 감추기·홀짝 조정 컨트롤은 원본의 그 쪽에만
   작용하므로 가져오지 않고, 첫 문단에서 시작하는 범위는 그 문단을 통째로 가져온다.
-- `hwp compare {a} {b}` / `hwp_compare` — 문서 두 개의 문단·구조 차이를 보고하며 두 입력 모두
-  수정하지 않는다. 렌더를 한컴 참조 PNG와 비교하는 `hwp diff`와는 다른 명령이다.
+- `ahwp compare {a} {b}` / `hwp_compare` — 문서 두 개의 문단·구조 차이를 보고하며 두 입력 모두
+  수정하지 않는다. 렌더를 한컴 참조 PNG와 비교하는 `ahwp diff`와는 다른 명령이다.
 
 ### 이름 있는 문단 스타일 바꾸기
 
 편집 전에 현재 스타일과 문단 주소를 확인한다.
 
 ```bash
-hwp styles doc.hwpx --format json
-hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
+ahwp styles doc.hwpx --format json
+ahwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
 ```
 
 `kind: "paragraph"`인 스타일을 선택한다. 아래 예시의 `body`는 기존 기본 이름이고,
@@ -114,17 +114,17 @@ hwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
 ```
 
 ```bash
-hwp edit doc.hwpx -o styled.hwpx --ops restyle.json
+ahwp edit doc.hwpx -o styled.hwpx --ops restyle.json
 ```
 
-같은 배열을 `hwp edit doc.hwpx -o styled.hwpx --ops -`의 stdin으로 전달할 수도 있다.
+같은 배열을 `ahwp edit doc.hwpx -o styled.hwpx --ops -`의 stdin으로 전달할 수도 있다.
 이름 있는 스타일 연산에는 별도 플래그가 없다. MCP는 다른 편집 배열보다 먼저
 create/update/apply 순서로 스타일 배열을 실행한다. 다른 순서가 필요하면 순서가 있는
 `--ops` 배열을 사용한다.
 
 새 스타일의 사용 문단을 함께 바꾸려면
 `[{"op":"update_style","style":"Body restyled","size":"14pt"}]`를 `update-style.json`으로
-저장하고 `hwp edit styled.hwpx -o updated.hwpx --ops update-style.json`을 실행한다.
+저장하고 `ahwp edit styled.hwpx -o updated.hwpx --ops update-style.json`을 실행한다.
 스타일 선택자는 정확한 기본 이름 또는 정수 ID를 받는다. `update_style`은 바뀐 정의를
 copy-on-write로 추가하므로 다른 스타일과 직접 서식은 자체 모양을 유지한다.
 `apply_style`은 기본적으로 직접 지정한 글자·문단 서식을 보존한다. `clear_direct: true`를
@@ -143,12 +143,12 @@ copy-on-write로 추가하므로 다른 스타일과 직접 서식은 자체 모
 
 동일한 적용·갱신 요청을 반복하면 의미 변경 없이 성공한다. 생성을 반복하면 중복 이름으로
 원자적으로 거부한다. 오래된 ID도 발행 전에 거부한다. 영향을 받는 사용 문단이 재생성할 수
-없는 원본 레코드나 XML 안에 있으면 위치를 알리고 거부한다. `hwp styles`로 다른 스타일을
+없는 원본 레코드나 XML 안에 있으면 위치를 알리고 거부한다. `ahwp styles`로 다른 스타일을
 선택하거나 원본을 복구한 뒤 다시 시도한다.
 
 ```bash
-hwp validate updated.hwpx
-hwp certify updated.hwpx --policy policy.json --report ./style-certification
+ahwp validate updated.hwpx
+ahwp certify updated.hwpx --policy policy.json --report ./style-certification
 ```
 
 문서에 맞는 정책 파일과 아직 없는 리포트 디렉터리를 지정한다. 현재 `certify`에는
@@ -160,7 +160,7 @@ hwp certify updated.hwpx --policy policy.json --report ./style-certification
 ### 기존 문서에 구성 요소 삽입
 
 `insert_blocks`는 DocumentSpec v1 블록(문단, 목록, 표, 이미지, 필드, 수식, 쪽·단 나누기)을
-지정한 문단 앞이나 뒤에 문서의 서식 그대로 넣는다. 문단 주소는 `hwp cat doc.hwpx --format
+지정한 문단 앞이나 뒤에 문서의 서식 그대로 넣는다. 문단 주소는 `ahwp cat doc.hwpx --format
 json --with-segments --segments v2`에서 얻고, 구성 요소를 `component.json`으로 저장한다.
 
 ```json
@@ -177,7 +177,7 @@ json --with-segments --segments v2`에서 얻고, 구성 요소를 `component.js
 ```
 
 ```bash
-hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
+ahwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.json
 ```
 
 알아둘 규칙은 다음과 같다.
@@ -197,10 +197,10 @@ hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.js
 - 편집은 원자적이다. 하나라도 거부되면 `--allow-partial`이어도 출력이 쓰이지 않는다.
 
 보고서의 해당 연산 항목은 삽입된 대상의 id를 알려 주므로 다음 호출에서 인덱스를 추측할 필요가
-없다. `pieces_touched`는 삽입된 문단 수이고, `changed`에는 `hwp cat`이 그 문단 안에서 발행할
+없다. `pieces_touched`는 삽입된 문단 수이고, `changed`에는 `ahwp cat`이 그 문단 안에서 발행할
 세그먼트마다 생성 쌍(`before`는 null)이 하나씩 있다. 문단 id 다음에 그 런 id가 오고, 표나
 이미지 블록이면 표·셀·이미지 id도 있다. 보고서 상한(10,000쌍)을 넘는 아주 큰 구성 요소는 `changed`에 문서 순서로 앞 10,000쌍만 담고
-`changed_total`에 실제 개수를 적는다. 빠진 id는 `hwp cat`이 보여 주는 값과 같다.
+`changed_total`에 실제 개수를 적는다. 빠진 id는 `ahwp cat`이 보여 주는 값과 같다.
 `set_format`에는 런 id를 넘긴다.
 
 ```json
@@ -208,7 +208,7 @@ hwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.js
 ```
 
 id는 해당 연산 직후의 문서를 기준으로 한다. 이후 편집을 하면 새로 얻어야 한다. 결과에는
-다른 문서와 똑같이 `hwp validate`와 `hwp certify`를 적용한다. 필드 블록은 네이티브 렌더가
+다른 문서와 똑같이 `ahwp validate`와 `ahwp certify`를 적용한다. 필드 블록은 네이티브 렌더가
 생략된 컨트롤을 보고하게 하는데, 삽입 오류가 아니라 렌더러의 한계다.
 
 대응하는 `hwp_edit` MCP 인수는 다음과 같다(항목은 `op` 태그를 뺀 연산이다).
@@ -222,14 +222,14 @@ id는 해당 연산 직후의 문서를 기준으로 한다. 이후 편집을 �
 실제로 편집할 원본에서 정확한 개별 위치를 발견한다.
 
 ```bash
-hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
+ahwp slots source.hwpx --json --forms --occurrences > local-catalog.json
 ```
 
 버전 1 목록은 `source_sha256`, 파싱 IR의 `structural_sha256`, 원본에 결속된 개별 위치 ID를
 담는다. 문서 텍스트가 포함되므로 명시적인 검토를 위해 로컬에 보관한다. 셀 문단은 목록의
 대상이며 이웃 레이블은 근거이지 자동 값 소유 관계가 아니다. 연결 가능한 겹치지 않는 범위를
 명시적으로 선택한다. 캡션·원본 보존/혼합 내용 대상·네이티브 이름 있는 필드는 미지원으로
-보이되 네이티브 필드는 `hwp fields`로 안내한다. 이 거부를 광범위한 텍스트 치환으로 우회하지 않는다.
+보이되 네이티브 필드는 `ahwp fields`로 안내한다. 이 거부를 광범위한 텍스트 치환으로 우회하지 않는다.
 `label_occurrences`는 같은 종류·정확히 같은 레이블의 횟수를 세고 `label_ambiguous`는
 반복 레이블을 표시한다. 검토할 모호성을 드러낼 뿐 자동으로 한 위치를 선택하지 않는다.
 
@@ -272,8 +272,8 @@ hwp slots source.hwpx --json --forms --occurrences > local-catalog.json
 ```
 
 ```bash
-hwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
-hwp validate bound.hwpx
+ahwp edit source.hwpx -o bound.hwpx --ops OPS.json --verify
+ahwp validate bound.hwpx
 ```
 
 `apply_form_bindings`는 배치의 유일한 연산이어야 한다. 영수증은 필수이며 문서·선택한 로컬
@@ -322,7 +322,7 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 
 ### 문단을 새 쪽에서 시작하기와 공백 들여쓰기 바꾸기
 
-양식 쪽 나눔에는 문단 단위 연산 세 개가 있다. 문단 주소는 `hwp cat doc.hwpx --format json
+양식 쪽 나눔에는 문단 단위 연산 세 개가 있다. 문단 주소는 `ahwp cat doc.hwpx --format json
 --with-segments --segments v2`에서 얻는다. 각 연산은 `--ops`의 한 항목이며, MCP `hwp_edit`에서는
 같은 이름의 배열이다.
 
@@ -375,7 +375,7 @@ passthrough를 항상 버리기 때문에, 기본값을 fail-closed로 두면 �
 
 ### 공문서 린트
 
-`hwp lint {file}` / `hwp_lint`는 `.md`·`.hwp`·`.hwpx` 원본에 대해 한국어 공문서 표기·구조 규칙
+`ahwp lint {file}` / `hwp_lint`는 `.md`·`.hwp`·`.hwpx` 원본에 대해 한국어 공문서 표기·구조 규칙
 열 가지를 검사하고, `--json`을 주면 `hwp-lint-report-v1` 계약
 (`rule_id`/`severity`/`line`/`col`/`message`)을 출력한다. 공문서가 에이전트 손을 떠나기 전의
 게이트로 쓰고, 지적 하나로 파이프라인을 멈춰야 한다면 `--strict`를 함께 준다.
@@ -420,7 +420,7 @@ MCP 서버를 등록한다(Claude Code: `.mcp.json` 또는 `claude mcp add`; Cla
 {
   "mcpServers": {
     "hwp": {
-      "command": "hwp",
+      "command": "ahwp",
       "args": ["mcp", "--root", "/path/to/workspace"]
     }
   }
@@ -433,7 +433,7 @@ MCP 서버를 등록한다(Claude Code: `.mcp.json` 또는 `claude mcp add`; Cla
 Claude Code는 에이전트 스킬을 바로 소비할 수도 있다.
 
 ```sh
-hwp skill export --install claude-code   # ~/.claude/skills/hwp/ 아래에 스킬 트리 설치
+ahwp skill export --install claude-code   # ~/.claude/skills/hwp/ 아래에 스킬 트리 설치
 ```
 
 ## Codex CLI
@@ -442,14 +442,14 @@ hwp skill export --install claude-code   # ~/.claude/skills/hwp/ 아래에 스�
 
 ```toml
 [mcp_servers.hwp]
-command = "hwp"
+command = "ahwp"
 args = ["mcp", "--root", "/path/to/workspace"]
 ```
 
 에이전트 스킬 설치:
 
 ```sh
-hwp skill export --install codex         # ~/.codex/skills/hwp/ 아래에 스킬 트리 설치
+ahwp skill export --install codex         # ~/.codex/skills/hwp/ 아래에 스킬 트리 설치
 ```
 
 ## Codex cloud
@@ -471,7 +471,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 {
   "mcpServers": {
     "hwp": {
-      "command": "hwp",
+      "command": "ahwp",
       "args": ["mcp", "--root", "/path/to/workspace"]
     }
   }
@@ -479,7 +479,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 ```
 
 각 클라이언트의 MCP 설정에 넣는다(Kiro: `.kiro/settings/mcp.json`; Kimi: 자체 설정의 MCP 섹션).
-스킬 디렉터리 관례는 클라이언트마다 다르므로 `hwp skill export -o {dir}`로 트리를 원하는 위치에
+스킬 디렉터리 관례는 클라이언트마다 다르므로 `ahwp skill export -o {dir}`로 트리를 원하는 위치에
 풀어내고 클라이언트가 그 경로를 가리키게 한다(이 명령은 `{dir}` 아래에 `SKILL.md`,
 `SKILL.ko.md`, `official-documents(.ko).md`, `references/`, `templates/`를 쓰며, `-o`를 생략하면
 `./hwp`에 쓴다). export는 심볼릭 링크 대상을 거부하고 트리를 디렉터리 교체 한 번으로 발행하며
@@ -489,7 +489,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 
 claude.ai 코드 실행 샌드박스는 네트워크가 레지스트리로 제한되어 런타임에 바이너리를 받을
 수 없다. 그래서 매 릴리스에 `hwp-skill-claude-web.zip`을 함께 올린다. zip 루트의
-`SKILL.md`, `bootstrap.sh`, Linux x86_64 `bin/hwp`, 라이선스 파일(`LICENSE-MIT`, `LICENSE-APACHE`,
+`SKILL.md`, `bootstrap.sh`, Linux x86_64 `bin/ahwp`, 라이선스 파일(`LICENSE-MIT`, `LICENSE-APACHE`,
 `NOTICE`)이 포함된다.
 
 1. [최신 릴리스](https://github.com/STAIxBWLB/hwp-cli/releases)에서
@@ -497,14 +497,14 @@ claude.ai 코드 실행 샌드박스는 네트워크가 레지스트리로 제�
    아카이브 해시를 대조한다.
 2. claude.ai에서 Settings → Capabilities → Skills로 가서 zip을 업로드한다.
 3. 코드 실행이 켜진 채팅에서 세션당 한 번 `bash bootstrap.sh`를 실행한다. 번들된 바이너리를
-   `~/.local/bin`(`HWP_BIN_DIR`로 변경 가능)에 설치하고 `hwp --version`으로 동작을 확인한 뒤
-   MCP 등록 스니펫을 출력한다. 이후 Claude는 샌드박스 안에서 `hwp`를 CLI로 직접 구동한다.
+   `~/.local/bin`(`HWP_BIN_DIR`로 변경 가능)에 설치하고 `ahwp --version`으로 동작을 확인한 뒤
+   MCP 등록 스니펫을 출력한다. 이후 Claude는 샌드박스 안에서 `ahwp`를 CLI로 직접 구동한다.
    여기서는 CLI만 쓸 수 있으므로 `merge`·`split`·`compare`도 MCP 도구가 아니라 명령으로
    실행한다.
 
 ## Amazon Quick Desktop
 
-Amazon Quick Desktop은 `hwp mcp`를 로컬 stdio 커넥터로 실행할 수 있다. HWP 도구 23개가
+Amazon Quick Desktop은 `ahwp mcp`를 로컬 stdio 커넥터로 실행할 수 있다. HWP 도구 23개가
 모두 노출되는 연결을 실기 확인했다. Quick 릴리스에 따라 UI 이름은 달라질 수 있으며 아래 명칭은
 현재 Desktop 흐름 기준이다.
 
@@ -518,15 +518,15 @@ Amazon Quick Desktop은 `hwp mcp`를 로컬 stdio 커넥터로 실행할 수 있
 방지할 수 있다.
 
 ```sh
-command -v hwp
-hwp --version
+command -v ahwp
+ahwp --version
 # zsh/bash: 중복 설치 전부 확인
-type -a hwp
+type -a ahwp
 ```
 
-Apple Silicon Homebrew에서는 흔히 `/opt/homebrew/bin/hwp`가 나온다. 이는 예시이지 모든 시스템의
-고정 경로가 아니다. `~/.cargo/bin/hwp`가 구버전 중복본이고 Homebrew 설치본을 사용할 예정이면
-`cargo uninstall hwp-cli`로 Cargo 등록을 제거한 뒤 다시 확인한다.
+Apple Silicon Homebrew에서는 흔히 `/opt/homebrew/bin/ahwp`가 나온다. 이는 예시이지 모든 시스템의
+고정 경로가 아니다. `~/.cargo/bin/ahwp`가 구버전 중복본이고 Homebrew 설치본을 사용할 예정이면
+`cargo uninstall agent-hwp`로 Cargo 등록을 제거한 뒤 다시 확인한다.
 
 ### 2. 로컬 MCP 커넥터 추가
 
@@ -535,7 +535,7 @@ Apple Silicon Homebrew에서는 흔히 `/opt/homebrew/bin/hwp`가 나온다. 이
 | 항목 | 값 |
 |---|---|
 | Name | `hwp` |
-| Command | `command -v hwp`에서 확인한 절대 경로 |
+| Command | `command -v ahwp`에서 확인한 절대 경로 |
 | Arguments (macOS 예시) | `mcp --font-dir /System/Library/Fonts --root /path/to/workspace` |
 | Description | `Read, write, edit, render, validate, and convert HWP/HWPX documents.` |
 | Timeout | `30`초(일반적으로 기본값이면 충분) |
@@ -556,7 +556,7 @@ Apple Silicon Homebrew에서는 흔히 `/opt/homebrew/bin/hwp`가 나온다. 이
 {
   "mcpServers": {
     "hwp": {
-      "command": "/absolute/path/to/hwp",
+      "command": "/absolute/path/to/ahwp",
       "args": [
         "mcp",
         "--font-dir",
@@ -587,7 +587,7 @@ icacls.exe $QuickHwpRoot
 {
   "mcpServers": {
     "hwp": {
-      "command": "C:\\absolute\\path\\to\\hwp.exe",
+      "command": "C:\\absolute\\path\\to\\ahwp.exe",
       "args": [
         "mcp",
         "--font-dir",
@@ -602,7 +602,7 @@ icacls.exe $QuickHwpRoot
 
 각 인자는 JSON 배열의 별도 항목으로 유지하고 Windows 경로에 셸 따옴표를 덧붙이지 않는다.
 Quick의 **Local folders and access permissions**는 내장 읽기·검색 도구를 제어하며 로컬 MCP 자식의
-쓰기 무결성은 바꾸지 않는다. Quick은 `hwp.exe`를 Low mandatory integrity(`S-1-16-4096`)로
+쓰기 무결성은 바꾸지 않는다. Quick은 `ahwp.exe`를 Low mandatory integrity(`S-1-16-4096`)로
 시작하지만 `C:\TEMP`와 `%LOCALAPPDATA%\Temp`는 보통 Medium이다. 이 불일치 때문에 커넥터 탐색은
 성공해도 첫 atomic output staging 디렉터리가 `Access is denied (os error 5)`로 거부된다.
 `AppData\LocalLow`의 자식은 광범위한 ACL 변경 없이 필요한 Low 레이블을 상속한다. HWP 작업 전에
@@ -615,7 +615,7 @@ Quick의 **Local folders and access permissions**는 내장 읽기·검색 도�
 ### 3. publish-safe HWP 스킬 설치
 
 ```sh
-hwp skill export --install amazon-quick
+ahwp skill export --install amazon-quick
 ```
 
 명령은 `~/.quickwork/profiles.json`을 읽어 유효한 `last_active` 프로필을 우선 선택하고, 유효한
@@ -627,8 +627,8 @@ hwp skill export --install amazon-quick
 프로필이 여러 개이거나 자동 선택이 불가능하면 프로필 ID 또는 절대 프로필 디렉터리를 지정한다.
 
 ```sh
-hwp skill export --install amazon-quick --quick-profile enterprise-example
-hwp skill export --install amazon-quick --quick-profile /absolute/path/to/quick/profile
+ahwp skill export --install amazon-quick --quick-profile enterprise-example
+ahwp skill export --install amazon-quick --quick-profile /absolute/path/to/quick/profile
 ```
 
 Quick 실행 중에 설치했다면 Quick을 재시작하거나 새로고침한다.
@@ -657,13 +657,13 @@ Quick 실행 중에 설치했다면 Quick을 재시작하거나 새로고침한�
 활성화하고, 설치된 `hwp` 스킬 사용, 쓰기 후 검증, 설정된 root 준수를 instructions에 명시한다.
 OneDrive/SharePoint 커넥터는 원본이나 결과가 그 위치에 있을 때만 선택적으로 추가한다.
 
-publish 중 `assetDescriptor contains prohibited HTML/script content` 오류가 발생하면 최신 `hwp`
+publish 중 `assetDescriptor contains prohibited HTML/script content` 오류가 발생하면 최신 `ahwp`
 바이너리에서 스킬을 다시 설치한다. 현재 스킬은 `{file}` 같은 중괄호 placeholder를 사용하며 Quick이
 HTML로 오인할 수 있는 angle-bracket markup을 포함하지 않는다.
 
 ### Desktop 확인 체크리스트
 
-- `hwp --version`이 의도한 최신 바이너리를 표시함
+- `ahwp --version`이 의도한 최신 바이너리를 표시함
 - 커넥터 테스트가 **Connected**, **23 tools available**을 표시함
 - 새로고침 뒤에도 커넥터가 활성화되어 있고 **23 tools, Connected**를 표시함
 - 테스트 HWPX에서 `hwp_new`, `hwp_read`, `hwp_validate`, `hwp_render`가 성공함(Windows에서는
@@ -678,11 +678,11 @@ Quick Web은 클라우드에서 실행되므로 로컬 stdio 프로세스를 시
 접근할 수 없다. 현재는 문서를 Quick이 읽을 수 있는 형식으로 변환한 뒤 결과물을 업로드한다:
 
 ```bash
-hwp convert input.hwp -o output.docx   # 또는: -o output.pdf
+ahwp convert input.hwp -o output.docx   # 또는: -o output.pdf
 ```
 
-편집된 결과물은 다운로드한 뒤 필요하면 `hwp convert`로 다시 변환한다. 제공되는 경우
-Desktop/Outpost 실행 경로를 대신 사용할 수 있다. 로컬 `hwp mcp` 프로세스를 네트워크에 직접
+편집된 결과물은 다운로드한 뒤 필요하면 `ahwp convert`로 다시 변환한다. 제공되는 경우
+Desktop/Outpost 실행 경로를 대신 사용할 수 있다. 로컬 `ahwp mcp` 프로세스를 네트워크에 직접
 노출하면 안 된다.
 
 Web 네이티브 연동에는 인증된 Streamable HTTP MCP 서비스, tenant별 격리 저장소, 클라이언트 로컬

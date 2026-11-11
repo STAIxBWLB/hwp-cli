@@ -85,16 +85,16 @@ width 1, inline width 8, extended width 8). Lossless round-tripping is preserved
 | 10 | [hwp5-structure-map](10-hwp5-structure-map.md) | **Exhaustive HWP5 map**: CFB stream tree, record catalog (every tag plus implementation status), control characters and ctrl IDs |
 | 11 | [hwpx-structure-map](11-hwpx-structure-map.md) | **Exhaustive HWPX map**: OPC tree, namespaces, element catalog, read/write symmetry audit |
 | 12 | [feature-gaps](12-feature-gaps.md) | Feature gap catalog plus a difficulty and dependency roadmap (inherits 07 §F; 10 §8 and 11 §5 are the underlying data) |
-| 13 | [document-spec-v1](13-document-spec-v1.md) | **DocumentSpec v1 contract** — the typed authoring specification `hwp compose` compiles |
-| 14 | [template-spec-v1](14-template-spec-v1.md) | **TemplateSpec / TemplateData v1 contract** — the typed `value`/`if`/`each` AST `hwp template` expands, with no string interpolation |
+| 13 | [document-spec-v1](13-document-spec-v1.md) | **DocumentSpec v1 contract** — the typed authoring specification `ahwp compose` compiles |
+| 14 | [template-spec-v1](14-template-spec-v1.md) | **TemplateSpec / TemplateData v1 contract** — the typed `value`/`if`/`each` AST `ahwp template` expands, with no string interpolation |
 | 15 | [document-spec-v2](15-document-spec-v2.md) | **DocumentSpec v2 contract** — v1 plus images with accessibility descriptions, the closed SVG→PNG fallback and native text boxes |
-| 16 | [certification-v1](16-certification-v1.md) | **Certification v1 contract** — the frozen policy `hwp certify` enforces and the report it publishes atomically |
-| 17 | [structured-corpus-v1](17-structured-corpus-v1.md) | **Structured corpus v1 contract** — the frozen corpus `hwp corpus` generates twice and the hashes that must agree |
+| 16 | [certification-v1](16-certification-v1.md) | **Certification v1 contract** — the frozen policy `ahwp certify` enforces and the report it publishes atomically |
+| 17 | [structured-corpus-v1](17-structured-corpus-v1.md) | **Structured corpus v1 contract** — the frozen corpus `ahwp corpus` generates twice and the hashes that must agree |
 | 18 | [html-fragment-contract](18-html-fragment-contract.md) | **HTML fragment contract** — XHTML subset for Maru part-based authoring/assembly, table/image/footnote round-trip rules |
 | 19 | [hwp5-spec-supplement](19-hwp5-spec-supplement.md) | **HWP 5.0 spec supplement index** — errata, version-layout matrix, conformance checklist, consumption semantics (07·03·05·10·08 are the underlying data) |
 | 20 | [remote-mcp](20-remote-mcp.md) | **Remote MCP transport design** - future Streamable HTTP, OAuth resource-server, tenant isolation, artifact transfer, limits and security gates for web clients |
 | 21 | [pdf-parity](21-pdf-parity.md) | **PDF parity contract (Hancom Office 2024)** — oracle, five-metric set, thresholds, font gate, data policy and non-goals the parity harness reads (issue #79) |
-| 22 | [remote-mcp-deployment](22-remote-mcp-deployment.md) | **Remote MCP deployment design** — how doc 20 gets built and hosted: the shared `hwp serve` HTTP adapter, the `httparse` dependency decision (doc 20 §8 gate), and two tiers (Cloudflare Workers + Containers, AgentCore behind an Amazon Quick connector) |
+| 22 | [remote-mcp-deployment](22-remote-mcp-deployment.md) | **Remote MCP deployment design** — how doc 20 gets built and hosted: the shared `ahwp serve` HTTP adapter, the `httparse` dependency decision (doc 20 §8 gate), and two tiers (Cloudflare Workers + Containers, AgentCore behind an Amazon Quick connector) |
 | 23 | [hwpx-skill-absorption](23-hwpx-skill-absorption.md) | **hwpx skill absorption** — subcommand-grain parity matrix (28 old subcommands + script-level guarantees, verified/inferred marked), the D-14 margin record, the living checklist phases 2.2-2.5 update in place (issue #121, skills#35) |
 | 24 | [original-form-contract](24-original-form-contract.md) | **Original-form preservation contract** - synthetic P0 fixture, cell/grid/style/resource projections, explicit changes, relative anchors and separate font/native evidence (#411, #416) |
 | 25 | [form-binding-plan](25-form-binding-plan.md) | **Source-bound form binding plan** - reviewed occurrences, explicit profile copies, bounded numeric constraints, atomic apply and separate layout/native evidence (#411, #418) |
@@ -126,7 +126,7 @@ many columns, empty cells), mixed body and table content, multi-page and composi
 hyperlinks and bookmarks; formatting and structural editing; and the donut, center circle, numerals
 and arcs of the annual-report design document. Since then: reading Hancom distribution documents
 (배포용문서, GA-2), the official-document authoring layer (profiles, templates, 두문/결문 frames,
-table styling and `hwp lint`, the GN series), and justified alignment and letter spacing, which
+table styling and `ahwp lint`, the GN series), and justified alignment and letter spacing, which
 were U2 and U4 below and are now GG-3 and GG-4, resolved 2026-08-14.
 
 **Open or under investigation:** the **text-box drop plus page overflow** on pages 5 and 6 of the

@@ -31,7 +31,7 @@ package upload or release publication.
 - [ ] no commit, push, tag, package upload or release performed by the readiness run
 - [ ] version-pinned examples in `README.md` / `README.ko.md` (the `install.sh --tag` snippets)
       bumped to the release being cut
-- [ ] tool-count claims agree with the server: `hwp mcp` `tools/list` length equals every "N tools"
+- [ ] tool-count claims agree with the server: `ahwp mcp` `tools/list` length equals every "N tools"
       in `README*.md`, `docs/manual/*.md` and `skills/hwp/SKILL*.md`
 - [ ] bundled `skills/hwp/SKILL.md` and `SKILL.ko.md` cover every command and MCP tool the release
       adds — an exported skill is what agents read, and nothing gates its content

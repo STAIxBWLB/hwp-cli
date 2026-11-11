@@ -1,6 +1,6 @@
 [한국어](README.ko.md) · [English](README.md)
 
-# hwp-cli
+# agent-hwp
 
 > A clean-room Rust toolkit to read, convert, render, write and AI-edit HWP 5.0 / HWPX documents with no Hancom Office or COM dependency. Runs on Linux / macOS / CI.
 
@@ -19,7 +19,7 @@ and in CI.
 - **Reading and text extraction** from hwp/hwpx to plain / markdown / HTML / JSON (full IR) / CSV.
   Tables, images, headers/footers and unparsed records are preserved during parsing, and Hancom
   distribution documents (배포용문서) are decrypted and read like any other file.
-- **Password-protected input** `hwp cat`, `convert` and `render` accept `--password` or the safer
+- **Password-protected input** `ahwp cat`, `convert` and `render` accept `--password` or the safer
   `--password-stdin` for the evidenced HWP5 and HWPX password profiles. The matching MCP tools use
   a per-call password field with no session cache. Wrong or absent passwords return one stable,
   redacted refusal.
@@ -40,13 +40,13 @@ and in CI.
 - **AI editing** A read → edit → rewrite loop over the JSON IR. Text replacement, table cell values
   and field filling are applied while images, formatting and unparsed records are preserved.
 - **Official-document authoring (공문서)** Six canonical profiles (`official`, `report`, `plan`,
-  `notice`, `minutes`, `press`), eight embedded document templates (`hwp new --template`), native
+  `notice`, `minutes`, `press`), eight embedded document templates (`ahwp new --template`), native
   두문/결문 frames, the statutory eight-level item marks, preset table styling
-  (`hwp edit --style-tables`) and a notation and structure linter (`hwp lint`, ten rules).
-- **Document-level workflows** Merge several documents into one (`hwp merge`, one Section per
+  (`ahwp edit --style-tables`) and a notation and structure linter (`ahwp lint`, ten rules).
+- **Document-level workflows** Merge several documents into one (`ahwp merge`, one Section per
   input), split one into per-section or per-page-range fragments, or cut out one typed range such as
-  a single form with the binaries it uses (`hwp split`), and report the paragraph and structural
-  differences between two documents (`hwp compare`).
+  a single form with the binaries it uses (`ahwp split`), and report the paragraph and structural
+  differences between two documents (`ahwp compare`).
 - **MCP server** A dependency-free (serde_json only) stdio MCP server exposing 23 tools to
   desktop clients, including Amazon Quick Desktop.
 
@@ -112,9 +112,11 @@ Windows is not a roadmap item: ubuntu, macOS and Windows are all required CI gat
 
 ## Installation
 
+Use `ahwp` for new commands. The `hwp` compatibility name remains available throughout 1.x and will be removed in 2.0.
+
 ### One-line script (macOS / Linux)
 
-Installs a release binary without a Rust toolchain. After installation, `hwp update` self-updates.
+Installs a release binary without a Rust toolchain. After installation, `ahwp update` self-updates.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
@@ -124,7 +126,7 @@ The default location is `~/.local/bin` (if it is not on PATH, the script says so
 location or version with arguments or environment variables:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v1.3.1
+curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v1.6.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
@@ -136,11 +138,11 @@ The repository is its own tap (there is no separate `homebrew-*` repository).
 
 ```sh
 brew tap staixbwlb/hwp https://github.com/STAIxBWLB/hwp-cli
-brew install hwp
-hwp --version
+brew install ahwp
+ahwp --version
 ```
 
-Upgrade with `brew update && brew upgrade hwp`. Supported platforms are macOS (Apple Silicon and
+Upgrade with `brew update && brew upgrade ahwp`. Supported platforms are macOS (Apple Silicon and
 Intel) and Linux x86_64.
 
 ### Pre-built binaries
@@ -150,13 +152,13 @@ Every [release](https://github.com/STAIxBWLB/hwp-cli/releases) attaches per-plat
 
 | Platform | Archive |
 |---|---|
-| Linux x86_64 | `hwp-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux arm64 | `hwp-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Apple Silicon | `hwp-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `hwp-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
-| Windows x86_64 | `hwp-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
+| Linux x86_64 | `ahwp-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux arm64 | `ahwp-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `ahwp-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `ahwp-vX.Y.Z-x86_64-apple-darwin.tar.gz` |
+| Windows x86_64 | `ahwp-vX.Y.Z-x86_64-pc-windows-msvc.zip` |
 
-Extract and put `hwp` on PATH (verify with `shasum -a 256 -c hwp-*.sha256`).
+Extract and put `ahwp` on PATH (verify with `shasum -a 256 -c ahwp-*.sha256`).
 
 ### Serverless and containers (Vercel, AWS Lambda, Docker)
 
@@ -169,7 +171,7 @@ to bump:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
-  | sh -s -- --tag v1.3.1 --dir ./bin
+  | sh -s -- --tag v1.6.0 --dir ./bin
 ```
 
 Run this from the build command (or a `prebuild` script) so the binary exists before the platform
@@ -182,7 +184,7 @@ rendering commands.
 ```sh
 git clone git@github.com:STAIxBWLB/hwp-cli.git && cd hwp-cli
 cargo build --release
-cargo install --path crates/hwp-cli   # installs the `hwp` binary
+cargo install --path crates/hwp-cli   # installs the `ahwp` binary
 ```
 
 Requires Rust edition 2024 and `rust-version = 1.93` or newer.
@@ -205,73 +207,73 @@ URL and verifies each against its SHA-256.
 ### Updating
 
 ```sh
-hwp update            # replace itself with the latest release (checksum-verified, atomic)
-hwp update --check    # report current and latest versions without replacing
-hwp update --tag v0.9.0   # roll back to a specific version
+ahwp update            # replace itself with the latest release (checksum-verified, atomic)
+ahwp update --check    # report current and latest versions without replacing
+ahwp update --tag v0.9.0   # roll back to a specific version
 ```
 
 It detects how it was installed. For the one-line script, a release archive or `cargo install`, it
 replaces the running binary in place (sha256 check → temporary file in the same directory → rename,
 restoring the original on failure). A Homebrew (Cellar) installation is delegated to
-`brew upgrade hwp`; because brew cannot pin versions, `--tag` is refused there.
+`brew upgrade ahwp`; because brew cannot pin versions, `--tag` is refused there.
 
 ## Quickstart
 
 ```sh
 # Diagnostics: format, version, properties, streams
-hwp info report.hwp
+ahwp info report.hwp
 
 # Extract body text
-hwp cat report.hwp                       # plain text
-hwp cat report.hwp --format markdown     # markdown
-hwp cat report.hwp --format json         # full IR (JSON)
-hwp cat report.hwp --format csv          # tables as CSV
+ahwp cat report.hwp                       # plain text
+ahwp cat report.hwp --format markdown     # markdown
+ahwp cat report.hwp --format json         # full IR (JSON)
+ahwp cat report.hwp --format csv          # tables as CSV
 
 # Search body text (grep semantics: exit 1 when nothing matches)
-hwp grep "예산" report.hwp
+ahwp grep "예산" report.hwp
 
 # Convert (format inferred from the output extension)
-hwp convert report.hwp   -o report.hwpx  # hwp → hwpx (tables, images, headers preserved)
-hwp convert report.hwpx  -o report.hwp   # hwpx → hwp binary
-hwp convert report.hwp   -o report.md    # images extracted to report.media/
-hwp convert report.hwp   -o doc.json --embed-bin   # self-contained JSON with embedded images
+ahwp convert report.hwp   -o report.hwpx  # hwp → hwpx (tables, images, headers preserved)
+ahwp convert report.hwpx  -o report.hwp   # hwpx → hwp binary
+ahwp convert report.hwp   -o report.md    # images extracted to report.media/
+ahwp convert report.hwp   -o doc.json --embed-bin   # self-contained JSON with embedded images
 
 # Render
-hwp render report.hwp -o page.png --dpi 150
-hwp render report.hwp -o report.pdf --font-dir ./fonts   # single searchable multi-page PDF
+ahwp render report.hwp -o page.png --dpi 150
+ahwp render report.hwp -o report.pdf --font-dir ./fonts   # single searchable multi-page PDF
 
 # Create a new document
-hwp new -o out.hwpx --from notes.md
-hwp new -o out.hwp  --from doc.json
+ahwp new -o out.hwpx --from notes.md
+ahwp new -o out.hwp  --from doc.json
 
 # Structured authoring
-hwp compose spec.yaml -o report.hwpx --report
-hwp template report-template.yaml --data report-data.json -o report.hwpx
+ahwp compose spec.yaml -o report.hwpx --report
+ahwp template report-template.yaml --data report-data.json -o report.hwpx
 
 # Official documents (공문서)
-hwp new --list-templates                              # the eight embedded templates
-hwp new -o gian.hwpx --template gian-internal         # 기안문, 두문/결문 frames included
-hwp slots gian.hwpx                                   # the {{slots}} left to fill
-hwp fill gian.hwpx -o final.hwpx --set "제목=예산 집행 계획"
-hwp lint final.hwpx --strict                          # 표기법 and structure rules
+ahwp new --list-templates                              # the eight embedded templates
+ahwp new -o gian.hwpx --template gian-internal         # 기안문, 두문/결문 frames included
+ahwp slots gian.hwpx                                   # the {{slots}} left to fill
+ahwp fill gian.hwpx -o final.hwpx --set "제목=예산 집행 계획"
+ahwp lint final.hwpx --strict                          # 표기법 and structure rules
 
 # Edit (images, formatting and unparsed records preserved)
-hwp fields form.hwp                        # list fillable fields
-hwp edit form.hwp -o filled.hwp \
+ahwp fields form.hwp                        # list fillable fields
+ahwp edit form.hwp -o filled.hwp \
     --replace "초안=>최종" \
     --set-cell "0:1:2=12,300원" \
     --set-field "수신처=홍길동" --verify
 
 # Structural editing (insert/delete paragraphs, table rows/columns, cell merge/split)
-hwp edit report.hwp -o out.hwp \
+ahwp edit report.hwp -o out.hwp \
     --insert-para "개요=>추가 설명 문단입니다." \
     --add-row "0" --add-col "1" --merge-cells "0:1:1:2:2" --verify
 
 # Render fidelity comparison against a Hancom reference PNG
-hwp diff report.hwp --ref hancom_p1.png --page 1 --dpi 150 --font-dir ./fonts
+ahwp diff report.hwp --ref hancom_p1.png --page 1 --dpi 150 --font-dir ./fonts
 
 # MCP stdio server
-hwp mcp --font-dir ./fonts
+ahwp mcp --font-dir ./fonts
 ```
 
 ## Command reference
@@ -315,12 +317,12 @@ Output format is usually inferred from the output file extension; `convert`/`ren
 
 ## Markdown export
 
-Converts hwp/hwpx to GFM. `hwp cat --format markdown` writes to stdout only and does not extract images.
+Converts hwp/hwpx to GFM. `ahwp cat --format markdown` writes to stdout only and does not extract images.
 
 ```sh
-hwp convert report.hwp -o report.md                    # images extracted to report.media/
-hwp convert report.hwp -o report.md --media-dir figs   # extracted to figs/ and linked as figs/...
-hwp convert report.hwp -o full.md --with-header-footer --with-hidden
+ahwp convert report.hwp -o report.md                    # images extracted to report.media/
+ahwp convert report.hwp -o report.md --media-dir figs   # extracted to figs/ and linked as figs/...
+ahwp convert report.hwp -o full.md --with-header-footer --with-hidden
 ```
 
 | HWP element | markdown |
@@ -346,7 +348,7 @@ as tables and bold.
 
 ### `--with-segments` (provenance coordinates)
 
-`hwp cat <file> --format markdown --with-segments` emits, alongside the markdown, a single-line JSON
+`ahwp cat <file> --format markdown --with-segments` emits, alongside the markdown, a single-line JSON
 envelope stating which source paragraph each output character range came from.
 
 ```json
@@ -374,10 +376,10 @@ The v2 fallback policy is stated per target; omitting it fails as native-only.
 
 ```sh
 # Validate schema, references, table spans, assets and native support without writing
-hwp compose examples/document-spec-v1/basic.json -o /tmp/basic.hwpx --dry-run --report
+ahwp compose examples/document-spec-v1/basic.json -o /tmp/basic.hwpx --dry-run --report
 
 # Publish the validated file atomically
-hwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/report.hwpx --report
+ahwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/report.hwpx --report
 ```
 
 `template` allows only a typed `value`/`if`/`each` AST, with no string interpolation and no expression
@@ -417,8 +419,8 @@ pre-filled with `{{slots}}`.
 `--doc-foot 발신명의=…`, `--notice-head`, `--notice-foot` and `--press-head`. Since v0.10.0 both
 `--preset` and the frame flags **override** a template's own defaults instead of being refused.
 
-**Filling** A generated document is itself a template. `hwp slots` lists what is still unfilled and
-`hwp fill` replaces `{{name}}`, preserving the rest of the hwpx package byte for byte. Both commands
+**Filling** A generated document is itself a template. `ahwp slots` lists what is still unfilled and
+`ahwp fill` replaces `{{name}}`, preserving the rest of the hwpx package byte for byte. Both commands
 read a slot the same way: the name is any text without braces or control characters
 (`{{성 명}}`, `{{사업명(국문)}}`), padding inside the braces (`{{ name }}`) is trimmed, and so are
 requested names. Values are inserted literally in one pass, so a value that spells a slot is not
@@ -426,9 +428,9 @@ filled again. An unmatched slot is an error and nothing is written unless `--all
 given; with it, even a fill that matched nothing publishes the input unchanged and reports zero
 counts.
 
-**Form fields** Korean public forms rarely carry slots. `hwp slots --forms` also lists label cells
+**Form fields** Korean public forms rarely carry slots. `ahwp slots --forms` also lists label cells
 (성명, 연락처, ...), inline `라벨: 값` text and slots, each with a key, label, source, confidence
-and occurrence count. `hwp fill --forms` fills them from the same `--data` or `--set` values in one
+and occurrence count. `ahwp fill --forms` fills them from the same `--data` or `--set` values in one
 pass: the cell next to or below a label cell, the text after an inline label, `학년(  )반` blanks,
 `□동의` checkboxes and `(비고:   )` blanks. A non-empty value cell, and the inline text after
 `라벨:` (up to a comma, semicolon, the next `라벨:` or the line end; a bracket the label sits in,
@@ -437,16 +439,16 @@ the report warns for each overwrite. A cell holding a field (누름틀), picture
 written, and values are inserted literally. Keys match with spaces, colons and parentheses
 ignored, and `--json` adds the `unmatched` keys. The rules are ported from [kordoc](https://github.com/chrisryugj/kordoc) (MIT).
 This path goes through the IR and writes `.hwpx` only: the sections it changed are rewritten the
-way `hwp edit` writes them, and every other section and package entry is copied byte for byte.
+way `ahwp edit` writes them, and every other section and package entry is copied byte for byte.
 
-**Linting** `hwp lint` applies ten rules to `.md`, `.hwp` and `.hwpx` files (or to stdin markdown
+**Linting** `ahwp lint` applies ten rules to `.md`, `.hwp` and `.hwpx` files (or to stdin markdown
 with `-`): seven notation rules (date `2026. 8. 20.`, time, money, the `붙임:` colon and its
 numbering, the closing `끝.`, punctuation), one against decorative item marks (`■ ▶ ▲ ◆ ● ※`, which
 belong as `□ ○` or as nested lists), and two structural rules for statutory item marks and
 Roman-numeral headings. Only the two structural rules are error severity; every notation finding is
 a warning. The command is advisory and exits 0 unless `--strict` is given.
 
-**Table styling** `hwp edit --style-tables <preset>` applies the profile's table look. Single-column
+**Table styling** `ahwp edit --style-tables <preset>` applies the profile's table look. Single-column
 tables are skipped, and applying it twice produces byte-identical output.
 
 ## Certification and the structured corpus
@@ -465,7 +467,7 @@ identities all agree across the two runs.
 
 ```sh
 bash scripts/fetch-corpus-fonts.sh    # fetch and SHA-256 verify the pinned OFL font (once)
-hwp corpus --manifest corpus/structured-v1/manifest.json --report /new/path/corpus-report
+ahwp corpus --manifest corpus/structured-v1/manifest.json --report /new/path/corpus-report
 ```
 
 `scripts/check-structured-corpus.sh` (the CI gate) runs that fetch first, so no separate setup is
@@ -477,24 +479,24 @@ and [16-certification-v1](docs/design/16-certification-v1.md) for certification.
 A document can be recreated from scratch rather than edited in place.
 
 ```sh
-hwp convert report.hwpx -o report.json   # hwp/hwpx → JSON IR (--embed-bin also embeds images)
-hwp new --from report.json -o regen.hwpx # JSON IR → new document
+ahwp convert report.hwpx -o report.json   # hwp/hwpx → JSON IR (--embed-bin also embeds images)
+ahwp new --from report.json -o regen.hwpx # JSON IR → new document
 ```
 
-Regeneration is verified (`crates/hwp-cli/tests/regen.rs`) by validation passing, identical `hwp cat`
+Regeneration is verified (`crates/hwp-cli/tests/regen.rs`) by validation passing, identical `ahwp cat`
 output, an identical table map (count, rows/columns, merges, cell widths) and byte-identical secPr and
 tabProperties slices. What still differs is by design: the line layout cache (recomputed by Hancom
 Office on open), the preview image and settings.xml.
 
 ## MCP server (AI agent integration)
 
-`hwp mcp` implements synchronous JSON-RPC 2.0 over stdio (line-delimited) using only `serde_json`,
+`ahwp mcp` implements synchronous JSON-RPC 2.0 over stdio (line-delimited) using only `serde_json`,
 with no tokio and no SDK. The protocol version is negotiated at `initialize`: a client
 `protocolVersion` of `2025-06-18`, `2025-03-26` or `2024-11-05` is echoed back, anything else gets
 the latest supported version. stdout carries the protocol; logs go to stderr.
 
 Per-client setup (Claude Code/Desktop, Codex CLI/cloud, Kiro, Kimi, claude.ai skill upload,
-and Amazon Quick Desktop) and the bundled agent skill (`hwp skill export`):
+and Amazon Quick Desktop) and the bundled agent skill (`ahwp skill export`):
 [docs/manual/ai-integrations.md](docs/manual/ai-integrations.md).
 The copy-paste Windows setup, create/validate acceptance test, reusable agent instructions, and
 symptom-driven recovery are in the dedicated
@@ -504,7 +506,7 @@ Amazon Quick Desktop can launch this local stdio server and expose all 23 tools.
 publish-safe skill into its active profile with:
 
 ```sh
-hwp skill export --install amazon-quick
+ahwp skill export --install amazon-quick
 ```
 
 On Windows, create a dedicated exchange root under `%USERPROFILE%\AppData\LocalLow` (for example
@@ -514,7 +516,7 @@ expand environment variables). Quick starts the local MCP child at Low mandatory
 not change that write integrity; use the dedicated runbook's creation, import JSON, and recovery
 steps.
 
-Amazon Quick Web cannot launch a local stdio process. `hwp serve` now runs the same tools over
+Amazon Quick Web cannot launch a local stdio process. `ahwp serve` now runs the same tools over
 HTTP for container deployment (`POST /mcp`, see [deployment design](docs/design/22-remote-mcp-deployment.md)),
 but it is a private hop that expects a trusted edge in front of it: authenticated Streamable HTTP,
 tenant isolation and artifact transfer remain future work in
@@ -554,7 +556,7 @@ tenant isolation and artifact transfer remain future work in
 {
   "mcpServers": {
     "hwp": {
-      "command": "hwp",
+      "command": "ahwp",
       "args": ["mcp", "--font-dir", "<repo>/fonts", "--root", "<repo>"]
     }
   }
@@ -591,7 +593,7 @@ Hancom Office.
 | `hwpx` | HWPX reader/writer (ZIP package, OWPML XML) |
 | `hwp-convert` | IR ↔ markdown / HTML / JSON, in-memory editing, field scanning |
 | `hwp-render` | IR → PNG / SVG / PDF / JPEG / WebP renderer and layout geometry, line layout synthesis, shaping, font subsetting and embedding, render diff |
-| `hwp-cli` | The `hwp` binary (CLI and MCP server) |
+| `agent-hwp` | The `ahwp` binary (CLI and MCP server) |
 
 An interactive map of these crates and the MCP deployment path is in
 [docs/architecture/](docs/architecture/): open `hwp-cli-rendered.html` in a browser.
@@ -623,8 +625,8 @@ files, and [docs/release-readiness.md](docs/release-readiness.md) for the pre-re
 hwp-cli follows [Semantic Versioning](https://semver.org) from 1.0.0. A breaking change to any of
 the following needs a new major version:
 
-- the `hwp` CLI's commands, flags and exit codes;
-- the MCP tools' names and arguments, over stdio and `hwp serve`;
+- the `ahwp` CLI's commands, flags and exit codes;
+- the MCP tools' names and arguments, over stdio and `ahwp serve`;
 - the published JSON Schemas in [`schemas/`](schemas). Each schema also carries its own version in
   its file name (`edit-ops-v1`, `segment-envelope-v2`): an incompatible change ships as a new file.
 
@@ -656,8 +658,8 @@ so this repository does not bundle the specification or derivatives of it (extra
 captures) and links only to the official distribution point. See [docs/README.md](docs/README.md).
 
 Some test fixtures come from [hahnlee/hwp-rs](https://github.com/hahnlee/hwp-rs) (Apache-2.0); see
-`fixtures/README.md` and the root `NOTICE`. The form-field rules of `hwp slots --forms` and
-`hwp fill --forms` are ported from [chrisryugj/kordoc](https://github.com/chrisryugj/kordoc) (MIT);
+`fixtures/README.md` and the root `NOTICE`. The form-field rules of `ahwp slots --forms` and
+`ahwp fill --forms` are ported from [chrisryugj/kordoc](https://github.com/chrisryugj/kordoc) (MIT);
 see the root `NOTICE`.
 
 ## License

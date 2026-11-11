@@ -1,14 +1,22 @@
 [package]
-name = "hwp-cli"
-description = "HWP/HWPX 문서 처리 CLI"
+name = "agent-hwp"
+description = "HWP/HWPX document processing CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+default-run = "ahwp"
+
+[lib]
+name = "hwp_cli"
+
+[[bin]]
+name = "ahwp"
+path = "src/main.rs"
 
 [[bin]]
 name = "hwp"
-path = "src/main.rs"
+path = "src/bin/hwp.rs"
 
 [dependencies]
 hwp-model = { workspace = true }
@@ -20,14 +28,12 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
-# edit-ops-v1 스키마 검증기(D-10): `hwp edit --ops` 파일 경계가 런타임에 스키마를
-# 검사하는 데 사용. dev 전용이었다가 런타임으로 승격 — 트리에 새 의존성은 없다.
+# Runtime edit-ops-v1 validation at the `ahwp edit --ops` boundary (D-10).
 jsonschema = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 getrandom = { workspace = true }
-# 구조화 코퍼스 PDF 검증기가 FlateDecode 스트림을 인플레이트하는 데 사용.
-# hwp-render가 이미 끌어오는 의존성이라 의존성 그래프는 커지지 않는다.
+# Structured-corpus PDF validation inflates FlateDecode streams; already used by hwp-render.
 flate2 = { workspace = true }
 regex = { workspace = true }
 tiny-skia = { workspace = true }
@@ -50,9 +56,7 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 zip = { workspace = true }
-# 보호 비트 픽스처 합성 전용 (테스트에서 FileHeader 속성 DWORD를 패치). 이미
-# 워크스페이스 의존성이자 hwp5의 직접 의존성이라 트리에 새 코드가 추가되지 않고,
-# dev 전용이라 출시 바이너리에는 들어가지 않는다.
+# Test-only protected-bit fixture synthesis; already a direct dependency of hwp5.
 cfb = { workspace = true }
 aes = { workspace = true }
 base64 = { workspace = true }

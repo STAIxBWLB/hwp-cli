@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""진단 코퍼스 생성 + 자체 검증 하네스.
+"""Generate a diagnostic corpus and run self-verification.
 
-기능 격리 markdown 케이스를 hwp/hwpx로 생성하고, fixtures와 함께 자체 검증(구조·렌더·
-strict변환·텍스트 왕복·외부파서)을 돌려 현재 무엇이 되고 안 되는지 정밀 진단한다.
+Generate isolated Markdown features as HWP/HWPX, then check their structure,
+rendering, strict conversion, text round-trip and external-parser readability.
+Only self-verifiable checks run here; Hangul-specific behavior needs native testing.
 
-한글 실기가 필요 없는 self-verifiable 검사만 수행(한글 특정 이슈는 별도 실기 필요).
-
-사용: HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py [출력디렉토리]
+Usage: HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py [output-directory]
 """
 import os, sys, subprocess, re, zipfile, tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HWP = os.path.join(ROOT, "target", "debug", "hwp")
+HWP = os.path.join(ROOT, "target", "debug", "ahwp")
 OUTDIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "target", "diagnostic-corpus")
 os.makedirs(OUTDIR, exist_ok=True)
 os.environ.setdefault("HWP_FONT_DIR", os.path.join(ROOT, "fonts"))
 
-# ── 기능 격리 markdown 케이스 (각 파일 = 한 기능) ──
+# ── Isolated Markdown cases (one feature per file) ──
 CASES = {
     "single_para":       "간단한 한 문단입니다.\n",
     "multi_para":        "첫째 문단입니다.\n\n둘째 문단입니다.\n\n셋째 문단입니다.\n",
@@ -64,7 +63,7 @@ def norm_text(s):
     return re.sub(r"\s+", " ", s).strip()
 
 def structural_ok(path):
-    """hwpx=validate, hwp5=olefile/CFB 읽힘."""
+    """Validate HWPX, or check HWP5 readability through olefile/CFB."""
     if path.endswith(".hwpx"):
         rc, _, _ = run(["validate", path]); return rc == 0
     else:
@@ -72,11 +71,11 @@ def structural_ok(path):
             import olefile
             return olefile.isOleFile(path)
         except Exception:
-            # olefile 없으면 파일 크기>0로 근사
+            # Without olefile, approximate readability by checking for a nonempty file.
             return os.path.getsize(path) > 0
 
 def external_parse_ok(path):
-    """hwpx=zip+XML 파싱, hwp5=pyhwp/olefile 스트림 읽힘."""
+    """Parse HWPX ZIP/XML, or read HWP5 streams through pyhwp/olefile."""
     try:
         if path.endswith(".hwpx"):
             z = zipfile.ZipFile(path)
@@ -99,21 +98,21 @@ def strict_convert_ok(path, to):
     return rc == 0, err.strip().splitlines()[-1] if (rc != 0 and err.strip()) else ""
 
 def get_text(path):
-    # md/txt는 직접 읽고(hwp cat은 hwp/hwpx 전용), 그 외는 cat으로 텍스트 추출.
+    # Read Markdown/text directly; use ahwp cat for native HWP/HWPX inputs.
     if path.endswith((".md", ".txt")):
         try: return open(path, encoding="utf-8").read()
         except Exception: return None
-    # md 표는 '|'/'---' 마크업 포함이라 텍스트 비교 시 제거
+    # Remove Markdown table syntax before comparing text.
     rc, out, _ = run(["cat", path]); return out if rc == 0 else None
 
 def strip_md(s):
-    s = re.sub(r"^\s*\d+\.\s", " ", s, flags=re.M)   # 번호 리스트
-    s = re.sub(r"[|`*#>_-]", " ", s)                 # 마크업 문자
+    s = re.sub(r"^\s*\d+\.\s", " ", s, flags=re.M)   # Numbered list markers.
+    s = re.sub(r"[|`*#>_-]", " ", s)                 # Markup characters.
     s = re.sub(r"---+", " ", s)
     return norm_text(s)
 
 def text_preserved(md_text, gen_path):
-    """생성 파일(cat 텍스트)에 원본 md 텍스트가 보존됐는지(마크업 제거 후 단어 포함율)."""
+    """Measure source word retention in generated-file text after stripping Markdown."""
     cat = get_text(gen_path)
     if cat is None: return None, "cat 실패"
     a = strip_md(md_text); b = norm_text(cat)
@@ -127,7 +126,7 @@ def main():
     tmp = tempfile.mkdtemp()
     rows = []  # (name, kind, checks dict)
 
-    # ── 생성 케이스: markdown → hwp + hwpx ──
+    # ── Generated cases: Markdown to HWP and HWPX ──
     for name, md in CASES.items():
         mdpath = os.path.join(OUTDIR, f"{name}.md")
         open(mdpath, "w").write(md)
@@ -148,7 +147,7 @@ def main():
             checks["텍스트보존"] = ("✅" if rtok else ("⚠️" if rtok is not None else "❌"), rtnote)
             rows.append((f"gen/{name}", fmt, checks))
 
-    # ── fixtures: 구조·외부파서·렌더·strict·왕복(hwp5→hwpx→hwp5 or hwpx→hwp) ──
+    # ── Fixtures: structure, external parser, render, strict conversion and round-trip ──
     for name, rel in FIXTURES:
         src = os.path.join(ROOT, rel)
         if not os.path.exists(src): continue
@@ -157,20 +156,20 @@ def main():
         checks["구조"] = ("✅" if structural_ok(src) else "❌", "")
         checks["외부파서"] = ("✅" if external_parse_ok(src) else "❌", "")
         checks["렌더"] = ("✅" if render_ok(src) else "❌", "")
-        # 교차 변환: hwp5→hwpx (또는 hwpx→hwp)
+        # Cross-format conversion: HWP5 to HWPX or HWPX to HWP5.
         cross = "hwpx" if fmt == "hwp" else "hwp"
         crosspath = os.path.join(OUTDIR, f"fixture_{name}_to_{cross}.{cross}")
         rc, _, err = run(["convert", src, "-o", crosspath, "--to", cross])
         checks["교차변환"] = ("✅" if rc == 0 else "❌", err.strip().splitlines()[-1] if (rc != 0 and err.strip()) else "")
         ok, note = strict_convert_ok(src, cross)
         checks["strict교차"] = ("✅" if ok else "⚠️", note)
-        # 교차변환 결과의 구조·렌더
+        # Structure and rendering of cross-format output.
         if rc == 0:
             checks["교차구조"] = ("✅" if structural_ok(crosspath) else "❌", "")
             checks["교차렌더"] = ("✅" if render_ok(crosspath) else "❌", "")
         rows.append((f"fixture/{name}", fmt, checks))
 
-    # ── 리포트 ──
+    # Report.
     allchecks = []
     for _,_,c in rows:
         for k in c:

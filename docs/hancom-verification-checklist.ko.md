@@ -19,7 +19,7 @@
 아니다. 대상 디렉터리는 저장소 밖이어야 한다. 스크립트는 저장소 루트와 그 하위 경로를,
 심볼릭 링크나 상대 경로 별칭으로 지정한 경우까지 거부하며, 작업 트리에는 아무것도 쓰지 않는다.
 
-모든 산출물은 게시 전에 자체 재읽기(`hwp cat` 무경고)와 구조 검증(`hwp validate --json`이
+모든 산출물은 게시 전에 자체 재읽기(`ahwp cat` 무경고)와 구조 검증(`ahwp validate --json`이
 valid이고 warnings 없음)을 통과해야 하며, 인덱스 `hancom-regression-index-v1` JSON은 맨 마지막에
 쓴다. 따라서 대상 디렉터리에 인덱스 파일이 있다는 것은 세트 전체가 통과했다는 뜻이다. 인덱스의
 각 행은 파일명, 해당 체크리스트 시리즈 항목, 그 파일을 만든 명령, SHA-256, 두 게이트 열을
@@ -65,15 +65,15 @@ fidelity 결함의 이슈 번호를 빌려 통과하는 일을 막기 위함이�
 이어진다. **제외가 있는 실행은 깨끗한 통과가 아니며**, 해당 이슈들이 닫히고 변수를 다시 비울
 때까지 마일스톤은 깨끗하지 않다.
 
-`HWP_CERT_FONT_DIR=/path/to/fonts`는 `hwp certify`가 이 세트를 렌더링할 때 쓸 수 있는 글꼴
-파일을 지정한다. `hwp certify`는 정책이 고정한 파일에서만 글꼴을 찾으므로, 스크립트는 이
+`HWP_CERT_FONT_DIR=/path/to/fonts`는 `ahwp certify`가 이 세트를 렌더링할 때 쓸 수 있는 글꼴
+파일을 지정한다. `ahwp certify`는 정책이 고정한 파일에서만 글꼴을 찾으므로, 스크립트는 이
 디렉터리의 `.ttf`/`.otf`/`.ttc`를 모두 `gen-<타임스탬프>/fonts/`로 복사하고, 정렬된 경로와
 SHA-256 목록을 각 정책의 `document.fonts.manifest`와 인덱스의 `font_manifest`에 똑같이 기록한다.
 대체 글꼴은 계속 허용한다(`forbid_substitution: false`). 글꼴 파일이 없거나, 같은 글꼴 바이트가
 두 번 들어 있거나, certify 상한(글꼴 128개, 파일당 32 MiB, 합계 128 MiB)을 넘는 디렉터리는 생성
 시작 전에 거부한다. 변수를 지정하지 않아도 게시는 하지만,
 stderr에 경고를 내고 `"font_manifest": "none"`을 기록한다. 이때 정책에는 고정된 글꼴이 없어서
-`hwp certify`는 모든 글꼴을 `missing`으로 보고하고 fonts 규칙이 실패한다. 이런 세트는 실제
+`ahwp certify`는 모든 글꼴을 `missing`으로 보고하고 fonts 규칙이 실패한다. 이런 세트는 실제
 글꼴로 인증했다는 증거가 아니다. 스크립트가 hwp5 줄 배치 계산용으로 설정하는 `HWP_FONT_DIR`과는
 무관하다.
 
@@ -100,7 +100,7 @@ E, F, G 시리즈는 재생성하지 않는다. 그 이분탐색은 종결되었
 이 실행은 Hancom 관찰도 영수증도 만들지 않는다. 대신 세대 디렉터리 안 산출물 옆에 그 산출물에
 결합될 영수증 하나를 지정한 `<artifact>.policy.json`과, 그 영수증이 놓일 새 빈 `receipts/`
 디렉터리를 만든다. 실제 관찰이 생긴 뒤에는
-`hwp certify current/<artifact> --policy current/<artifact>.policy.json --report <directory>`
+`ahwp certify current/<artifact> --policy current/<artifact>.policy.json --report <directory>`
 한 명령으로 손수 고칠 것 없이 확인할 수 있다. 방출되는 정책은
 `hancom_open.require_artifact_sha256`을 켜므로, `artifact_sha256`이 없는 영수증이나 인증 대상
 산출물과 값이 다른 영수증은 거부된다. 한 산출물의 영수증을 다른 산출물에 재사용할 수 없다는

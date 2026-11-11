@@ -19,7 +19,7 @@ New image streams are grafted by name afterwards: an identical stream is shared 
 stream with different bytes is refused.
 
 Reporting and transport. The edit report lists the inserted segments: one creation pair
-(`before` null) for each segment `hwp cat --segments v2` publishes inside the inserted top-level
+(`before` null) for each segment `ahwp cat --segments v2` publishes inside the inserted top-level
 paragraphs, read from the document right after the op, so the ids equal what a fresh `cat` shows
 and a run id is directly addressable by `set_format`. `edit-report-v1` caps `changed` at 10,000
 items, and a valid request can publish more (one 100 x 50 table is 15,002 segments), so the
@@ -96,7 +96,7 @@ pixel dimensions and preserves the intrinsic aspect ratio; invalid or zero-sized
 
 ## Native-first execution contract
 
-`hwp compose SPEC -o OUTPUT` follows one pipeline for CLI and MCP:
+`ahwp compose SPEC -o OUTPUT` follows one pipeline for CLI and MCP:
 
 1. bound and parse JSON/YAML;
 2. validate the closed v1 contract and all cross-references;

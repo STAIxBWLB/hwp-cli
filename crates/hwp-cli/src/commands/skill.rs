@@ -1,8 +1,8 @@
-//! `hwp skill` — manages the bundled agent skill.
+//! `ahwp skill` — manages the bundled agent skill.
 //!
 //! The repository source of truth under `skills/hwp/` is embedded into the
 //! binary as a hand-maintained `include_str!` table (`SKILL_FILES`), and
-//! `hwp skill export` writes the whole tree out verbatim (generated
+//! `ahwp skill export` writes the whole tree out verbatim (generated
 //! artifacts, so existing table-listed files are silently overwritten;
 //! anything else in the target directory is left untouched).
 //! `--install claude-code|codex|amazon-quick` selects the conventional skill
@@ -1578,7 +1578,7 @@ mod tests {
                     .expect("entry under the walked root")
                     .to_path_buf();
                 // claude-web/ is a repo/release artifact (web bundle
-                // installer), not skill content shipped by `hwp skill export`.
+                // installer), not skill content shipped by `ahwp skill export`.
                 if rel.starts_with("claude-web") {
                     continue;
                 }

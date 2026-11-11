@@ -440,7 +440,7 @@ yields a blank page.
 ### 7.3 Three-way comparison
 
 Three viewpoints are crossed: (1) **our reader** (cat text, fields JSON), (2) **our renderer** (PNG,
-PDF), and (3) **Hancom's export** (reference PNG, hwpx). `hwp diff <in> --ref <Hancom PNG> --dpi <n>`
+PDF), and (3) **Hancom's export** (reference PNG, hwpx). `ahwp diff <in> --ref <Hancom PNG> --dpi <n>`
 compares our render to the Hancom reference by pixels and profile: `ink_ratio` (ink coverage, that is
 completeness), `dx/dy` (position offset), `bad_pixel_pct` (pixel difference, that is glyphs and
 antialiasing), and MAE. Fonts must be pinned to the same set as Hancom (`HWP_FONT_DIR`) for the same

@@ -28,11 +28,11 @@ label-form 및 skill-export
 아래 전체 워크플로는 `document.original_form`을 포함해 v1.5.0 이상이 필요하다.
 [버전별 기능 기록](original-form-capabilities-v1.json)은 기록된 커밋의 **출시 전 소스 빌드**(패키지
 버전 1.4.0으로 표시)에서 참조 실행을 수행했고, 출시된 v1.4.0에는 워크플로가 없음을 확인했다.
-사용 전에 `hwp --version`과 해당 바이너리에서 내보낸 기록을 확인한다.
+사용 전에 `ahwp --version`과 해당 바이너리에서 내보낸 기록을 확인한다.
 
 ```sh
-hwp --version
-hwp skill export -o ./hwp-guide
+ahwp --version
+ahwp skill export -o ./hwp-guide
 ```
 
 격리된 작업 디렉터리를 사용한다. 원문이 든 discovery·검토된 계획·정확한 preview·로컬 주소
@@ -57,7 +57,7 @@ python3 tools/generate_original_form_fixture.py ./target/original-form-workflow
 
 ```sh
 cd ./target/original-form-workflow
-hwp compose "$PWD/p0-nanum.spec.json" -o ./source.hwpx
+ahwp compose "$PWD/p0-nanum.spec.json" -o ./source.hwpx
 ```
 
 기능 파일의 `reference_inputs`에는 완전한 검토 JSON 값이 있다. JSON 편집기나 클라이언트의
@@ -69,9 +69,9 @@ hwp compose "$PWD/p0-nanum.spec.json" -o ./source.hwpx
 ### 네이티브 범위 발견과 추출
 
 ```sh
-hwp info ./source.hwpx --json
-hwp slots ./source.hwpx --forms --occurrences --json > ./source-catalog.json
-hwp cat ./source.hwpx --format json --with-segments --segments v2 > ./source-map.json
+ahwp info ./source.hwpx --json
+ahwp slots ./source.hwpx --forms --occurrences --json > ./source-catalog.json
+ahwp cat ./source.hwpx --format json --with-segments --segments v2 > ./source-map.json
 ```
 
 라벨·기존 값·`bindable`·문단/표 ID·본문 좌표를 검토한다. 반복 라벨은 고유 주소가 아니다.
@@ -82,11 +82,11 @@ P0 원본에는 이미 프로필 표가 **네 개** 있다. 네 개로 반복하
 `SOURCE_SHA256`을 `source-catalog.json`의 실제 `source_sha256`으로 설정한 뒤 실행한다.
 
 ```sh
-hwp split ./source.hwpx --out-dir ./extracted \
+ahwp split ./source.hwpx --out-dir ./extracted \
   --from heading:FORM_START_APPLICATION --to at:0.11 \
   --source-sha256 "$SOURCE_SHA256" --strict \
   --range-report ./extraction.json --loss-report ./extraction-preservation.json
-hwp validate ./extracted/source-001.hwpx
+ahwp validate ./extracted/source-001.hwpx
 ```
 
 실제 범위 리포트와 원본→출력 맵을 유지한다. 기록된 실행은 `BinData/image2.png`(내부 이미지)를
@@ -102,12 +102,12 @@ kept-unverified·읽을 수 없는 참조 위치가 없었다. 제외된 원본 
 `insert_para.style`/`char` 필드에 의존하지 않는다.
 
 ```sh
-hwp cat ./extracted/source-001.hwpx --format json --with-segments --segments v2 > ./extracted-map.json
-hwp edit ./extracted/source-001.hwpx -o ./inserted.hwpx --ops "$PWD/prepare-headings.json" --verify
-hwp styles ./inserted.hwpx --format json
-hwp edit ./inserted.hwpx -o ./prepared.hwpx --ops "$PWD/prepare-style.json" --verify
-hwp slots ./prepared.hwpx --forms --occurrences --json > ./prepared-catalog.json
-hwp cat ./prepared.hwpx --format json --with-segments --segments v2 > ./prepared-map.json
+ahwp cat ./extracted/source-001.hwpx --format json --with-segments --segments v2 > ./extracted-map.json
+ahwp edit ./extracted/source-001.hwpx -o ./inserted.hwpx --ops "$PWD/prepare-headings.json" --verify
+ahwp styles ./inserted.hwpx --format json
+ahwp edit ./inserted.hwpx -o ./prepared.hwpx --ops "$PWD/prepare-style.json" --verify
+ahwp slots ./prepared.hwpx --forms --occurrences --json > ./prepared-catalog.json
+ahwp cat ./prepared.hwpx --format json --with-segments --segments v2 > ./prepared-map.json
 ```
 
 P0 맵에서 선택한 표는 원본 문단 11에서 추출 문단 8로 이동한다.
@@ -153,7 +153,7 @@ P0 맵에서 선택한 표는 원본 문단 11에서 추출 문단 8로 이동�
 원자적 리포트 목적지는 상위 디렉터리가 존재하는 절대 경로나 `./` 경로를 사용한다.
 
 ```sh
-hwp edit ./prepared.hwpx -o ./dry.hwpx --ops "$PWD/dry.ops.json" --dry-run
+ahwp edit ./prepared.hwpx -o ./dry.hwpx --ops "$PWD/dry.ops.json" --dry-run
 ```
 
 정확한 로컬 preview·선택한 claim·숫자 값·원본→복제 맵을 검토한다. Dry-run도 비공개 후보를
@@ -161,8 +161,8 @@ hwp edit ./prepared.hwpx -o ./dry.hwpx --ops "$PWD/dry.ops.json" --dry-run
 같은 검토 원본 `prepared.hwpx` 바이트에 적용한다.
 
 ```sh
-hwp edit ./prepared.hwpx -o ./bound.hwpx --ops "$PWD/binding.ops.json" --verify
-hwp validate ./bound.hwpx
+ahwp edit ./prepared.hwpx -o ./bound.hwpx --ops "$PWD/binding.ops.json" --verify
+ahwp validate ./bound.hwpx
 ```
 
 `apply_form_bindings`는 배치의 유일한 연산이다. `--allow-partial`·스타일 연산·`--report`와
@@ -183,14 +183,14 @@ hwp validate ./bound.hwpx
 서명 영역은 그대로 유지한다.
 
 ```sh
-hwp cat ./bound.hwpx --format json --with-segments --segments v2 > ./bound-map.json
-hwp edit ./bound.hwpx -o ./headings-inserted.hwpx --ops "$PWD/remaining-headings.json" --verify
-hwp edit ./headings-inserted.hwpx -o ./headed.hwpx --ops "$PWD/remaining-style.json" --verify
-hwp slots ./headed.hwpx --forms --occurrences --json > ./headed-catalog.json
-hwp edit ./headed.hwpx -o ./paged.hwpx --ops "$PWD/pagination.ops.json" --verify --report ./pagination-report.json
-hwp slots ./paged.hwpx --forms --occurrences --json > ./paged-catalog.json
-hwp edit ./paged.hwpx -o ./final.hwpx --ops "$PWD/indent-repeat.ops.json" --verify --report ./indent-repeat-report.json
-hwp compare ./paged.hwpx ./final.hwpx --format json > ./indent-compare.json
+ahwp cat ./bound.hwpx --format json --with-segments --segments v2 > ./bound-map.json
+ahwp edit ./bound.hwpx -o ./headings-inserted.hwpx --ops "$PWD/remaining-headings.json" --verify
+ahwp edit ./headings-inserted.hwpx -o ./headed.hwpx --ops "$PWD/remaining-style.json" --verify
+ahwp slots ./headed.hwpx --forms --occurrences --json > ./headed-catalog.json
+ahwp edit ./headed.hwpx -o ./paged.hwpx --ops "$PWD/pagination.ops.json" --verify --report ./pagination-report.json
+ahwp slots ./paged.hwpx --forms --occurrences --json > ./paged-catalog.json
+ahwp edit ./paged.hwpx -o ./final.hwpx --ops "$PWD/indent-repeat.ops.json" --verify --report ./indent-repeat-report.json
+ahwp compare ./paged.hwpx ./final.hwpx --format json > ./indent-compare.json
 ```
 
 `pagination.ops.json`은 새 프로필 제목(`headed.hwpx`의 문단 9·11·13)에 break-before를
@@ -213,13 +213,13 @@ hwp compare ./paged.hwpx ./final.hwpx --format json > ./indent-compare.json
 ### 정확한 전달 산출물 렌더와 인증
 
 ```sh
-hwp validate ./final.hwpx
-hwp convert ./final.hwpx -o ./final.hwp --strict --loss-report ./conversion-preservation.json
-hwp validate ./final.hwp
-hwp slots ./final.hwpx --forms --occurrences --json > ./final-hwpx-catalog.json
-hwp slots ./final.hwp --forms --occurrences --json > ./final-hwp-catalog.json
-hwp render ./final.hwpx -o ./hwpx.pdf --font-dir ./fonts --report ./hwpx-render.json --layout-json ./hwpx-layout.json
-hwp render ./final.hwp -o ./hwp.pdf --font-dir ./fonts --report ./hwp-render.json --layout-json ./hwp-layout.json
+ahwp validate ./final.hwpx
+ahwp convert ./final.hwpx -o ./final.hwp --strict --loss-report ./conversion-preservation.json
+ahwp validate ./final.hwp
+ahwp slots ./final.hwpx --forms --occurrences --json > ./final-hwpx-catalog.json
+ahwp slots ./final.hwp --forms --occurrences --json > ./final-hwp-catalog.json
+ahwp render ./final.hwpx -o ./hwpx.pdf --font-dir ./fonts --report ./hwpx-render.json --layout-json ./hwpx-layout.json
+ahwp render ./final.hwp -o ./hwp.pdf --font-dir ./fonts --report ./hwp-render.json --layout-json ./hwp-layout.json
 ```
 
 이 참조 실행은 HWPX를 바인딩·편집한 뒤 전달 산출물을 HWP로 변환한다. 동일 형식 HWP 바인딩은
@@ -239,8 +239,8 @@ HWP에는 해당 기대값을 `expect-hwp.json`으로 복사하고 `output_sha25
 페이지 바깥 경계·잠재적 충돌 실패 게이트도 활성화 상태로 유지한다.
 
 ```sh
-hwp certify ./final.hwpx --policy "$PWD/certify-hwpx.json" --report "$PWD/certificate-hwpx"
-hwp certify ./final.hwp --policy "$PWD/certify-hwp.json" --report "$PWD/certificate-hwp"
+ahwp certify ./final.hwpx --policy "$PWD/certify-hwpx.json" --report "$PWD/certificate-hwpx"
+ahwp certify ./final.hwp --policy "$PWD/certify-hwp.json" --report "$PWD/certificate-hwp"
 ```
 
 실행마다 새 리포트 디렉터리를 사용한다. 발행은 원자적이며 기존 리포트 디렉터리는 거부한다.
@@ -264,7 +264,7 @@ hwp certify ./final.hwp --policy "$PWD/certify-hwp.json" --report "$PWD/certific
 격리된 작업공간에서 stdio 서버를 시작하거나 설정된 MCP 호스트가 시작하게 한다.
 
 ```sh
-hwp mcp --root "$PWD" --font-dir "$PWD/fonts"
+ahwp mcp --root "$PWD" --font-dir "$PWD/fonts"
 ```
 
 같은 검토 데이터와 단계 경계를 사용한다.
@@ -306,19 +306,19 @@ CLI 플래그를 흉내 내려 도구 인자를 만들어내지 않는다.
 `"가나"`가 아니다. 네이티브 컨트롤은 자체 너비와 payload를 갖는다. 문자열 인덱싱이나 raw 배열
 슬라이싱을 대체 편집 엔진으로 사용하지 않는다.
 
-`hwp cat --format json`(CLI v2 segments 옆의 문서 포함)은 확인용 내보내기이며 자체 완결
+`ahwp cat --format json`(CLI v2 segments 옆의 문서 포함)은 확인용 내보내기이며 자체 완결
 바이너리 리소스 패키지가 아니다. JSON으로 완전한 왕복이 필요하면 다음을 사용한다.
 
 ```sh
-hwp convert ./final.hwpx --to json --embed-bin -o ./final.self-contained.json
-hwp new --from ./final.self-contained.json -o ./json-roundtrip.hwpx
-hwp validate ./json-roundtrip.hwpx
-hwp compare ./final.hwpx ./json-roundtrip.hwpx --format json
+ahwp convert ./final.hwpx --to json --embed-bin -o ./final.self-contained.json
+ahwp new --from ./final.self-contained.json -o ./json-roundtrip.hwpx
+ahwp validate ./json-roundtrip.hwpx
+ahwp compare ./final.hwpx ./json-roundtrip.hwpx --format json
 ```
 
 MCP 내보내기는 `input`, `output`, `to: "json"`, `embed_bin: true`를 담은 `hwp_convert`를 사용한다.
 재입력은 `output`과 전체 IR JSON **문자열**을 담은 `json`으로 `hwp_new`를 호출한다. 파일명을
-`json`에 넣지 않는다. `hwp convert`는 이 JSON을 네이티브 입력으로 받지 않는다. 기록된 JSON
+`json`에 넣지 않는다. `ahwp convert`는 이 JSON을 네이티브 입력으로 받지 않는다. 기록된 JSON
 재입력은 표 6개와 이미지 제어를 유지했고 semantic-identical로 비교됐다.
 이 왕복 주장은 해당 fixture의 의미·리소스 확인에 한정하며, 모든 네이티브 형식이나 opaque
 레코드의 바이트 동일성을 주장하지 않는다.
@@ -349,19 +349,19 @@ PDF-parity 계약을 따른다. 자동 렌더링으로 사람이 수행한 `pass
 
 | 이전 추론 동작 | 네이티브 명령 순서 | 상태 | 알려진 제한 | 실행 가능한 검증 |
 |---|---|---|---|---|
-| `summary` | `hwp info form.hwpx --json` 다음 `hwp cat form.hwpx --format json > form.json` | composed | 이전 pretty summary 또는 XML section-index map은 없습니다. | `test -s form.json && hwp validate form.hwpx` |
-| `unpack` | unpack하지 말고 `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify`를 사용합니다. | intentionally retired | 지원되는 raw-ZIP 추출 워크플로우는 없습니다. | `hwp validate edited.hwpx` |
-| `repack` | repack하지 말고 `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify`를 사용합니다. | intentionally retired | 네이티브 writer가 package layout을 맡으며 수동 manifest 변경은 지원하지 않습니다. | `hwp validate edited.hwpx` |
-| `edit`의 run-spanning find/replace | `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | limited | 네이티브 replace는 임의 XML text run에 걸쳐 분할된 찾기 문자열의 일치를 보장하지 않습니다. | `hwp validate edited.hwpx && hwp cat edited.hwpx --format plain` |
-| `fill`의 run-spanning `{{slot}}` | `hwp slots template.hwpx --json` 다음 `hwp fill template.hwpx -o filled.hwpx --set "name=value" --json` | limited | 슬롯은 서식 run을 넘을 수 있지만 줄바꿈이나 문단 경계를 넘을 수는 없습니다. | `hwp slots template.hwpx --json && hwp validate filled.hwpx` |
-| `fill-table` | `hwp fill template.hwpx -o filled.hwpx --data tables.json --json` | exact | `tables.json`은 네이티브 `tables` 데이터 계약을 따르고 기존 표를 대상으로 해야 합니다. | `hwp validate filled.hwpx` |
-| `fill-form` | `hwp edit form.hwpx -o filled.hwpx --set-cell-by-label "성명=홍길동" --set-cell-by-label "소속=AI센터" --verify` | limited | 정규화된 각 레이블은 인접 또는 header-row value cell 하나로만 해석되어야 합니다. 모호성이나 중복 대상은 발행을 거부합니다. 재귀 표 범위는 `--label-table N`으로 제한합니다. | `hwp validate filled.hwpx && hwp cat filled.hwpx --format plain` |
-| `analyze` | `hwp info form.hwpx --json` 다음 `hwp cat form.hwpx --format json > form.json` | composed | JSON IR은 텍스트, 표, anchor에 유용하지만 이전 raw `sec` child index나 XML style ID를 내보내지 않습니다. | `test -s form.json && hwp validate form.hwpx` |
-| `edit-section` | `hwp cat form.hwpx --format json > form.json`, 다음 `hwp edit form.hwpx -o edited.hwpx --delete-para "old paragraph" --insert-para "anchor=>replacement paragraph" --verify` | limited | anchor/문단 동작은 raw `[start:end)` section-index 수술이 아니며 XML 문단 스타일을 인덱스로 복제하지 않습니다. | `hwp validate edited.hwpx && hwp cat edited.hwpx --format json > edited.json` |
-| 편집 시 `linesegarray` 정리 | `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | composed | writer가 layout record를 내부 관리하며 사용자 표시 `linesegarray` 스위치나 XML 수준 보고서는 없습니다. | `hwp validate edited.hwpx` |
-| sec-index section 편집 | `hwp cat form.hwpx --format json > form.json`, 다음 `hwp edit ... --delete-para ... --insert-para ... --verify` | limited | 네이티브 표면은 안정적인 `sec` child index 계약을 의도적으로 제공하지 않습니다. | `hwp validate edited.hwpx` |
-| mimetype-first STORED repack | `hwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | intentionally retired | writer는 유효한 package 구성을 보존하지만 일반 raw-ZIP repack API를 노출하지 않습니다. | `hwp validate edited.hwpx` |
-| `guard` / `page_guard` 구조 드리프트 지표 | `hwp validate edited.hwpx`, 다음 `hwp render reference.hwpx -o reference.png --report reference.render.json`, `hwp render edited.hwpx -o edited.png --report edited.render.json` | composed | validation과 render report는 XML 문단/표/텍스트 변화율 임계값을 재현하지 않습니다. layout이 중요하면 report 페이지 수를 비교하고 렌더 결과를 검토하십시오. | `hwp validate edited.hwpx && test -s reference.render.json && test -s edited.render.json` |
+| `summary` | `ahwp info form.hwpx --json` 다음 `ahwp cat form.hwpx --format json > form.json` | composed | 이전 pretty summary 또는 XML section-index map은 없습니다. | `test -s form.json && ahwp validate form.hwpx` |
+| `unpack` | unpack하지 말고 `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify`를 사용합니다. | intentionally retired | 지원되는 raw-ZIP 추출 워크플로우는 없습니다. | `ahwp validate edited.hwpx` |
+| `repack` | repack하지 말고 `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify`를 사용합니다. | intentionally retired | 네이티브 writer가 package layout을 맡으며 수동 manifest 변경은 지원하지 않습니다. | `ahwp validate edited.hwpx` |
+| `edit`의 run-spanning find/replace | `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | limited | 네이티브 replace는 임의 XML text run에 걸쳐 분할된 찾기 문자열의 일치를 보장하지 않습니다. | `ahwp validate edited.hwpx && ahwp cat edited.hwpx --format plain` |
+| `fill`의 run-spanning `{{slot}}` | `ahwp slots template.hwpx --json` 다음 `ahwp fill template.hwpx -o filled.hwpx --set "name=value" --json` | limited | 슬롯은 서식 run을 넘을 수 있지만 줄바꿈이나 문단 경계를 넘을 수는 없습니다. | `ahwp slots template.hwpx --json && ahwp validate filled.hwpx` |
+| `fill-table` | `ahwp fill template.hwpx -o filled.hwpx --data tables.json --json` | exact | `tables.json`은 네이티브 `tables` 데이터 계약을 따르고 기존 표를 대상으로 해야 합니다. | `ahwp validate filled.hwpx` |
+| `fill-form` | `ahwp edit form.hwpx -o filled.hwpx --set-cell-by-label "성명=홍길동" --set-cell-by-label "소속=AI센터" --verify` | limited | 정규화된 각 레이블은 인접 또는 header-row value cell 하나로만 해석되어야 합니다. 모호성이나 중복 대상은 발행을 거부합니다. 재귀 표 범위는 `--label-table N`으로 제한합니다. | `ahwp validate filled.hwpx && ahwp cat filled.hwpx --format plain` |
+| `analyze` | `ahwp info form.hwpx --json` 다음 `ahwp cat form.hwpx --format json > form.json` | composed | JSON IR은 텍스트, 표, anchor에 유용하지만 이전 raw `sec` child index나 XML style ID를 내보내지 않습니다. | `test -s form.json && ahwp validate form.hwpx` |
+| `edit-section` | `ahwp cat form.hwpx --format json > form.json`, 다음 `ahwp edit form.hwpx -o edited.hwpx --delete-para "old paragraph" --insert-para "anchor=>replacement paragraph" --verify` | limited | anchor/문단 동작은 raw `[start:end)` section-index 수술이 아니며 XML 문단 스타일을 인덱스로 복제하지 않습니다. | `ahwp validate edited.hwpx && ahwp cat edited.hwpx --format json > edited.json` |
+| 편집 시 `linesegarray` 정리 | `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | composed | writer가 layout record를 내부 관리하며 사용자 표시 `linesegarray` 스위치나 XML 수준 보고서는 없습니다. | `ahwp validate edited.hwpx` |
+| sec-index section 편집 | `ahwp cat form.hwpx --format json > form.json`, 다음 `ahwp edit ... --delete-para ... --insert-para ... --verify` | limited | 네이티브 표면은 안정적인 `sec` child index 계약을 의도적으로 제공하지 않습니다. | `ahwp validate edited.hwpx` |
+| mimetype-first STORED repack | `ahwp edit form.hwpx -o edited.hwpx --replace "old=>new" --verify` | intentionally retired | writer는 유효한 package 구성을 보존하지만 일반 raw-ZIP repack API를 노출하지 않습니다. | `ahwp validate edited.hwpx` |
+| `guard` / `page_guard` 구조 드리프트 지표 | `ahwp validate edited.hwpx`, 다음 `ahwp render reference.hwpx -o reference.png --report reference.render.json`, `ahwp render edited.hwpx -o edited.png --report edited.render.json` | composed | validation과 render report는 XML 문단/표/텍스트 변화율 임계값을 재현하지 않습니다. layout이 중요하면 report 페이지 수를 비교하고 렌더 결과를 검토하십시오. | `ahwp validate edited.hwpx && test -s reference.render.json && test -s edited.render.json` |
 
 ## 편집 전 확인
 
@@ -371,32 +371,32 @@ PDF-parity 계약을 따른다. 자동 렌더링으로 사람이 수행한 `pass
 field/bookmark 이름을 anchor로 찾고, 이전 XML index를 추론하지 마십시오.
 
 ```bash
-hwp info form.hwpx --json
-hwp cat form.hwpx --format json > form.json
-hwp fields form.hwpx --json
-hwp bookmarks form.hwpx --json
+ahwp info form.hwpx --json
+ahwp cat form.hwpx --format json > form.json
+ahwp fields form.hwpx --json
+ahwp bookmarks form.hwpx --json
 ```
 
 ### 확인 검증
 
 ```bash
 test -s form.json
-hwp validate form.hwpx
+ahwp validate form.hwpx
 ```
 
 ## 네이티브 placeholder와 양식 채우기
 
 ### 템플릿 또는 표 채우기
 
-placeholder 작업은 `hwp fill` 전에 `hwp slots`를 사용합니다. 데이터 기반 표 행에는 `--data`를
+placeholder 작업은 `ahwp fill` 전에 `ahwp slots`를 사용합니다. 데이터 기반 표 행에는 `--data`를
 사용하며, 이것이 이전 `fill-table` 명령의 네이티브 대체입니다.
 
 ```bash
-hwp slots template.hwpx --json
-hwp fill template.hwpx -o filled.hwpx --set "title=2026 Plan" --json
-hwp fill table-template.hwpx -o table-filled.hwpx --data tables.json --json
-hwp validate filled.hwpx
-hwp validate table-filled.hwpx
+ahwp slots template.hwpx --json
+ahwp fill template.hwpx -o filled.hwpx --set "title=2026 Plan" --json
+ahwp fill table-template.hwpx -o table-filled.hwpx --data tables.json --json
+ahwp validate filled.hwpx
+ahwp validate table-filled.hwpx
 ```
 
 ### label-value 양식 채우기
@@ -406,11 +406,11 @@ hwp validate table-filled.hwpx
 `--allow-partial`을 사용하지 마십시오.
 
 ```bash
-hwp edit form.hwpx -o form-filled.hwpx \
+ahwp edit form.hwpx -o form-filled.hwpx \
   --set-cell-by-label "성명=홍길동" \
   --set-cell-by-label "소속=AI센터" \
   --verify
-hwp validate form-filled.hwpx
+ahwp validate form-filled.hwpx
 ```
 
 ## anchor를 통한 내용 편집
@@ -422,12 +422,12 @@ hwp validate form-filled.hwpx
 작성합니다.
 
 ```bash
-hwp edit form.hwpx -o revised.hwpx \
+ahwp edit form.hwpx -o revised.hwpx \
   --replace "2025 Plan=>2026 Plan" \
   --delete-para "old body paragraph" \
   --insert-para "body heading=>replacement paragraph" \
   --verify
-hwp validate revised.hwpx
+ahwp validate revised.hwpx
 ```
 
 ### 경계 이해하기
@@ -444,9 +444,9 @@ validation은 package 구조를 확인합니다. render report는 페이지 수�
 이전 structural XML-drift 임계값의 대체는 아닙니다.
 
 ```bash
-hwp validate revised.hwpx
-hwp render form.hwpx -o reference.png --report reference.render.json
-hwp render revised.hwpx -o revised.png --report revised.render.json
+ahwp validate revised.hwpx
+ahwp render form.hwpx -o reference.png --report reference.render.json
+ahwp render revised.hwpx -o revised.png --report revised.render.json
 ```
 
 ### 증거 검토
@@ -456,6 +456,6 @@ hwp render revised.hwpx -o revised.png --report revised.render.json
 
 ## 안전과 비목표
 
-위의 모든 쓰기 명령은 `hwp validate`로 끝납니다. 네이티브 edit와 fill은 atomic publication을
+위의 모든 쓰기 명령은 `ahwp validate`로 끝납니다. 네이티브 edit와 fill은 atomic publication을
 사용하며, 필요한 변경이 실패하면 기존 output을 그대로 둡니다. 이 레시피는 retired wrapper,
 Python XML helper, 실행 가능한 recipe 파일, 이전 바이너리 template을 의도적으로 복원하지 않습니다.

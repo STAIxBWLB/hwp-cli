@@ -45,7 +45,7 @@ Report at most 5 nits per review; summarize the rest as a count.
 ## Do not report
 
 - Generated files: `docs/manual/cli-reference.md` and `cli-reference.ko.md` (regenerate with
-  `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`).
+  `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`).
 - Anything CI already enforces: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
   -- -D warnings`, `cargo test --workspace`, the PDF-runner tests, the Hancom regression gate, the
   structured-corpus gate, claim lint, the documentation-surface gate, the release-readiness

@@ -101,7 +101,7 @@ ViewText 레코드를 복호화하고 동일한 의미 파서에 넘긴다.
 
 읽기 분기에 쓰이는 것은 `COMPRESSED`(bit0), `ENCRYPTED`(bit1), `DISTRIBUTION`(bit2), `DRM`(bit4),
 `HAS_SIGNATURE`(bit7), `CERT_ENCRYPTED`(bit8), `CERT_DRM`(bit10)이다. 서명 예비 bit9는 실제 의미를
-확립하지 못해 메타데이터로만 유지한다. 모든 이름은 `attribute_names()`로 `hwp info`에도 표시한다.
+확립하지 못해 메타데이터로만 유지한다. 모든 이름은 `attribute_names()`로 `ahwp info`에도 표시한다.
 
 ---
 

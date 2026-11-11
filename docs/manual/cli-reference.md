@@ -1,47 +1,47 @@
-<!-- Generated document. Do not edit by hand. Regenerate with: HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference -->
+<!-- Generated document. Do not edit by hand. Regenerate with: HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference -->
 
 [한국어](cli-reference.ko.md) · [English](cli-reference.md)
 
-# hwp CLI command reference
+# ahwp CLI command reference
 
-This document is generated from the clap definitions of the `hwp` CLI. Do not edit it by hand: when a command or flag changes, regenerate it with `HWP_UPDATE_DOCS=1 cargo test -p hwp-cli --test cli_reference`. A CI test enforces that it stays in sync with the code.
+This document is generated from the clap definitions of the `ahwp` CLI. Do not edit it by hand: when a command or flag changes, regenerate it with `HWP_UPDATE_DOCS=1 cargo test -p agent-hwp --test cli_reference`. A CI test enforces that it stays in sync with the code.
 
 ## Command index
 
-- [`hwp info`](#hwp-info)
-- [`hwp cat`](#hwp-cat)
-- [`hwp grep`](#hwp-grep)
-- [`hwp convert`](#hwp-convert)
-- [`hwp merge`](#hwp-merge)
-- [`hwp split`](#hwp-split)
-- [`hwp render`](#hwp-render)
-- [`hwp new`](#hwp-new)
-- [`hwp compose`](#hwp-compose)
-- [`hwp template`](#hwp-template)
-- [`hwp diff`](#hwp-diff)
-- [`hwp compare`](#hwp-compare)
-- [`hwp edit`](#hwp-edit)
-- [`hwp fields`](#hwp-fields)
-- [`hwp bookmarks`](#hwp-bookmarks)
-- [`hwp styles`](#hwp-styles)
-- [`hwp slots`](#hwp-slots)
-- [`hwp fill`](#hwp-fill)
-- [`hwp validate`](#hwp-validate)
-- [`hwp lint`](#hwp-lint)
-- [`hwp certify`](#hwp-certify)
-- [`hwp corpus`](#hwp-corpus)
-- [`hwp mcp`](#hwp-mcp)
-- [`hwp serve`](#hwp-serve)
-- [`hwp update`](#hwp-update)
-- [`hwp skill`](#hwp-skill)
-- [`hwp skill export`](#hwp-skill-export)
-- [`hwp dump`](#hwp-dump)
+- [`ahwp info`](#ahwp-info)
+- [`ahwp cat`](#ahwp-cat)
+- [`ahwp grep`](#ahwp-grep)
+- [`ahwp convert`](#ahwp-convert)
+- [`ahwp merge`](#ahwp-merge)
+- [`ahwp split`](#ahwp-split)
+- [`ahwp render`](#ahwp-render)
+- [`ahwp new`](#ahwp-new)
+- [`ahwp compose`](#ahwp-compose)
+- [`ahwp template`](#ahwp-template)
+- [`ahwp diff`](#ahwp-diff)
+- [`ahwp compare`](#ahwp-compare)
+- [`ahwp edit`](#ahwp-edit)
+- [`ahwp fields`](#ahwp-fields)
+- [`ahwp bookmarks`](#ahwp-bookmarks)
+- [`ahwp styles`](#ahwp-styles)
+- [`ahwp slots`](#ahwp-slots)
+- [`ahwp fill`](#ahwp-fill)
+- [`ahwp validate`](#ahwp-validate)
+- [`ahwp lint`](#ahwp-lint)
+- [`ahwp certify`](#ahwp-certify)
+- [`ahwp corpus`](#ahwp-corpus)
+- [`ahwp mcp`](#ahwp-mcp)
+- [`ahwp serve`](#ahwp-serve)
+- [`ahwp update`](#ahwp-update)
+- [`ahwp skill`](#ahwp-skill)
+- [`ahwp skill export`](#ahwp-skill-export)
+- [`ahwp dump`](#ahwp-dump)
 
-## `hwp info`
+## `ahwp info`
 
 Show file information: format, version, properties and stream list
 
-**Usage:** `hwp info [OPTIONS] <FILE>`
+**Usage:** `ahwp info [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -49,11 +49,11 @@ Show file information: format, version, properties and stream list
 | `--json` |  |  | Print as JSON |
 | `--body-stats` |  |  | Also parse the body and report table placement counts (tables/inline/floating). Off by default: plain info works on files whose body no longer parses |
 
-## `hwp cat`
+## `ahwp cat`
 
 Extract text
 
-**Usage:** `hwp cat [OPTIONS] <FILE>`
+**Usage:** `ahwp cat [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -67,11 +67,11 @@ Extract text
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
-## `hwp grep`
+## `ahwp grep`
 
 Search paragraph text (grep semantics; non-zero exit when no match)
 
-**Usage:** `hwp grep [OPTIONS] <PATTERN> <FILE>`
+**Usage:** `ahwp grep [OPTIONS] <PATTERN> <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -79,11 +79,11 @@ Search paragraph text (grep semantics; non-zero exit when no match)
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--ignore-case` |  |  | Case-insensitive match |
 
-## `hwp convert`
+## `ahwp convert`
 
 Convert between formats
 
-**Usage:** `hwp convert [OPTIONS] <INPUTS>...`
+**Usage:** `ahwp convert [OPTIONS] <INPUTS>...`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -102,11 +102,11 @@ Convert between formats
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
-## `hwp merge`
+## `ahwp merge`
 
 Combine several HWP5/HWPX inputs into one output, one Section per input in argument order (page/footnote/outline numbering keep each input's own start/continue settings and may need manual adjustment after merging)
 
-**Usage:** `hwp merge [OPTIONS] --output <OUTPUT> <INPUTS> <INPUTS>...`
+**Usage:** `ahwp merge [OPTIONS] --output <OUTPUT> <INPUTS> <INPUTS>...`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -117,18 +117,18 @@ Combine several HWP5/HWPX inputs into one output, one Section per input in argum
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
-## `hwp split`
+## `ahwp split`
 
 Divide one document into several outputs, one per section by default (page ranges are opt-in via --pages and are an estimate that may not match Hancom's own pagination)
 
-**Usage:** `hwp split [OPTIONS] --out-dir <OUT_DIR> <INPUT>`
+**Usage:** `ahwp split [OPTIONS] --out-dir <OUT_DIR> <INPUT>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `<INPUT>` |  |  | Input HWP/HWPX file |
 | `--out-dir` | `<OUT_DIR>` |  | Output directory (file names are "<input stem>-NNN.<lowercased input extension>") |
 | `--pages` | `<PAGES>` |  | Page range to split on instead of section boundaries, "N" or "N-M" (1-based, inclusive, repeatable). Boundaries come from the page starts Hancom itself saved in the document's layout cache — a boundary that falls inside a paragraph rounds forward to the next paragraph's start, and the estimate may not match what Hancom itself would paginate |
-| `--from` | `<FROM>` |  | Extract one typed range instead of splitting: where it starts, as "heading:<text>" (the one body paragraph whose own text equals it, as `hwp cat` prints it: tabs, line breaks and non-breaking spaces count), "bookmark:<name>" or "at:<section>.<paragraph>" (both 0-based). The range is a run of top-level body paragraphs of one section, so a table is taken whole; the fragment keeps the section setup, the whole header and every binary it uses. A binary is left out only when nothing in the fragment provably uses it: a reference the tool cannot read (an image fill, a raw shape or OLE object) keeps them all and is reported |
+| `--from` | `<FROM>` |  | Extract one typed range instead of splitting: where it starts, as "heading:<text>" (the one body paragraph whose own text equals it, as `ahwp cat` prints it: tabs, line breaks and non-breaking spaces count), "bookmark:<name>" or "at:<section>.<paragraph>" (both 0-based). The range is a run of top-level body paragraphs of one section, so a table is taken whole; the fragment keeps the section setup, the whole header and every binary it uses. A binary is left out only when nothing in the fragment provably uses it: a reference the tool cannot read (an image fill, a raw shape or OLE object) keeps them all and is reported |
 | `--to` | `<TO>` |  | Where the range ends, same syntax as --from (default: the end of the start's section) |
 | `--end-exclusive` |  |  | Leave the --to paragraph out of the range (it is included by default) |
 | `--source-sha256` | `<SOURCE_SHA256>` |  | SHA-256 (hex) of the source file the selection was made against; a different file is refused before anything is written |
@@ -138,11 +138,11 @@ Divide one document into several outputs, one per section by default (page range
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
-## `hwp render`
+## `ahwp render`
 
 Render pages
 
-**Usage:** `hwp render [OPTIONS] --output <OUTPUT> <INPUT>`
+**Usage:** `ahwp render [OPTIONS] --output <OUTPUT> <INPUT>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -157,11 +157,11 @@ Render pages
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
-## `hwp new`
+## `ahwp new`
 
 Create a new document
 
-**Usage:** `hwp new [OPTIONS]`
+**Usage:** `ahwp new [OPTIONS]`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -183,11 +183,11 @@ Create a new document
 | `--press-head` | `<PRESS_HEAD>` |  | Press release (보도자료) header block "key=value" (keys: 기관명\|보도시점\|배포일\| 담당부서\|담당자\|연락처; repeatable) |
 | `--table-placement` | `inline` \| `floating` |  | Table placement: inline keeps "treat as character" (글자처럼 취급), floating anchors each table to its paragraph so a long table can split across pages. Applies to every table the input produces; pictures are unaffected. Omit to keep the historical default (no explicit placement) |
 
-## `hwp compose`
+## `ahwp compose`
 
 Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YAML)
 
-**Usage:** `hwp compose [OPTIONS] --output <OUTPUT> <SPEC>`
+**Usage:** `ahwp compose [OPTIONS] --output <OUTPUT> <SPEC>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -198,11 +198,11 @@ Compose a structured document deterministically from DocumentSpec v1/v2 (JSON/YA
 | `--report` |  |  | Print the run report as JSON |
 | `--allow-visual-fallback` |  |  | [deprecated] v1 compatibility only; v2 rejects this policy override |
 
-## `hwp template`
+## `ahwp template`
 
 Generate typed native HWP/HWPX from TemplateSpec/Data v1
 
-**Usage:** `hwp template [OPTIONS] --data <DATA> --output <OUTPUT> <TEMPLATE>`
+**Usage:** `ahwp template [OPTIONS] --data <DATA> --output <OUTPUT> <TEMPLATE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -214,11 +214,11 @@ Generate typed native HWP/HWPX from TemplateSpec/Data v1
 | `--dry-run` |  |  | Run the real expansion, writer and validation paths without publishing the result |
 | `--report` |  |  | Print the preservation and expansion report as JSON |
 
-## `hwp diff`
+## `ahwp diff`
 
 Compare a render against a Hancom reference PNG (offset and pixel difference)
 
-**Usage:** `hwp diff [OPTIONS] --ref <REF> <INPUT>`
+**Usage:** `ahwp diff [OPTIONS] --ref <REF> <INPUT>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -232,11 +232,11 @@ Compare a render against a Hancom reference PNG (offset and pixel difference)
 | `--format` | `text` \| `json` | `text` | Report output format (json = machine-readable, for the parity batch runner) |
 | `--ours-png` | `<OURS_PNG>` |  | Compare this raster (e.g. pdftoppm of our PDF) against --ref instead of rendering the input document; the input path is only recorded in the report |
 
-## `hwp compare`
+## `ahwp compare`
 
 Report text and structural differences between two documents, leaving both untouched (not `diff`, which compares a render against a Hancom reference PNG). Exit codes follow diff(1): 0 identical, 1 differences found, 2 the run itself failed — this deliberately diverges from `lint`, which always exits 0 unless --strict finds an error
 
-**Usage:** `hwp compare [OPTIONS] <A> <B>`
+**Usage:** `ahwp compare [OPTIONS] <A> <B>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -246,11 +246,11 @@ Report text and structural differences between two documents, leaving both untou
 | `--password` | `<PASSWORD>` |  | Password supplied directly on the command line |
 | `--password-stdin` |  |  | Read one UTF-8 password line from standard input |
 
-## `hwp edit`
+## `ahwp edit`
 
 Edit an existing document (text replacement, table cells); images and formatting preserved
 
-**Usage:** `hwp edit [OPTIONS] --output <OUTPUT> <INPUT>`
+**Usage:** `ahwp edit [OPTIONS] --output <OUTPUT> <INPUT>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -261,7 +261,7 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--set-cell` | `<SET_CELL>` |  | Set a table cell, "table:row:col=value" (repeatable; 0-based indices) |
 | `--set-cell-by-label` | `<SET_CELL_BY_LABEL>` |  | Fill the value cell immediately right of a form label, "label=value" (repeatable) |
 | `--label-table` | `<LABEL_TABLE>` |  | Restrict every --set-cell-by-label request to this zero-based recursive table index |
-| `--set-field` | `<SET_FIELD>` |  | Fill a field, "name=value" (repeatable; list names with hwp fields) |
+| `--set-field` | `<SET_FIELD>` |  | Fill a field, "name=value" (repeatable; list names with ahwp fields) |
 | `--set-meta` | `<SET_META>` |  | Set metadata, "key=value" (keys: title\|author\|subject\|keywords; repeatable) |
 | `--create-field` | `<CREATE_FIELD>` |  | Create a field, "anchor=>name" or "anchor=>name=value": insert a %clk field after the anchor text (repeatable) |
 | `--create-bookmark` | `<CREATE_BOOKMARK>` |  | Create a bookmark, "anchor=>name": insert a bokm marker after the anchor text (repeatable) |
@@ -286,54 +286,54 @@ Edit an existing document (text replacement, table cells); images and formatting
 | `--set-page` | `<SET_PAGE>` |  | Page setup, "key:value" (keys: width, height, margin-left, margin-right, margin-top, margin-bottom (mm), orientation (portrait\|landscape); repeatable) |
 | `--delete-image` | `<DELETE_IMAGE>` |  | Delete an image, "anchor": delete the picture in the anchor paragraph (repeatable) |
 | `--delete-table` | `<DELETE_TABLE>` |  | Delete a table, "n" (0-based index) or "anchor" (table in the anchor paragraph) (repeatable) |
-| `--delete-field` | `<DELETE_FIELD>` |  | Delete a field by name, "name" (repeatable; list names with hwp fields) |
-| `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | Delete a bookmark by name, "name" (repeatable; list names with hwp bookmarks) |
+| `--delete-field` | `<DELETE_FIELD>` |  | Delete a field by name, "name" (repeatable; list names with ahwp fields) |
+| `--delete-bookmark` | `<DELETE_BOOKMARK>` |  | Delete a bookmark by name, "name" (repeatable; list names with ahwp bookmarks) |
 | `--style-tables` | `<STYLE_TABLES>` |  | Style every eligible table (header shade/bold/center, content-proportional widths) under an official-document preset: official, report, plan, notice, minutes, or press. Skips single-column tables (frame blocks); byte-stable when applied twice |
 | `--table-placement` | `inline` \| `floating` |  | Set table placement: inline restores "treat as character" (글자처럼 취급), floating anchors the table to its paragraph so it can split across pages. Applies to every table, or to one table with --table. Byte-stable when applied twice |
 | `--table` | `<TABLE>` |  | Restrict --table-placement to this zero-based recursive table index (same addressing as --label-table) |
 | `--verify` |  |  | Verify by re-reading after writing |
 | `--allow-partial` |  |  | Publish the matched edits even if some requests found no target (default: fail if any is unapplied) |
-| `--report` | `<FILE>` |  | Write an edit-report-v1 JSON file naming every op's status, how many pieces it touched, and the segment ids it changed as before/after pairs. Unlike "hwp compose --report" (a bare flag printing to stdout), this one takes a file path, matching --loss-report's shape |
+| `--report` | `<FILE>` |  | Write an edit-report-v1 JSON file naming every op's status, how many pieces it touched, and the segment ids it changed as before/after pairs. Unlike "ahwp compose --report" (a bare flag printing to stdout), this one takes a file path, matching --loss-report's shape |
 | `--dry-run` |  |  | Apply the whole batch in memory and run the real writer and verifier, but publish no output file; prints the edit-report-v1 report to stdout unless --report is also given |
 
-## `hwp fields`
+## `ahwp fields`
 
 List fields (name, kind, value)
 
-**Usage:** `hwp fields [OPTIONS] <FILE>`
+**Usage:** `ahwp fields [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
 
-## `hwp bookmarks`
+## `ahwp bookmarks`
 
 List bookmarks (name)
 
-**Usage:** `hwp bookmarks [OPTIONS] <FILE>`
+**Usage:** `ahwp bookmarks [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
 
-## `hwp styles`
+## `ahwp styles`
 
 List named styles (resolved attributes; `used_by` is the paragraph segment ids `cat --with-segments --segments v2` publishes)
 
-**Usage:** `hwp styles [OPTIONS] <FILE>`
+**Usage:** `ahwp styles [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--format` | `text` \| `json` | `text` | Output format |
 
-## `hwp slots`
+## `ahwp slots`
 
 List `{{name}}` text placeholders (template slots; a name is any text without braces or control characters, padding inside the braces trimmed)
 
-**Usage:** `hwp slots [OPTIONS] <FILE>`
+**Usage:** `ahwp slots [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -342,11 +342,11 @@ List `{{name}}` text placeholders (template slots; a name is any text without br
 | `--forms` |  |  | Also list Korean form fields - label cells, inline "label: value" and the slots - with key, label, source, confidence, occurrences and required (JSON "fields"; kordoc rules) |
 | `--occurrences` |  |  | Discover exact source-bound form occurrences, including unsupported targets (requires --forms --json) |
 
-## `hwp fill`
+## `ahwp fill`
 
 Fidelity-preserving template fill (replace `{{name}}`, padded `{{ name }}` too, in hwpx; package preserved; values are literal)
 
-**Usage:** `hwp fill [OPTIONS] --output <OUTPUT> <INPUT>`
+**Usage:** `ahwp fill [OPTIONS] --output <OUTPUT> <INPUT>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -358,22 +358,22 @@ Fidelity-preserving template fill (replace `{{name}}`, padded `{{ name }}` too, 
 | `--allow-partial` |  |  | Publish the matched values even if some requests found no placeholder (default: fail if any is unreplaced). If none matched, the input is published unchanged with every count 0 |
 | `--forms` |  |  | Also fill Korean form fields from the same values (hwpx): the cell next to or below a label cell, inline "label: value", "label( )" blanks, "□option" checkboxes and "(label: )" blanks. A non-empty value cell, and the inline text after "label:", is overwritten (a warning names each overwrite); a cell holding a field, picture or table is never written, and values are inserted literally. Keys match with spaces, colons and parentheses ignored; the report adds "unmatched". Output must be .hwpx |
 
-## `hwp validate`
+## `ahwp validate`
 
 Structural validation (mimetype, required entries, XML parsing); exit code 0 when valid
 
-**Usage:** `hwp validate [OPTIONS] <FILE>`
+**Usage:** `ahwp validate [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `<FILE>` |  |  | Target HWP/HWPX file |
 | `--json` |  |  | Print as JSON |
 
-## `hwp lint`
+## `ahwp lint`
 
 Lint official-document notation and structure rules; advisory by default (always exit 0) — --strict exits 1 only when an error-severity finding exists. This diverges from `compare`, which follows the diff(1) convention (1 means differences were found)
 
-**Usage:** `hwp lint [OPTIONS] <FILE>`
+**Usage:** `ahwp lint [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -382,11 +382,11 @@ Lint official-document notation and structure rules; advisory by default (always
 | `--json` |  |  | Print the hwp-lint-report-v1 JSON report |
 | `--strict` |  |  | Exit 1 when an error-severity finding exists (default: always exit 0) |
 
-## `hwp certify`
+## `ahwp certify`
 
 Certify package, semantics, native render and independent import under a versioned policy
 
-**Usage:** `hwp certify --policy <POLICY> --report <REPORT> <INPUT>`
+**Usage:** `ahwp certify --policy <POLICY> --report <REPORT> <INPUT>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -394,33 +394,33 @@ Certify package, semantics, native render and independent import under a version
 | `--policy` | `<POLICY>` |  | hwp-certification-policy-v1 JSON/YAML |
 | `--report` | `<REPORT>` |  | Atomic artifact directory to create (an existing path is refused) |
 
-## `hwp corpus`
+## `ahwp corpus`
 
 Generate the frozen structured corpus twice, reopen it and certify natively
 
-**Usage:** `hwp corpus --manifest <MANIFEST> --report <REPORT>`
+**Usage:** `ahwp corpus --manifest <MANIFEST> --report <REPORT>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `--manifest` | `<MANIFEST>` |  | hwp-structured-corpus-v1 manifest JSON |
 | `--report` | `<REPORT>` |  | Atomic run report directory to create (an existing path is refused) |
 
-## `hwp mcp`
+## `ahwp mcp`
 
 MCP (Model Context Protocol) stdio server: a tool interface for AI agents
 
-**Usage:** `hwp mcp [OPTIONS]`
+**Usage:** `ahwp mcp [OPTIONS]`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
 | `--font-dir` | `<FONT_DIR>` |  | Default font directory for the render and diff tools (repeatable) |
 | `--root` | `<ROOT>` |  | Restrict all file access to this directory (repeatable). Default: unrestricted |
 
-## `hwp serve`
+## `ahwp serve`
 
 MCP HTTP server for container deployment: the same tools over POST /mcp
 
-**Usage:** `hwp serve [OPTIONS] --root <ROOT>`
+**Usage:** `ahwp serve [OPTIONS] --root <ROOT>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -429,11 +429,11 @@ MCP HTTP server for container deployment: the same tools over POST /mcp
 | `--font-dir` | `<FONT_DIR>` |  | Default font directory for the render and diff tools (repeatable) |
 | `--files` |  |  | Enable POST and GET /files/{name} upload and download inside the root |
 
-## `hwp update`
+## `ahwp update`
 
 Self-update: fetch the latest `hwp` from GitHub releases and replace the running binary
 
-**Usage:** `hwp update [OPTIONS]`
+**Usage:** `ahwp update [OPTIONS]`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -442,19 +442,19 @@ Self-update: fetch the latest `hwp` from GitHub releases and replace the running
 | `--force` |  |  | Re-download and replace even at the same version (to repair a broken install) |
 | `--json` |  |  | Print as JSON |
 
-## `hwp skill`
+## `ahwp skill`
 
 Manage the bundled agent skill (SKILL.md for AI coding assistants)
 
-**Usage:** `hwp skill <COMMAND>`
+**Usage:** `ahwp skill <COMMAND>`
 
 _No arguments or flags_
 
-## `hwp skill export`
+## `ahwp skill export`
 
 Write the embedded skill tree (SKILL.md, SKILL.ko.md, the official-documents guide, references/ and templates/) into a directory (default ./hwp)
 
-**Usage:** `hwp skill export [OPTIONS]`
+**Usage:** `ahwp skill export [OPTIONS]`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
@@ -462,11 +462,11 @@ Write the embedded skill tree (SKILL.md, SKILL.ko.md, the official-documents gui
 | `--install` | `claude-code` \| `codex` \| `amazon-quick` |  | Install into a known agent skills directory instead |
 | `--quick-profile` | `<ID_OR_ABSOLUTE_PATH>` |  | Amazon Quick profile ID or absolute profile directory (Amazon Quick installs only) |
 
-## `hwp dump`
+## `ahwp dump`
 
 [developer] Dump record and package structure
 
-**Usage:** `hwp dump [OPTIONS] <FILE>`
+**Usage:** `ahwp dump [OPTIONS] <FILE>`
 
 | Argument/flag | Value | Default | Description |
 |---|---|---|---|
