@@ -359,6 +359,98 @@ degrades positions instead of failing a render. The prepass keeps a private accu
 neither spends the caller's page/display-item budget nor repeats the document's other warnings; only
 the diagnostics that can invalidate an anchor are propagated.
 
+### 2.2.2 An edited HWP5 document seeds the suffix from the kept prefix
+
+`ahwp edit` on an HWP5 source re-synthesizes the document and then puts every paragraph the edit did
+not change back as its saved record (`convert::restore_unchanged_native_paragraphs`), so new
+PARA_LINE_SEG records are limited to what the edit moved. Both sides of that seam carry page-relative
+`v_pos`, and a re-synthesis that restarts the section at 0 puts the first edited paragraph *above* the
+saved cache of the paragraph before it. `layout_document_pages` reads that step back as a page
+boundary (`seg.v_pos < prev_v_pos`) and draws the change on the next page
+([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
+
+The fix adds one rule and no new geometry: the writer measures the prefix it will restore and passes
+one `lineseg::BodySeed` per section (`synthesize_linesegs_seeded`, which takes a
+`lineseg::BodyFlow { seeds, preserve_nested }`). A seed names the section, the first body paragraph
+whose flow the edit moved, and the cursor that paragraph starts at, which is
+`lineseg::saved_body_cursor` over that prefix's last kept paragraph. It reads `lineseg::body_cursor`,
+the one rule §2.2's walk also uses: the paragraph's entry position plus its tables' height when it
+anchors any (text cannot resume at the line cursor after a table), otherwise the cursor the line
+synthesizer reached, plus its space-after.
+
+The walk passes that line cursor in rather than reading it back out of the committed line, because
+the two are not the same number. A committed line serializes `line_spacing = max(advance - base, 0)`,
+so `v_pos + line_height + line_spacing` reads back `max(base, advance)`: with FIXED spacing below the
+base line, or FIXED 0, re-deriving the cursor would move every following paragraph and change
+unseeded synthesis (HWPX or markdown to HWP). `saved_body_cursor` reconstructs the reading from a
+saved record because a saved cache has no other field to offer; that path feeds a seed, never the
+unseeded walk ([#509](https://github.com/STAIxBWLB/hwp-cli/pull/509)).
+
+The restore runs twice, around the synthesis. Before it, every paragraph the edit did not change
+gets its saved record back, so the nested caches the output will keep are in place while the walk
+measures them (`BodyFlow::preserve_nested` keeps a nested list that already has a cache instead of
+re-synthesizing it, and a preserved list paragraph still advances the list cursor by its own block).
+An edited paragraph is cacheless in that document, so a cache present there is one the writer
+restores; measuring it is what keeps a kept table's height the height the paragraphs below it are
+placed against. After the synthesis the same restore runs again for the body caches alone: the prefix
+before the first moved paragraph gets its saved `v_pos` back, and from that paragraph on the body
+cache the synthesizer produced is what gets written. A paragraph behind the seam is cacheless in the
+document the walk sees (`SuffixCache::Drop`), and the synthesized cache stays after it
+(`SuffixCache::Keep`). Unchanged table cells and the paragraphs of generic lists are restored on both
+sides of the seam, matched by `instance_id`, then by full equality, and only then by index when the
+list length is unchanged. Captions are restored only where a whole unchanged paragraph brings them: a
+caption inside a control the edit changed is not rewritten here.
+
+A nested list decides for itself, and there are three answers (`lineseg::ListCaches`), because three
+different questions are folded into "keep the cache": which paragraphs keep their own cache, what a
+descendant table cell does, and whether a kept cache moves the list cursor. `Recompute`
+re-synthesizes every paragraph of the list, `KeepInPlace` keeps a paragraph's own cache and leaves the
+cursor where it is, and `KeepMeasured` keeps the cached prefix, advances the cursor by each kept block
+and re-synthesizes from the first cacheless paragraph. An unedited document runs `Recompute` at the
+top, which maps to `KeepInPlace` for a caption and a generic list and to `Recompute` for a table cell:
+that is base behaviour, so a caption, a generic list and a table nested inside either are synthesized
+exactly as before ([#509](https://github.com/STAIxBWLB/hwp-cli/pull/509)). Only an edited document's
+body runs `KeepMeasured`, and it keeps it through captions and cells on that path.
+
+Inside one list the seam is positional, not per paragraph. A list's saved `v_pos` values are
+cumulative, so only the part before its first *moved* paragraph still describes it:
+`first_moved_paragraph` marks a paragraph moved when its match is not at its own index, when its
+content differs, or when nothing matches — the shift an insertion or deletion above it causes is
+included, which is what stops a retained sibling from keeping a `v_pos` measured below a block the
+edit changed. "Content" is the fields that decide the paragraph's lines: the line cache is the answer
+being computed, and PARA_TEXT's "last paragraph in the list" bit follows the list rather than the
+paragraph, so inserting a sibling flips it on a paragraph nobody edited.
+
+Paragraph equality is sufficient only when its local parent context still matches. Before restoring
+cell paragraphs, the writer compares the cell's width, all four margins, `list_attr` and opaque
+`header_tail`. For a Generic paragraph list it compares the first `gso_shapes` entry's width
+(including whether that entry exists) and the list's opaque `header_data`. A mismatch puts that
+list's seam at its first paragraph: the pre-synthesis pass drops its own saved lines, and the
+post-synthesis pass keeps its new lines. This prevents `split_cell` and width-only `style_tables`
+edits from restoring a cache measured for the old box even when text and paragraph styles match.
+Cell row/column coordinates and border-only changes do not invalidate cell-local lines. Valid
+unchanged descendant controls still retain their saved records, so changing an outer cell's context
+does not require re-synthesizing an unchanged nested table's tall cells. These are local validity
+comparisons, not new interpretations of opaque list headers or new native geometry rules; the
+regressions do not establish Hancom-open behavior.
+
+A kept table anchor keeps the table inside its own line block, so `saved_body_cursor` is floored at
+the last kept line's bottom: the anchor line's height can exceed the summed cell heights (a 4412 HU
+table under a 5100 HU line in the public fixture), and the paragraph after it must not resume inside
+a line the output keeps.
+
+Consequences worth keeping. An unedited document never enters this path, so HWP5 identity stays
+byte-identical, and an unseeded synthesis (HWPX or markdown to HWP) runs the same cursor rule it ran
+before. An edit in a section's first paragraph needs no seed (the section starts at 0 anyway), and a
+prefix paragraph without a saved cache yields no seed rather than a guessed position. A seed is
+applied only when it lands inside the body box (`0..=content_h`), and the arithmetic around it
+saturates, because a saved cursor comes from untrusted bytes and an out-of-page one must degrade to a
+page start instead of overflowing. An explicit page break in the seeded paragraph still restarts the
+page. The seed continues the synthesizer's own spacing unit, so the seam
+can sit half a paragraph spacing away from Hangul's saved gap until the unit calibration in
+[#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) lands. A floating-table section reads prepass
+anchors instead of the cursor (§2.2.1), so a seed has no effect there.
+
 ### 2.3 Line layout for one paragraph (`compute_linesegs`)
 
 Line metrics are derived from the `base_size` of the first character shape (1000 by default):

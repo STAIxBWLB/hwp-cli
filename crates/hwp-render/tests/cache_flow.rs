@@ -692,3 +692,315 @@ fn native_floating_edit_restarts_the_base_cursor_at_an_explicit_break() {
         "the native base path sets no cacheless page-start flag"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// #509 finding 5: the body walk must carry the advance `compute_linesegs` actually committed.
+//
+// A committed line serializes `line_spacing = max(advance - base, 0)`, so reading the cursor back
+// out of the segs (`v_pos + line_height + line_spacing`) yields `max(base, advance)`. For FIXED
+// spacing below the base line, and for FIXED 0, that is not the advance the synthesizer used, and
+// every following paragraph moves. Unseeded synthesis (HWPX/markdown -> HWP) must stay exactly as
+// it was, so each case below pins the positions the pre-change walk produced; the numbers were
+// read off the unseeded synthesis of the same documents on the change's base `a9f1571`.
+// ---------------------------------------------------------------------------------------------
+
+/// One body line of 1000 HWPUNIT whose FIXED line spacing is `value / 2`, as `line_advance_hu`
+/// reads FIXED mode, so `value` 600 is an advance of 300 below the base line and 0 an advance of 0.
+fn fix_line_spacing(doc: &mut Document, value: i32) {
+    for shape in &mut doc.header.char_shapes {
+        shape.base_size = 1000;
+    }
+    for shape in &mut doc.header.para_shapes {
+        shape.spacing_top = 0;
+        shape.spacing_bottom = 0;
+        shape.line_spacing_type = 1;
+        shape.line_spacing = value;
+        shape.line_spacing_old = value;
+    }
+}
+
+/// Zero-margin page of `height_hu`: the body box is the whole page, so pagination follows flow
+/// geometry alone (no font, no header band).
+fn set_body_height(doc: &mut Document, height_hu: i32) {
+    for control in &mut doc.sections[0].paragraphs[0].controls {
+        let Control::SectionDef(definition) = control else {
+            continue;
+        };
+        let page = definition
+            .page
+            .as_mut()
+            .expect("from_markdown defines a page");
+        page.height = HwpUnit(height_hu);
+        page.margin_top = HwpUnit(0);
+        page.margin_bottom = HwpUnit(0);
+        page.margin_header = HwpUnit(0);
+        page.margin_footer = HwpUnit(0);
+        page.margin_left = HwpUnit(0);
+        page.margin_right = HwpUnit(0);
+    }
+}
+
+/// Each body paragraph's first-line `v_pos`, the walk's published cursor chain.
+fn body_v_pos(doc: &Document) -> Vec<i32> {
+    doc.sections[0]
+        .paragraphs
+        .iter()
+        .map(|para| {
+            para.line_segs
+                .first()
+                .unwrap_or_else(|| panic!("paragraph has no synthesized line"))
+                .v_pos
+        })
+        .collect()
+}
+
+/// FIXED spacing below the base line: main advanced 300 per paragraph, and re-deriving the cursor
+/// from the segs (base 1000 + serialized 0) would advance 1000 instead.
+#[test]
+fn unseeded_synthesis_keeps_a_fixed_advance_below_the_base_line() {
+    let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n");
+    fix_line_spacing(&mut doc, 600);
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 300, 600]);
+
+    let last = doc.sections[0].paragraphs[0].line_segs[0];
+    assert_eq!(
+        last.line_spacing, 0,
+        "fixture: a sub-base FIXED advance serializes as zero spacing, which is why the segs \
+         cannot carry the cursor"
+    );
+}
+
+/// FIXED 0 spacing: main advanced nothing, so every paragraph starts at the same position.
+#[test]
+fn unseeded_synthesis_keeps_a_zero_fixed_advance() {
+    let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n");
+    fix_line_spacing(&mut doc, 0);
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 0, 0]);
+}
+
+/// A page that overflows: the reset to the page top happens inside `compute_linesegs`, and the
+/// sub-base advance still has to be carried across it.
+#[test]
+fn unseeded_synthesis_keeps_a_sub_base_advance_across_a_page_break() {
+    let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n\nD\n\nE\n\nF\n");
+    fix_line_spacing(&mut doc, 600);
+    set_body_height(&mut doc, 2400);
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 300, 600, 900, 1200, 0]);
+}
+
+/// An explicit page break restarts the cursor; the paragraph after it still advances by the
+/// committed 300, not by the base line.
+#[test]
+fn unseeded_synthesis_keeps_a_sub_base_advance_after_an_explicit_break() {
+    let mut doc = hwp_convert::from_markdown("A\n\nB\n\nC\n");
+    fix_line_spacing(&mut doc, 600);
+    doc.sections[0].paragraphs[1].header.break_type |= 0x04;
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 0, 300]);
+}
+
+/// A floating table makes the section read prepass anchors. The anchors are measured before the
+/// walk, so this case pins that the anchored path still publishes the anchor's own position: a
+/// walk that fed the re-derived cursor back into the flow would move it.
+#[test]
+fn unseeded_synthesis_keeps_its_anchors_under_a_floating_prepass() {
+    let mut doc = hwp_convert::from_markdown("First\n\nFollowing\n");
+    fix_line_spacing(&mut doc, 600);
+    let fill = add_fill(&mut doc, 0x0005_6789);
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(table(
+            vec![Paragraph::default()],
+            fill,
+            1200,
+        )));
+    synthesize(&mut doc);
+    assert_eq!(body_v_pos(&doc), vec![0, 1600]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// #509 finding 5 (round 3): the three cache switches must not leak into default synthesis.
+//
+// Which paragraphs keep their own cache, what a descendant table cell does, and whether a kept
+// cache moves the list cursor are separate decisions. Unedited synthesis keeps a caption or
+// generic-list paragraph's cache **without** moving the cursor, and always recomputes the cells of
+// a table nested inside either. The source-aware edit path is the only caller that measures a
+// retained prefix.
+// ---------------------------------------------------------------------------------------------
+
+/// A saved list line at `v_pos` with 1000 of line height and `line_spacing` serialized beside it.
+fn saved_line(v_pos: i32, line_spacing: i32) -> hwp_model::LineSeg {
+    hwp_model::LineSeg {
+        text_start: 0,
+        v_pos,
+        line_height: 1000,
+        text_height: 1000,
+        baseline_gap: 850,
+        line_spacing,
+        col_start: 0,
+        seg_width: 20000,
+        flags: 0x0006_0000,
+    }
+}
+
+/// A caption holding one paragraph that already carries a saved line and one that does not.
+fn mixed_caption(doc: &Document) -> hwp_model::Caption {
+    let mut cached = paragraph(doc);
+    cached.line_segs = vec![saved_line(0, 600)];
+    let cacheless = paragraph(doc);
+    hwp_model::Caption {
+        side: hwp_model::CaptionSide::Bottom,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 200,
+        width: Some(15000),
+        last_width: 15000,
+        paragraphs: vec![cached, cacheless],
+    }
+}
+
+/// A generic paragraph list holding the same pair.
+fn generic_list(doc: &Document) -> hwp_model::GenericControl {
+    let mut cached = paragraph(doc);
+    cached.line_segs = vec![saved_line(0, 600)];
+    let cacheless = paragraph(doc);
+    hwp_model::GenericControl {
+        ctrl_id: *b"gso ",
+        data: Vec::new(),
+        paragraph_lists: vec![hwp_model::ParagraphList {
+            header_data: Vec::new(),
+            paragraphs: vec![cached, cacheless],
+        }],
+        extras: Vec::new(),
+        raw_children: Vec::new(),
+        gso_shapes: Vec::new(),
+        equation: None,
+        column_def: None,
+        caption: None,
+        hwpx_raw_xml: None,
+        container_box: None,
+    }
+}
+
+/// A cached caption paragraph followed by a cacheless one: the unedited convention publishes the
+/// second at 0, because a kept cache does not move the list cursor. Reading the cursor back out of
+/// the kept line (`v_pos + line_height + line_spacing`) would publish 1600 instead.
+#[test]
+fn unseeded_synthesis_does_not_advance_past_a_kept_caption_cache() {
+    let mut doc = hwp_convert::from_markdown("Anchor\n");
+    fix_line_spacing(&mut doc, 600);
+    let caption = mixed_caption(&doc);
+    let fill = add_fill(&mut doc, 0x0006_789A);
+    let mut host = table(vec![paragraph(&doc)], fill, 1200);
+    host.caption = Some(caption);
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(host));
+    synthesize(&mut doc);
+
+    let caption = doc.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => table.caption.as_ref(),
+            _ => None,
+        })
+        .expect("table caption");
+    assert_eq!(
+        caption.paragraphs[0].line_segs,
+        vec![saved_line(0, 600)],
+        "the caption paragraph with a cache keeps it unchanged"
+    );
+    assert_eq!(
+        caption.paragraphs[1].line_segs[0].v_pos, 0,
+        "the cacheless caption paragraph starts where the list cursor still is"
+    );
+}
+
+/// The same pair in a generic paragraph list.
+#[test]
+fn unseeded_synthesis_does_not_advance_past_a_kept_generic_list_cache() {
+    let mut doc = hwp_convert::from_markdown("Anchor\n");
+    fix_line_spacing(&mut doc, 600);
+    let list = generic_list(&doc);
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Generic(list));
+    synthesize(&mut doc);
+
+    let list = doc.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Generic(generic) => generic.paragraph_lists.first(),
+            _ => None,
+        })
+        .expect("generic paragraph list");
+    assert_eq!(
+        list.paragraphs[0].line_segs,
+        vec![saved_line(0, 600)],
+        "the list paragraph with a cache keeps it unchanged"
+    );
+    assert_eq!(
+        list.paragraphs[1].line_segs[0].v_pos, 0,
+        "the cacheless list paragraph starts where the list cursor still is"
+    );
+}
+
+/// A table nested inside a caption: unedited synthesis always recomputes its cells, so a cell cache
+/// carrying an outsized line height is replaced rather than measured.
+#[test]
+fn unseeded_synthesis_recomputes_a_cell_of_a_table_nested_in_a_caption() {
+    let mut doc = hwp_convert::from_markdown("Anchor\n");
+    fix_line_spacing(&mut doc, 600);
+    let fill = add_fill(&mut doc, 0x0006_789B);
+
+    let mut tall = paragraph(&doc);
+    tall.line_segs = vec![hwp_model::LineSeg {
+        line_height: 12000,
+        text_height: 12000,
+        ..saved_line(0, 0)
+    }];
+    let inner = table(vec![tall], fill, 1200);
+
+    let mut host_paragraph = paragraph(&doc);
+    host_paragraph.controls.push(Control::Table(inner));
+    let mut host = table(vec![paragraph(&doc)], fill, 1200);
+    host.caption = Some(hwp_model::Caption {
+        side: hwp_model::CaptionSide::Bottom,
+        direction: hwp_model::CaptionDirection::Horizontal,
+        gap: 200,
+        width: Some(15000),
+        last_width: 15000,
+        paragraphs: vec![host_paragraph],
+    });
+    doc.sections[0].paragraphs[0]
+        .controls
+        .push(Control::Table(host));
+    synthesize(&mut doc);
+
+    let cell = doc.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => table.caption.as_ref(),
+            _ => None,
+        })
+        .and_then(|caption| caption.paragraphs.first())
+        .and_then(|caption_paragraph| {
+            caption_paragraph
+                .controls
+                .iter()
+                .find_map(|control| match control {
+                    Control::Table(inner) => inner.cells.first(),
+                    _ => None,
+                })
+        })
+        .expect("table nested in the caption");
+    assert_eq!(
+        cell.paragraphs[0].line_segs[0].line_height, 1000,
+        "a nested table's cell is recomputed, not measured from the cache it arrived with"
+    );
+}

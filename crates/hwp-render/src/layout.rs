@@ -1695,13 +1695,19 @@ fn layout_document_pages(
 
                 let baseline_gap_pt = seg.baseline_gap as f32 / 100.0;
                 let line_height_pt = seg.line_height as f32 / 100.0;
-                let stored_baseline = body_top + (seg.v_pos + seg.baseline_gap) as f32 / 100.0;
+                // A saved cache is untrusted: saturate, so a corrupt position degrades the line
+                // instead of overflowing (the page fit checks below still apply).
+                let stored_baseline =
+                    body_top + seg.v_pos.saturating_add(seg.baseline_gap) as f32 / 100.0;
                 // Flow correction: if previous content passed the saved position,
                 // move the baseline down to content_bottom plus this line's ascent.
                 let baseline_y = stored_baseline.max(content_bottom + baseline_gap_pt);
 
-                let line_advance =
-                    (seg.line_height + seg.line_spacing).max(seg.line_height) as f32 / 100.0;
+                let line_advance = seg
+                    .line_height
+                    .saturating_add(seg.line_spacing)
+                    .max(seg.line_height) as f32
+                    / 100.0;
 
                 // Current column's x offset (col_start is column-relative and zero). Zero for a single column.
                 let col_x = (col_band % col_count) as f32 * (col_width + col_gap);
@@ -5140,8 +5146,11 @@ fn layout_box_para_iter<'a>(
                 } else {
                     f32::INFINITY
                 };
-                let line_advance =
-                    (seg.line_height + seg.line_spacing).max(seg.line_height) as f32 / 100.0;
+                let line_advance = seg
+                    .line_height
+                    .saturating_add(seg.line_spacing)
+                    .max(seg.line_height) as f32
+                    / 100.0;
 
                 let last_y = place_wrapped(
                     page,

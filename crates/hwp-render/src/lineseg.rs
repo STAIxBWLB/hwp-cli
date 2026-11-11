@@ -66,7 +66,98 @@ pub fn synthesize_linesegs(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) {
-    synthesize_linesegs_inner(doc, store, warnings, None);
+    synthesize_linesegs_inner(doc, store, warnings, None, &BodyFlow::default());
+}
+
+/// One section's body flow continues at a caller-supplied cursor instead of restarting at the
+/// section top: an edited HWP5 document keeps the saved caches of the paragraphs before the edit,
+/// so the re-synthesized suffix has to start where that prefix ends (#462).
+#[derive(Clone, Copy, Debug)]
+pub struct BodySeed {
+    pub section: usize,
+    /// Body paragraph index the cursor applies to.
+    pub paragraph: usize,
+    /// Page-relative cursor the paragraph's flow starts from, in HWPUNIT: the kept prefix's bottom.
+    /// The paragraph's own space-before is added by the walk, as for any other paragraph.
+    pub v_pos_hu: i32,
+}
+
+/// The cursor the walk below carries past one body paragraph, in HWPUNIT: the paragraph's entry
+/// position plus the tables it anchors when it has any (text cannot follow a table at the line
+/// cursor, which is what Hangul flags as corruption), otherwise `line_cursor`, the position
+/// `compute_linesegs` left the caller at; plus the paragraph's space-after.
+///
+/// `line_cursor` is passed in rather than re-derived from the committed segs on purpose: the
+/// serialized `line_spacing` is `max(advance - base, 0)`, so `v_pos + line_height + line_spacing`
+/// reads back `max(base, advance)`. With FIXED spacing below the base line, or FIXED 0, that is not
+/// the advance the synthesizer committed, and re-deriving it would change unseeded synthesis
+/// (HWPX/markdown -> HWP) that this rule is not allowed to touch (#509).
+fn body_cursor(entry_v_pos: i32, line_cursor: i32, table_total: i32, space_after: i32) -> i32 {
+    let bottom = if table_total > 0 {
+        entry_v_pos.saturating_add(table_total)
+    } else {
+        line_cursor
+    };
+    bottom.saturating_add(space_after)
+}
+
+/// [`body_cursor`] measured from a paragraph's saved record, for a caller continuing a flow from
+/// kept caches: the saved first line stands for the entry position, and the tables are measured
+/// from their saved nested caches, which is what the renderer draws for that kept paragraph.
+///
+/// A saved record carries no separate advance field, so the line cursor is reconstructed as
+/// `v_pos + line_height + line_spacing` of the last line. That is the only reading a saved cache
+/// offers, and it is exact for every mode but FIXED spacing below the base line, which a genuine
+/// record cannot express without also losing the committed position (#509).
+pub fn saved_body_cursor(paragraph: &Paragraph, space_after: i32) -> Option<i32> {
+    let entry = paragraph.line_segs.first()?;
+    let table_total = paragraph
+        .controls
+        .iter()
+        .filter_map(|control| match control {
+            Control::Table(table) => Some(table_height(table)),
+            _ => None,
+        })
+        .fold(0i32, |total, height| total.saturating_add(height));
+    let last = paragraph.line_segs.last()?;
+    let line_cursor = last
+        .v_pos
+        .saturating_add(last.line_height)
+        .saturating_add(last.line_spacing);
+    // A kept table anchor keeps the table inside its own line block: genuine records store the
+    // extent in the anchor line's height, which can end below the summed cell heights (a 4412 HU
+    // table under a 5100 HU line in the #462 fixture). Resuming at the smaller of the two would
+    // start the next paragraph inside the line the output keeps (#509).
+    let line_bottom = last.v_pos.saturating_add(last.line_height);
+    Some(
+        body_cursor(entry.v_pos, line_cursor, table_total, space_after)
+            .max(line_bottom.saturating_add(space_after)),
+    )
+}
+
+/// [`synthesize_linesegs`] with body-flow seeds, so an edited document can re-synthesize only the
+/// paragraphs after an edit while keeping the genuine caches before it (#462). A seeded paragraph
+/// starts at its seed; an explicit page break in that paragraph still restarts the page.
+pub fn synthesize_linesegs_seeded(
+    doc: &mut Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    flow: &BodyFlow<'_>,
+) {
+    synthesize_linesegs_inner(doc, store, warnings, None, flow);
+}
+
+/// How an edited document's body flow is synthesized (#462, #509).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BodyFlow<'a> {
+    /// One seed per section, each taken from [`saved_body_cursor`] over the paragraphs before the
+    /// edit that the output keeps.
+    pub seeds: &'a [BodySeed],
+    /// The document already carries the caches the output will retain (their nested cells,
+    /// captions and lists restored from the saved record), so a nested list that has one is
+    /// measured as it is rather than re-synthesized. That is what keeps a kept table's height the
+    /// one the paragraphs below it were placed against (#509).
+    pub preserve_nested: bool,
 }
 
 /// [`synthesize_linesegs`] with an explicit prepass page budget, so a test can prove how an
@@ -79,7 +170,7 @@ fn synthesize_linesegs_with_prepass_page_limit(
     warnings: &mut RenderIssueAccumulator,
     page_limit: usize,
 ) -> Option<crate::layout::BodyAnchors> {
-    synthesize_linesegs_inner(doc, store, warnings, Some(page_limit))
+    synthesize_linesegs_inner(doc, store, warnings, Some(page_limit), &BodyFlow::default())
 }
 
 fn synthesize_linesegs_inner(
@@ -87,8 +178,15 @@ fn synthesize_linesegs_inner(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
     prepass_page_limit: Option<usize>,
+    flow: &BodyFlow<'_>,
 ) -> Option<crate::layout::BodyAnchors> {
     let snap = doc.clone();
+    let seeds = flow.seeds;
+    let nested_caches = if flow.preserve_nested {
+        ListCaches::KeepMeasured
+    } else {
+        ListCaches::Recompute
+    };
     let use_fragment_flow = doc.meta.source_format != "hwp5";
     let floating_sections: Vec<bool> = doc
         .sections
@@ -118,7 +216,7 @@ fn synthesize_linesegs_inner(
                     pg.width.0 - pg.margin_left.0 - pg.margin_right.0
                 });
             for para in &mut section.paragraphs {
-                fill_nested(para, width, &snap, store, warnings);
+                fill_nested(para, width, &snap, store, warnings, nested_caches);
             }
         }
         let mut flow = doc.clone();
@@ -180,11 +278,24 @@ fn synthesize_linesegs_inner(
                 .get(snap.sections[si].paragraphs[pi].para_shape.0 as usize)
                 .map_or((0, 0), |ps| (ps.spacing_top, ps.spacing_bottom));
             let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
+            // A seeded paragraph continues the flow a caller measured before it, so an edited
+            // document's re-synthesized suffix begins where its kept prefix ends (#462) instead
+            // of at a section-top cursor that contradicts the kept caches. An explicit page
+            // break still wins: it restarts the page regardless of the seed. The seed comes from
+            // a saved record, so the arithmetic saturates: an out-of-page cursor must degrade to
+            // a page start, never to a panic or a release-mode wrap (#509).
+            if let Some(seed) = seeds
+                .iter()
+                .find(|seed| seed.section == si && seed.paragraph == pi)
+                && (0..=content_h).contains(&seed.v_pos_hu)
+            {
+                v_pos = seed.v_pos_hu;
+            }
             if explicit_break {
                 v_pos = 0;
             }
             if pi > 0 {
-                v_pos += sp_top;
+                v_pos = v_pos.saturating_add(sp_top);
             }
             // Floating-table measurement already populated nested caches.
             if section_anchors.is_none() {
@@ -194,20 +305,21 @@ fn synthesize_linesegs_inner(
                     &snap,
                     store,
                     warnings,
+                    nested_caches,
                 );
             }
             // Total table height in this paragraph.
             let mut table_total = 0i32;
             for ctrl in &doc.sections[si].paragraphs[pi].controls {
                 if let Control::Table(t) = ctrl {
-                    table_total += table_height(t);
+                    table_total = table_total.saturating_add(table_height(t));
                 }
             }
             // Move the whole table to the next page when it does not fit in the current remainder.
             if section_anchors.is_none()
                 && table_total > 0
                 && v_pos > 0
-                && v_pos + table_total > content_h
+                && v_pos.saturating_add(table_total) > content_h
             {
                 v_pos = 0;
             }
@@ -222,25 +334,65 @@ fn synthesize_linesegs_inner(
             let mut segs = compute_linesegs(
                 store, &snap, src, body_width, content_h, &mut v_pos, warnings,
             );
+            // The exact position compute_linesegs advanced to. It is captured before anything
+            // rewrites the cursor, because the committed segs cannot reproduce it: the serialized
+            // line_spacing caps the reading at the base line, so FIXED spacing below it (or 0)
+            // would otherwise move the following paragraph (#509).
+            let line_cursor = v_pos;
             if anchor.is_some_and(|anchor| anchor.starts_page)
                 && let Some(first) = segs.first_mut()
             {
                 // HWP 5.0 §4.3.4 (PARA_LINE_SEG): bit0 marks the first line of a page.
                 first.flags |= 0x1;
             }
-            doc.sections[si].paragraphs[pi].line_segs = segs;
             // A table paragraph advances by table height rather than one line_advance, keeping
-            // following text from overlapping the table (which Hangul flags as corruption).
-            // compute_linesegs has already added one line_advance for the anchor paragraph,
-            // so replace the cursor with entry position plus table heights, summing multiple tables.
-            if table_total > 0 {
-                v_pos = anchor_v + table_total;
-            }
-            // Space-after moves the next paragraph's first line down accordingly.
-            v_pos += sp_bottom;
+            // following text from overlapping the table (which Hangul flags as corruption), and
+            // space-after moves the next paragraph's first line down. `body_cursor` holds both
+            // readings, so measuring a kept prefix from its saved record cannot drift from this.
+            v_pos = body_cursor(anchor_v, line_cursor, table_total, sp_bottom);
+            doc.sections[si].paragraphs[pi].line_segs = segs;
         }
     }
     flow_anchors
+}
+
+/// What a nested paragraph list does with the line caches it already carries (#509). The three
+/// readings are separate switches: which paragraphs keep their own cache, what a descendant table
+/// cell does, and whether a kept cache moves the list cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListCaches {
+    /// Re-synthesize every paragraph. Table cells default to this because their line counts decide
+    /// the table height, and a stale pre-edit cache would misalign the table.
+    Recompute,
+    /// Keep a paragraph's own cache and leave the list cursor where it was, which is the unedited
+    /// convention for captions and generic paragraph lists. A kept cache does not move the cursor
+    /// here, so unseeded synthesis publishes the same positions it always did (#509).
+    KeepInPlace,
+    /// Keep the cached prefix of the list, advancing the cursor by each kept paragraph's block, and
+    /// re-synthesize from the first paragraph without a cache (#509). Only an edited document whose
+    /// retained caches were restored first uses this: the prefix is what the output keeps, so it is
+    /// what the table height must be measured from, and a cache after the seam is stale because an
+    /// earlier paragraph in the same list moved.
+    KeepMeasured,
+}
+
+impl ListCaches {
+    /// What a caption or a generic control's paragraph list nested under this policy does: both are
+    /// text containers the base synthesis keeps in place.
+    fn text_list(self) -> Self {
+        match self {
+            Self::KeepMeasured => Self::KeepMeasured,
+            Self::Recompute | Self::KeepInPlace => Self::KeepInPlace,
+        }
+    }
+
+    /// What a table cell list nested under this policy does.
+    fn cell(self) -> Self {
+        match self {
+            Self::KeepMeasured => Self::KeepMeasured,
+            Self::Recompute | Self::KeepInPlace => Self::Recompute,
+        }
+    }
 }
 
 /// Synthesize every nested paragraph list: table captions/cells, controls within cells
@@ -257,6 +409,7 @@ fn fill_nested(
     snap: &Document,
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
+    caches: ListCaches,
 ) {
     for ctrl in &mut para.controls {
         match ctrl {
@@ -266,7 +419,7 @@ fn fill_nested(
                     fill_list(
                         &mut cap.paragraphs,
                         w,
-                        false,
+                        caches.text_list(),
                         body_width,
                         snap,
                         store,
@@ -280,12 +433,10 @@ fn fill_nested(
                     let w =
                         (cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]))
                             .max(1);
-                    // Always recompute cells, as before: their line counts determine table height,
-                    // and stale pre-edit caches would misalign the table.
                     fill_list(
                         &mut cell.paragraphs,
                         w,
-                        true,
+                        caches.cell(),
                         body_width,
                         snap,
                         store,
@@ -299,7 +450,7 @@ fn fill_nested(
                     fill_list(
                         &mut cap.paragraphs,
                         w,
-                        false,
+                        caches.text_list(),
                         body_width,
                         snap,
                         store,
@@ -317,7 +468,7 @@ fn fill_nested(
                     fill_list(
                         &mut list.paragraphs,
                         bw,
-                        false,
+                        caches.text_list(),
                         body_width,
                         snap,
                         store,
@@ -329,7 +480,7 @@ fn fill_nested(
                     fill_list(
                         &mut cap.paragraphs,
                         w,
-                        false,
+                        caches.text_list(),
                         body_width,
                         snap,
                         store,
@@ -352,22 +503,40 @@ fn caption_width(width: Option<u32>, body_width: i32) -> i32 {
 
 /// Fill one paragraph list. Accumulate v_pos per list rather than resetting each paragraph;
 /// table_height reads the last paragraph's v_pos as the whole cell's height on that basis.
-/// With force=false, preserve paragraphs that already carry line layout.
+/// [`ListCaches::KeepInPlace`] keeps a paragraph's own cache without moving the cursor, and
+/// [`ListCaches::KeepMeasured`] keeps the cached prefix while advancing by it and re-synthesizes
+/// from the first paragraph without a cache.
 fn fill_list(
     paras: &mut [Paragraph],
     width: i32,
-    force: bool,
+    caches: ListCaches,
     body_width: i32,
     snap: &Document,
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) {
     let mut v = 0i32;
+    // Set once KeepMeasured re-synthesized a paragraph: an earlier paragraph in this list moved, so
+    // every later cache was measured against a position that no longer holds (#509).
+    let mut past_seam = false;
     for para in paras.iter_mut() {
-        fill_nested(para, body_width, snap, store, warnings);
-        if !force && !para.line_segs.is_empty() {
+        fill_nested(para, body_width, snap, store, warnings, caches);
+        let keep = match caches {
+            ListCaches::Recompute => false,
+            ListCaches::KeepInPlace => !para.line_segs.is_empty(),
+            ListCaches::KeepMeasured => !past_seam && !para.line_segs.is_empty(),
+        };
+        if keep {
+            if caches == ListCaches::KeepMeasured {
+                // The retained prefix moves the cursor: the paragraph after it has to start below
+                // it, and that is the height the table is measured from.
+                if let Some(bottom) = saved_body_cursor(para, 0) {
+                    v = bottom;
+                }
+            }
             continue;
         }
+        past_seam = true;
         // Do not paginate inside lists (content_h=MAX); synthesize_linesegs handles overflow
         // at the table/object level.
         let segs = compute_box_linesegs(store, snap, para, width, &mut v, warnings);
@@ -412,18 +581,19 @@ fn table_height(table: &Table) -> i32 {
         // v_pos + line_height is already the whole cell height. Summing paragraph heights
         // would count earlier paragraphs twice because their heights are included in later v_pos.
         let block = cell.paragraphs.last().map_or(0, para_line_block);
-        let cell_h = i32::from(cell.margins[2]) + block + i32::from(cell.margins[3]);
+        let cell_h = i32::from(cell.margins[2])
+            .saturating_add(block)
+            .saturating_add(i32::from(cell.margins[3]));
         if cell_h > row_heights[r] {
             row_heights[r] = cell_h;
         }
     }
     // Rows containing only row_span>1 cells have zero height; use one fallback line to prevent overlap.
     let fallback = 141 + 1000 + 141; // Top margin + one line (lh) + bottom margin, using genuine defaults.
-    let sum: i32 = row_heights
-        .iter()
-        .map(|&h| if h > 0 { h } else { fallback })
-        .sum();
-    sum + TABLE_BLOCK_PADDING
+    let sum = row_heights.iter().fold(0i32, |total, &h| {
+        total.saturating_add(if h > 0 { h } else { fallback })
+    });
+    sum.saturating_add(TABLE_BLOCK_PADDING)
 }
 
 /// One cell paragraph's line-block height (HWPUNIT): last line.v_pos + last line.line_height.
@@ -432,7 +602,8 @@ fn table_height(table: &Table) -> i32 {
 /// mixed sizes use the actual final v_pos plus line height.
 fn para_line_block(para: &Paragraph) -> i32 {
     match para.line_segs.last() {
-        Some(seg) => seg.v_pos + seg.line_height,
+        // Saved caches are untrusted input: saturate so a corrupt position cannot wrap or panic.
+        Some(seg) => seg.v_pos.saturating_add(seg.line_height),
         // Without line layout (theoretically impossible), fall back to one default line.
         None => 1000,
     }
@@ -743,6 +914,24 @@ mod tests {
         let h = table_height(&table_with(cell_with(&[])));
         assert_eq!(h, 141 + 141 + TABLE_BLOCK_PADDING);
     }
+
+    #[test]
+    fn saved_body_cursor_follows_the_walks_two_readings() {
+        // No table: the saved line block (0 + 1000) is the bottom, plus space-after 300.
+        let mut plain = Paragraph {
+            line_segs: vec![seg(0, 1000)],
+            ..Default::default()
+        };
+        assert_eq!(saved_body_cursor(&plain, 300), Some(1300));
+
+        // A table paragraph advances past the table, not past its text line (#462): the saved
+        // entry position 0 plus the table's height, plus the same space-after.
+        let table = table_with(cell_with(&[0]));
+        let height = table_height(&table);
+        plain.controls.push(Control::Table(table));
+        assert_eq!(saved_body_cursor(&plain, 300), Some(height + 300));
+        assert!(height > 1300, "the table reaches below the text line");
+    }
 }
 
 /// Regression coverage for #426: an anchor prepass that stops before it collected every
@@ -838,8 +1027,9 @@ mod anchor_prepass_tests {
     ) -> (crate::layout::BodyAnchors, crate::issues::RenderIssueReport) {
         let mut store = FontStore::new_isolated();
         let mut warnings = RenderIssueAccumulator::new();
-        let anchors = synthesize_linesegs_inner(doc, &mut store, &mut warnings, None)
-            .expect("a floating-table section runs the prepass");
+        let anchors =
+            synthesize_linesegs_inner(doc, &mut store, &mut warnings, None, &BodyFlow::default())
+                .expect("a floating-table section runs the prepass");
         (anchors, warnings.finish())
     }
 

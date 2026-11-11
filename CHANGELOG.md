@@ -10,6 +10,44 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- An HWP5 edit now continues the re-synthesized body flow from the saved paragraphs it keeps
+  instead of restarting the section at its top. The writer measures the kept prefix and seeds the
+  first edited body paragraph with that prefix's bottom, and the source-aware restore stops at the
+  same paragraph: from there the renderer's body cache is written out, while the prefix before the
+  edit and the unchanged paragraphs of table cells and generic paragraph lists come back from the
+  immutable snapshot (a caption is restored only where a whole unchanged paragraph brings it; one
+  inside a control the edit changed is not rewritten). The restore runs before the synthesis as
+  well, so the walk measures the nested caches the output will keep and a kept table whose saved
+  cells are taller than their synthesis decides where the following body starts. The kept prefix's
+  paragraphs are matched by `instance_id` and equality, so an inserted or deleted paragraph no
+  longer costs the untouched prefix its saved records, and a seed taken from untrusted saved bytes
+  outside the body box degrades to a page start instead of overflowing. The walk also carries the
+  exact cursor the line synthesizer committed rather than re-deriving it from the committed line,
+  where `line_spacing` is floored at zero: unseeded synthesis (HWPX or markdown to HWP) is
+  unchanged, including FIXED spacing below the base line and FIXED 0. A nested list now states
+  separately which paragraphs keep their own cache, what a descendant table cell does and whether a
+  kept cache moves the list cursor, so a document that is not being edited keeps synthesizing
+  captions, generic lists and the table cells inside them exactly as before. An edited list keeps
+  only the part before its first moved paragraph, a shifted index included, because a cache left
+  below an earlier insertion, deletion or growth holds a `v_pos` measured against a block the edit
+  changed, and a paragraph added under a retained table anchor resumes no higher than the bottom of
+  the line the anchor keeps. Nested-list restoration also checks local parent context: cell width,
+  all four margins, `list_attr` and opaque `header_tail`; for Generic lists, the first shape's width
+  and opaque list `header_data`. A changed context re-synthesizes that list's own lines even when
+  text and paragraph styles match, covering `split_cell` and width-only `style_tables` edits, while
+  valid unchanged descendant controls retain their saved caches. Cell row/column movement and
+  border-only changes preserve cell-local caches. These checks add no native geometry rule or
+  Hancom-open claim. An edited table therefore stays on its page and the content after it
+  flows below the table again, instead of the edited paragraph sitting above its kept predecessor
+  and opening a new page. Unedited documents never enter this path, so HWP5 identity stays
+  byte-identical; the seed continues the synthesizer's own spacing rule, so the seam can still sit
+  half a paragraph spacing from Hangul's saved gap until the unit calibration
+  in [#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) lands, and a
+  floating-table section reads its prepass anchors instead
+  ([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
+
 ## [1.6.0]
 
 **Compatibility**
