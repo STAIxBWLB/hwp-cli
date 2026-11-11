@@ -321,8 +321,10 @@ jobs:
             [ -f "$dir/ahwp.exe" ] || { echo "::error::$archive carries no ahwp.exe"; return 1; }
             cp -p "$dir/ahwp.exe" "$dir/hwp.exe"
             (cd "$dir" && zip -qr "$absolute" -- *)
-            unzip -l "$archive" | grep 'ahwp\.exe' >/dev/null
-            unzip -l "$archive" | grep 'hwp\.exe' >/dev/null
+            # Anchored at end of line: `ahwp.exe` contains `hwp.exe`, so an unanchored grep
+            # would match the member that is always present and never fail.
+            unzip -l "$archive" | grep -E '(^|[[:space:]])ahwp\.exe$' >/dev/null
+            unzip -l "$archive" | grep -E '(^|[[:space:]])hwp\.exe$' >/dev/null
           }
 
           archives=(ahwp-"$tag"-*.tar.gz ahwp-"$tag"-*.zip)
