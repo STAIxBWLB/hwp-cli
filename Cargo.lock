@@ -790,7 +790,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "agent-hwp"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "hwp-convert"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "hwp-model",
  "hwpx",
@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "hwp-model"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "hwp-render"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -875,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "hwp5"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "aes",
  "cfb",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "hwpx"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "aes",
  "base64 0.23.1",
