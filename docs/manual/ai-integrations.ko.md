@@ -186,6 +186,12 @@ ahwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.jso
 `<checksum>.<path>` 모양이 같으므로 `id`로 run을 지정할 때는 `chars`를 함께 주고, 창 없이 run을
 지정하려면 `at.run`을 쓴다.
 
+묶음 실행에서 주소는 문서를 읽은 시점에 해석되므로, 앞선 연산이 위쪽 문단을 삽입하거나 삭제해도
+run 지정은 제 문단을 따라간다. 다만 그 문단 자체의 길이가 바뀌면 유지되지 않는다. 앞선
+`replace`의 `from`과 `to` 길이가 다르면 사전 검사에서 거부하고, 앞선 `set_indent_level`이 앞쪽
+공백을 지우면 아무것도 쓰지 않고 거부한다. 묶음에서 run 지정을 먼저 두거나 두 편집을 나누어
+실행한다.
+
 ### 기존 문서에 구성 요소 삽입
 
 `insert_blocks`는 DocumentSpec v1 블록(문단, 목록, 표, 이미지, 필드, 수식, 쪽·단 나누기)을

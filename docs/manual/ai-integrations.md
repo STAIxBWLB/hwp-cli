@@ -193,6 +193,12 @@ reported unapplied with the address and its window, and the run fails unless `--
 A run id and a nested-paragraph id share one `<checksum>.<path>` shape, so a run named by `id`
 carries `chars`; `at.run` names a run without a window.
 
+In a batch the address resolves against the document as loaded, so a run reading follows its own
+paragraph when an earlier op inserts or deletes one above it. It does not survive a change to that
+paragraph's own length: an earlier `replace` whose `from` and `to` differ in width is rejected
+during preflight, and an earlier `set_indent_level` stripping blanks is refused with nothing
+written. Put the run reading first in the batch, or run the two edits separately.
+
 ### Insert a component into an existing document
 
 `insert_blocks` places DocumentSpec v1 blocks (paragraphs, lists, tables, images, fields,

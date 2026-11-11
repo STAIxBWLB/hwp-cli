@@ -18,7 +18,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   as a run's `source_chars` — rewrites exactly that span, leaving the same phrase elsewhere in the
   paragraph, across a run boundary or inside a field value alone. `from` stays required and
   becomes a drift check: when the addressed text is not `from`, nothing is rewritten and the
-  request is reported unapplied with the address and its window. Additive to `edit-ops-v1` — the
+  request is reported unapplied with the address and its window. In a batch the address resolves
+  against the document as loaded, so the op follows its own paragraph across an earlier insert or
+  delete, while a run reading that would follow an op changing that paragraph's length is refused
+  with nothing written. Additive to `edit-ops-v1` — the
   paragraph-addressed form and the whole-document default are unchanged
   ([#525](https://github.com/STAIxBWLB/hwp-cli/issues/525)).
 

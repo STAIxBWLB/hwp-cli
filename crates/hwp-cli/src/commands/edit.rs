@@ -2830,10 +2830,12 @@ enum ConflictKind {
 /// path** (planner decision 2) — do not split this into a second conflict mechanism:
 ///
 /// 1. **Length-change clause (07-02, T-07-26):** a length-changing op on a paragraph (an
-///    addressed `replace`, or a pattern-form `replace` whose `from` string occurs in that
-///    paragraph in the ORIGINAL document — the pattern-form arm is a deliberate
-///    over-approximation, since a batch could in principle be harmless if an even earlier op
-///    already removed the match) paired with a LATER run-range op inside that same paragraph.
+///    addressed `replace` whose `from` and `to` differ in UTF-16 width, or a pattern-form
+///    `replace` whose `from` string occurs in that paragraph in the ORIGINAL document — the
+///    pattern-form arm is a deliberate over-approximation, since a batch could in principle be
+///    harmless if an even earlier op already removed the match) paired with a LATER run-range
+///    op inside that same paragraph: an addressed `set_format`, or a `replace` whose address
+///    declares run intent (#525).
 /// 2. **Removal clause (07-03, T-07-12):** an op that REMOVES its target (`delete_para`, or
 ///    `move_para`'s source) paired with a LATER op whose resolved target is the SAME path or a
 ///    path BENEATH it (nested inside the removed paragraph, e.g. a table cell it contained).
@@ -2859,6 +2861,13 @@ fn detect_conflicts(
             // apply arm) — it cannot change any paragraph's length.
             continue;
         }
+        if address.is_some() && from.encode_utf16().count() == to.encode_utf16().count() {
+            // An addressed replace rewrites one known paragraph, and equally wide `from`/`to`
+            // leave that paragraph's `wchar_len` unchanged whatever the match count, so a later
+            // run-range op's offsets still name the same characters. The pattern-form arm below
+            // keeps its deliberate over-approximation; this one can be exact.
+            continue;
+        }
         let length_changing_paths: Vec<hwp_convert::SegmentPath> = if address.is_some() {
             resolved
                 .get(earlier_index)
@@ -2877,12 +2886,23 @@ fn detect_conflicts(
             .enumerate()
             .skip(earlier_index + 1)
         {
-            let TypedEditOperation::SetFormat {
-                address: Some(_), ..
-            } = later_operation
-            else {
-                continue;
+            // Both spellings of "a later run-range op": `set_format` is run-range by construction,
+            // and a `replace` is when its address declares run intent (#525). Each holds WCHAR
+            // offsets that preflight resolved against the paragraph's length before this batch
+            // ran, so an earlier length change in the same paragraph invalidates them.
+            let later_is_run_range = match later_operation {
+                TypedEditOperation::SetFormat {
+                    address: Some(_), ..
+                } => true,
+                TypedEditOperation::Replace {
+                    address: Some(address),
+                    ..
+                } => replace_names_a_run(address),
+                _ => false,
             };
+            if !later_is_run_range {
+                continue;
+            }
             let Some(target) = resolved.get(later_index).and_then(|t| t.as_ref()) else {
                 continue;
             };
@@ -3404,11 +3424,37 @@ fn apply_typed_operation(
             }
             if let Some(address) = address {
                 if replace_names_a_run(address) {
-                    // One run range (#525). The address is resolved again here against the
-                    // current document, so an earlier op in the batch that moved this paragraph
-                    // is a refusal, not a rewrite of whatever now sits at the window.
-                    let count = hwp_convert::replace_text_in_range(doc, address, from, to)
-                        .map_err(anyhow::Error::msg)?;
+                    // One run range (#525). The address was resolved against the document as
+                    // loaded (preflight_addressed_ops, D-06), so the apply step only maps that
+                    // path through this batch's earlier splices and splices the window; it never
+                    // resolves the raw address again against what the batch has already written.
+                    let target = resolved_target.expect(
+                        "preflight_addressed_ops resolved every addressed run-range replace op",
+                    );
+                    let hwp_convert::address::TargetKind::Run {
+                        w_start,
+                        w_end,
+                        paragraph_wchar_len,
+                        ..
+                    } = target.kind
+                    else {
+                        anyhow::bail!("replace 주소는 run 단위여야 합니다");
+                    };
+                    // Structural drift (planner decision 3): the paragraph's own list position may
+                    // have shifted; w_start/w_end are content offsets WITHIN it, and a batch that
+                    // removed it is already rejected by the preflight removal clause.
+                    let current_path = offsets.current_path(&target.path)?;
+                    let count = hwp_convert::replace_text_in_window(
+                        doc,
+                        address,
+                        &current_path,
+                        w_start,
+                        w_end,
+                        paragraph_wchar_len,
+                        from,
+                        to,
+                    )
+                    .map_err(anyhow::Error::msg)?;
                     if count == 0 {
                         // The drift check failed: the addressed span is text but it is not
                         // `from`, so nothing changed. Recording it unapplied names the address,

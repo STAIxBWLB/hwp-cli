@@ -511,6 +511,12 @@ pub fn replace_text_at(
 ///
 /// Trailing control characters are outside the addressed text: an HWP5 paragraph stores its break
 /// as its last character, so the last run's published bound includes it (#517).
+///
+/// This resolves `addr` against `doc` **as it is now** and hands the resolved window to
+/// [`replace_text_in_window`]. A caller that already resolved the address earlier — the CLI batch
+/// apply loop, whose preflight resolution against the loaded document is authoritative (D-06) —
+/// must call that function with its own path instead of resolving a second time here: resolving
+/// again would read the raw address against whatever the batch has already written.
 pub fn replace_text_in_range(
     doc: &mut Document,
     addr: &crate::address::Address,
@@ -528,19 +534,75 @@ pub fn replace_text_in_range(
             "치환 주소 {label}를 해석할 수 없습니다: {error}. 주소의 run 인덱스와 chars 범위를 확인하세요"
         )
     })?;
-    let TargetKind::Run { w_start, w_end, .. } = target.kind else {
+    let TargetKind::Run {
+        w_start,
+        w_end,
+        paragraph_wchar_len,
+        ..
+    } = target.kind
+    else {
         return Err(format!(
             "치환 주소 {label}는 run 범위로 해석되지 않았습니다. run 주소나 chars 범위를 지정하세요"
         ));
     };
-    let path = target.path;
+    replace_text_in_window(
+        doc,
+        label,
+        &target.path,
+        w_start,
+        w_end,
+        paragraph_wchar_len,
+        from,
+        to,
+    )
+}
 
+/// Splices `to` over the WCHAR window `[w_start, w_end)` of the paragraph at `path`, provided the
+/// window is exactly `from` and that paragraph is still `paragraph_wchar_len` WCHAR long.
+///
+/// This is the apply half of [`replace_text_in_range`], split out for callers that resolved the
+/// address themselves: an `id`/`at` address names a run by its position, so the batch apply loop
+/// resolves it during preflight, against the document as loaded (D-06), and then maps that path
+/// through the earlier ops' inserts and removals before splicing here. `path` is therefore the
+/// paragraph's **current** path, `label` is the address the caller was given (used in messages
+/// only, never to locate anything), and `paragraph_wchar_len` is the length the preflight
+/// resolution observed.
+///
+/// The length is checked here, not at resolve time: an earlier op of the same batch (`replace`,
+/// `set_indent_level` stripping blanks) can change the paragraph's length while leaving it at the
+/// same path, which moves the characters the offsets name (#420). That is a refusal, like the
+/// `set_format` arm's: nothing is written and the message names the address and both lengths. A
+/// paragraph that moved to another index is the caller's structural drift to handle; a removal
+/// that took it away is already rejected by the preflight removal clause.
+///
+/// Returns `Ok(1)` when the window was rewritten and `Ok(0)` when it is text but is not `from`;
+/// see [`replace_text_in_range`] for the refusal cases and the trailing-control rule.
+#[allow(clippy::too_many_arguments)]
+pub fn replace_text_in_window(
+    doc: &mut Document,
+    label: &crate::address::Address,
+    path: &SegmentPath,
+    w_start: u32,
+    w_end: u32,
+    paragraph_wchar_len: u32,
+    from: &str,
+    to: &str,
+) -> Result<usize, String> {
+    if from.is_empty() {
+        return Ok(0);
+    }
     let replaced = {
-        let Some(para) = crate::address::paragraph_at_mut(doc, &path) else {
+        let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
             return Err(format!(
-                "치환 주소 {label}의 문단을 찾을 수 없습니다. 주소를 다시 읽고 재시도하세요"
+                "치환 주소 {label}의 문단 {path}를 찾을 수 없습니다. 주소를 다시 읽고 재시도하세요"
             ));
         };
+        let current_len = para.wchar_len();
+        if current_len != paragraph_wchar_len {
+            return Err(format!(
+                "치환 주소 {label}의 문단 {path}은 앞선 연산(replace, set_indent_level 등)으로 글자 수가 {paragraph_wchar_len}에서 {current_len}(으)로 바뀌어 범위 [{w_start}, {w_end})가 다른 글자를 가리킵니다. 아무것도 쓰지 않았습니다. 연산 순서를 바꾸거나 별도 편집으로 나누어 실행하세요"
+            ));
+        }
         let (start, end) = source_char_indices(para, w_start, w_end).ok_or_else(|| {
             format!(
                 "치환 주소 {label}의 chars 범위 [{w_start}, {w_end})가 문자 경계에 맞지 않습니다. 글자 중간을 자르지 않는 범위를 지정하세요"
@@ -577,7 +639,7 @@ pub fn replace_text_in_range(
         1
     };
     if replaced > 0 {
-        crate::address::invalidate_ancestors(doc, &path);
+        crate::address::invalidate_ancestors(doc, path);
     }
     Ok(replaced)
 }

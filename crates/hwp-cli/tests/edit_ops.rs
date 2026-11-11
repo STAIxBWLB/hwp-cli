@@ -1586,6 +1586,183 @@ fn run_id_without_chars_is_refused_rather_than_guessed() {
     assert!(!output.exists());
 }
 
+/// A run-range replace resolves in preflight and must keep following ITS paragraph when an
+/// earlier op of the same batch shifts that paragraph's position (D-06 + structural drift).
+///
+/// The inserted paragraph repeats the addressed text at the same window, so the `from` drift
+/// check cannot tell the two apart: re-resolving the raw address against the mutated document
+/// lands on the inserted paragraph and silently rewrites it, while mapping the preflight path
+/// through the batch's splices rewrites the paragraph the caller addressed.
+#[test]
+fn batch_insert_before_the_target_keeps_a_run_window_on_its_own_paragraph() {
+    let (dir, base) = new_repeated_run_base("run-range-structural-drift");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"insert_para","address":{"at":{"section":0,"paragraph":1}},"before":true,"text":"AAA AAA tail"},
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":0},"chars":[0,3]},"from":"AAA","to":"ZZZ"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "the batch must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].plain_text(),
+        "AAA AAA tail",
+        "the paragraph the batch inserted must not be rewritten"
+    );
+    assert_eq!(
+        after.sections[0].paragraphs[2].plain_text(),
+        "ZZZ AAA",
+        "the addressed paragraph moved to index 2 and must carry the replacement"
+    );
+}
+
+/// A replace earlier in the batch that can change the paragraph's length invalidates a later
+/// run-range replace's pre-resolved window, so the batch is rejected during preflight and
+/// nothing is written - the same length-change clause `set_format` already gets.
+#[test]
+fn a_length_changing_replace_before_a_run_window_is_rejected_in_preflight() {
+    let (dir, base) = new_repeated_run_base("run-range-length-conflict");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"AAA","to":"AAAAAAA"},
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":0},"chars":[0,3]},"from":"AAA","to":"ZZZ"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a later run window behind a length-changing replace must be rejected: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("길이를 바꿀 수 있어") && stderr.contains("op[1]"),
+        "the rejection must name the length-change conflict: {stderr}"
+    );
+    assert!(!output.exists(), "a rejected batch must not publish");
+}
+
+/// What the batch's own conflict clause cannot see, the apply step's content-drift guard catches:
+/// `set_indent_level` strips leading blanks but is not a `replace`, so preflight has no pair to
+/// reject, and yet the pre-resolved window no longer names its characters. The op is refused with
+/// nothing written, exactly as the addressed `set_format` arm refuses the same batch shape (#420).
+///
+/// Markdown import trims leading whitespace, so the blanks `set_indent_level` strips are seeded
+/// with an unaddressed replace. The seeded paragraph is asserted to be 11 WCHAR wide with its run
+/// spanning `[0, 11)`, so the window the batch addresses (`[4, 7)`) is legal at preflight and only
+/// the length change can refuse it.
+#[test]
+fn run_window_behind_a_blank_stripping_indent_is_refused_at_apply_time() {
+    let dir = test_dir("run-range-content-drift");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# T\n\nZZZ AAA AAA\n").unwrap();
+    let seeded = dir.join("seeded.hwpx");
+    new_from(&md, &seeded);
+
+    let base = dir.join("base.hwpx");
+    let setup = dir.join("setup.json");
+    std::fs::write(&setup, r#"[{"op":"replace","from":"ZZZ","to":"   "}]"#).unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&seeded)
+        .arg("-o")
+        .arg(&base)
+        .arg("--ops")
+        .arg(&setup)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "seeding the leading blanks must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let before = hwpx::read_document(&base).unwrap().document;
+    let para = &before.sections[0].paragraphs[1];
+    assert_eq!(para.plain_text(), "    AAA AAA");
+    assert_eq!(
+        para.wchar_len(),
+        11,
+        "the seeded paragraph must be 11 WCHAR wide, blanks included"
+    );
+    let runs = run_segments_of_paragraph(&base, 1);
+    assert_eq!(
+        runs.iter()
+            .map(|(_, start, end)| (*start, *end))
+            .collect::<Vec<_>>(),
+        vec![(0, 11)],
+        "the whole-11 window must be one published run, so [4, 7) is legal at preflight"
+    );
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"set_indent_level","address":{"at":{"section":0,"paragraph":1}},"level":1,"step":"5mm"},
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":0},"chars":[4,7]},"from":"AAA","to":"ZZZ"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a window whose paragraph changed length must be refused: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("at 0.1.0 chars=[4, 7)")
+            && stderr.contains("글자 수가 11에서 7(으)로 바뀌어")
+            && stderr.contains("아무것도 쓰지 않았습니다"),
+        "the refusal must name the address, both lengths and that nothing was written: {stderr}"
+    );
+    assert!(!output.exists(), "a refused batch must not publish");
+    let after = hwpx::read_document(&base).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].wchar_len(),
+        11,
+        "the input document must be untouched by the refused batch"
+    );
+}
+
 /// `set_para` with both `pattern` and `address` is rejected before anything applies (D-12).
 #[test]
 fn set_para_rejects_pattern_and_address_together() {
@@ -2746,6 +2923,11 @@ fn case_sensitive_enum_values_rejected() {
 /// name the two run readings. That is an added address shape only — no op gained a required key,
 /// no existing instance changes meaning, and the id, `$id` and version stay edit-ops-v1 — so this
 /// is the schema's documented minor revision rather than a break a consumer must handle.
+///
+/// Re-pinned again in the same task, this time for a description sentence only: the replace
+/// address description now states that a run reading does not survive an earlier op of the same
+/// batch changing that paragraph's length. Stripping `description` and `$comment` from both
+/// revisions leaves them identical, so the contract shape did not move.
 #[test]
 fn schema_hash_frozen() {
     use sha2::{Digest, Sha256};
@@ -2757,7 +2939,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "150a12f2a15eddf1c9086fbe94cba6cc518b351ed0a34cf43d4ee1b16a59635f",
+        actual, "ea9a8a2aead13b1675689a9dab8f7bb204889e761d4b8911bc77170b93c8b2ab",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
