@@ -1523,12 +1523,19 @@ fn restore_unchanged_paragraph_list(
     edited: &[hwp_model::Paragraph],
     synthesized: &mut [hwp_model::Paragraph],
     suffix: SuffixCache,
+    parent_layout_matches: bool,
 ) {
     if edited.len() != synthesized.len() {
         return;
     }
     let matches = match_unchanged_paragraphs(original, edited);
-    let first_moved = first_moved_paragraph(original, edited, &matches);
+    // Equal paragraph content is insufficient when its box changed: editors intentionally
+    // clear those caches, and normalizing line_segs must not undo that invalidation.
+    let first_moved = if parent_layout_matches {
+        first_moved_paragraph(original, edited, &matches)
+    } else {
+        0
+    };
     for (edited_index, original_index) in matches.into_iter().enumerate() {
         let Some(original_index) = original_index else {
             continue;
@@ -1546,6 +1553,16 @@ fn restore_unchanged_paragraph_list(
             );
         }
     }
+}
+
+/// Compare the local cell inputs before reusing native paragraph caches. Position and border
+/// styling do not change the cell-local line box; width, margins and raw list properties do.
+/// Compare raw values rather than declaring different clamped boxes equivalent.
+fn cell_layout_matches(original: &hwp_model::Cell, edited: &hwp_model::Cell) -> bool {
+    original.width == edited.width
+        && original.margins == edited.margins
+        && original.list_attr == edited.list_attr
+        && original.header_tail == edited.header_tail
 }
 
 /// Handle a paragraph at or after the edit's seam: its own line cache is not the saved one any
@@ -1603,6 +1620,7 @@ fn restore_unchanged_controls(
                         &edited_cell.paragraphs,
                         &mut synthesized_cell.paragraphs,
                         suffix,
+                        cell_layout_matches(original_cell, edited_cell),
                     );
                 }
             }
@@ -1622,6 +1640,9 @@ fn restore_unchanged_controls(
                         &edited_list.paragraphs,
                         &mut synthesized_list.paragraphs,
                         suffix,
+                        original_generic.gso_shapes.first().map(|shape| shape.w)
+                            == edited_generic.gso_shapes.first().map(|shape| shape.w)
+                            && original_list.header_data == edited_list.header_data,
                     );
                 }
             }
