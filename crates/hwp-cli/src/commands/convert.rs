@@ -1538,6 +1538,11 @@ fn restore_unchanged_paragraph_list(
     };
     for (edited_index, original_index) in matches.into_iter().enumerate() {
         let Some(original_index) = original_index else {
+            // An unmatched paragraph belongs to the recomputed suffix too; an imported cache
+            // must not make it look like a retained prefix to the nested synthesizer.
+            if suffix == SuffixCache::Drop {
+                synthesized[edited_index].line_segs.clear();
+            }
             continue;
         };
         if edited_index < first_moved {
