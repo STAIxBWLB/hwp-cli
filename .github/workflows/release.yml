@@ -366,8 +366,8 @@ jobs:
   # Why the binary ships instead of a download script: the claude.ai sandbox network is
   # restricted to registries, so the binary cannot be fetched at runtime (bundling beats downloading).
   # The zip keeps its `hwp-skill` name and the skill keeps the name `hwp` (#510 leaves both
-  # alone), but the binary it carries is `bin/ahwp`, which is what the skill's bootstrap and
-  # templates call.
+  # alone), but the binary it carries is `bin/ahwp`, which is the path bootstrap.sh installs
+  # (`hwp` stays beside it as the 1.x alias SKILL.md's command list uses).
   skill-bundle:
     needs: alias-assets
     runs-on: ubuntu-latest

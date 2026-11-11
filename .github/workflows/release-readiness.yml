@@ -505,7 +505,7 @@ jobs:
           # that runs later can reach them.
           GATES_FILE="$(mktemp)"
           status=pass
-          evidence='.github/workflows/release.yml packages bin: ahwp through upload-rust-binary-action, names the ahwp-<tag>-<target> asset, and republishes the same bytes as hwp-<tag>-<target> with the hwp compatibility name inside each archive; it names no font file, so the corpus does not ship and no OFL inventory is required'
+          evidence='.github/workflows/release.yml packages bin: ahwp through upload-rust-binary-action, names the ahwp-<tag>-<target> asset, and republishes the same bytes as hwp-<tag>-<target> with the hwp compatibility name inside each archive; the claude.ai bundle packs bin/ahwp, which its bootstrap installs; it names no font file, so the corpus does not ship and no OFL inventory is required'
           if grep -nEi '\.(ttf|otf|ttc|woff2?)' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml names a font file in the published assets, so the archive needs an OFL license inventory'
@@ -526,6 +526,10 @@ jobs:
             || ! grep -q '"\$legacy_stem\.sha256"' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml no longer writes the checksum asset as <archive-without-extension>.sha256 (canonical and legacy), which is the name upload-rust-binary-action, scripts/install.sh, update and update_formula.sh all use; a sidecar named after the archive file pairs an archive with the wrong bytes'
+          elif ! grep -q 'cp "$work/ahwp" "$bundle/bin/ahwp"' .github/workflows/release.yml \
+            || ! grep -q 'cp "$here/bin/ahwp" "$dest_dir/ahwp"' skills/hwp/claude-web/bootstrap.sh; then
+            status=fail
+            evidence='the claude.ai bundle and its bootstrap disagree on the binary path: release.yml must pack bin/ahwp and skills/hwp/claude-web/bootstrap.sh must install that same path, or an uploaded skill runs a bootstrap that copies a binary the zip does not contain'
           fi
           printf '%s\t%s\t%s\n' release-archive-fonts "$status" "$evidence" >>"$GATES_FILE"
           {

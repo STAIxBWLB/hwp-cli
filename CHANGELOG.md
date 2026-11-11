@@ -30,7 +30,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `Formula/ahwp.rb` with `formula_renames.json` mapping `hwp` to `ahwp`, so
   `brew update && brew upgrade` replaces an installed `hwp` in place. The formula keeps the legacy
   asset URLs until 2.0.0 retires the legacy names, and the release-readiness archive/font gate now
-  asserts the renamed binary, both asset names and the in-archive compatibility name
+  asserts the renamed binary, both asset names and the in-archive compatibility name. The claude.ai
+  skill bundle keeps its `hwp-skill` archive and skill name but ships `bin/ahwp`, and its bootstrap
+  installs that path plus the 1.x `hwp` alias, which the same gate keeps in step with the bundle
   ([#510](https://github.com/STAIxBWLB/hwp-cli/issues/510)).
 
 **Fixed**

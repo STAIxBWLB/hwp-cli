@@ -126,7 +126,8 @@ and editing parity remain deferred to their named phases.
   walk excludes it too.
 - **Q3 — the release web bundle keeps shipping SKILL.md only this phase**:
   `hwp-skill-claude-web.zip` continues to contain `SKILL.md`, `bootstrap.sh` and the Linux x86_64
-  `bin/hwp`. Deferred idea (recorded, not scheduled): a tree-shaped web bundle once the claude.ai
+  `bin/ahwp` (the payload takes the renamed command; the zip and skill names stay `hwp`, #510).
+  Deferred idea (recorded, not scheduled): a tree-shaped web bundle once the claude.ai
   sandbox skills UI is re-checked.
 
 ## 5. Sources

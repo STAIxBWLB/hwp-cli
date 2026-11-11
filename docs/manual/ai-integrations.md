@@ -519,10 +519,11 @@ license files (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`):
    `hwp-skill-claude-web.zip.sha256` published beside it, and check the archive against it.
 2. In claude.ai, open Settings → Capabilities → Skills and upload the zip.
 3. In a chat with code execution, run `bash bootstrap.sh` once per session. It installs the
-   bundled binary into `~/.local/bin` (override with `HWP_BIN_DIR`), runs `ahwp --version` as a
-   smoke check, and prints the MCP registration snippet. Claude then drives `ahwp` as a CLI
-   inside the sandbox. Only the CLI is available here, so `merge`, `split` and `compare` run as
-   commands rather than as MCP tools.
+   bundled binary into `~/.local/bin` (override with `HWP_BIN_DIR`) as `ahwp`, installs the 1.x
+   `hwp` name beside it as a symlink, runs `ahwp --version` as a smoke check, and prints the MCP
+   registration snippet. Claude then drives `ahwp` as a CLI inside the sandbox, and the `hwp`
+   commands in `SKILL.md` resolve to the same binary. Only the CLI is available here, so
+   `merge`, `split` and `compare` run as commands rather than as MCP tools.
 
 ## Amazon Quick Desktop
 
