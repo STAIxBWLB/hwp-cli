@@ -157,6 +157,35 @@ ahwp certify updated.hwpx --policy policy.json --report ./style-certification
 한컴에서 파일을 열거나 렌더했다는 증거가 아니다. 한컴 열기 증거는 별도 영수증으로 제공한다.
 `.hwp` 경로에도 같은 순서를 쓸 수 있으며 출력 형식 제한과 거부 진단은 계속 적용된다.
 
+### 모든 일치 대신 run 하나 또는 구간 하나만 치환
+
+문단 주소를 준 `replace`는 그 문단 안에서 `from`이 일치하는 곳을 모두 바꾸므로, `from`이 그
+문단에 정확히 한 번만 나온다는 것을 아는 호출자에게만 쓸 수 있다. 선택한 run 하나, 또는 그
+안의 구간 하나만 바꾸려면 run을 주소로 지정한다. v2 엔벨로프의 `run` 세그먼트는 원본 문단
+안에서 차지하는 `source_chars` 구간을 절대 UTF-16 코드 단위로 실으므로, 그 숫자를 변환 없이
+주소의 `chars`로 그대로 쓴다.
+
+```bash
+ahwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
+```
+
+```json
+[{"op":"replace","address":{"id":"RUN_ID_FROM_THE_ENVELOPE","chars":[12,17]},"from":"선택 구간","to":"{{slot}}"}]
+```
+
+`chars`가 없는 `at.run`은 지정한 run의 텍스트 전체를 바꾼다.
+
+```json
+[{"op":"replace","address":{"at":{"section":0,"paragraph":3,"run":1}},"from":"기존 텍스트","to":"새 텍스트"}]
+```
+
+두 형태 모두 지정한 run 또는 구간만 건드린다. 같은 문단의 다른 위치, run 경계를 걸친 곳,
+필드 값 안에 같은 문구가 있어도 그대로 둔다. `from`은 선택자가 아니라 드리프트 검사이므로,
+주소가 덮는 텍스트가 `from`과 정확히 같지 않으면 아무것도 바꾸지 않고 그 요청을 주소와 구간을
+붙여 미적용으로 보고하며, `--allow-partial`이 없으면 실행이 실패한다. run id와 중첩 문단 id는
+`<checksum>.<path>` 모양이 같으므로 `id`로 run을 지정할 때는 `chars`를 함께 주고, 창 없이 run을
+지정하려면 `at.run`을 쓴다.
+
 ### 기존 문서에 구성 요소 삽입
 
 `insert_blocks`는 DocumentSpec v1 블록(문단, 목록, 표, 이미지, 필드, 수식, 쪽·단 나누기)을
