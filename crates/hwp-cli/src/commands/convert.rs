@@ -2530,6 +2530,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn changed_parent_invalidates_a_new_cached_leading_paragraph() {
+        let original = cell_context_fixture();
+        let mut edited = original.clone();
+        let cell = context_cell(&mut edited);
+        cell.width.0 += 1;
+        let mut inserted = hwp_model::Paragraph::default();
+        inserted.header.instance_id = 2;
+        inserted.chars = vec![hwp_model::HwpChar::Text('Z')];
+        inserted.line_segs = vec![cached_segment(500)];
+        cell.paragraphs.insert(0, inserted);
+        let mut synthesized = edited.clone();
+
+        restore_unchanged_controls(&original, &edited, &mut synthesized, SuffixCache::Drop);
+
+        assert!(
+            context_cell(&mut synthesized)
+                .paragraphs
+                .iter()
+                .all(|paragraph| paragraph.line_segs.is_empty()),
+            "a changed parent invalidates every own cache, including an unmatched leading paragraph"
+        );
+    }
+
     fn context_generic(parent: &mut hwp_model::Paragraph) -> &mut hwp_model::GenericControl {
         let hwp_model::Control::Generic(generic) = &mut parent.controls[0] else {
             panic!("generic fixture")
