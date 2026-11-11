@@ -122,8 +122,9 @@ GN-9는 이 검증 경계에서 해소된다. 이 해소는 프로필 여백과 
   `skills/hwp/claude-web/bootstrap.sh`는 스킬 콘텐츠가 아니라 저장소/릴리스 산출물이다.
   드리프트 워크에서도 제외한다.
 - **Q3 — 릴리스 웹 번들은 이번 phase에도 SKILL.md만 유지**:
-  `hwp-skill-claude-web.zip`은 계속 `SKILL.md`, `bootstrap.sh`, Linux x86_64 `bin/hwp`만
-  담는다. 보류 아이디어(기록, 일정 없음): claude.ai 샌드박스 스킬 UI를 다시 확인한 뒤
+  `hwp-skill-claude-web.zip`은 계속 `SKILL.md`, `bootstrap.sh`, Linux x86_64 `bin/ahwp`를
+  담는다(페이로드는 변경된 명령 이름을 따르고, zip 이름과 스킬 이름은 `hwp`로 유지한다, #510).
+  보류 아이디어(기록, 일정 없음): claude.ai 샌드박스 스킬 UI를 다시 확인한 뒤
   트리 형태 웹 번들.
 
 ## 5. 출처

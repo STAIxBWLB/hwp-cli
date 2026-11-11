@@ -128,7 +128,8 @@ brew install ahwp
 ahwp --version
 ```
 
-업그레이드는 `brew update && brew upgrade ahwp`. 지원 플랫폼은 macOS(Apple Silicon·Intel)와 Linux x86_64다.
+업그레이드는 `brew update && brew upgrade ahwp`. 예전 `hwp` 포뮬러로 설치한 기기는
+`formula_renames.json`을 통해 그대로 이전된다. 지원 플랫폼은 macOS(Apple Silicon·Intel)와 Linux x86_64다.
 
 ### 사전 빌드 바이너리
 

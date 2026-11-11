@@ -497,10 +497,11 @@ claude.ai 코드 실행 샌드박스는 네트워크가 레지스트리로 제�
    아카이브 해시를 대조한다.
 2. claude.ai에서 Settings → Capabilities → Skills로 가서 zip을 업로드한다.
 3. 코드 실행이 켜진 채팅에서 세션당 한 번 `bash bootstrap.sh`를 실행한다. 번들된 바이너리를
-   `~/.local/bin`(`HWP_BIN_DIR`로 변경 가능)에 설치하고 `ahwp --version`으로 동작을 확인한 뒤
-   MCP 등록 스니펫을 출력한다. 이후 Claude는 샌드박스 안에서 `ahwp`를 CLI로 직접 구동한다.
-   여기서는 CLI만 쓸 수 있으므로 `merge`·`split`·`compare`도 MCP 도구가 아니라 명령으로
-   실행한다.
+   `~/.local/bin`(`HWP_BIN_DIR`로 변경 가능)에 `ahwp`로 설치하고, 1.x의 `hwp` 이름을 같은 위치에
+   심볼릭 링크로 남긴 뒤 `ahwp --version`으로 동작을 확인하고 MCP 등록 스니펫을 출력한다. 이후
+   Claude는 샌드박스 안에서 `ahwp`를 CLI로 직접 구동하며, `SKILL.md`의 `hwp` 명령도 같은
+   바이너리로 해석된다. 여기서는 CLI만 쓸 수 있으므로 `merge`·`split`·`compare`도 MCP 도구가
+   아니라 명령으로 실행한다.
 
 ## Amazon Quick Desktop
 
