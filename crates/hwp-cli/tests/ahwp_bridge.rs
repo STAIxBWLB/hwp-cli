@@ -71,8 +71,9 @@ fn legacy_non_terminal_output_matches_the_canonical_command() {
 #[test]
 fn legacy_terminal_prints_one_deprecation_line() {
     use std::io::Read;
-    use std::os::fd::FromRawFd;
+    use std::os::fd::{AsRawFd, FromRawFd};
     use std::process::Stdio;
+    use std::time::{Duration, Instant};
 
     let alias = Alias::new("terminal");
     let mut master = -1;
@@ -90,6 +91,9 @@ fn legacy_terminal_prints_one_deprecation_line() {
     assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
     let mut reader = unsafe { std::fs::File::from_raw_fd(master) };
     let terminal = unsafe { std::fs::File::from_raw_fd(slave) };
+    // Darwin can discard unread output when the last slave closes. Keep the parent copy
+    // alive until the master is drained, even after the child has exited.
+    let parent_terminal = terminal.try_clone().unwrap();
     let output = Command::new(&alias.0)
         .env("HWP_LANG", "en")
         .arg("--version")
@@ -99,7 +103,38 @@ fn legacy_terminal_prints_one_deprecation_line() {
     assert!(output.status.success());
     let mut bytes = Vec::new();
     let mut buffer = [0; 1024];
+    let deadline = Instant::now() + Duration::from_secs(5);
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "PTY output did not quiesce within five seconds; inspect descriptor ownership \
+             and rerun legacy_terminal_prints_one_deprecation_line"
+        );
+        // The child has been reaped. After receiving output, a quiet interval completes the
+        // drain; the retained slave means EOF cannot be used as the completion signal.
+        let wait = if bytes.is_empty() {
+            remaining
+        } else {
+            remaining.min(Duration::from_millis(100))
+        };
+        let mut descriptor = libc::pollfd {
+            fd: reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready =
+            unsafe { libc::poll(&mut descriptor, 1, wait.as_millis().max(1) as libc::c_int) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            panic!("poll terminal: {error}; inspect PTY descriptors and rerun this test");
+        }
+        if ready == 0 || descriptor.revents & libc::POLLIN == 0 {
+            break;
+        }
         match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(length) => bytes.extend_from_slice(&buffer[..length]),
@@ -108,6 +143,7 @@ fn legacy_terminal_prints_one_deprecation_line() {
             Err(error) => panic!("read terminal: {error}"),
         }
     }
+    drop(parent_terminal);
     let stderr = String::from_utf8(bytes).unwrap();
     let lines = stderr.lines().collect::<Vec<_>>();
     assert_eq!(lines.len(), 1, "one notice on terminal stderr: {stderr:?}");
