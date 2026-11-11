@@ -36,6 +36,34 @@
 //! recorded during emission, remapped through the cleanup deletion map, and converted to scalars
 //! in one pass. A consumer can slice `md[start:end]` in Python directly.
 //!
+//! ## Source offsets
+//!
+//! A `run` segment carries a second range, [`Segment::source_chars`], and it lives in a
+//! different coordinate space than `char_range`: **absolute UTF-16 code units into the source
+//! paragraph**, the same unit and origin as `edit-ops-v1` `address.chars` and
+//! `render-layout-v1`'s `source_chars` (#517). The two are never interchangeable and nothing
+//! converts between them — `char_range` indexes the emitted markdown, emphasis markers included,
+//! while `source_chars` indexes the paragraph as the document stores it.
+//!
+//! The point of publishing it is a round trip with no conversion on the caller's side: a
+//! consumer copies `start` and `end` into a run-range op's `address.chars` and the op targets the
+//! text that segment emitted. That only holds if both sides compute the bound the same way, so
+//! they do: `run_wchar_bounds` is the single rule, [`crate::address`]'s `Granularity::Run`
+//! resolves the whole-run bound through it and the walk publishes what it returns for the same
+//! run. A second, independent derivation would let the envelope name a range its own resolver
+//! then refuses as out of range.
+//!
+//! A fragmented run publishes **one value per contiguous piece** (see "A fragmented run" below),
+//! each paired with that piece's `char_range`. The interrupting control's own characters belong
+//! to no piece, so no piece's `source_chars` spans it, and the pieces of one run neither overlap
+//! nor leave a gap. Inline controls — a field start/end, a bookmark — sit inside a run's source
+//! span and are counted in it, exactly as `address.chars` counts them, because they are characters
+//! of the paragraph. A run that emitted no source text at all (a control-only run) is not
+//! published as a segment, so no empty range exists to hand to an op. The last piece of a
+//! paragraph ends at the paragraph's own length, where the stored paragraph break is the
+//! paragraph's final character: the same bound `run_wchar_bounds` gives the last run, so the
+//! published range is always one the resolver accepts.
+//!
 //! # One emission core
 //!
 //! There is no second emitter. The v2 vector is produced by the same `emit_markdown` the default
@@ -234,6 +262,20 @@ pub struct SegmentStyle {
     pub direct: StyleLevel,
 }
 
+/// A half-open range in the source paragraph, in UTF-16 code units.
+///
+/// The same unit and origin as `edit-ops-v1` `address.chars` and `render-layout-v1`
+/// `source_chars`, so a caller copies the two numbers into a run-range op's `[start, end]` with
+/// no conversion (issue #517). It is deliberately NOT the same coordinate space as a segment's
+/// `start`/`end`, which count Unicode scalars into the emitted markdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceChars {
+    /// Absolute WCHAR offset into the source paragraph, inclusive.
+    pub start: u32,
+    /// Absolute WCHAR offset into the source paragraph, exclusive.
+    pub end: u32,
+}
+
 /// One emitted range, its IR coordinates, its id and its style.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
@@ -257,6 +299,11 @@ pub struct Segment {
     /// it is not usable by an editor, which is why it is published rather than left to a second
     /// query.
     pub name: Option<String>,
+    /// The source characters this `run` piece emitted, in the source paragraph's own UTF-16
+    /// coordinates. `None` on every other kind. A piece that emitted no source text is not
+    /// published as a segment at all, so a `run` here always carries a non-empty range. See the
+    /// module doc, "Source offsets".
+    pub source_chars: Option<SourceChars>,
 }
 
 /// A span recorded during emission, in the byte coordinates of the buffer being written.
@@ -274,6 +321,9 @@ pub(crate) struct RawSeg {
     /// Recorded as a point on purpose - a `para` that emitted no text but is still drawn - so
     /// [`finalize`] keeps it even though its kind is dropped when a range collapses.
     pub point: bool,
+    /// The source-paragraph WCHAR span this piece emitted, for a `run` piece that emitted text.
+    /// Recorded in the same coordinates `address.chars` takes, so no conversion happens anywhere.
+    pub source: Option<(u32, u32)>,
 }
 
 /// The markdown of [`crate::markdown::to_markdown_with`], plus the v2 segment vector.
@@ -307,6 +357,13 @@ pub(crate) fn finalize(raw: Vec<RawSeg>, mut remap: impl FnMut(usize) -> usize) 
                 style: seg.style,
                 ctrl_id: seg.ctrl_id,
                 name: seg.name,
+                // A zero-length source span is omitted, never published: the contract says a
+                // run with no source text carries no `source_chars`, and an empty range would
+                // be a second way to say the same thing.
+                source_chars: seg
+                    .source
+                    .filter(|&(s, e)| e > s)
+                    .map(|(s, e)| SourceChars { start: s, end: e }),
             })
         })
         .collect();
@@ -374,6 +431,22 @@ pub(crate) fn char_shape_id_at(para: &Paragraph, pos: u32) -> Option<u16> {
         .rev()
         .find(|(start, _)| *start <= pos)
         .map(|(_, id)| id.0)
+}
+
+/// The `[start, end)` WCHAR bounds of canonical run `index`, or `None` when there is no such run.
+///
+/// ONE RULE, TWO READERS: this is the boundary `address::resolve` validates an `address.chars`
+/// against, and the same boundary a `run` segment publishes as `source_chars`. If they were
+/// computed twice they could drift, and a caller handing our own published range back to
+/// `set_format` would be refused by the resolver — which is exactly the round trip issue #517
+/// exists to make work.
+pub(crate) fn run_wchar_bounds(para: &Paragraph, index: usize) -> Option<(u32, u32)> {
+    let runs = canonical_char_shape_runs(para);
+    let &(start, _) = runs.get(index)?;
+    let end = runs
+        .get(index + 1)
+        .map_or_else(|| para.wchar_len(), |&(next, _)| next);
+    Some((start, end))
 }
 
 pub(crate) fn level(
@@ -818,6 +891,23 @@ mod tests {
         }
     }
 
+    /// One run whose emission a table interrupts, so the run is emitted as two pieces.
+    fn fragmented_document() -> Document {
+        let mut p = Paragraph {
+            chars: "앞".chars().map(HwpChar::Text).collect(),
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        attach(
+            &mut p,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(vec![cell_of(0, 0, "칸")], 1, 1)),
+        );
+        p.chars.extend("뒤".chars().map(HwpChar::Text));
+        doc_of(vec![p])
+    }
+
     /// A document carrying every kind: text runs, a picture, a field, a bookmark and a table.
     fn seven_kind_document() -> Document {
         let mut first = para("첫 문단");
@@ -1091,6 +1181,168 @@ mod tests {
         // The block is not swallowed by the run that its anchor sits in.
         let table = only(&segs, SegmentKind::Table);
         assert!(runs[0].end <= table.start && runs[1].start >= table.end);
+    }
+
+    /// #517: a run publishes the source characters it emitted, in the source paragraph's own
+    /// UTF-16 coordinates - the same ones `edit-ops-v1` `address.chars` takes - so a caller's
+    /// round trip needs no conversion. The published span is the run's text, not the markdown it
+    /// produced: a bold run's `char_range` also covers the emphasis markers.
+    #[test]
+    fn a_run_publishes_its_source_span() {
+        let mut p = para("plain bold tail");
+        p.char_shape_runs = vec![
+            (0, CharShapeId(0)),
+            (6, CharShapeId(1)),
+            (10, CharShapeId(0)),
+        ];
+        let (md, segs) = emit(&doc_of(vec![p]));
+        let runs = of(&segs, SegmentKind::Run);
+        assert_eq!(runs.len(), 3, "{segs:#?}");
+        // The three pieces tile the paragraph with no gap and no overlap.
+        assert_eq!(runs[0].source_chars, Some(SourceChars { start: 0, end: 6 }));
+        assert_eq!(
+            runs[1].source_chars,
+            Some(SourceChars { start: 6, end: 10 })
+        );
+        assert_eq!(
+            runs[2].source_chars,
+            Some(SourceChars { start: 10, end: 15 })
+        );
+        // The middle run's markdown is longer than its source span, because the markers belong to
+        // the run's emission but to none of its source characters.
+        assert_eq!(slice(&md, runs[1]), "***bold***");
+    }
+
+    /// A surrogate pair is two source units and one markdown scalar. A span computed from the
+    /// markdown's scalars would name the wrong characters on any document with an emoji before
+    /// the run.
+    #[test]
+    fn a_source_span_counts_surrogate_pairs_as_two_units() {
+        let mut p = para("😀가나다");
+        // 😀 is U+1F600: two UTF-16 code units, so the second run starts at 2, not at 1.
+        p.char_shape_runs = vec![(0, CharShapeId(0)), (2, CharShapeId(1))];
+        let (md, segs) = emit(&doc_of(vec![p]));
+        let runs = of(&segs, SegmentKind::Run);
+        assert_eq!(runs.len(), 2, "{segs:#?}");
+        assert_eq!(runs[0].source_chars, Some(SourceChars { start: 0, end: 2 }));
+        assert_eq!(runs[1].source_chars, Some(SourceChars { start: 2, end: 5 }));
+        // The same run in the other space: "😀가나다" is four scalars, and the run holds three.
+        assert_eq!(slice(&md, runs[1]), "***가나다***");
+    }
+
+    /// A fragmented run publishes one span per piece, and the interrupting control's own
+    /// characters belong to no piece: the second piece resumes after the anchor rather than
+    /// continuing where the first stopped.
+    #[test]
+    fn a_fragmented_run_publishes_one_source_span_per_piece() {
+        let mut p = Paragraph {
+            chars: "앞".chars().map(HwpChar::Text).collect(),
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        attach(
+            &mut p,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(vec![cell_of(0, 0, "칸")], 1, 1)),
+        );
+        p.chars.extend("뒤".chars().map(HwpChar::Text));
+        let (_, segs) = emit(&doc_of(vec![p]));
+        let runs: Vec<&Segment> = of(&segs, SegmentKind::Run)
+            .into_iter()
+            .filter(|r| r.path.indices == vec![0, 0])
+            .collect();
+        assert_eq!(runs.len(), 2, "{segs:#?}");
+        assert_eq!(runs[0].source_chars, Some(SourceChars { start: 0, end: 1 }));
+        // The table anchor is an ExtCtrl, 8 WCHAR wide: 1 + 8 = 9, and the paragraph ends at 10.
+        assert_eq!(
+            runs[1].source_chars,
+            Some(SourceChars { start: 9, end: 10 })
+        );
+    }
+
+    /// A run whose piece emitted no source text is not published at all, so there is no empty
+    /// range for a caller to hand to an op: `source_chars` is never zero-length anywhere. This
+    /// pins the mechanism, which the contract states only as the omission.
+    #[test]
+    fn a_control_only_run_publishes_nothing_and_no_empty_span() {
+        let mut p = Paragraph {
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        attach(
+            &mut p,
+            ctrl_char::OBJECT,
+            *b"tbl ",
+            Control::Table(table_of(vec![cell_of(0, 0, "칸")], 1, 1)),
+        );
+        let control_only = doc_of(vec![p]);
+        let (_, segs) = emit(&control_only);
+        let outer: Vec<&Segment> = of(&segs, SegmentKind::Run)
+            .into_iter()
+            .filter(|r| r.path.indices == vec![0, 0])
+            .collect();
+        assert!(
+            outer.is_empty(),
+            "a run with no source text is not a segment: {outer:#?}"
+        );
+
+        // The same invariant over a document whose runs do emit text: no published run carries an
+        // empty or missing span.
+        let (_, rich) = emit(&seven_kind_document());
+        let runs = of(&rich, SegmentKind::Run);
+        assert!(!runs.is_empty(), "the document must publish runs at all");
+        for run in runs {
+            let chars = run
+                .source_chars
+                .unwrap_or_else(|| panic!("a published run must carry its span: {run:#?}"));
+            assert!(
+                chars.end > chars.start,
+                "a published span is never zero-length: {run:#?}"
+            );
+        }
+    }
+
+    /// The resolver and the envelope share one rule, so every span the envelope publishes is a
+    /// string `resolve` accepts at run granularity - including each piece of a fragmented run,
+    /// which is a sub-range of the run it names. This is the property the published field exists
+    /// for; a second derivation would let the envelope name a range its own resolver refuses.
+    #[test]
+    fn every_published_source_span_resolves_as_an_address_range() {
+        for doc in [seven_kind_document(), fragmented_document()] {
+            let (_, segs) = emit(&doc);
+            let mut checked = 0;
+            for seg in of(&segs, SegmentKind::Run) {
+                let Some(chars) = seg.source_chars else {
+                    continue;
+                };
+                let addr = crate::address::Address {
+                    section: seg.path.section,
+                    indices: seg.path.indices.clone(),
+                    checksum: None,
+                    chars: Some((chars.start, chars.end)),
+                };
+                let resolved =
+                    crate::address::resolve(&doc, &addr, crate::address::Granularity::Run)
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "the published span {chars:?} of {} was refused: {e}",
+                                seg.id
+                            )
+                        });
+                match resolved.kind {
+                    crate::address::TargetKind::Run { w_start, w_end, .. } => {
+                        assert_eq!((w_start, w_end), (chars.start, chars.end))
+                    }
+                    other => panic!("expected a run target, got {other:?}"),
+                }
+                checked += 1;
+            }
+            assert!(
+                checked > 0,
+                "no run published a span, so this proves nothing: {segs:#?}"
+            );
+        }
     }
 
     /// A control inside a cell must not overwrite the style captured at the outer control.

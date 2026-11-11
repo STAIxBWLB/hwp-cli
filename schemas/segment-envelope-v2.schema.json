@@ -8,8 +8,8 @@
   "required": ["schema_version", "contract", "markdown", "segments"],
   "properties": {
     "schema_version": {
-      "const": "1.0",
-      "description": "Version of this envelope contract. A field added, removed or renamed is a new major schema, because this envelope is closed."
+      "const": "1.1",
+      "description": "Version of this envelope contract. An OPTIONAL field added to an existing kind is a minor bump: `1.1` added `source_chars` on `run` segments, and a consumer that ignores unknown fields reads a `1.1` envelope exactly as it read `1.0`. Removing a field, renaming one, or changing what an existing field means is a new major schema, because this envelope is closed in that direction: no field disappears or changes meaning inside a major."
     },
     "contract": {
       "const": "hwp-segment-envelope-v2",
@@ -33,10 +33,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "path", "char_range", "style", "direct"],
-      "$comment": "`dependentSchemas` enforces what `ctrl_id` and `name` say about themselves. Without it the two descriptions would assert a constraint the schema does not have, and a `para` segment carrying a `ctrl_id` would validate.",
+      "$comment": "`dependentSchemas` enforces what `ctrl_id`, `name` and `source_chars` say about themselves. Without it those descriptions would assert constraints the schema does not have, and a `para` segment carrying a `ctrl_id` or a `source_chars` would validate.",
       "dependentSchemas": {
         "ctrl_id": { "properties": { "kind": { "enum": ["field", "bookmark"] } } },
-        "name": { "properties": { "kind": { "const": "bookmark" } } }
+        "name": { "properties": { "kind": { "const": "bookmark" } } },
+        "source_chars": { "properties": { "kind": { "const": "run" } } }
       },
       "properties": {
         "id": {
@@ -65,6 +66,10 @@
         "name": {
           "type": "string",
           "description": "A bookmark's name, present only on `bookmark` segments that carry one and omitted otherwise - enforced by this object's `dependentSchemas`. A bookmark without a name omits the key rather than carrying an empty one. Published rather than left to a second query, because a bookmark segment without it is not addressable by an editor."
+        },
+        "source_chars": {
+          "$ref": "#/$defs/source_chars",
+          "description": "The source characters this `run` piece emitted. Present on EVERY `run` segment and on no other kind - enforced by this object's `dependentSchemas` - and always non-empty, because a piece that emitted no source text is not published as a segment at all. ABSOLUTE UTF-16 CODE UNITS INTO THE SOURCE PARAGRAPH, the same unit and origin as `edit-ops-v1` `address.chars` and `render-layout-v1` `source_chars`: a caller copies `start` and `end` into a run-range op's `address.chars` as `[start, end]` with no conversion, which is what distinguishes this field from `char_range` (Unicode scalars into the emitted markdown, emphasis markers included) - the two spaces differ on any document with a non-BMP character, a table or a control anchor, and NOTHING CONVERTS BETWEEN THEM. NEVER ZERO-LENGTH: `end > start` always holds, and a piece with nothing to report is not published rather than carrying an empty range. ONE VALUE PER CONTIGUOUS PIECE: a run a block control interrupts is published once per piece and each piece carries ITS OWN range, so `source_chars` pairs with that piece's `char_range`; the interrupting control's own characters belong to no piece, so no piece spans it, and the pieces of one run neither overlap nor leave a gap. Inline controls - a field start/end, a bookmark - sit inside a run's own source span and are counted, exactly as `address.chars` counts them. The last piece of a paragraph ends at the paragraph's own length, where the stored paragraph break is the paragraph's last character; that is the same bound `address.chars` is resolved against, so the published range is always one an op accepts."
         }
       }
     },
@@ -94,6 +99,24 @@
       "properties": {
         "start": { "type": "integer", "minimum": 0, "description": "Inclusive." },
         "end": { "type": "integer", "minimum": 0, "description": "Exclusive. Equals `start` for a `bookmark`, which emits nothing, and for a `para` that emits no text (see `kind`)." }
+      }
+    },
+    "source_chars": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "description": "A half-open range in the SOURCE PARAGRAPH, in ABSOLUTE UTF-16 CODE UNITS. Same unit and origin as `edit-ops-v1` `address.chars` and `render-layout-v1` `source_chars`, and nothing converts between the spaces: the two numbers go into a run-range op's `[start, end]` unchanged. It is deliberately a separate definition from `char_range`, which is a Unicode scalar range into this envelope's own `markdown`.",
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Inclusive. Absolute, from the start of the paragraph, so it is not relative to the segment."
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Exclusive. STRICTLY greater than `start`: a piece with no source text is not published, so it never publishes an empty range."
+        }
       }
     },
     "style_level": {
