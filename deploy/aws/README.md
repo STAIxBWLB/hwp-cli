@@ -52,7 +52,7 @@ path modifier and silently breaks the ARN.
 export AWS_PROFILE=<profile> AWS_REGION=us-east-1
 ACCOUNT_ID=<12-digit account id>
 REPO=hwp-agentcore
-TAG=v1.5.0
+TAG=v1.6.0
 IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO}:${TAG}"
 ```
 
@@ -234,7 +234,7 @@ rm -f auth.hdr
 ## Update to a new release
 
 Bump `HWP_VERSION` and `HWP_SHA256` in [Dockerfile.agentcore](Dockerfile.agentcore) together (the
-sha256 is published beside the tarball as `hwp-<version>-aarch64-unknown-linux-gnu.sha256`), build
+sha256 is published beside the tarball as `ahwp-<version>-aarch64-unknown-linux-gnu.sha256`), build
 from the repository root and push under the new tag, then point the runtime at it. Pass `update-agent-runtime` every setting
 the runtime was created with: the artifact, role, network and protocol, plus the authorizer for a
 JWT runtime and the platform version for a V2 runtime.

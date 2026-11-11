@@ -49,7 +49,7 @@ AgentCore tier(Tier B)다. `hwp serve`를 AgentCore Runtime에서 MCP 서버로 
 export AWS_PROFILE=<profile> AWS_REGION=us-east-1
 ACCOUNT_ID=<12자리 계정 ID>
 REPO=hwp-agentcore
-TAG=v1.5.0
+TAG=v1.6.0
 IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${REPO}:${TAG}"
 ```
 
@@ -226,7 +226,7 @@ rm -f auth.hdr
 ## 새 릴리스로 교체
 
 [Dockerfile.agentcore](Dockerfile.agentcore)의 `HWP_VERSION`과 `HWP_SHA256`을 함께 올리고(sha256은
-tarball 옆 `hwp-<version>-aarch64-unknown-linux-gnu.sha256`), 저장소 루트에서 새 태그로 빌드·푸시한 뒤 런타임이 새
+tarball 옆 `ahwp-<version>-aarch64-unknown-linux-gnu.sha256`), 저장소 루트에서 새 태그로 빌드·푸시한 뒤 런타임이 새
 이미지를 가리키게 한다. `update-agent-runtime`에는 생성 때 준 설정을 모두 다시 넘긴다.
 아티팩트·역할·네트워크·프로토콜에 더해, JWT 런타임은 인증 설정을, V2 런타임은 플랫폼 버전을 넘긴다.
 

@@ -13,9 +13,9 @@
 # is published alongside the tarball as hwp-<version>-<target>.sha256; the build
 # fails loudly if it does not match, which is the point.
 
-ARG HWP_VERSION=v1.5.0
+ARG HWP_VERSION=v1.6.0
 ARG HWP_TARGET=x86_64-unknown-linux-gnu
-ARG HWP_SHA256=95cc7aa843132b6eb4c18e9c9660492d8b45ad668f3277e54fb2f582dd6b9b8d
+ARG HWP_SHA256=399bbf1ba6ce3ae591956fb0b5ad5de5b1bab8102de45c931ff67ae82a6677a0
 
 # Fetch stage. ADD downloads over the builder's own network stack, so no curl and
 # no CA bundle are ever installed; keeping it in a discarded stage also keeps the
@@ -24,10 +24,10 @@ FROM debian:bookworm-slim AS fetch
 ARG HWP_VERSION
 ARG HWP_TARGET
 ARG HWP_SHA256
-ADD https://github.com/STAIxBWLB/hwp-cli/releases/download/${HWP_VERSION}/hwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz /tmp/hwp.tar.gz
+ADD https://github.com/STAIxBWLB/hwp-cli/releases/download/${HWP_VERSION}/ahwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz /tmp/hwp.tar.gz
 RUN set -eux; \
     echo "${HWP_SHA256}  /tmp/hwp.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin hwp; \
+    tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin ahwp hwp; \
     chmod +x /usr/local/bin/hwp; \
     hwp --version; \
     # A release without `serve` would otherwise fail only at runtime, inside a
