@@ -10,9 +10,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.6.1]
+
+**Compatibility**
+
+- `cat --with-segments --segments v2` now reports `schema_version` `1.1`: run segments gain an
+  optional `source_chars`. Consumers that ignore unknown fields read it exactly as `1.0`; a
+  consumer that validates against a pinned copy of the `1.0` schema must take the updated schema
+  ([#517](https://github.com/STAIxBWLB/hwp-cli/issues/517)).
+- HWP5 edits keep the saved line caches of the unchanged prefix and regenerate the body flow from
+  the first changed paragraph, so an edited `.hwp` file's line-layout records after that point can
+  differ from 1.6.0 output for the same edit; unedited files and HWP5 identity round-trips are
+  unchanged ([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
+
 **Added**
 
-- `hwp cat --with-segments --segments v2` publishes an optional `source_chars` on `run` segments
+- `ahwp cat --with-segments --segments v2` publishes an optional `source_chars` on `run` segments
   in both envelope formats, as a minor `1.1` bump of `segment-envelope-v2`. The range is absolute
   UTF-16 code units into the source paragraph, the same unit and origin as `edit-ops-v1`
   `address.chars` and `render-layout-v1` `source_chars`, so a caller copies the two numbers into a
