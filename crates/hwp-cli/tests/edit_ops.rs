@@ -1312,6 +1312,457 @@ fn replace_requires_from_even_with_address() {
     assert!(!output.exists());
 }
 
+/// A one-paragraph body that imports as three char-shape runs — "AAA" (bold, from `**AAA**`),
+/// " " (plain) and "AAA" (bold) at source_chars 0..3, 3..4 and 4..7 — so the same phrase occurs
+/// twice with a run boundary between the occurrences. That is the shape a window-addressed
+/// replace has to tell apart (#525).
+const REPEATED_RUN_MD: &str = "# T\n\n**AAA** **AAA**\n";
+
+fn new_repeated_run_base(name: &str) -> (PathBuf, PathBuf) {
+    let dir = test_dir(name);
+    let md = dir.join("doc.md");
+    std::fs::write(&md, REPEATED_RUN_MD).unwrap();
+    let base = dir.join("base.hwpx");
+    new_from(&md, &base);
+    (dir, base)
+}
+
+/// The `(id, start, end)` of every `run` segment inside paragraph `para_index`, read from
+/// segment-envelope-v2 itself. A test that builds its `chars` window from these values proves the
+/// two features share one coordinate space: the window the envelope publishes is the window
+/// `replace` accepts (#517 publishes it, #525 consumes it).
+fn run_segments_of_paragraph(file: &Path, para_index: usize) -> Vec<(String, u32, u32)> {
+    let out = hwp()
+        .arg("cat")
+        .arg(file)
+        .args([
+            "--format",
+            "markdown",
+            "--with-segments",
+            "--segments",
+            "v2",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "hwp cat --with-segments failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let envelope: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut paragraph = 0usize;
+    let mut seen_paragraph = false;
+    let mut runs = Vec::new();
+    for segment in envelope["segments"].as_array().unwrap() {
+        match segment["kind"].as_str().unwrap() {
+            "para" => {
+                if seen_paragraph {
+                    paragraph += 1;
+                }
+                seen_paragraph = true;
+            }
+            "run" if paragraph == para_index => runs.push((
+                segment["id"].as_str().unwrap().to_owned(),
+                segment["source_chars"]["start"].as_u64().unwrap() as u32,
+                segment["source_chars"]["end"].as_u64().unwrap() as u32,
+            )),
+            _ => {}
+        }
+    }
+    runs
+}
+
+/// A `replace` carrying `chars` rewrites exactly that WCHAR window. The phrase also occurs in a
+/// sibling run of the same paragraph, and the window comes from the published `source_chars` of
+/// the second occurrence, so this pins both acceptance criterion 1 of #525 (nothing outside the
+/// address is touched) and the shared unit and origin with segment-envelope-v2.
+#[test]
+fn run_range_replace_touches_only_the_published_window() {
+    let (dir, base) = new_repeated_run_base("run-range-only-window");
+    let runs = run_segments_of_paragraph(&base, 1);
+    assert_eq!(
+        runs.len(),
+        3,
+        "the fixture must import as three runs, got {runs:?}"
+    );
+    let (id, start, end) = runs[2].clone();
+    assert_eq!(
+        (start, end),
+        (4, 7),
+        "the second occurrence must be its own run: {runs:?}"
+    );
+    let before = hwpx::read_document(&base).unwrap().document;
+    assert_eq!(before.sections[0].paragraphs[1].plain_text(), "AAA AAA");
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        format!(
+            r#"[{{"op":"replace","address":{{"id":"{id}","chars":[{start},{end}]}},"from":"AAA","to":"ZZZ"}}]"#
+        ),
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "a run-window replace must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].plain_text(),
+        "AAA ZZZ",
+        "only the addressed occurrence may change"
+    );
+    // Both replacements have the same WCHAR width, so no run boundary and no shape moves: the
+    // untouched occurrence keeps its own bold run and the paragraph's run list is unchanged.
+    assert_eq!(
+        after.sections[0].paragraphs[1].char_shape_runs,
+        before.sections[0].paragraphs[1].char_shape_runs,
+        "nothing outside the window may be restructured"
+    );
+}
+
+/// `at.run` with no `chars` replaces that run's whole text (the schema's run reading, D-01), and
+/// leaves the identical phrase in the sibling run alone. This is the spelling that makes the run
+/// intent explicit without a window.
+#[test]
+fn run_address_without_chars_replaces_the_whole_run() {
+    let (dir, base) = new_repeated_run_base("run-address-whole-run");
+    let before = hwpx::read_document(&base).unwrap().document;
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":0}},"from":"AAA","to":"ZZZ"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "a whole-run replace must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].plain_text(),
+        "ZZZ AAA",
+        "run 0 is the first occurrence; the second must stay"
+    );
+    assert_eq!(
+        after.sections[0].paragraphs[1].char_shape_runs,
+        before.sections[0].paragraphs[1].char_shape_runs
+    );
+}
+
+/// A window whose text is not `from` changes nothing and is reported unapplied, which names the
+/// address and its window. The run fails closed by default; under `--allow-partial` the batch
+/// still publishes the op that matched, and the report marks the drifted one failed with the
+/// drift cause. `from` is a drift check, never a selector (#525).
+#[test]
+fn run_range_window_that_is_not_from_is_reported_unapplied() {
+    let (dir, base) = new_repeated_run_base("run-range-drift");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[{"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":2},"chars":[4,7]},"from":"BBB","to":"ZZZ"}]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a window that is not from must fail closed"
+    );
+    assert!(!output.exists(), "a refused batch must not publish");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("at 0.1.2 chars=[4, 7)"),
+        "the refusal must name the address and its window: {stderr}"
+    );
+
+    let partial_ops = dir.join("ops-partial.json");
+    std::fs::write(
+        &partial_ops,
+        r#"[
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":2},"chars":[4,7]},"from":"BBB","to":"ZZZ"},
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":0},"chars":[0,3]},"from":"AAA","to":"YYY"}
+        ]"#,
+    )
+    .unwrap();
+    let partial_output = dir.join("partial.hwpx");
+    let report_path = dir.join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&partial_output)
+        .arg("--ops")
+        .arg(&partial_ops)
+        .arg("--allow-partial")
+        .arg("--report")
+        .arg(&report_path)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "a partially-matched batch under --allow-partial must still succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let after = hwpx::read_document(&partial_output).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].plain_text(),
+        "YYY AAA",
+        "the matched window applies; the drifted one must not"
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert!(
+        edit_report_v1_validator().is_valid(&report),
+        "report must validate against edit-report-v1: {report}"
+    );
+    let ops = report["ops"].as_array().unwrap();
+    assert_eq!(ops[0]["status"], "failed");
+    assert_eq!(ops[0]["reason"], "replace: addressed text is not from");
+    assert_eq!(ops[1]["status"], "applied");
+}
+
+/// An `id` that names a run but carries no `chars` keeps its paragraph reading and is refused —
+/// never guessed into a run rewrite. A run id and a nested-paragraph id are both
+/// `<checksum>.<path>[.<index>]`, so only `chars` (or `at.run`) declares the run reading; the
+/// schema states the same rule beside `chars`.
+#[test]
+fn run_id_without_chars_is_refused_rather_than_guessed() {
+    let (dir, base) = new_repeated_run_base("run-id-without-chars");
+    let runs = run_segments_of_paragraph(&base, 1);
+    let (id, _, _) = runs[2].clone();
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        format!(r#"[{{"op":"replace","address":{{"id":"{id}"}},"from":"AAA","to":"ZZZ"}}]"#),
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a run id without chars must be refused, not applied"
+    );
+    assert!(!output.exists());
+}
+
+/// A run-range replace resolves in preflight and must keep following ITS paragraph when an
+/// earlier op of the same batch shifts that paragraph's position (D-06 + structural drift).
+///
+/// The inserted paragraph repeats the addressed text at the same window, so the `from` drift
+/// check cannot tell the two apart: re-resolving the raw address against the mutated document
+/// lands on the inserted paragraph and silently rewrites it, while mapping the preflight path
+/// through the batch's splices rewrites the paragraph the caller addressed.
+#[test]
+fn batch_insert_before_the_target_keeps_a_run_window_on_its_own_paragraph() {
+    let (dir, base) = new_repeated_run_base("run-range-structural-drift");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"insert_para","address":{"at":{"section":0,"paragraph":1}},"before":true,"text":"AAA AAA tail"},
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":0},"chars":[0,3]},"from":"AAA","to":"ZZZ"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "the batch must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let after = hwpx::read_document(&output).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].plain_text(),
+        "AAA AAA tail",
+        "the paragraph the batch inserted must not be rewritten"
+    );
+    assert_eq!(
+        after.sections[0].paragraphs[2].plain_text(),
+        "ZZZ AAA",
+        "the addressed paragraph moved to index 2 and must carry the replacement"
+    );
+}
+
+/// A replace earlier in the batch that can change the paragraph's length invalidates a later
+/// run-range replace's pre-resolved window, so the batch is rejected during preflight and
+/// nothing is written - the same length-change clause `set_format` already gets.
+#[test]
+fn a_length_changing_replace_before_a_run_window_is_rejected_in_preflight() {
+    let (dir, base) = new_repeated_run_base("run-range-length-conflict");
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"AAA","to":"AAAAAAA"},
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":0},"chars":[0,3]},"from":"AAA","to":"ZZZ"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a later run window behind a length-changing replace must be rejected: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("길이를 바꿀 수 있어") && stderr.contains("op[1]"),
+        "the rejection must name the length-change conflict: {stderr}"
+    );
+    assert!(!output.exists(), "a rejected batch must not publish");
+}
+
+/// What the batch's own conflict clause cannot see, the apply step's content-drift guard catches:
+/// `set_indent_level` strips leading blanks but is not a `replace`, so preflight has no pair to
+/// reject, and yet the pre-resolved window no longer names its characters. The op is refused with
+/// nothing written, exactly as the addressed `set_format` arm refuses the same batch shape (#420).
+///
+/// Markdown import trims leading whitespace, so the blanks `set_indent_level` strips are seeded
+/// with an unaddressed replace. The seeded paragraph is asserted to be 11 WCHAR wide with its run
+/// spanning `[0, 11)`, so the window the batch addresses (`[4, 7)`) is legal at preflight and only
+/// the length change can refuse it.
+#[test]
+fn run_window_behind_a_blank_stripping_indent_is_refused_at_apply_time() {
+    let dir = test_dir("run-range-content-drift");
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# T\n\nZZZ AAA AAA\n").unwrap();
+    let seeded = dir.join("seeded.hwpx");
+    new_from(&md, &seeded);
+
+    let base = dir.join("base.hwpx");
+    let setup = dir.join("setup.json");
+    std::fs::write(&setup, r#"[{"op":"replace","from":"ZZZ","to":"   "}]"#).unwrap();
+    let run = hwp()
+        .arg("edit")
+        .arg(&seeded)
+        .arg("-o")
+        .arg(&base)
+        .arg("--ops")
+        .arg(&setup)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "seeding the leading blanks must succeed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let before = hwpx::read_document(&base).unwrap().document;
+    let para = &before.sections[0].paragraphs[1];
+    assert_eq!(para.plain_text(), "    AAA AAA");
+    assert_eq!(
+        para.wchar_len(),
+        11,
+        "the seeded paragraph must be 11 WCHAR wide, blanks included"
+    );
+    let runs = run_segments_of_paragraph(&base, 1);
+    assert_eq!(
+        runs.iter()
+            .map(|(_, start, end)| (*start, *end))
+            .collect::<Vec<_>>(),
+        vec![(0, 11)],
+        "the whole-11 window must be one published run, so [4, 7) is legal at preflight"
+    );
+
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        r#"[
+          {"op":"set_indent_level","address":{"at":{"section":0,"paragraph":1}},"level":1,"step":"5mm"},
+          {"op":"replace","address":{"at":{"section":0,"paragraph":1,"run":0},"chars":[4,7]},"from":"AAA","to":"ZZZ"}
+        ]"#,
+    )
+    .unwrap();
+    let output = dir.join("out.hwpx");
+    let run = hwp()
+        .arg("edit")
+        .arg(&base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops)
+        .output()
+        .unwrap();
+    assert!(
+        !run.status.success(),
+        "a window whose paragraph changed length must be refused: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("at 0.1.0 chars=[4, 7)")
+            && stderr.contains("글자 수가 11에서 7(으)로 바뀌어")
+            && stderr.contains("아무것도 쓰지 않았습니다"),
+        "the refusal must name the address, both lengths and that nothing was written: {stderr}"
+    );
+    assert!(!output.exists(), "a refused batch must not publish");
+    let after = hwpx::read_document(&base).unwrap().document;
+    assert_eq!(
+        after.sections[0].paragraphs[1].wchar_len(),
+        11,
+        "the input document must be untouched by the refused batch"
+    );
+}
+
 /// `set_para` with both `pattern` and `address` is rejected before anything applies (D-12).
 #[test]
 fn set_para_rejects_pattern_and_address_together() {
@@ -2466,6 +2917,17 @@ fn case_sensitive_enum_values_rejected() {
 /// document-spec-v1 pin in document_spec.rs: any schema edit — even a description
 /// tweak — must consciously update this constant. The schema is the shared contract
 /// for `hwp edit --ops` and the MCP edit tool's ops channel.
+///
+/// Re-pinned deliberately for #525: `replace`'s `address` now refs `$defs/address` instead of
+/// `$defs/paragraphAddress`, so a run address validates, and the replace and root descriptions
+/// name the two run readings. That is an added address shape only — no op gained a required key,
+/// no existing instance changes meaning, and the id, `$id` and version stay edit-ops-v1 — so this
+/// is the schema's documented minor revision rather than a break a consumer must handle.
+///
+/// Re-pinned again in the same task, this time for a description sentence only: the replace
+/// address description now states that a run reading does not survive an earlier op of the same
+/// batch changing that paragraph's length. Stripping `description` and `$comment` from both
+/// revisions leaves them identical, so the contract shape did not move.
 #[test]
 fn schema_hash_frozen() {
     use sha2::{Digest, Sha256};
@@ -2477,7 +2939,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "e3e5166c3d8aadfffbf4fb573708279b161cfffe36a56d5446a7fa117ad07093",
+        actual, "ea9a8a2aead13b1675689a9dab8f7bb204889e761d4b8911bc77170b93c8b2ab",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

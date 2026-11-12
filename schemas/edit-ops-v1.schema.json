@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hwp-cli.staix.net/schemas/edit-ops-v1.schema.json",
   "title": "hwp-cli EditOps v1",
-  "description": "Contract for `hwp edit --ops <file.json>`: a flat, ordered array of typed edit operations, applied in order. Shape-only: exactly-one selectors, paired image sizes, count >= 1, and non-empty strings are enforced by the parser after this schema passes. Compilation also requires document-spec-v1.schema.json registered under its $id (https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json), including batches without insert_blocks. Load both bundled schemas together; the CLI embeds and registers them offline.",
+  "description": "Contract for `hwp edit --ops <file.json>`: a flat, ordered array of typed edit operations, applied in order. Shape-only: exactly-one selectors, paired image sizes, count >= 1, and non-empty strings are enforced by the parser after this schema passes. Compilation also requires document-spec-v1.schema.json registered under its $id (https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json), including batches without insert_blocks. Load both bundled schemas together; the CLI embeds and registers them offline. Minor revision (#525): `replace` also accepts an address that names a run - `at.run` for the whole run, or `chars` for one WCHAR window inside it - instead of every match in the paragraph. That is an added address shape: every operation that validated before still validates and still means the same thing, and the id, the required keys and the version stay edit-ops-v1.",
   "type": "array",
   "minItems": 1,
   "maxItems": 10000,
@@ -841,13 +841,13 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["op", "from", "to"],
-          "description": "address optionally narrows the from/to match-and-replace from the whole document (default) to inside one paragraph (D-12); from is required either way, unlike pattern on set_para/set_align, since it is always the matched substring, never purely a selector.",
+          "description": "address optionally narrows the from/to match-and-replace from the whole document (default) to inside one paragraph (D-12), or to exactly one run or run range (#525); from is required either way, unlike pattern on set_para/set_align, since it is always the matched substring, never purely a selector.",
           "properties": {
             "op": { "const": "replace" },
             "from": { "type": "string" },
             "address": {
-              "$ref": "#/$defs/paragraphAddress",
-              "description": "Paragraph granularity — a run-range address here is a schema violation (D-11). Narrows from/to matching to inside the addressed paragraph only."
+              "$ref": "#/$defs/address",
+              "description": "Two readings, told apart by what the address declares about a run. WITHOUT chars and without at.run: paragraph granularity, unchanged - every left-to-right match of from inside the addressed paragraph is replaced. A run is named one of two ways, because a run id and a nested-paragraph id are both spelled <checksum>.<path>[.<index>]: by at.run with no chars, which rewrites that run's whole text, or by chars (with at.run or a run id), which rewrites exactly that WCHAR window inside the named run. chars uses the same absolute UTF-16 offsets segment-envelope-v2 publishes per run as source_chars, so the window a v2 envelope gives a caller is the window this op accepts; chars narrows the run the address already names and never selects a run by itself. Either run reading touches only the named run or window, so a phrase that also occurs elsewhere in the paragraph, across run boundaries or inside a field value is left alone. In the run readings from is still required, but as a DRIFT CHECK: when the addressed text is not exactly from the request is reported unapplied, naming the address and its window (and the run fails unless --allow-partial), rather than rewriting text the caller did not read. An address resolves against the document before the batch, so a run reading never follows an op that changed the same paragraph's length: a width-changing replace earlier in the batch is rejected during preflight, and any other length change (set_indent_level stripping blanks) is refused with nothing written; put the run reading first or run the edits separately. The run readings are a minor revision of this schema; an address that declares neither keeps its paragraph meaning and its behaviour is unchanged."
             },
             "to": { "type": "string" }
           }

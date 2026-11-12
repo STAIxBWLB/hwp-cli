@@ -48,6 +48,26 @@ pub struct Address {
     pub chars: Option<(u32, u32)>,
 }
 
+/// The address as its caller wrote it: `at 0.3`, `id <checksum>.0.3.1`, and the WCHAR window
+/// when one is present. Only numbers the caller supplied — never the document's text (T-07-04) —
+/// so it can travel in a refusal message or an unapplied request verbatim.
+impl std::fmt::Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = std::iter::once(self.section.to_string())
+            .chain(self.indices.iter().map(ToString::to_string))
+            .collect::<Vec<_>>()
+            .join(".");
+        match &self.checksum {
+            Some(checksum) => write!(f, "id {checksum}.{path}")?,
+            None => write!(f, "at {path}")?,
+        }
+        if let Some((start, end)) = self.chars {
+            write!(f, " chars=[{start}, {end})")?;
+        }
+        Ok(())
+    }
+}
+
 /// The addressing depth an op declares it accepts. A paragraph-level op rejects a run-range
 /// address; the schema enforces this shape-wise via `paragraphAddress`/`runAddress` (D-11), and
 /// `resolve` enforces it against the document's own structure (a run index or `chars` makes no

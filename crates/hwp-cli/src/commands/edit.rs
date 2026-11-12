@@ -2188,6 +2188,21 @@ fn preflight_label_edits(
     })
 }
 
+/// Whether a `replace` address declares run granularity (#525).
+///
+/// Two spellings do. `chars` says so directly — it is a WCHAR window, which only a run has. So
+/// does `at.run`, because `addressPath` names a TOP-LEVEL paragraph: an `at` address never
+/// carries a nesting step, so a second index can only have come from `at.run`.
+///
+/// An `id` gives no such evidence. A run id and a nested-paragraph id are both spelled
+/// `<checksum>.<path>[.<index>]`, so the same string can name run 1 of paragraph `0.3` or the
+/// paragraph at `0.3.1`; picking the run reading from path depth alone would silently retarget
+/// the nested-paragraph addresses that work today. An id-named run therefore carries `chars`
+/// (its full published `source_chars` to replace the whole run), which this reads as run intent.
+fn replace_names_a_run(address: &hwp_convert::address::Address) -> bool {
+    address.chars.is_some() || (address.checksum.is_none() && address.indices.len() > 1)
+}
+
 /// Resolves every addressed target in `plan.typed_operations` against `doc` **as loaded** (D-06:
 /// never against a state any earlier op in the batch may have produced), returning one slot per
 /// entry so the apply loop can consume it in lockstep with `plan.typed_operations`, exactly as it
@@ -2207,6 +2222,15 @@ fn preflight_addressed_ops(
                 address: Some(address),
                 ..
             } => Some((address, hwp_convert::address::Granularity::Run)),
+            // A replace that names a run targets one run range (#525); otherwise it keeps its
+            // paragraph reading, which is what every address that does not declare run intent
+            // meant before the run form existed.
+            TypedEditOperation::Replace {
+                address: Some(address),
+                ..
+            } if replace_names_a_run(address) => {
+                Some((address, hwp_convert::address::Granularity::Run))
+            }
             TypedEditOperation::SetPara {
                 address: Some(address),
                 ..
@@ -2834,10 +2858,12 @@ enum ConflictKind {
 /// path** (planner decision 2) — do not split this into a second conflict mechanism:
 ///
 /// 1. **Length-change clause (07-02, T-07-26):** a length-changing op on a paragraph (an
-///    addressed `replace`, or a pattern-form `replace` whose `from` string occurs in that
-///    paragraph in the ORIGINAL document — the pattern-form arm is a deliberate
-///    over-approximation, since a batch could in principle be harmless if an even earlier op
-///    already removed the match) paired with a LATER run-range op inside that same paragraph.
+///    addressed `replace` whose `from` and `to` differ in UTF-16 width, or a pattern-form
+///    `replace` whose `from` string occurs in that paragraph in the ORIGINAL document — the
+///    pattern-form arm is a deliberate over-approximation, since a batch could in principle be
+///    harmless if an even earlier op already removed the match) paired with a LATER run-range
+///    op inside that same paragraph: an addressed `set_format`, or a `replace` whose address
+///    declares run intent (#525).
 /// 2. **Removal clause (07-03, T-07-12):** an op that REMOVES its target (`delete_para`, or
 ///    `move_para`'s source) paired with a LATER op whose resolved target is the SAME path or a
 ///    path BENEATH it (nested inside the removed paragraph, e.g. a table cell it contained).
@@ -2863,6 +2889,13 @@ fn detect_conflicts(
             // apply arm) — it cannot change any paragraph's length.
             continue;
         }
+        if address.is_some() && from.encode_utf16().count() == to.encode_utf16().count() {
+            // An addressed replace rewrites one known paragraph, and equally wide `from`/`to`
+            // leave that paragraph's `wchar_len` unchanged whatever the match count, so a later
+            // run-range op's offsets still name the same characters. The pattern-form arm below
+            // keeps its deliberate over-approximation; this one can be exact.
+            continue;
+        }
         let length_changing_paths: Vec<hwp_convert::SegmentPath> = if address.is_some() {
             resolved
                 .get(earlier_index)
@@ -2881,12 +2914,23 @@ fn detect_conflicts(
             .enumerate()
             .skip(earlier_index + 1)
         {
-            let TypedEditOperation::SetFormat {
-                address: Some(_), ..
-            } = later_operation
-            else {
-                continue;
+            // Both spellings of "a later run-range op": `set_format` is run-range by construction,
+            // and a `replace` is when its address declares run intent (#525). Each holds WCHAR
+            // offsets that preflight resolved against the paragraph's length before this batch
+            // ran, so an earlier length change in the same paragraph invalidates them.
+            let later_is_run_range = match later_operation {
+                TypedEditOperation::SetFormat {
+                    address: Some(_), ..
+                } => true,
+                TypedEditOperation::Replace {
+                    address: Some(address),
+                    ..
+                } => replace_names_a_run(address),
+                _ => false,
             };
+            if !later_is_run_range {
+                continue;
+            }
             let Some(target) = resolved.get(later_index).and_then(|t| t.as_ref()) else {
                 continue;
             };
@@ -3073,6 +3117,12 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         Op::Replace { from, to, .. } if from.is_empty() || from == to => {
             "empty pattern or identical replacement"
         }
+        // A run-range replace is unapplied for exactly one reason: its drift check failed. Naming
+        // that cause lets a client tell a stale window from a paragraph with no match (#525).
+        Op::Replace {
+            address: Some(address),
+            ..
+        } if replace_names_a_run(address) => "addressed text is not from",
         Op::Replace {
             address: Some(_), ..
         } => "no match at the address",
@@ -3400,21 +3450,66 @@ fn apply_typed_operation(
                 unapplied.push(replace_request(from, to));
                 return Ok(());
             }
-            if address.is_some() {
-                let target = resolved_target
-                    .expect("preflight_addressed_ops resolved every addressed replace op");
-                // Structural drift (planner decision 3): an earlier insert/delete/move in this
-                // batch may have shifted this paragraph's position since preflight resolved it.
-                let current_path = offsets.current_path(&target.path)?;
-                let count = hwp_convert::replace_text_at(doc, &current_path, from, to)
+            if let Some(address) = address {
+                if replace_names_a_run(address) {
+                    // One run range (#525). The address was resolved against the document as
+                    // loaded (preflight_addressed_ops, D-06), so the apply step only maps that
+                    // path through this batch's earlier splices and splices the window; it never
+                    // resolves the raw address again against what the batch has already written.
+                    let target = resolved_target.expect(
+                        "preflight_addressed_ops resolved every addressed run-range replace op",
+                    );
+                    let hwp_convert::address::TargetKind::Run {
+                        w_start,
+                        w_end,
+                        paragraph_wchar_len,
+                        ..
+                    } = target.kind
+                    else {
+                        anyhow::bail!("replace 주소는 run 단위여야 합니다");
+                    };
+                    // Structural drift (planner decision 3): the paragraph's own list position may
+                    // have shifted; w_start/w_end are content offsets WITHIN it, and a batch that
+                    // removed it is already rejected by the preflight removal clause.
+                    let current_path = offsets.current_path(&target.path)?;
+                    let count = hwp_convert::replace_text_in_window(
+                        doc,
+                        address,
+                        &current_path,
+                        w_start,
+                        w_end,
+                        paragraph_wchar_len,
+                        from,
+                        to,
+                    )
                     .map_err(anyhow::Error::msg)?;
-                if count == 0 {
-                    unapplied.push(format!(
-                        "replace address={current_path} from={from:?} to={to:?}"
-                    ));
+                    if count == 0 {
+                        // The drift check failed: the addressed span is text but it is not
+                        // `from`, so nothing changed. Recording it unapplied names the address,
+                        // window included, and fails the run unless --allow-partial.
+                        unapplied
+                            .push(format!("replace address={address} from={from:?} to={to:?}"));
+                    } else {
+                        eprintln!("치환(범위): {address} {from:?} → {to:?} ({count}건)");
+                        *edits += 1;
+                    }
                 } else {
-                    eprintln!("치환(주소): {current_path} {from:?} → {to:?} ({count}건)");
-                    *edits += 1;
+                    let target = resolved_target
+                        .expect("preflight_addressed_ops resolved every addressed replace op");
+                    // Structural drift (planner decision 3): an earlier insert/delete/move in
+                    // this batch may have shifted this paragraph's position since preflight
+                    // resolved it.
+                    let current_path = offsets.current_path(&target.path)?;
+                    let count = hwp_convert::replace_text_at(doc, &current_path, from, to)
+                        .map_err(anyhow::Error::msg)?;
+                    if count == 0 {
+                        unapplied.push(format!(
+                            "replace address={current_path} from={from:?} to={to:?}"
+                        ));
+                    } else {
+                        eprintln!("치환(주소): {current_path} {from:?} → {to:?} ({count}건)");
+                        *edits += 1;
+                    }
                 }
             } else {
                 let before = doc.clone();

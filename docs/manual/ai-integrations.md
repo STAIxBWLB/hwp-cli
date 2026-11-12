@@ -164,6 +164,41 @@ native implementation under that policy; it does not attest that Hancom opened o
 file. Hancom-open evidence is a separate receipt. The same workflow accepts `.hwp` paths; output
 format constraints and refusal diagnostics still apply.
 
+### Replace one run or one range instead of every match
+
+A `replace` with a paragraph address rewrites every match of `from` inside that paragraph, so it
+only serves a caller that knows `from` occurs exactly once there. To rewrite one selected run, or
+one span inside it, address the run instead. A `run` segment of the v2 envelope carries the
+`source_chars` window it occupies in the source paragraph, in absolute UTF-16 code units — use
+those numbers directly as the address's `chars`:
+
+```bash
+ahwp cat doc.hwpx --format json --with-segments --segments v2 > doc.segments.json
+```
+
+```json
+[{"op":"replace","address":{"id":"RUN_ID_FROM_THE_ENVELOPE","chars":[12,17]},"from":"선택 구간","to":"{{slot}}"}]
+```
+
+`at.run` with no `chars` rewrites the named run's whole text:
+
+```json
+[{"op":"replace","address":{"at":{"section":0,"paragraph":3,"run":1}},"from":"기존 텍스트","to":"새 텍스트"}]
+```
+
+Either form touches only the named run or window: the same phrase elsewhere in the paragraph,
+across a run boundary or inside a field value is left alone. `from` is a drift check, not a
+selector — when the addressed text is not exactly `from`, nothing is rewritten, the request is
+reported unapplied with the address and its window, and the run fails unless `--allow-partial`.
+A run id and a nested-paragraph id share one `<checksum>.<path>` shape, so a run named by `id`
+carries `chars`; `at.run` names a run without a window.
+
+In a batch the address resolves against the document as loaded, so a run reading follows its own
+paragraph when an earlier op inserts or deletes one above it. It does not survive a change to that
+paragraph's own length: an earlier `replace` whose `from` and `to` differ in width is rejected
+during preflight, and an earlier `set_indent_level` stripping blanks is refused with nothing
+written. Put the run reading first in the batch, or run the two edits separately.
+
 ### Insert a component into an existing document
 
 `insert_blocks` places DocumentSpec v1 blocks (paragraphs, lists, tables, images, fields,
