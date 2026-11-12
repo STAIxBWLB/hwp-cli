@@ -3,7 +3,7 @@
 # PDF parity contract (Hancom Office 2024)
 
 > **Status:** active contract. Tracked by
-> [issue #79](https://github.com/STAIxBWLB/hwp-cli/issues/79). This document is the durable
+> [issue #79](https://github.com/STAIxBWLB/agent-hwp/issues/79). This document is the durable
 > definition the parity harness reads: metric set, thresholds, data policy and non-goals. The
 > issue body sequences the work (PR 1–9); this document defines what "par" means.
 

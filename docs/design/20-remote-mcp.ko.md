@@ -7,7 +7,7 @@
 
 이 문서는 로컬 프로세스를 실행할 수 없는 Web client를 위한 향후 Remote MCP service를 정의한다.
 첫 concrete consumer는 Amazon Quick Web이다. 구현 추적은
-[issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52)에서 계속한다.
+[issue #52](https://github.com/STAIxBWLB/agent-hwp/issues/52)에서 계속한다.
 
 ## 1. 범위와 비범위
 

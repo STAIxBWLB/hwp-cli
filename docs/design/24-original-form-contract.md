@@ -2,8 +2,8 @@
 
 # Original-form preservation contract
 
-This P0 contract belongs to [#416](https://github.com/STAIxBWLB/hwp-cli/issues/416), under
-[#411](https://github.com/STAIxBWLB/hwp-cli/issues/411). It defines bounded comparisons and an
+This P0 contract belongs to [#416](https://github.com/STAIxBWLB/agent-hwp/issues/416), under
+[#411](https://github.com/STAIxBWLB/agent-hwp/issues/411). It defines bounded comparisons and an
 owner-authored synthetic fixture for workflows that keep a supplied native form. English is
 canonical. A passing projection is evidence for the fields it checks, not a new native-format rule
 or proof that Hancom Office opens the output.

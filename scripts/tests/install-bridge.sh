@@ -108,11 +108,11 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$url" ] || exit 99
 case "$url" in
-    "https://github.com/STAIxBWLB/hwp-cli/releases/latest")
+    "https://github.com/STAIxBWLB/agent-hwp/releases/latest")
         name=latest
-        effective="https://github.com/STAIxBWLB/hwp-cli/releases/tag/$FIXTURE_TAG"
+        effective="https://github.com/STAIxBWLB/agent-hwp/releases/tag/$FIXTURE_TAG"
         ;;
-    "https://github.com/STAIxBWLB/hwp-cli/releases/download/$FIXTURE_TAG/"*)
+    "https://github.com/STAIxBWLB/agent-hwp/releases/download/$FIXTURE_TAG/"*)
         name="${url##*/}"
         effective="$url"
         ;;

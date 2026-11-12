@@ -249,7 +249,7 @@
   `pgnp` 위치 1~10(안쪽/바깥쪽 홀짝 반전)·장식·지원 번호형식, 본문/머리말/꼬리말 PAGE `atno`
   동적 치환을 공용 DisplayList 단계에 구현. PNG·SVG·PDF가 같은 결과를 사용하며, GE-4
   (`pgnp formatType` HWPX 변환 DIGIT 고정)은 잔존하고, GG-16(머리말/꼬리말 종류 선택)은 PR 9에서 해소.
-- **2026-08-13 (PDF parity PR 2, [issue #79](https://github.com/STAIxBWLB/hwp-cli/issues/79))**:
+- **2026-08-13 (PDF parity PR 2, [issue #79](https://github.com/STAIxBWLB/agent-hwp/issues/79))**:
   PR #81에서 렌더러 쪽 표 쪽 분할 구현. `body_bottom`을 넘는 표가 `Table.attr` bits 0-1(pageBreak
   NONE/TABLE/CELL)·bit2(repeatHeader)와 `Cell.list_attr` bit18(제목 셀)을 따른다 — NONE은
   통째로 다음 쪽으로, TABLE/CELL은 행 경계에서 나누고 이어지는 쪽에 제목 행을 다시 그리며,
@@ -543,8 +543,8 @@ GB-10 계열과 접하며(제어문자 23), 의미 렌더를 하려면 정답지
 | GG-22 | **글자 단위 테두리/배경 미렌더** — `CharShape.border_fill_id`는 hwp5·hwpx 파싱/왕복 완비인데 렌더가 무참조(렌더의 border_fill_id 참조는 전부 ParaShape 경로) | `hwp-model` CharShape ↔ `hwp-render/src/layout.rs`(`push_run` — 종전 무참조) | ✅ **해소(2026-08-13, PR 6)**: 런 단위 배경 Rect(글리프보다 먼저 emit) + 4변 테두리(`border_rectangle_items`) — 문단 배경 로직 재사용. 상자 메트릭(y-0.80em~y+0.25em)은 한컴 라운드 확인용 플레이스홀더 | S~M |
 | GG-23 | **타원→호 변환 미해석** — 타원 레코드(표 96) 60B 중 28B만 읽어 변환된 타원이 항상 완전한 타원으로 렌더됐음 | `hwp-render/src/shape_draw.rs`(SC_ELLIPSE, `ellipse_arc_path`) | ✅ **해소(2026-08-14, PR 8)**: 호 변환 플래그(attr bit1)·start/end 좌표·호 종류(bits 2~9)를 읽고 `arc_path`의 축 벡터 일반화로 호/부채꼴/현을 렌더. 종류 값 매핑(0/1/2=호/부채꼴/현)과 sweep 방향은 한컴 정답지 대기 | M |
 | GG-24 | **대각선 테두리 선 종류·BORDER_FILL 효과 비트 미렌더** — 대각선 자체는 `diagonal_dirs` 패스 이후 렌더되나 `line_type`은 드롭, attr의 3D·그림자 효과 비트는 raw 보존 뿐 | `hwp-model` BorderFill.diagonal ↔ `hwp-render/src/border.rs` | ⚠ **부분 해소(2026-08-13, PR 5)**: 대각선도 `border_strokes`로 `line_type` 반영(GG-5와 같은 헬퍼). 3D·그림자 효과 비트는 raw 보존 유지 | S(빈도 낮음) |
-| GG-25 | ~~**책갈피·하이퍼링크 컨트롤이 렌더에서 조용히 누락**(문단 단위 책갈피(`bokm`) 또는 하이퍼링크(`%hlk`) 컨트롤이 미지원 렌더 누락으로 집계됐으나, 책갈피는 설계상 비가시 마커이고 하이퍼링크 텍스트는 이미 그려지고 스타일이 적용돼 있었음)~~ | `hwp-render/src/layout.rs:963-980`(렌더 대상 컨트롤 화이트리스트) | ✅ **해소(2026-09-20, PR [#258](https://github.com/STAIxBWLB/hwp-cli/pull/258), #254 해소)**: 기존 `cold`/`head`/`foot`/`fn`/`en` 화이트리스트에 두 `ctrl_id`를 추가. 분류 수정일 뿐 새 그리기 경로는 없음 | S |
-| GG-26 | **폰트 무관 페이지 기하 결함**(네이티브 인증의 `outside_page_bounds`/`possible_collision` 검출이 A3(1, 5, 7쪽), A4(20쪽), O_report_hwp/O_plan_hwp 문서(4, 6쪽)에서 테스트한 모든 폰트 후보에 걸쳐 동일하게 유지돼, 폰트 대체 아티팩트가 아니라 문서 기하 원인을 가리킴) | `hwp-render/src/lib.rs:474-497`(`outside_page_bounds`), `:498-540`(`possible_collision`) | ⚠ **부분 해소(2026-09-20, PR [#262](https://github.com/STAIxBWLB/hwp-cli/pull/262), A3 1쪽만)**: 비앵커 도형이 다른 도형의 문단 목록에 중첩된 경우, 저장된 x/y에 부모 도형 자신의 원점을 더하도록 수정해 A3 1쪽의 검출 10건을 모두 제거. A3 5쪽(고정 높이 글상자가 중첩 문단 64개 중 약 44개를 넘어 오버플로, 이미 이연된 §F1/§F2 갭과 연결), A3 7쪽=A4 20쪽(저장된 과대 크기 `Picture` 표시 박스, 렌더러 버그 아님), O_report_hwp/O_plan_hwp 4/6쪽(체계적인 마지막 흐름줄 페이지 나눔 초과)은 미해소로 남아 `CHANGELOG.md` "Known issues"에 대체 폰트 측정 단서와 함께 선언, 정품 한컴 페이지네이션 정답지 확보 후 해소 예정 | M to L |
+| GG-25 | ~~**책갈피·하이퍼링크 컨트롤이 렌더에서 조용히 누락**(문단 단위 책갈피(`bokm`) 또는 하이퍼링크(`%hlk`) 컨트롤이 미지원 렌더 누락으로 집계됐으나, 책갈피는 설계상 비가시 마커이고 하이퍼링크 텍스트는 이미 그려지고 스타일이 적용돼 있었음)~~ | `hwp-render/src/layout.rs:963-980`(렌더 대상 컨트롤 화이트리스트) | ✅ **해소(2026-09-20, PR [#258](https://github.com/STAIxBWLB/agent-hwp/pull/258), #254 해소)**: 기존 `cold`/`head`/`foot`/`fn`/`en` 화이트리스트에 두 `ctrl_id`를 추가. 분류 수정일 뿐 새 그리기 경로는 없음 | S |
+| GG-26 | **폰트 무관 페이지 기하 결함**(네이티브 인증의 `outside_page_bounds`/`possible_collision` 검출이 A3(1, 5, 7쪽), A4(20쪽), O_report_hwp/O_plan_hwp 문서(4, 6쪽)에서 테스트한 모든 폰트 후보에 걸쳐 동일하게 유지돼, 폰트 대체 아티팩트가 아니라 문서 기하 원인을 가리킴) | `hwp-render/src/lib.rs:474-497`(`outside_page_bounds`), `:498-540`(`possible_collision`) | ⚠ **부분 해소(2026-09-20, PR [#262](https://github.com/STAIxBWLB/agent-hwp/pull/262), A3 1쪽만)**: 비앵커 도형이 다른 도형의 문단 목록에 중첩된 경우, 저장된 x/y에 부모 도형 자신의 원점을 더하도록 수정해 A3 1쪽의 검출 10건을 모두 제거. A3 5쪽(고정 높이 글상자가 중첩 문단 64개 중 약 44개를 넘어 오버플로, 이미 이연된 §F1/§F2 갭과 연결), A3 7쪽=A4 20쪽(저장된 과대 크기 `Picture` 표시 박스, 렌더러 버그 아님), O_report_hwp/O_plan_hwp 4/6쪽(체계적인 마지막 흐름줄 페이지 나눔 초과)은 미해소로 남아 `CHANGELOG.md` "Known issues"에 대체 폰트 측정 단서와 함께 선언, 정품 한컴 페이지네이션 정답지 확보 후 해소 예정 | M to L |
 
 > 재수색에서 **갭이 아님**으로 확인된 것(오보고 방지): 장평(x_scale), 양각/음각/외곽선/글자그림자
 > on-off, 셀 세로정렬·셀 여백·자동 행높이, 위/아래 첨자·글자 음영·밑줄 색 — 전부 렌더됨.
@@ -632,7 +632,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 | GM-6 | **메타데이터 일괄 편집/덤프 없음** — `--set-meta`는 new/edit 국소 | — | ✅ **이미 충족(2026-08-01 정정)** — 덤프는 `ahwp info`(metadata JSON), 편집은 `edit --set-meta`(title/author/subject/keywords 반복)로 커버됨 | S |
 | GM-7 | **도장/서명 자동 날인** — `edit --seal "앵커=>이미지@크기mm"` 구현(부유·글 앞 Picture, 앵커 텍스트 유지, 기본 20mm) | `hwp-convert/src/image.rs insert_seal` | ✅ **실기 확정(2026-07-16, D1·D2 통과)** — 실기 3회 반복으로 확정: hwpx=`IN_FRONT_OF_TEXT`+`allowOverlap=1`+오프셋, hwp5=attr `0x04aa4310`(글앞·PARA·본문제한 해제, §4.3.9.1 비트 표 대조) |
 | GM-8 | **문서 내용 비교 없음** — `diff`는 렌더 픽셀 비교 전용, 텍스트/구조 비교 없음 | kordoc compare_documents 선례 | ✅ **확인(2026-08-29)** — `hwp compare`는 두 문서의 문단·구조 차이를 보고하며 둘 다 수정하지 않음(실행 전후 SHA-256 불변 확인), 차이가 있으면 종료 코드 1. 읽기 전용 명령이라 한글 실행 확인 대상이 아님 | M |
-| GM-9 | **AI 연동이 client 환경별로 다름** - Amazon Quick Desktop은 publish-safe skill을 active profile에 설치하고 local stdio connector를 실행할 수 있으나, Quick Web은 `ahwp mcp`를 시작하거나 desktop path를 공유할 수 없음. Tenant-isolated artifact를 사용하는 hosted authenticated Streamable HTTP service는 미구현 | Desktop profile 탐색/설치는 `skill export --install amazon-quick`으로 ✅ **해소(2026-08-09)**. Web은 [20-remote-mcp](20-remote-mcp.ko.md)와 [issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52)의 open item | Desktop S / Web L |
+| GM-9 | **AI 연동이 client 환경별로 다름** - Amazon Quick Desktop은 publish-safe skill을 active profile에 설치하고 local stdio connector를 실행할 수 있으나, Quick Web은 `ahwp mcp`를 시작하거나 desktop path를 공유할 수 없음. Tenant-isolated artifact를 사용하는 hosted authenticated Streamable HTTP service는 미구현 | Desktop profile 탐색/설치는 `skill export --install amazon-quick`으로 ✅ **해소(2026-08-09)**. Web은 [20-remote-mcp](20-remote-mcp.ko.md)와 [issue #52](https://github.com/STAIxBWLB/agent-hwp/issues/52)의 open item | Desktop S / Web L |
 | GM-10 | **PII 비식별 처리 없음** — 공문서에는 주민등록번호·전화번호·계좌·카드번호가 일상적으로 들어가지만 이를 탐지·마스킹하는 명령이 없고, 편집 파이프라인은 리터럴로 지정한 문자열만 치환 가능 | kordoc `src/redact.ts` 선례(탐지기 7종, 자릿수·구분자를 보존하는 형식 유지 마스킹, 원문 PII를 절대 담지 않는 적출 보고서). 2026-08-20 결정: 외부 관심사가 아니라 원본 보존 편집 파이프라인 위의 코어 `ahwp redact` 명령 — 후보이며 미착수 | M |
 
 ## 14. GN — 공문서 저작 계층 (2026-08-20 kordoc 대조 신설)
@@ -641,7 +641,7 @@ validate·mcp·dump) 기준 부재 목록. 수요 근거는 [08](08-external-res
 틀. Phase 2.2는 여섯 표준 프로필, 검증된 8단계 번호, 문서화한 여백 계열을 출하했으며 규정 계층은
 계속 번들 스킬로 바이너리에 담긴다. 남은 갭은 표기법 lint, 문서 프레임, 템플릿 지름길, 표 스타일링,
 편집 패리티다. 이 계열을 낳은 대조는 kordoc v4.9.0(MIT)이며([08](08-external-research.ko.md)),
-스펙과 단계 분할은 [이슈 #121](https://github.com/STAIxBWLB/hwp-cli/issues/121)이다.
+스펙과 단계 분할은 [이슈 #121](https://github.com/STAIxBWLB/agent-hwp/issues/121)이다.
 
 | ID | 현상 | 비고·선례 | 난이도 |
 |---|---|---|---|

@@ -10,6 +10,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Compatibility**
+
+- The repository is now `STAIxBWLB/agent-hwp`, renamed from `STAIxBWLB/hwp-cli`, and the old name
+  redirects for web, git, API and release downloads. Release archives, the installer one-liner,
+  the Homebrew tap URL, `ahwp update` and the release scripts read the new name; a script that
+  hardcodes the old URL keeps working through the redirect but should be repointed
+  ([#510](https://github.com/STAIxBWLB/agent-hwp/issues/510)).
+
 ## [1.6.1]
 
 **Compatibility**

@@ -2,7 +2,7 @@
 
 # hwpx 스킬 흡수: 서브커맨드 패리티 매트릭스와 여백 기록
 
-> **상태:** 살아있는 체크리스트. [issue #121](https://github.com/STAIxBWLB/hwp-cli/issues/121)
+> **상태:** 살아있는 체크리스트. [issue #121](https://github.com/STAIxBWLB/agent-hwp/issues/121)
 > (2026-08-20 수정: 두 개가 아닌 하나의 통합 스킬 — D-01)과
 > [skills#35](https://github.com/STAIxBWLB/skills/issues/35)(구 스킬 폐기)에서 추적한다.
 > Phase 2.2부터 2.5까지는 각 행이 해소될 때마다 이 매트릭스를 **제자리에서** 갱신한다. 이 문서는
@@ -85,7 +85,7 @@ Phase 지도: **2.1** 스캐폴드 + 이 매트릭스. **2.2** 법정 8단계 �
 
 ### 3.1 Phase 2.5 릴리스 영수증
 
-첫 Phase 2.5 replacement 릴리스는 [v0.12.0](https://github.com/STAIxBWLB/hwp-cli/releases/tag/v0.12.0)이며 main 커밋 `79cec823053d6f7b212ee1288fb83eeb7114cef7`에 annotated tag로 생성했습니다. Apple Silicon archive `hwp-v0.12.0-aarch64-apple-darwin.tar.gz`의 SHA-256은 `5ba46e0622820ba13ed071158e4635b905e01633d44c1cfee089269e644149b8`입니다. checkout binary가 아닌 다운로드 asset은 `hwp 0.12.0`을 보고했고, 두 editing recipe와 `hwpx` sibling 없는 하나의 `hwp` tree를 export했으며 tagged install hash equality를 통과했습니다. 닫힌 여섯 템플릿, label-fill, split-run 증거는 `.planning/phases/02.5-editing-parity-and-hwpx-skill-retirement/02.5-release-compatibility.json`에 기록했습니다.
+첫 Phase 2.5 replacement 릴리스는 [v0.12.0](https://github.com/STAIxBWLB/agent-hwp/releases/tag/v0.12.0)이며 main 커밋 `79cec823053d6f7b212ee1288fb83eeb7114cef7`에 annotated tag로 생성했습니다. Apple Silicon archive `hwp-v0.12.0-aarch64-apple-darwin.tar.gz`의 SHA-256은 `5ba46e0622820ba13ed071158e4635b905e01633d44c1cfee089269e644149b8`입니다. checkout binary가 아닌 다운로드 asset은 `hwp 0.12.0`을 보고했고, 두 editing recipe와 `hwpx` sibling 없는 하나의 `hwp` tree를 export했으며 tagged install hash equality를 통과했습니다. 닫힌 여섯 템플릿, label-fill, split-run 증거는 `.planning/phases/02.5-editing-parity-and-hwpx-skill-retirement/02.5-release-compatibility.json`에 기록했습니다.
 
 편집 레시피 쌍은 수정된 label-form 및 일반 skill-export 계약이 처음 포함된 v0.12.1을 최소 지원
 버전으로 고정합니다. 상태는 의도적으로 경계를 둡니다. 네이티브 inspection과 guard는 composed

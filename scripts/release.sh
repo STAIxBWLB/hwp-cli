@@ -19,7 +19,7 @@
 # 확인한다. 어느 하나라도 어긋나면 파일을 건드리기 전에(또는 되돌린 뒤) 거부한다.
 # 우회 플래그는 없다.
 #
-#     scripts/release.sh 0.18.0 https://github.com/STAIxBWLB/hwp-cli/actions/runs/1234567890
+#     scripts/release.sh 0.18.0 https://github.com/STAIxBWLB/agent-hwp/actions/runs/1234567890
 #
 # 자체 점검:  scripts/release.sh --self-test
 set -euo pipefail
@@ -66,7 +66,7 @@ if [ -z "$readiness_url" ]; then
       이 추가한다(PR 대기 중). 그 PR 이 머지되기 전에는 dispatch 할 수 없으므로 릴리스도
       진행할 수 없다. 머지된 뒤 릴리스 대상 커밋(지금의 HEAD)으로 dispatch 하고, 그 실행
       URL 을 두 번째 인수로 넘긴다:
-        scripts/release.sh $ver https://github.com/STAIxBWLB/hwp-cli/actions/runs/<run-id>
+        scripts/release.sh $ver https://github.com/STAIxBWLB/agent-hwp/actions/runs/<run-id>
 EOF
   exit 1
 fi

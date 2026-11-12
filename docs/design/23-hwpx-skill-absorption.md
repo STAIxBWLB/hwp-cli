@@ -3,7 +3,7 @@
 # hwpx skill absorption: subcommand parity matrix and margin record
 
 > **Status:** living checklist. Tracked by
-> [issue #121](https://github.com/STAIxBWLB/hwp-cli/issues/121) (amended 2026-08-20: one unified
+> [issue #121](https://github.com/STAIxBWLB/agent-hwp/issues/121) (amended 2026-08-20: one unified
 > skill, not two — D-01) and [skills#35](https://github.com/STAIxBWLB/skills/issues/35) (old-skill
 > retirement). Phases 2.2 through 2.5 update this matrix **in place** as rows are resolved; it is
 > the seed list for Phase 2.5's "nothing lost" proof. No status cell may be upgraded to "verified"
@@ -86,7 +86,7 @@ the concern disappears because the skill now ships inside the binary.
 
 ### 3.1 Phase 2.5 release receipt
 
-The first Phase 2.5 replacement release is [v0.12.0](https://github.com/STAIxBWLB/hwp-cli/releases/tag/v0.12.0), annotated on main commit `79cec823053d6f7b212ee1288fb83eeb7114cef7`. Its Apple Silicon archive `hwp-v0.12.0-aarch64-apple-darwin.tar.gz` has SHA-256 `5ba46e0622820ba13ed071158e4635b905e01633d44c1cfee089269e644149b8`. The downloaded asset, never the checkout binary, reported `hwp 0.12.0`, exported one `hwp` tree with both editing recipes and no `hwpx` sibling, and passed tagged-install hash equality. The closed six-template, label-fill, and split-run evidence is in `.planning/phases/02.5-editing-parity-and-hwpx-skill-retirement/02.5-release-compatibility.json`.
+The first Phase 2.5 replacement release is [v0.12.0](https://github.com/STAIxBWLB/agent-hwp/releases/tag/v0.12.0), annotated on main commit `79cec823053d6f7b212ee1288fb83eeb7114cef7`. Its Apple Silicon archive `hwp-v0.12.0-aarch64-apple-darwin.tar.gz` has SHA-256 `5ba46e0622820ba13ed071158e4635b905e01633d44c1cfee089269e644149b8`. The downloaded asset, never the checkout binary, reported `hwp 0.12.0`, exported one `hwp` tree with both editing recipes and no `hwpx` sibling, and passed tagged-install hash equality. The closed six-template, label-fill, and split-run evidence is in `.planning/phases/02.5-editing-parity-and-hwpx-skill-retirement/02.5-release-compatibility.json`.
 
 The editing recipe pair sets v0.12.1 as its minimum supported version because that is the first
 release with the corrected label-form and regular skill-export contracts. Its statuses are

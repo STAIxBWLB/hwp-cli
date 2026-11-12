@@ -4,7 +4,7 @@
 
 > 한컴오피스나 COM 자동화 없이 HWP 5.0 / HWPX 문서를 읽고·변환하고·렌더하고·쓰고·AI로 편집하는 클린룸 Rust 툴킷. Linux / macOS / CI에서 그대로 동작한다.
 
-[![CI](https://github.com/STAIxBWLB/hwp-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/STAIxBWLB/hwp-cli/actions/workflows/ci.yml)
+[![CI](https://github.com/STAIxBWLB/agent-hwp/actions/workflows/ci.yml/badge.svg)](https://github.com/STAIxBWLB/agent-hwp/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#라이선스)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)](Cargo.toml)
 
@@ -106,7 +106,7 @@ Windows는 로드맵 항목이 아니다. 현재 ubuntu, macOS, Windows가 모�
 Rust 툴체인 없이 릴리스 바이너리를 설치한다. 설치 후에는 `ahwp update`로 자체 갱신된다.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh | sh
 ```
 
 기본 위치는 `~/.local/bin`이다(PATH에 없으면 안내를 출력한다). 위치·버전은 인자나 환경변수로 바꾼다:
@@ -123,7 +123,7 @@ HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 저장소 자체가 tap이다(별도 `homebrew-*` 저장소 없음).
 
 ```sh
-brew tap staixbwlb/hwp https://github.com/STAIxBWLB/hwp-cli
+brew tap staixbwlb/hwp https://github.com/STAIxBWLB/agent-hwp
 brew install ahwp
 ahwp --version
 ```
@@ -133,7 +133,7 @@ ahwp --version
 
 ### 사전 빌드 바이너리
 
-각 [릴리스](https://github.com/STAIxBWLB/hwp-cli/releases)에 플랫폼별 아카이브와 `.sha256`이 붙는다.
+각 [릴리스](https://github.com/STAIxBWLB/agent-hwp/releases)에 플랫폼별 아카이브와 `.sha256`이 붙는다.
 
 | 플랫폼 | 아카이브 |
 |---|---|
@@ -154,7 +154,7 @@ RHEL/CentOS 7+ 및 그 이후 배포판에서 그대로 돌아간다. 빌드 러
 바이너리를 커밋하지 말고 빌드 단계에서 받는다. 그러면 갱신할 것은 고정한 태그 하나뿐이다.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh \
   | sh -s -- --tag v1.6.0 --dir ./bin
 ```
 
@@ -166,7 +166,7 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/inst
 ### 소스 빌드
 
 ```sh
-git clone git@github.com:STAIxBWLB/hwp-cli.git && cd hwp-cli
+git clone git@github.com:STAIxBWLB/agent-hwp.git && cd agent-hwp
 cargo build --release
 cargo install --path crates/hwp-cli   # `ahwp` 바이너리 설치
 ```

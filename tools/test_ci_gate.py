@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ci_gate", ROOT / "scripts/ci_gate.py")
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
-REPO, BRANCH = "STAIxBWLB/hwp-cli", "brew/formula-v1.3.2"
+REPO, BRANCH = "STAIxBWLB/agent-hwp", "brew/formula-v1.3.2"
 HEAD, BASE, MERGE = "a" * 40, "b" * 40, "c" * 40
 
 

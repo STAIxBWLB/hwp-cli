@@ -24,7 +24,7 @@ FROM debian:bookworm-slim AS fetch
 ARG HWP_VERSION
 ARG HWP_TARGET
 ARG HWP_SHA256
-ADD https://github.com/STAIxBWLB/hwp-cli/releases/download/${HWP_VERSION}/ahwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz /tmp/hwp.tar.gz
+ADD https://github.com/STAIxBWLB/agent-hwp/releases/download/${HWP_VERSION}/ahwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz /tmp/hwp.tar.gz
 RUN set -eux; \
     echo "${HWP_SHA256}  /tmp/hwp.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin ahwp hwp; \
