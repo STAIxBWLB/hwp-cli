@@ -11,7 +11,7 @@ endpoint 계약, 인증, 격리, limit, release gate가 거기에 해당한다. 
 platform에 중립적인 Rust HTTP adapter 하나를 규정하며, 그 adapter를 공유하는 deployment tier
 두 가지를 규정한다.
 
-[Issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52)는 remote service의 consumer, 담당자,
+[Issue #52](https://github.com/STAIxBWLB/agent-hwp/issues/52)는 remote service의 consumer, 담당자,
 OAuth 정책, 예산이 명명되지 않았다는 이유로 deferred 상태로 닫혔으며, 그 조건이 갖추어지면 범위를
 좁힌 새 delivery issue를 열라고 요구한다. 이 문서가 그 조건을 제공하며, 이 문서와 함께 등록하는
 delivery issue가 activation record가 된다.

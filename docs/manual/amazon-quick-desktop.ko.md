@@ -32,7 +32,7 @@ Windows 절차 자체를 다시 실행하지는 않았다. 아래에 적은 `hwp
 
 ## 1. 최신 `ahwp.exe` 하나 설치하고 확인
 
-[최신 릴리스](https://github.com/STAIxBWLB/hwp-cli/releases)에서 Windows x86_64 아카이브와
+[최신 릴리스](https://github.com/STAIxBWLB/agent-hwp/releases)에서 Windows x86_64 아카이브와
 `.sha256` 파일을 받는다. Amazon Quick Windows 경로 정규화에는 hwp-cli v0.8.2 이상이 필요하다.
 
 - `ahwp-vX.Y.Z-x86_64-pc-windows-msvc.zip`

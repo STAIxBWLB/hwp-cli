@@ -10,6 +10,27 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.6.2]
+
+**Compatibility**
+
+- The repository is now `STAIxBWLB/agent-hwp`, renamed from `STAIxBWLB/hwp-cli`, and the old name
+  redirects for web, git, API and release downloads. Release archives, the installer one-liner,
+  the Homebrew tap URL, `ahwp update` and the release scripts read the new name; a script that
+  hardcodes the old URL keeps working through the redirect but should be repointed
+  ([#510](https://github.com/STAIxBWLB/agent-hwp/issues/510)).
+- `edit --ops` `insert_blocks`: `edit-report-v1` `changed` can now hold more pairs than before
+  for the same request, because an inserted empty or break-only paragraph is named by its
+  paragraph id. `schema_version` stays `1.0` (the shape is unchanged); a consumer that matched
+  `changed` one-to-one against published segments must allow these ids, which a fresh
+  `cat --segments v2` does not list
+  ([#521](https://github.com/STAIxBWLB/agent-hwp/issues/521)).
+- `edit --ops`: a batch with an addressed `replace` whose `from` and `to` have the same UTF-16
+  width, followed by a run-range op in the same paragraph, is no longer rejected during
+  preflight: equal widths leave the later op's offsets valid, and the apply step still refuses
+  the op if the paragraph's length changed
+  ([#525](https://github.com/STAIxBWLB/agent-hwp/issues/525)).
+
 **Added**
 
 - `edit-ops-v1` `replace` accepts a run address, so a caller can rewrite one selected run or one
@@ -23,7 +44,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   delete, while a run reading that would follow an op changing that paragraph's length is refused
   with nothing written. Additive to `edit-ops-v1` — the
   paragraph-addressed form and the whole-document default are unchanged
-  ([#525](https://github.com/STAIxBWLB/hwp-cli/issues/525)).
+  ([#525](https://github.com/STAIxBWLB/agent-hwp/issues/525)).
 
 **Fixed**
 
@@ -36,7 +57,28 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   segment, so it used to get no id and a client could not move or delete it afterwards; its paragraph id,
   which `move_para` and `delete_para` accept, now takes its place. The report shape and
   `schema_version` are unchanged; only the `changed` description moved, so the pinned schema hash
-  changed ([#521](https://github.com/STAIxBWLB/hwp-cli/issues/521)).
+  changed ([#521](https://github.com/STAIxBWLB/agent-hwp/issues/521)).
+
+<!-- verification:begin -->
+**Verification**
+
+- Release-readiness run: https://github.com/STAIxBWLB/agent-hwp/actions/runs/43259354085
+- The private PDF-parity profile excludes four gates. The public one-page gate declares none
+  (docs/design/21-pdf-parity.md section 4.3), so these exclusions describe the private profile
+  only.
+- `fonts`: the document declares its dominant body face through a `substFont`, and the oracle
+  host did not have that face either, so our substitutions resolve to the same faces the oracle
+  embedded. The gate's `substitution_free` criterion is unreachable for this case by
+  construction (section 4.5).
+- `text`: 1/13 pages byte-equal; the differences are pagination, not characters. Page 4's only
+  diff is one line that crosses a page boundary (section 4.6).
+- `raster`: `bad_pixel_pct` 0.1418-0.2332, MAE 18.5-27.9, ink ratio 0.854-1.435, max abs dx/dy
+  40px (section 4.6).
+- `roi`: 3 of 4 pass; only the page-2 diagram region fails (precision 0.848, recall 0.892)
+  (section 4.6).
+- Provenance: these distances were measured by the private composite run of 2026-08-16, not by
+  the public one-page gate.
+<!-- verification:end -->
 
 ## [1.6.1]
 

@@ -84,7 +84,7 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
 
 - Features, fixes, docs - **all work happens on a branch**: `feat/<topic>`, `fix/<topic>`,
   `docs/<topic>`. No direct pushes to main.
-- The canonical repository is `STAIxBWLB/hwp-cli` (= origin). Push branches to origin and **open PRs
+- The canonical repository is `STAIxBWLB/agent-hwp` (= origin). Push branches to origin and **open PRs
   against origin's main**.
 - Open a PR only once `scripts/check.sh` passes. **Squash merge once CI is green (ubuntu + macOS +
   windows all required)**, keeping the `(#N)` suffix convention in the merge commit title.

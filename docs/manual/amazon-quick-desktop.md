@@ -35,7 +35,7 @@ create-and-validate smoke test is required.
 ## 1. Install and verify one current `ahwp.exe`
 
 Download the Windows x86_64 archive and its `.sha256` file from the
-[latest release](https://github.com/STAIxBWLB/hwp-cli/releases). Amazon Quick Windows path
+[latest release](https://github.com/STAIxBWLB/agent-hwp/releases). Amazon Quick Windows path
 normalization requires hwp-cli v0.8.2 or later:
 
 - `ahwp-vX.Y.Z-x86_64-pc-windows-msvc.zip`

@@ -38,7 +38,7 @@ body_width      = (paper_w - margin_left - margin_right) / 100
 body_bottom     = h - (margin_bottom + margin_footer) / 100
 ```
 
-상단 합과 하단 합은 lineseg 합성이 페이지 나누기에 쓰는 `lineseg::body_box`에서 온다. 그래서 그려지는 본문과 합성 캐시가 본문 끝 위치에서 어긋나지 않는다([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+상단 합과 하단 합은 lineseg 합성이 페이지 나누기에 쓰는 `lineseg::body_box`에서 온다. 그래서 그려지는 본문과 합성 캐시가 본문 끝 위치에서 어긋나지 않는다([#423](https://github.com/STAIxBWLB/agent-hwp/issues/423)).
 
 상태 변수: `prev_v_pos=-1`(페이지 리셋 감지), `content_bottom=body_top`(흐름 커서), `paras_on_page=0`, `page_notes: Vec<&Note>`, `list_state: ListState`.
 
@@ -47,13 +47,13 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 1. **본문 넘침**: `content_bottom > body_bottom && paras_on_page>0` → 각주 렌더 + 페이지 가구(`PageNumberState::finish`: 머리/꼬리말·쪽번호) + 페이지 push, 상태 리셋.
 2. **명시 쪽 나누기**: `para.header.break_type & 0x04 != 0 && paras_on_page>0`.
 3. **캐시 v_pos 리셋**: 저장된 lineseg를 그릴 때 `seg.v_pos < prev_v_pos && !page.items.is_empty()` → 정품 멀티페이지는 페이지마다 v_pos가 0으로 리셋되므로 감소를 페이지 경계로 본다.
-4. **폴백 줄이 본문 하한을 넘을 때**: 캐시 없는 밴드에서 `baseline + max_size*0.4`가 `body_bottom`을 넘는 줄은 새 페이지를 열고 문단의 나머지를 데려간다. 페이지의 첫 줄은 트리거하지 않는다(빈 페이지가 생기고 이미 그린 목록 마커가 고아가 된다). lineseg가 아예 없는 우리 생성 문서의 문단 중간 나누기로, 이것이 없으면 그런 문단은 페이지 하단 아래로 통째로 그려지고 *다음* 문단에서만 쪽이 넘어갔다([#282](https://github.com/STAIxBWLB/hwp-cli/issues/282)).
+4. **폴백 줄이 본문 하한을 넘을 때**: 캐시 없는 밴드에서 `baseline + max_size*0.4`가 `body_bottom`을 넘는 줄은 새 페이지를 열고 문단의 나머지를 데려간다. 페이지의 첫 줄은 트리거하지 않는다(빈 페이지가 생기고 이미 그린 목록 마커가 고아가 된다). lineseg가 아예 없는 우리 생성 문서의 문단 중간 나누기로, 이것이 없으면 그런 문단은 페이지 하단 아래로 통째로 그려지고 *다음* 문단에서만 쪽이 넘어갔다([#282](https://github.com/STAIxBWLB/agent-hwp/issues/282)).
 
 ### 1.3 문단 처리 분기
 
 문단별로 `footnote::para_marks/para_notes`(각주 마커/노트 수집), `tab::tab_stops`, `para_geometry`, `hyperlink_ranges`, `list_state.marker_for_render`를 준비한 뒤:
 
-- **`line_segs`가 비었을 때(폴백)**: 빈 문단이면 `content_bottom`을 자신의 space-before와 합성이 쓰는 줄 하나(`lineseg::paragraph_metrics`의 advance)만큼 전진시킨다 — 흐름이 기록한 앵커를 흐름 자신이 소비한다는 뜻이라, 기본 문단의 16pt 전진은 그대로다([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)). space-after와 raw/반값 간격 단위는 이 전진에 넣지 않는다(#415). 아니면 `shape_range_notes`로 전체 셰이핑 → `place_wrapped`로 `body_width` 기준 그리디 줄바꿈. `baseline_y = content_bottom + spacing_top + max_size*1.2`, `content_bottom = last_y + max_size*0.4 + spacing_bottom`. 정렬(가운데/오른쪽)은 한 줄에 들어갈 때만 보정. 줄바꿈은 스크래치 페이지에서 수행하며 줄마다 `(item 인덱스, baseline)`을 함께 모으고, 위 트리거 4에 따라 줄 단위로 실제 페이지에 옮긴다. 모든 나누기는 `push_page_checked`를 거쳐 세그먼트 기록기의 페이지 서수가 유도 가능하게 유지된다. 본문 상자보다 큰 줄은 어떤 나누기로도 담을 수 없다 — 그대로 그리고 편차만 `paragraph_line_content_overflow`로 보고한다(표 셀의 `table_cell_content_overflow`와 같은 계약).
+- **`line_segs`가 비었을 때(폴백)**: 빈 문단이면 `content_bottom`을 자신의 space-before와 합성이 쓰는 줄 하나(`lineseg::paragraph_metrics`의 advance)만큼 전진시킨다 — 흐름이 기록한 앵커를 흐름 자신이 소비한다는 뜻이라, 기본 문단의 16pt 전진은 그대로다([#422](https://github.com/STAIxBWLB/agent-hwp/issues/422)). space-after와 raw/반값 간격 단위는 이 전진에 넣지 않는다(#415). 아니면 `shape_range_notes`로 전체 셰이핑 → `place_wrapped`로 `body_width` 기준 그리디 줄바꿈. `baseline_y = content_bottom + spacing_top + max_size*1.2`, `content_bottom = last_y + max_size*0.4 + spacing_bottom`. 정렬(가운데/오른쪽)은 한 줄에 들어갈 때만 보정. 줄바꿈은 스크래치 페이지에서 수행하며 줄마다 `(item 인덱스, baseline)`을 함께 모으고, 위 트리거 4에 따라 줄 단위로 실제 페이지에 옮긴다. 모든 나누기는 `push_page_checked`를 거쳐 세그먼트 기록기의 페이지 서수가 유도 가능하게 유지된다. 본문 상자보다 큰 줄은 어떤 나누기로도 담을 수 없다 — 그대로 그리고 편차만 `paragraph_line_content_overflow`로 보고한다(표 셀의 `table_cell_content_overflow`와 같은 계약).
 - **`line_segs`가 있을 때(캐시 존중)**: 각 seg마다 `[text_start, next.text_start)` 구간을 `shape_range_notes`로 셰이핑. 핵심 좌표:
   ```
   stored_baseline = body_top + (seg.v_pos + seg.baseline_gap) / 100
@@ -79,7 +79,7 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 
 1. **그리드 기하**: `col_span==1` 셀에서 열 폭, `row_span==1` 셀에서 행 높이 확정.
 2. `derive_col_widths`: 병합 셀에서 미지 열 유도(작은 병합부터) → 평균 폴백 → `table_true_width`(행별 셀폭 합의 최대)로 스케일. 표 실제폭 > 가용폭이면 가용폭에 맞춰 비율 유지 축소.
-3. **측정 패스**: 셀마다 스크래치 `PageList`에 `layout_box_paragraphs`로 그려 실측 내용 높이를 잰다. 이 측정은 **문서가 크기를 정하지 않은 행**을 채운다. 줄 배치 캐시가 있는 셀의 행은 한글이 계산해 둔 최종 높이이므로 그대로 두는데, 늘리면 아래 모든 행과 다음 쪽들의 조각 격자까지 밀리기 때문이다(실측: 개체를 담은 셀 하나가 행을 190pt 늘려 한 쪽의 조각을 통째로 이동). 실측이 저장 높이를 넘으면 내용은 그대로 그리고 편차만 typed 경고 `table_cell_content_overflow`로 보고한다. 단 저장 높이는 하한일 뿐이다: 셀 자신의 캐시는 한글이 줄을 그린 자리라, 행은 적어도 캐시 글줄 높이(조각별 합; 조각은 쪽 시작 플래그, `v_pos` 역행, 전진하지 않는 문단 시작에서 나뉜다 — 한글이 다음 쪽에 이어 그린 내용, #233)만큼은 크다. 텍스트 구간이 빈 캐시 레코드는 높이를 더하지 않지만, 빈 문단 자신의 줄은 예외다: 글자는 없어도 줄 하나는 차지하므로, 마지막이거나 유일한 빈 문단의 줄 하단이 행에 계속 기여하고 셀이 여백만 남도록 접히지 않는다([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)). 한글 hwpx 내보내기는 더 큰 캐시 아래 선언 최소 높이를 유지하고, 편집으로 재합성된 셀은 편집 전 높이를 유지한다(#245); 두 경우 모두 행을 캐시 전체 높이까지 늘리고, `layout_box_para_iter`가 이어지는 조각을 앞 줄 아래(`run_shift`, 한 문단 안) 또는 앞 문단 아래(`para_shift`)에 그려 셀 전체가 한 행 안에 머문다. 이 하한을 넘는 실측(중첩 개체, 우리 줄바꿈)은 종전대로 행을 늘리지 않고 보고만 한다. 캐시가 없는 셀(우리가 만든 문서 등)은 저장 높이도 레이아웃 산출물이 아니므로 종전대로 실측으로 행을 늘린다. `row_span>1`은 스팬 합 부족분을 마지막 스팬 행에 가산 — 역시 캐시가 없거나 캐시 하한이 저장 높이를 넘을 때만.
+3. **측정 패스**: 셀마다 스크래치 `PageList`에 `layout_box_paragraphs`로 그려 실측 내용 높이를 잰다. 이 측정은 **문서가 크기를 정하지 않은 행**을 채운다. 줄 배치 캐시가 있는 셀의 행은 한글이 계산해 둔 최종 높이이므로 그대로 두는데, 늘리면 아래 모든 행과 다음 쪽들의 조각 격자까지 밀리기 때문이다(실측: 개체를 담은 셀 하나가 행을 190pt 늘려 한 쪽의 조각을 통째로 이동). 실측이 저장 높이를 넘으면 내용은 그대로 그리고 편차만 typed 경고 `table_cell_content_overflow`로 보고한다. 단 저장 높이는 하한일 뿐이다: 셀 자신의 캐시는 한글이 줄을 그린 자리라, 행은 적어도 캐시 글줄 높이(조각별 합; 조각은 쪽 시작 플래그, `v_pos` 역행, 전진하지 않는 문단 시작에서 나뉜다 — 한글이 다음 쪽에 이어 그린 내용, #233)만큼은 크다. 텍스트 구간이 빈 캐시 레코드는 높이를 더하지 않지만, 빈 문단 자신의 줄은 예외다: 글자는 없어도 줄 하나는 차지하므로, 마지막이거나 유일한 빈 문단의 줄 하단이 행에 계속 기여하고 셀이 여백만 남도록 접히지 않는다([#422](https://github.com/STAIxBWLB/agent-hwp/issues/422)). 한글 hwpx 내보내기는 더 큰 캐시 아래 선언 최소 높이를 유지하고, 편집으로 재합성된 셀은 편집 전 높이를 유지한다(#245); 두 경우 모두 행을 캐시 전체 높이까지 늘리고, `layout_box_para_iter`가 이어지는 조각을 앞 줄 아래(`run_shift`, 한 문단 안) 또는 앞 문단 아래(`para_shift`)에 그려 셀 전체가 한 행 안에 머문다. 이 하한을 넘는 실측(중첩 개체, 우리 줄바꿈)은 종전대로 행을 늘리지 않고 보고만 한다. 캐시가 없는 셀(우리가 만든 문서 등)은 저장 높이도 레이아웃 산출물이 아니므로 종전대로 실측으로 행을 늘린다. `row_span>1`은 스팬 합 부족분을 마지막 스팬 행에 가산 — 역시 캐시가 없거나 캐시 하한이 저장 높이를 넘을 때만.
 4. 누적 오프셋 `col_x = prefix_sums(col_w, x)`, `row_prefix = prefix_sums(row_h, 0)` (조각마다 베이스 y를 더하므로 같은 prefix를 모든 쪽 조각이 공유).
 5. 셀마다: **배경 Rect** → **내용**(여백 + 세로정렬 `voff`: `(list_attr>>5)&0x3` 0 위/1 가운데 avail*0.5/2 아래 avail) → **4변 테두리 Line**(`width_mm()*72/25.4`) → **대각선**(`diagonal_dirs(attr)`: slash bits2~4, backslash bits5~7).
 6. **쪽 분할**(본문 흐름에서만, `TableSplitCtx` 경유; 셀/글상자 안 중첩 표는 나누지 않음): 표가 `body_bottom`을 넘으면 `Table::page_break_policy()`(`attr` bits 0-1)로 결정. NONE이면 통째로 다음 쪽으로(04 §6.1 불변식), 한 쪽보다 클 때만 행 분할로 폴백. TABLE/CELL은 행 경계에서 나눔. 셀 내부 분할은 TABLE 정책만 미지원이고, CELL은 한 쪽보다 큰 단일 행을 기존 cached line 경계에서 이어 그림(soft `v_pos` 채움, 행 단위 빈 continuation fragment, span 인지 채움, 쪽 하단 sliver 봉인 — 계약은 21-pdf-parity §6). 안전하지 않은 cache나 단편화된 행과 교차하는 row-span은 `table_cell_fragmentation_incomplete`로 보고하고, 새 쪽에도 안 들어가는 묶음은 넘치며 `TableRowTooTallClipped` 보고. `treat_as_char` 표는 "한 글자"라 나누지 않음(GE-8). 분할마다 표준 쪽 마감 순서(노트 → 가구 → `push_page_checked` → 흐름 상태 리셋)를 거치므로 다음 문단의 한글 경계 플래그가 흡수돼 이중 분할되지 않는다. `repeat_header()`면 선두의 "모든 셀이 `Cell::is_header()`(`list_attr` bit18)"인 행들을 이어지는 쪽 `body_top`에 다시 그린다. `row_span`이 가로지르는 후보 경계는 제외하므로 병합 셀은 절단되지 않고 하나의 분할 불가 행 묶음으로 이동한다. 이 묶음이 한 쪽보다 크면 `TableRowTooTallClipped`로 보고한다. 방출되는 모든 조각은 셀의 4변 테두리를 그대로 갖는다: 한글은 각 쪽의 조각을 자기 가로선으로 닫아 분할된 행이 경계 양쪽에서 닫힌 상자로 보인다(오라클 실측 — 우리가 긋지 않던 자리에 쪽 하단과 연속 상단 모두 전폭 가로선이 있다). 세로정렬과 대각선은 여전히 셀 전체의 속성이라 조각이 셀 전체일 때만, 또는 첫 조각에만 적용한다.
@@ -147,13 +147,13 @@ body_width = pg.width - margin_left - margin_right
 content_h  = max(pg.height - margin_top - margin_bottom - margin_header - margin_footer, 1)
 v_pos      = 0   // 페이지 상대 누적
 ```
-`content_h`는 `lineseg::body_box`의 높이이며, `layout_document_pages`가 빼는 네 여백과 같다. 따라서 머리말·꼬리말 밴드는 두 경로 모두에서 줄 공간이 아니다([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+`content_h`는 `lineseg::body_box`의 높이이며, `layout_document_pages`가 빼는 네 여백과 같다. 따라서 머리말·꼬리말 밴드는 두 경로 모두에서 줄 공간이 아니다([#423](https://github.com/STAIxBWLB/agent-hwp/issues/423)).
 
 문단마다 `spacing_top`(첫 문단 제외)을 v_pos에 더하고, `fill_nested`로 셀/글상자 내부 줄배치를 먼저 채운 뒤, 표 총높이 계산. **표가 잔여 공간에 안 들어가면**(`v_pos + table_total > content_h`) `v_pos=0`으로 다음 페이지. 표 앵커 문단은 진입 v_pos에 놓고, 표 있는 문단은 `v_pos = anchor_v + table_total`로 커서를 덮어쓴다(겹침 방지). 마지막에 `spacing_bottom` 가산.
 
 ### 2.2.1 본문 흐름 표가 있는 섹션의 사전 앵커
 
-본문 흐름 표(`placement.treat_as_char == false`)를 가진 섹션은 위 커서를 쓸 수 없다. 렌더러가 그 표의 행/셀 조각을 나눠 배치하므로 문단 위치도 같은 레이아웃 패스에서 나와야 한다. `layout::synthesized_body_anchors`가 본문 캐시를 모두 비운 복사본에 레이아웃을 한 번 돌려 문단마다 확정된 첫 줄 상단(`BodyAnchor::v_pos`)과 그 줄이 페이지를 열었는지(`starts_page`)를 기록한다. `synthesize_linesegs`는 그런 섹션의 각 문단을 앵커에서 시작하고, 앵커가 페이지를 연 경우 `LineSeg.flags` bit0을 세운다(한글문서파일형식 5.0 §4.3.4). HWP5 원본은 기존 커서 경로를 그대로 쓰므로 정품 캐시와 HWP5 동일성은 건드리지 않는다. 앵커는 그 문단의 *첫 줄*만 담으므로, 여러 줄 문단의 이후 줄은 `compute_linesegs` 단독으로 페이지를 나누며 그 자체 적합 판정이 결정한다(§2.3). 앵커를 만든 패스와는 독립적이다([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+본문 흐름 표(`placement.treat_as_char == false`)를 가진 섹션은 위 커서를 쓸 수 없다. 렌더러가 그 표의 행/셀 조각을 나눠 배치하므로 문단 위치도 같은 레이아웃 패스에서 나와야 한다. `layout::synthesized_body_anchors`가 본문 캐시를 모두 비운 복사본에 레이아웃을 한 번 돌려 문단마다 확정된 첫 줄 상단(`BodyAnchor::v_pos`)과 그 줄이 페이지를 열었는지(`starts_page`)를 기록한다. `synthesize_linesegs`는 그런 섹션의 각 문단을 앵커에서 시작하고, 앵커가 페이지를 연 경우 `LineSeg.flags` bit0을 세운다(한글문서파일형식 5.0 §4.3.4). HWP5 원본은 기존 커서 경로를 그대로 쓰므로 정품 캐시와 HWP5 동일성은 건드리지 않는다. 앵커는 그 문단의 *첫 줄*만 담으므로, 여러 줄 문단의 이후 줄은 `compute_linesegs` 단독으로 페이지를 나누며 그 자체 적합 판정이 결정한다(§2.3). 앵커를 만든 패스와는 독립적이다([#423](https://github.com/STAIxBWLB/agent-hwp/issues/423)).
 
 사전 패스 결과는 문단마다 `Option<BodyAnchor>` 슬롯을 갖는 `BodyAnchors`와 `completed` 플래그다(#426). 슬롯이 `None`이면 그 문단을 방문하기 전에 패스가 멈춘 것이므로, 채워지지 않은 항목을 정상적인 페이지 상단 앵커(`v_pos = 0`, `starts_page = false`)로 읽을 수 없다. `completed`는 페이지나 표시 항목 예산이 페이지 전환을 거부하면 거짓이 된다. 모든 앵커를 이미 기록한 뒤에 멈춘 경우도 포함하며, 다음 페이지가 필요한 본문 흐름 표가 정확히 그 경우다.
 
@@ -161,15 +161,15 @@ v_pos      = 0   // 페이지 상대 누적
 
 ### 2.2.2 편집된 HWP5 문서는 남긴 앞부분에서 이어 합성한다
 
-HWP5 원본에 `ahwp edit`를 걸면 문서 전체를 다시 합성한 뒤, 편집이 건드리지 않은 문단을 저장된 레코드 그대로 되돌린다(`convert::restore_unchanged_native_paragraphs`). 그래서 새 PARA_LINE_SEG 레코드는 편집이 옮긴 부분에만 생긴다. 그 이음매 양쪽 모두 페이지 기준 `v_pos`를 담고 있고, 섹션을 0에서 다시 시작하는 합성은 첫 편집 문단을 앞 문단의 저장 캐시 *위*에 놓는다. `layout_document_pages`는 그 되돌아간 걸음을 페이지 경계(`seg.v_pos < prev_v_pos`)로 읽어 편집 내용을 다음 페이지에 그린다([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
+HWP5 원본에 `ahwp edit`를 걸면 문서 전체를 다시 합성한 뒤, 편집이 건드리지 않은 문단을 저장된 레코드 그대로 되돌린다(`convert::restore_unchanged_native_paragraphs`). 그래서 새 PARA_LINE_SEG 레코드는 편집이 옮긴 부분에만 생긴다. 그 이음매 양쪽 모두 페이지 기준 `v_pos`를 담고 있고, 섹션을 0에서 다시 시작하는 합성은 첫 편집 문단을 앞 문단의 저장 캐시 *위*에 놓는다. `layout_document_pages`는 그 되돌아간 걸음을 페이지 경계(`seg.v_pos < prev_v_pos`)로 읽어 편집 내용을 다음 페이지에 그린다([#462](https://github.com/STAIxBWLB/agent-hwp/issues/462)).
 
 수정은 새 기하 규칙 없이 한 규칙만 더한다. 작성기가 되돌릴 앞부분을 측정해 섹션마다 `lineseg::BodySeed` 하나를 넘긴다(`synthesize_linesegs_seeded`는 `lineseg::BodyFlow { seeds, preserve_nested }`를 받는다). 시드는 섹션, 편집이 흐름을 옮긴 첫 본문 문단, 그리고 그 문단이 시작할 커서를 담는다. 커서는 남긴 앞부분 마지막 문단을 `lineseg::saved_body_cursor`로 측정하며, 그것은 위 §2.2 순회가 쓰는 단일 규칙 `lineseg::body_cursor`를 그대로 쓴다. 표를 앵커한 문단이면 진입 위치에 표 높이를 더하고(표 뒤에서 글은 줄 커서로 이어지지 않는다), 아니면 줄 합성기가 도달한 커서를 쓰며, 여기에 그 문단의 space-after를 더한다.
 
-순회는 그 줄 커서를 넘겨받아 쓰고, 커밋된 줄에서 다시 읽어내지 않는다. 둘은 같은 수가 아니다. 커밋된 줄은 `line_spacing = max(advance - base, 0)`으로 직렬화되므로 `v_pos + line_height + line_spacing`은 `max(base, advance)`로 읽힌다. 고정 줄간격이 기준 줄보다 작거나 0이면 커서를 다시 유도하는 순간 뒤따르는 모든 문단이 움직이고, 시드 없는 합성(HWPX·markdown → HWP)의 출력이 바뀐다. `saved_body_cursor`가 저장 레코드에서 그 값을 재구성하는 것은 저장 캐시에 다른 필드가 없기 때문이며, 그 경로는 시드로만 쓰이고 시드 없는 순회에는 쓰이지 않는다([#509](https://github.com/STAIxBWLB/hwp-cli/pull/509)).
+순회는 그 줄 커서를 넘겨받아 쓰고, 커밋된 줄에서 다시 읽어내지 않는다. 둘은 같은 수가 아니다. 커밋된 줄은 `line_spacing = max(advance - base, 0)`으로 직렬화되므로 `v_pos + line_height + line_spacing`은 `max(base, advance)`로 읽힌다. 고정 줄간격이 기준 줄보다 작거나 0이면 커서를 다시 유도하는 순간 뒤따르는 모든 문단이 움직이고, 시드 없는 합성(HWPX·markdown → HWP)의 출력이 바뀐다. `saved_body_cursor`가 저장 레코드에서 그 값을 재구성하는 것은 저장 캐시에 다른 필드가 없기 때문이며, 그 경로는 시드로만 쓰이고 시드 없는 순회에는 쓰이지 않는다([#509](https://github.com/STAIxBWLB/agent-hwp/pull/509)).
 
 되돌리기는 합성 앞뒤로 두 번 돈다. 앞에서는 편집이 건드리지 않은 모든 문단이 저장 레코드를 되찾으므로, 출력이 유지할 중첩 캐시가 제자리에 있고 순회는 그 캐시를 측정한다(`BodyFlow::preserve_nested`는 캐시가 이미 있는 중첩 목록을 다시 합성하지 않고 그대로 쓰며, 유지된 목록 문단도 자기 블록만큼 목록 커서를 전진시킨다). 편집된 문단은 그 문서에서 캐시가 없으므로, 남아 있는 캐시는 작성기가 되돌린 것이다. 그것을 측정해야 유지된 표의 높이가 아래 문단을 배치할 때 쓴 높이와 같아진다. 합성 뒤에는 본문 캐시만 다시 되돌린다. 이음매 앞부분은 저장 `v_pos`를 되찾고, 그 문단부터는 합성기가 만든 본문 캐시를 그대로 쓴다. 이음매 뒤 문단은 순회가 보는 문서에서 캐시가 없고(`SuffixCache::Drop`), 합성된 캐시는 그 뒤에 그대로 남는다(`SuffixCache::Keep`). 편집이 건드리지 않은 표 셀과 일반 목록의 문단은 이음매 양쪽에서 되돌리며, `instance_id`, 완전 일치, 그리고 목록 길이가 같을 때만 인덱스 순으로 대응시킨다. 캡션은 편집이 건드리지 않은 문단 전체가 함께 올 때만 되돌아간다. 편집이 바꾼 컨트롤 안의 캡션은 여기서 다시 쓰지 않는다.
 
-중첩 목록은 스스로 판단하며 답이 셋이다(`lineseg::ListCaches`). "캐시를 유지한다"에 서로 다른 질문 셋이 접혀 있기 때문이다. 어느 문단이 자기 캐시를 유지하는가, 하위 표 셀은 무엇을 하는가, 유지한 캐시가 목록 커서를 전진시키는가. `Recompute`는 목록의 모든 문단을 다시 합성하고, `KeepInPlace`는 문단 자신의 캐시는 두되 커서는 건드리지 않으며, `KeepMeasured`는 캐시된 앞부분을 유지하고 유지한 블록만큼 커서를 전진시킨 뒤 첫 캐시 없는 문단부터 다시 합성한다. 편집이 없는 문서는 맨 위에서 `Recompute`를 쓰고, 그것이 캡션과 일반 목록에는 `KeepInPlace`, 표 셀에는 `Recompute`로 대응된다. 이것이 기존 동작이므로 캡션, 일반 목록, 그 안에 중첩된 표는 예전과 똑같이 합성된다([#509](https://github.com/STAIxBWLB/hwp-cli/pull/509)). `KeepMeasured`를 쓰는 것은 편집된 문서의 본문뿐이며, 그 경로 위의 캡션과 셀까지 유지된다.
+중첩 목록은 스스로 판단하며 답이 셋이다(`lineseg::ListCaches`). "캐시를 유지한다"에 서로 다른 질문 셋이 접혀 있기 때문이다. 어느 문단이 자기 캐시를 유지하는가, 하위 표 셀은 무엇을 하는가, 유지한 캐시가 목록 커서를 전진시키는가. `Recompute`는 목록의 모든 문단을 다시 합성하고, `KeepInPlace`는 문단 자신의 캐시는 두되 커서는 건드리지 않으며, `KeepMeasured`는 캐시된 앞부분을 유지하고 유지한 블록만큼 커서를 전진시킨 뒤 첫 캐시 없는 문단부터 다시 합성한다. 편집이 없는 문서는 맨 위에서 `Recompute`를 쓰고, 그것이 캡션과 일반 목록에는 `KeepInPlace`, 표 셀에는 `Recompute`로 대응된다. 이것이 기존 동작이므로 캡션, 일반 목록, 그 안에 중첩된 표는 예전과 똑같이 합성된다([#509](https://github.com/STAIxBWLB/agent-hwp/pull/509)). `KeepMeasured`를 쓰는 것은 편집된 문서의 본문뿐이며, 그 경로 위의 캡션과 셀까지 유지된다.
 
 한 목록 안에서 이음매는 문단별이 아니라 위치 기준이다. 목록의 저장 `v_pos`는 누적값이라, 그 목록의 첫 *움직인* 문단 앞부분만 아직 목록을 설명한다. `first_moved_paragraph`는 대응이 자기 인덱스에 없거나, 내용이 다르거나, 대응이 아예 없을 때 그 문단을 움직인 것으로 본다. 위에서 문단을 넣거나 지워 생긴 밀림도 포함되며, 이것이 유지된 형제가 편집이 바꾼 블록 아래에서 잰 `v_pos`를 그대로 들고 있지 못하게 한다. "내용"은 그 문단의 줄을 결정하는 필드들이고, 줄 캐시는 지금 계산하는 답이며 PARA_TEXT의 "목록의 마지막 문단" 비트는 문단이 아니라 목록을 따라가므로, 형제를 넣으면 아무도 건드리지 않은 문단에서 그 비트가 뒤집힌다.
 
@@ -177,7 +177,7 @@ HWP5 원본에 `ahwp edit`를 걸면 문서 전체를 다시 합성한 뒤, 편�
 
 유지된 표 앵커는 표를 자기 줄 블록 안에 담으므로 `saved_body_cursor`는 남긴 마지막 줄의 하단을 하한으로 쓴다. 앵커 줄의 높이가 셀 높이 합보다 클 수 있고(공개 픽스처에서 4412 HU 표가 5100 HU 줄 아래에 있다), 그 뒤 문단은 출력이 유지하는 줄 안에서 다시 시작하면 안 된다.
 
-지켜야 할 결과. 편집이 없는 문서는 이 경로에 들어오지 않으므로 HWP5 동일성은 바이트 그대로이고, 시드 없는 합성(HWPX·markdown → HWP)은 이전과 같은 커서 규칙을 쓴다. 섹션 첫 문단을 고친 경우 시드가 필요 없고(어차피 0에서 시작한다), 저장 캐시가 없는 앞부분 문단은 추측 대신 시드를 만들지 않는다. 시드는 본문 상자(`0..=content_h`) 안에 들어올 때만 적용하고 그 주변 산술은 포화한다. 저장 커서는 믿을 수 없는 바이트에서 오므로, 본문 밖 커서는 넘침이 아니라 페이지 시작으로 열화해야 한다. 시드 문단에 명시적 쪽 나눔이 있으면 그쪽이 여전히 우선한다. 시드는 합성기 자신의 간격 단위를 이어 쓰므로, [#415](https://github.com/STAIxBWLB/hwp-cli/issues/415)의 단위 보정 전까지는 이음매가 한글 저장 간격과 문단 간격의 절반만큼 어긋날 수 있다. 본문 흐름 표가 있는 섹션은 커서 대신 사전 앵커를 읽으므로(§2.2.1) 시드가 효력이 없다.
+지켜야 할 결과. 편집이 없는 문서는 이 경로에 들어오지 않으므로 HWP5 동일성은 바이트 그대로이고, 시드 없는 합성(HWPX·markdown → HWP)은 이전과 같은 커서 규칙을 쓴다. 섹션 첫 문단을 고친 경우 시드가 필요 없고(어차피 0에서 시작한다), 저장 캐시가 없는 앞부분 문단은 추측 대신 시드를 만들지 않는다. 시드는 본문 상자(`0..=content_h`) 안에 들어올 때만 적용하고 그 주변 산술은 포화한다. 저장 커서는 믿을 수 없는 바이트에서 오므로, 본문 밖 커서는 넘침이 아니라 페이지 시작으로 열화해야 한다. 시드 문단에 명시적 쪽 나눔이 있으면 그쪽이 여전히 우선한다. 시드는 합성기 자신의 간격 단위를 이어 쓰므로, [#415](https://github.com/STAIxBWLB/agent-hwp/issues/415)의 단위 보정 전까지는 이음매가 한글 저장 간격과 문단 간격의 절반만큼 어긋날 수 있다. 본문 흐름 표가 있는 섹션은 커서 대신 사전 앵커를 읽으므로(§2.2.1) 시드가 효력이 없다.
 
 ### 2.3 문단 한 개 줄배치 (`compute_linesegs`)
 
@@ -196,7 +196,7 @@ baseline_gap  = base * 85 / 100
 seg_width     = max(body_width, 1)
 ```
 
-페이지 리셋은 줄 자체의 블록 `line_height`를 예약한다. 정품 저장 캐시는 기준선을 `baseline_gap`에 두고 descent가 `line_height`에서 끝나므로, 그것이 한글이 그 줄에 기록한 블록이다. `layout.rs` 폴백 플래너는 다른 블록을 예약한다. 흐름 커서 위 `1.2 x size`에 기준선을 두고 `0.4 x size` descent를 `body_bottom`과 비교하므로, 두 패스는 페이지의 마지막 줄을 다르게 옮길 수 있다. 로컬 정품 표본 중 본문 하단에서 문단을 끊는 것은 없다(로컬 코퍼스의 문단 중간 페이지 리셋은 모두 하단보다 훨씬 위에서 일어난다). 따라서 어느 비율도 저장 바이트로 확립되지 않았고, 캐시는 자기 저장 필드가 말하는 규칙을 유지하며 남은 불일치는 한글 주장이 아닌 알려진 격차로 남는다([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+페이지 리셋은 줄 자체의 블록 `line_height`를 예약한다. 정품 저장 캐시는 기준선을 `baseline_gap`에 두고 descent가 `line_height`에서 끝나므로, 그것이 한글이 그 줄에 기록한 블록이다. `layout.rs` 폴백 플래너는 다른 블록을 예약한다. 흐름 커서 위 `1.2 x size`에 기준선을 두고 `0.4 x size` descent를 `body_bottom`과 비교하므로, 두 패스는 페이지의 마지막 줄을 다르게 옮길 수 있다. 로컬 정품 표본 중 본문 하단에서 문단을 끊는 것은 없다(로컬 코퍼스의 문단 중간 페이지 리셋은 모두 하단보다 훨씬 위에서 일어난다). 따라서 어느 비율도 저장 바이트로 확립되지 않았고, 캐시는 자기 저장 필드가 말하는 규칙을 유지하며 남은 불일치는 한글 주장이 아닌 알려진 격차로 남는다([#423](https://github.com/STAIxBWLB/agent-hwp/issues/423)).
 
 셰이핑(`shape_range`)으로 글리프 x_advance를 pt로 재고 `seg_width/100`에서 렌더러가 줄상자 안에서 줄 들여쓰기(`layout::line_indents`)를 뺀 폭 기준 그리디 줄바꿈: 들여쓰기(양수)는 첫 줄, 내어쓰기는 둘째 줄부터 좁힌다. 이를 빼지 않으면 합성한 줄이 렌더 시 문단 우변을 넘는다. 목록 마커 폭은 셰이핑이 필요해 반영하지 않으므로, 마커가 내어쓰기 폭보다 넓은 문단의 첫 줄은 그만큼 길 수 있다. NB_SPACE 양옆은 줄바꿈 금지. 줄 시작점은 glyph index가 아니라 shaping-cluster source의 UTF-16 길이로 계산해 보조평면 문자·합자·결합문자의 WCHAR offset 보존. 각 줄 방출은 클로저 `place`:
 ```
@@ -209,7 +209,7 @@ v_pos += line_advance
 
 ### 2.4 표 높이 (`table_height`, `fill_nested`, `para_line_block`)
 
-`fill_nested`가 먼저 셀/글상자 내부 문단의 줄배치를 채운다(셀 폭 = `cell.width - margins[0] - margins[1]`, 셀마다 v_pos 리셋, `content_h=i32::MAX`로 페이지 분할 없음. 글상자는 폭 `gso_shapes[0].w - 566`). 캐시가 전혀 없는 목록은 이웃 문단과 같은 임시 합성으로 그리지만, 빈 문단만은 합성하지 않는다: 그래서 `marker_for_render`에 닿지 않아 보이지 않는 목록 번호를 소비하지 않고, 대신 줄 하나는 그대로 소유한다. 그 줄이 흐름 커서를 `paragraph_metrics`만큼 전진시키고, 그 줄 하단이 행이 재는 값이 된다(셀의 마지막 문단일 때도 마찬가지다)([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
+`fill_nested`가 먼저 셀/글상자 내부 문단의 줄배치를 채운다(셀 폭 = `cell.width - margins[0] - margins[1]`, 셀마다 v_pos 리셋, `content_h=i32::MAX`로 페이지 분할 없음. 글상자는 폭 `gso_shapes[0].w - 566`). 캐시가 전혀 없는 목록은 이웃 문단과 같은 임시 합성으로 그리지만, 빈 문단만은 합성하지 않는다: 그래서 `marker_for_render`에 닿지 않아 보이지 않는 목록 번호를 소비하지 않고, 대신 줄 하나는 그대로 소유한다. 그 줄이 흐름 커서를 `paragraph_metrics`만큼 전진시키고, 그 줄 하단이 행이 재는 값이 된다(셀의 마지막 문단일 때도 마찬가지다)([#422](https://github.com/STAIxBWLB/agent-hwp/issues/422)).
 
 표 높이 공식(정품 실측 도출):
 ```

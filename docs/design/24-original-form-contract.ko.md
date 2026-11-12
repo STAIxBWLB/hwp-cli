@@ -2,8 +2,8 @@
 
 # 원본 서식 보존 계약
 
-이 P0 계약은 [#411](https://github.com/STAIxBWLB/hwp-cli/issues/411)의 하위 작업
-[#416](https://github.com/STAIxBWLB/hwp-cli/issues/416)에 해당한다. 제공된 네이티브 서식을
+이 P0 계약은 [#411](https://github.com/STAIxBWLB/agent-hwp/issues/411)의 하위 작업
+[#416](https://github.com/STAIxBWLB/agent-hwp/issues/416)에 해당한다. 제공된 네이티브 서식을
 유지하는 작업의 제한된 비교 범위와 소유자가 작성한 합성 fixture를 정의한다. 영어 문서가
 정본이다. 투영 비교의 통과는 검사한 필드에 대한 근거이며, 새로운 네이티브 포맷 규칙이나
 한컴오피스에서 산출물이 열린다는 증명은 아니다.

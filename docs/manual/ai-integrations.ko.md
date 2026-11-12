@@ -493,7 +493,7 @@ Codex cloud 환경은 셋업 스크립트로 컨테이너를 만든다. 거기�
 툴체인 불필요, 사전 빌드 릴리스 아카이브를 받는다).
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh | sh
 ```
 
 이후 MCP 서버 등록은 위 Codex CLI와 같다.
@@ -527,7 +527,7 @@ claude.ai 코드 실행 샌드박스는 네트워크가 레지스트리로 제�
 `SKILL.md`, `bootstrap.sh`, Linux x86_64 `bin/ahwp`, 라이선스 파일(`LICENSE-MIT`, `LICENSE-APACHE`,
 `NOTICE`)이 포함된다.
 
-1. [최신 릴리스](https://github.com/STAIxBWLB/hwp-cli/releases)에서
+1. [최신 릴리스](https://github.com/STAIxBWLB/agent-hwp/releases)에서
    `hwp-skill-claude-web.zip`과 그 옆에 함께 게시되는 `hwp-skill-claude-web.zip.sha256`을 받아
    아카이브 해시를 대조한다.
 2. claude.ai에서 Settings → Capabilities → Skills로 가서 zip을 업로드한다.
@@ -724,7 +724,7 @@ Desktop/Outpost 실행 경로를 대신 사용할 수 있다. 로컬 `ahwp mcp` 
 Web 네이티브 연동에는 인증된 Streamable HTTP MCP 서비스, tenant별 격리 저장소, 클라이언트 로컬
 경로 인자 대신 content/artifact 전송이 필요하다. 이 릴리스에는 구현하지 않는다. 구현 계약은
 [Remote MCP transport](../design/20-remote-mcp.ko.md)에 정리했고
-[issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52)에서 추적한다.
+[issue #52](https://github.com/STAIxBWLB/agent-hwp/issues/52)에서 추적한다.
 
 ## `hwpx` 스킬 흡수 완료
 

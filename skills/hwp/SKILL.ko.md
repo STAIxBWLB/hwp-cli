@@ -15,7 +15,7 @@ HWPX 형식을 읽고 쓰며, docx, pdf, html, markdown, json, odt, txt, csv로 
 납출됩니다.
 
 설치: `brew install staixbwlb/hwp/ahwp`, 또는
-`curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh`.
+`curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh | sh`.
 `ahwp skill export [-o DIR] [--install claude-code|codex|amazon-quick]`으로 이 스킬을
 바이너리에서 꺼낼 수 있습니다. Amazon Quick Desktop 프로필은
 `--quick-profile ID_OR_ABSOLUTE_PATH`로 선택합니다.
@@ -205,11 +205,11 @@ retired `hwpx` 워크플로우의 정직한 한계를 포함한 이중 언어 �
 
 네이티브 HWP/HWPX 양식이 제공되면 그 양식을 편집한다. Markdown은 재작성하려는 경우에
 사용한다. 시작 전에 `ahwp --version`을
-[버전별 기능 증거](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/original-form-capabilities-v1.json)와
+[버전별 기능 증거](https://github.com/STAIxBWLB/agent-hwp/blob/main/skills/hwp/references/original-form-capabilities-v1.json)와
 대조한다. #417-#420 전체 워크플로는 v1.5.0부터 포함된다. v1.4.0 이하 릴리스는
 `document.original_form` 인증을 지원하지 않는다.
 
-[정본 원본 양식 절차](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/editing-recipes.ko.md#원본-양식-워크플로)를 따른다.
+[정본 원본 양식 절차](https://github.com/STAIxBWLB/agent-hwp/blob/main/skills/hwp/references/editing-recipes.ko.md#원본-양식-워크플로)를 따른다.
 
 1. 원본 식별자와 정확한 개별 위치를 발견하고, 리소스·주소 리포트와 함께 네이티브 범위를
    추출한다. 추출한 원본에서 discovery를 다시 한다.
@@ -389,7 +389,7 @@ ahwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.j
 
 ### 네이티브 양식 바인딩 검토와 적용
 
-제공된 양식을 바인딩하기 전에 [정본 바인딩 절차](https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/ai-integrations.ko.md#네이티브-양식-바인딩-검토와-적용)에서 닫힌 계획 스키마, 복제 주소 맵, 거부 범위를 읽는다.
+제공된 양식을 바인딩하기 전에 [정본 바인딩 절차](https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/ai-integrations.ko.md#네이티브-양식-바인딩-검토와-적용)에서 닫힌 계획 스키마, 복제 주소 맵, 거부 범위를 읽는다.
 
 ```bash
 ahwp slots source.hwpx --json --forms --occurrences > local-catalog.json
@@ -482,7 +482,7 @@ Quick 설정을 도와줄 때는 JSON 임포트를 선호하고, 인수 안에 �
 커넥터 수정 후에는 이전에 생성된 도구 접두사를 재사용하지 말고 새로고침하거나 새 채팅을
 여세요.
 복사-붙여넣기 운영자 및 AI 런북:
-`https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
+`https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/amazon-quick-desktop.md`.
 
 도구 (23):
 

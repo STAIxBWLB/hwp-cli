@@ -2,7 +2,7 @@
 
 # PDF 동등성 계약 (한컴오피스 2024)
 
-> **상태:** 활성 계약. [issue #79](https://github.com/STAIxBWLB/hwp-cli/issues/79)에서 추적한다.
+> **상태:** 활성 계약. [issue #79](https://github.com/STAIxBWLB/agent-hwp/issues/79)에서 추적한다.
 > 이 문서는 parity 하네스가 읽는 지속 계약이다 — 지표 집합, 임계값, 데이터 정책, 비목표를
 > 정의한다. 작업 순서(PR 1–9)는 이슈 본문이 정하고, 이 문서는 "동등"의 뜻을 정의한다.
 

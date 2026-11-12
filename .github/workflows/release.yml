@@ -411,7 +411,7 @@ jobs:
   # leaves the release a draft, so a broken or serverless-incompatible asset is never the
   # release install.sh and `hwp update` resolve to.
   # Build provenance for every archive and checksum file on the draft release (the platform
-  # archives and the skill bundle), so `gh attestation verify <asset> -R STAIxBWLB/hwp-cli`
+  # archives and the skill bundle), so `gh attestation verify <asset> -R STAIxBWLB/agent-hwp`
   # ties a download to this workflow run. Runs before publish, so a release is never public
   # without its attestations.
   attest:
