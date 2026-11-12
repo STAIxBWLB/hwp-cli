@@ -3604,3 +3604,93 @@ fn a_large_inserted_table_keeps_the_report_valid() {
     );
     assert_eq!(op["pieces_touched"], 1);
 }
+
+/// Every inserted top-level paragraph is named in `changed`, an empty one included, and
+/// `delete_para` and `move_para` accept the id the report gives the empty paragraph (#521).
+#[test]
+fn insert_blocks_report_names_empty_paragraphs_and_their_ids_address_them() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("empty-ids", extension);
+        let before = read(&fixture.base);
+        let (output, run) = fixture.edit(
+            &fixture.base,
+            "inserted",
+            json!([insert(
+                at(&before, ANCHOR),
+                "after",
+                "refuse",
+                json!({}),
+                json!([
+                    block("body", "First inserted."),
+                    block("body", ""),
+                    block("body", "Third inserted.")
+                ])
+            )]),
+            false,
+        );
+        success(run, "insert_blocks with an empty paragraph");
+        let report: Value = serde_json::from_slice(
+            &std::fs::read(fixture.dir.join("inserted-report.json")).unwrap(),
+        )
+        .unwrap();
+        let op = &report["ops"][0];
+        assert_eq!(op["pieces_touched"], 3);
+        let after = read(&output);
+        let anchor = index(&after, ANCHOR);
+        assert_eq!(after.sections[0].paragraphs[anchor + 2].plain_text(), "");
+        let changed: Vec<String> = op["changed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|pair| pair["after"].as_str().unwrap().to_owned())
+            .collect();
+        let mut doc = read(&output);
+        let para_ids: Vec<String> = (1..=3)
+            .map(|offset| {
+                let path = hwp_convert::SegmentPath {
+                    section: 0,
+                    indices: vec![anchor + offset],
+                };
+                let para = hwp_convert::address::paragraph_at_mut(&mut doc, &path).unwrap();
+                hwp_convert::paragraph_id(&path, para)
+            })
+            .collect();
+        for id in &para_ids {
+            assert!(
+                changed.contains(id),
+                "inserted paragraph id missing from changed ({extension}): {id}"
+            );
+        }
+        let positions: Vec<usize> = para_ids
+            .iter()
+            .map(|id| changed.iter().position(|c| c == id).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|w| w[0] < w[1]), "document order");
+
+        let (deleted, run) = fixture.edit(
+            &output,
+            "deleted",
+            json!([{"op":"delete_para","address":{"id":para_ids[1]}}]),
+            false,
+        );
+        success(run, "delete_para by the reported empty-paragraph id");
+        let deleted = read(&deleted);
+        let paragraphs = &deleted.sections[0].paragraphs;
+        let first = index(&deleted, "First inserted.");
+        assert_eq!(paragraphs[first + 1].plain_text(), "Third inserted.");
+
+        let (moved, run) = fixture.edit(
+            &output,
+            "moved",
+            json!([{"op":"move_para","address":{"id":para_ids[1]},
+                "to":{"address":{"id":para_ids[2]},"position":"after"}}]),
+            false,
+        );
+        success(run, "move_para by the reported empty-paragraph id");
+        let moved = read(&moved);
+        let paragraphs = &moved.sections[0].paragraphs;
+        let third = index(&moved, "Third inserted.");
+        assert_eq!(paragraphs[third - 1].plain_text(), "First inserted.");
+        assert_eq!(paragraphs[third + 1].plain_text(), "");
+    }
+}

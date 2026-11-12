@@ -10,6 +10,15 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+### Fixed
+
+- `edit --ops` `insert_blocks`: the `edit-report-v1` `changed` list now names every inserted
+  top-level paragraph, an empty or break-only one included. Such a paragraph publishes no `para`
+  segment, so it used to get no id and a client could not move or delete it afterwards; its paragraph id,
+  which `move_para` and `delete_para` accept, now takes its place. The report shape and
+  `schema_version` are unchanged; only the `changed` description moved, so the pinned schema hash
+  changed ([#521](https://github.com/STAIxBWLB/hwp-cli/issues/521)).
+
 ## [1.6.1]
 
 **Compatibility**
