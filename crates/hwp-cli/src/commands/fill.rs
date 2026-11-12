@@ -888,10 +888,18 @@ fn fill_part_temp_path() -> std::path::PathBuf {
 /// 부분 문서를 hwpx로 썼다가 다시 읽어 writer 정규형으로 만든다 (임시 파일 사용).
 /// 왕복이 첫 문단에 secd/cold를 재합성하므로 벗겨낸다 — 부분은 구역 정의를 가지면 안 된다.
 fn roundtrip_hwpx(doc: &hwp_model::Document) -> anyhow::Result<hwp_model::Document> {
-    let tmp = fill_part_temp_path();
+    roundtrip_hwpx_at(doc, &fill_part_temp_path())
+}
+
+/// [`roundtrip_hwpx`] through the given temp path, which is removed whether the round trip
+/// succeeds or fails. Split out so a test can see exactly which file each call used.
+fn roundtrip_hwpx_at(
+    doc: &hwp_model::Document,
+    tmp: &std::path::Path,
+) -> anyhow::Result<hwp_model::Document> {
     let result = (|| {
-        hwpx::write_document(doc, &tmp).map_err(|e| anyhow::anyhow!("{e}"))?;
-        let mut doc = load_document(&tmp)?;
+        hwpx::write_document(doc, tmp).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut doc = load_document(tmp)?;
         for section in &mut doc.sections {
             for para in &mut section.paragraphs {
                 strip_section_controls(para);
@@ -899,7 +907,7 @@ fn roundtrip_hwpx(doc: &hwp_model::Document) -> anyhow::Result<hwp_model::Docume
         }
         Ok(doc)
     })();
-    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(tmp);
     result
 }
 
@@ -1162,6 +1170,7 @@ fn value_to_string(v: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// Concurrent part fills in one process never share a temp path, all succeed, and leave
     /// no temp file behind (#533).
@@ -1202,25 +1211,43 @@ mod tests {
                     let doc = hwp_convert::from_markdown(&format!("Part {i}."));
                     barrier.wait();
                     (0..10)
-                        .map(|_| roundtrip_hwpx(&doc).map(|_| ()).map_err(|e| e.to_string()))
+                        .map(|_| {
+                            let tmp = fill_part_temp_path();
+                            let result = roundtrip_hwpx_at(&doc, &tmp)
+                                .map(|_| ())
+                                .map_err(|e| e.to_string());
+                            (tmp, result)
+                        })
                         .collect::<Vec<_>>()
                 })
             })
             .collect();
+        let mut used = Vec::new();
         for handle in handles {
-            for result in handle.join().unwrap() {
+            for (tmp, result) in handle.join().unwrap() {
+                used.push(tmp);
                 assert!(
                     result.is_ok(),
                     "concurrent part roundtrip failed: {result:?}"
                 );
             }
         }
-        for path in &paths {
+        // The files the round trips actually wrote, not phase 1's never-created names.
+        for path in &used {
             assert!(!path.exists(), "temp file left behind: {}", path.display());
         }
-    }
 
-    use super::*;
+        // Error path: a failed round trip reports the error and leaves nothing at its path.
+        // A write into a missing directory fails. A failure AFTER the file exists (a write
+        // that succeeds but a re-read that fails) is not reachable from a Document without a
+        // fault-injection seam, so that branch is covered only by the shared remove call.
+        let missing = std::env::temp_dir()
+            .join(format!("hwp_fill_part_missing_dir_{}", std::process::id()))
+            .join("part.hwpx");
+        let doc = hwp_convert::from_markdown("Part.");
+        assert!(roundtrip_hwpx_at(&doc, &missing).is_err());
+        assert!(!missing.exists(), "temp file left behind on error");
+    }
 
     fn map(pairs: &[(&str, usize)]) -> BTreeMap<String, usize> {
         pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
