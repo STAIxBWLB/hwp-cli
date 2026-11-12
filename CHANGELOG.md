@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `fill --parts` and MCP `hwp_fill` with `parts`: concurrent part fills in one process no longer
+  share a temp file. The name took a clock reading, so two calls in the same nanosecond wrote,
+  read and deleted one file, failing with an HWPX package integrity error; it now takes a
+  process-wide counter ([#533](https://github.com/STAIxBWLB/agent-hwp/issues/533)).
+
 ## [1.6.2]
 
 **Compatibility**
