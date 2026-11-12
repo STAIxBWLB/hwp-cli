@@ -10,6 +10,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.6.2]
+
 **Compatibility**
 
 - The repository is now `STAIxBWLB/agent-hwp`, renamed from `STAIxBWLB/hwp-cli`, and the old name
@@ -17,6 +19,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   the Homebrew tap URL, `ahwp update` and the release scripts read the new name; a script that
   hardcodes the old URL keeps working through the redirect but should be repointed
   ([#510](https://github.com/STAIxBWLB/agent-hwp/issues/510)).
+- `edit --ops` `insert_blocks`: `edit-report-v1` `changed` can now hold more pairs than before
+  for the same request, because an inserted empty or break-only paragraph is named by its
+  paragraph id. `schema_version` stays `1.0` (the shape is unchanged); a consumer that matched
+  `changed` one-to-one against published segments must allow these ids, which a fresh
+  `cat --segments v2` does not list
+  ([#521](https://github.com/STAIxBWLB/agent-hwp/issues/521)).
+- `edit --ops`: a batch with an addressed `replace` whose `from` and `to` have the same UTF-16
+  width, followed by a run-range op in the same paragraph, is no longer rejected during
+  preflight: equal widths leave the later op's offsets valid, and the apply step still refuses
+  the op if the paragraph's length changed
+  ([#525](https://github.com/STAIxBWLB/agent-hwp/issues/525)).
 
 **Added**
 
