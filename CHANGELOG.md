@@ -27,6 +27,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- `fill --parts` and MCP `hwp_fill` with `parts`: concurrent part fills in one process no longer
+  share a temp file. The name took a clock reading, so two calls in the same nanosecond wrote,
+  read and deleted one file, failing with an HWPX package integrity error; it now takes a
+  process-wide counter ([#533](https://github.com/STAIxBWLB/agent-hwp/issues/533)).
 - `edit --ops` `insert_blocks`: the `edit-report-v1` `changed` list now names every inserted
   top-level paragraph, an empty or break-only one included. Such a paragraph publishes no `para`
   segment, so it used to get no id and a client could not move or delete it afterwards; its paragraph id,

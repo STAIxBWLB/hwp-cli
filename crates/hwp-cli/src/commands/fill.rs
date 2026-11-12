@@ -874,15 +874,21 @@ fn paragraph_text(para: &hwp_model::Paragraph) -> String {
         .collect()
 }
 
+/// Process-wide sequence for [`fill_part_temp_path`] (#533).
+static FILL_PART_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A temp path unique within this process: pid plus a process-wide counter. A clock reading
+/// is not unique, so two concurrent part fills (an MCP server handling calls in parallel)
+/// could share one file and overwrite or delete each other's package mid-read (#533).
+fn fill_part_temp_path() -> std::path::PathBuf {
+    let seq = FILL_PART_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("hwp_fill_part_{}_{seq}.hwpx", std::process::id()))
+}
+
 /// 부분 문서를 hwpx로 썼다가 다시 읽어 writer 정규형으로 만든다 (임시 파일 사용).
 /// 왕복이 첫 문단에 secd/cold를 재합성하므로 벗겨낸다 — 부분은 구역 정의를 가지면 안 된다.
 fn roundtrip_hwpx(doc: &hwp_model::Document) -> anyhow::Result<hwp_model::Document> {
-    let uniq = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp =
-        std::env::temp_dir().join(format!("hwp_fill_part_{}_{uniq}.hwpx", std::process::id()));
+    let tmp = fill_part_temp_path();
     let result = (|| {
         hwpx::write_document(doc, &tmp).map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut doc = load_document(&tmp)?;
@@ -1156,6 +1162,64 @@ fn value_to_string(v: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// Concurrent part fills in one process never share a temp path, all succeed, and leave
+    /// no temp file behind (#533).
+    #[test]
+    fn concurrent_part_roundtrips_use_distinct_temp_paths() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Barrier};
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 200;
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..PER_THREAD)
+                        .map(|_| fill_part_temp_path())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let paths: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        let unique: HashSet<_> = paths.iter().collect();
+        assert_eq!(
+            unique.len(),
+            paths.len(),
+            "concurrent fill_part_temp_path calls returned a shared path"
+        );
+
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|i| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let doc = hwp_convert::from_markdown(&format!("Part {i}."));
+                    barrier.wait();
+                    (0..10)
+                        .map(|_| roundtrip_hwpx(&doc).map(|_| ()).map_err(|e| e.to_string()))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for handle in handles {
+            for result in handle.join().unwrap() {
+                assert!(
+                    result.is_ok(),
+                    "concurrent part roundtrip failed: {result:?}"
+                );
+            }
+        }
+        for path in &paths {
+            assert!(!path.exists(), "temp file left behind: {}", path.display());
+        }
+    }
+
     use super::*;
 
     fn map(pairs: &[(&str, usize)]) -> BTreeMap<String, usize> {
