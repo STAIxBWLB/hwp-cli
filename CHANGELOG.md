@@ -18,6 +18,30 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   hardcodes the old URL keeps working through the redirect but should be repointed
   ([#510](https://github.com/STAIxBWLB/agent-hwp/issues/510)).
 
+**Added**
+
+- `edit-ops-v1` `replace` accepts a run address, so a caller can rewrite one selected run or one
+  span inside it instead of every match in the paragraph: `at.run` with no `chars` rewrites that
+  run's whole text, and `chars` — the same absolute UTF-16 window `segment-envelope-v2` publishes
+  as a run's `source_chars` — rewrites exactly that span, leaving the same phrase elsewhere in the
+  paragraph, across a run boundary or inside a field value alone. `from` stays required and
+  becomes a drift check: when the addressed text is not `from`, nothing is rewritten and the
+  request is reported unapplied with the address and its window. In a batch the address resolves
+  against the document as loaded, so the op follows its own paragraph across an earlier insert or
+  delete, while a run reading that would follow an op changing that paragraph's length is refused
+  with nothing written. Additive to `edit-ops-v1` — the
+  paragraph-addressed form and the whole-document default are unchanged
+  ([#525](https://github.com/STAIxBWLB/agent-hwp/issues/525)).
+
+**Fixed**
+
+- `edit --ops` `insert_blocks`: the `edit-report-v1` `changed` list now names every inserted
+  top-level paragraph, an empty or break-only one included. Such a paragraph publishes no `para`
+  segment, so it used to get no id and a client could not move or delete it afterwards; its paragraph id,
+  which `move_para` and `delete_para` accept, now takes its place. The report shape and
+  `schema_version` are unchanged; only the `changed` description moved, so the pinned schema hash
+  changed ([#521](https://github.com/STAIxBWLB/agent-hwp/issues/521)).
+
 ## [1.6.1]
 
 **Compatibility**

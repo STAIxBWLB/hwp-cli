@@ -494,6 +494,178 @@ pub fn replace_text_at(
     Ok(count)
 }
 
+/// Replaces exactly the text one addressed run range covers, provided it equals `from`.
+///
+/// Unlike [`replace_text_at`], which rewrites every left-to-right match in a paragraph, this
+/// touches one span: the address is resolved at [`crate::address::Granularity::Run`], so `chars`
+/// narrows it and no `chars` means the run's whole text (D-01/A5). `from` is not a selector here
+/// but a drift check (issue #525): a client that selected one run cannot silently rewrite a
+/// different one after the document moved.
+///
+/// Returns `Ok(1)` when the span was rewritten. Returns `Ok(0)` when the span is text but is not
+/// exactly `from` — the drift check failed, nothing changed, and the caller reports the request
+/// as unapplied (the CLI then fails closed unless `--allow-partial`). Returns `Err` when the
+/// address does not name a text span at all: unresolvable, a `chars` bound inside a character, or
+/// an interior control (no text form to match). Every message names the address and no document
+/// text.
+///
+/// Trailing control characters are outside the addressed text: an HWP5 paragraph stores its break
+/// as its last character, so the last run's published bound includes it (#517).
+///
+/// This resolves `addr` against `doc` **as it is now** and hands the resolved window to
+/// [`replace_text_in_window`]. A caller that already resolved the address earlier — the CLI batch
+/// apply loop, whose preflight resolution against the loaded document is authoritative (D-06) —
+/// must call that function with its own path instead of resolving a second time here: resolving
+/// again would read the raw address against whatever the batch has already written.
+pub fn replace_text_in_range(
+    doc: &mut Document,
+    addr: &crate::address::Address,
+    from: &str,
+    to: &str,
+) -> Result<usize, String> {
+    use crate::address::{Granularity, TargetKind};
+
+    if from.is_empty() {
+        return Ok(0);
+    }
+    let label = addr;
+    let target = crate::address::resolve(doc, addr, Granularity::Run).map_err(|error| {
+        format!(
+            "치환 주소 {label}를 해석할 수 없습니다: {error}. 주소의 run 인덱스와 chars 범위를 확인하세요"
+        )
+    })?;
+    let TargetKind::Run {
+        w_start,
+        w_end,
+        paragraph_wchar_len,
+        ..
+    } = target.kind
+    else {
+        return Err(format!(
+            "치환 주소 {label}는 run 범위로 해석되지 않았습니다. run 주소나 chars 범위를 지정하세요"
+        ));
+    };
+    replace_text_in_window(
+        doc,
+        label,
+        &target.path,
+        w_start,
+        w_end,
+        paragraph_wchar_len,
+        from,
+        to,
+    )
+}
+
+/// Splices `to` over the WCHAR window `[w_start, w_end)` of the paragraph at `path`, provided the
+/// window is exactly `from` and that paragraph is still `paragraph_wchar_len` WCHAR long.
+///
+/// This is the apply half of [`replace_text_in_range`], split out for callers that resolved the
+/// address themselves: an `id`/`at` address names a run by its position, so the batch apply loop
+/// resolves it during preflight, against the document as loaded (D-06), and then maps that path
+/// through the earlier ops' inserts and removals before splicing here. `path` is therefore the
+/// paragraph's **current** path, `label` is the address the caller was given (used in messages
+/// only, never to locate anything), and `paragraph_wchar_len` is the length the preflight
+/// resolution observed.
+///
+/// The length is checked here, not at resolve time: an earlier op of the same batch (`replace`,
+/// `set_indent_level` stripping blanks) can change the paragraph's length while leaving it at the
+/// same path, which moves the characters the offsets name (#420). That is a refusal, like the
+/// `set_format` arm's: nothing is written and the message names the address and both lengths. A
+/// paragraph that moved to another index is the caller's structural drift to handle; a removal
+/// that took it away is already rejected by the preflight removal clause.
+///
+/// Returns `Ok(1)` when the window was rewritten and `Ok(0)` when it is text but is not `from`;
+/// see [`replace_text_in_range`] for the refusal cases and the trailing-control rule.
+#[allow(clippy::too_many_arguments)]
+pub fn replace_text_in_window(
+    doc: &mut Document,
+    label: &crate::address::Address,
+    path: &SegmentPath,
+    w_start: u32,
+    w_end: u32,
+    paragraph_wchar_len: u32,
+    from: &str,
+    to: &str,
+) -> Result<usize, String> {
+    if from.is_empty() {
+        return Ok(0);
+    }
+    let replaced = {
+        let Some(para) = crate::address::paragraph_at_mut(doc, path) else {
+            return Err(format!(
+                "치환 주소 {label}의 문단 {path}를 찾을 수 없습니다. 주소를 다시 읽고 재시도하세요"
+            ));
+        };
+        let current_len = para.wchar_len();
+        if current_len != paragraph_wchar_len {
+            return Err(format!(
+                "치환 주소 {label}의 문단 {path}은 앞선 연산(replace, set_indent_level 등)으로 글자 수가 {paragraph_wchar_len}에서 {current_len}(으)로 바뀌어 범위 [{w_start}, {w_end})가 다른 글자를 가리킵니다. 아무것도 쓰지 않았습니다. 연산 순서를 바꾸거나 별도 편집으로 나누어 실행하세요"
+            ));
+        }
+        let (start, end) = source_char_indices(para, w_start, w_end).ok_or_else(|| {
+            format!(
+                "치환 주소 {label}의 chars 범위 [{w_start}, {w_end})가 문자 경계에 맞지 않습니다. 글자 중간을 자르지 않는 범위를 지정하세요"
+            )
+        })?;
+        // A stored paragraph break (or any other control) at the span's end is not text.
+        let mut text_end = end;
+        while text_end > start && !matches!(para.chars[text_end - 1], HwpChar::Text(_)) {
+            text_end -= 1;
+        }
+        if para.chars[start..text_end]
+            .iter()
+            .any(|ch| !matches!(ch, HwpChar::Text(_)))
+        {
+            return Err(format!(
+                "치환 주소 {label}의 범위에 텍스트가 아닌 문자가 있습니다. 텍스트만 덮는 chars 범위를 지정하세요"
+            ));
+        }
+        let text: String = para.chars[start..text_end]
+            .iter()
+            .filter_map(|ch| match ch {
+                HwpChar::Text(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        if text != from {
+            return Ok(0);
+        }
+        let from_w: u32 = para.chars[start..text_end]
+            .iter()
+            .map(HwpChar::wchar_width)
+            .sum();
+        splice_text(para, start..text_end, w_start, from_w, to)?;
+        1
+    };
+    if replaced > 0 {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    Ok(replaced)
+}
+
+/// The character-vector range whose WCHAR offsets cover `[w_start, w_end)`, or `None` when
+/// either bound falls inside a character (a `chars` window that splits one).
+fn source_char_indices(para: &Paragraph, w_start: u32, w_end: u32) -> Option<(usize, usize)> {
+    let mut acc = 0u32;
+    let mut start = None;
+    let mut end = None;
+    for (index, ch) in para.chars.iter().enumerate() {
+        if acc == w_start {
+            start = Some(index);
+        }
+        acc += ch.wchar_width();
+        if acc == w_end {
+            end = Some(index + 1);
+            break;
+        }
+    }
+    match (start, end) {
+        (Some(start), Some(end)) if start < end => Some((start, end)),
+        _ => None,
+    }
+}
+
 /// Finds the first from match after start_idx in contiguous Text. Returns (character-vector index,
 /// paragraph-relative WCHAR offset).
 pub(crate) fn find_match(chars: &[HwpChar], from: &str, start_idx: usize) -> Option<(usize, u32)> {
@@ -2818,6 +2990,97 @@ mod tests {
         let n = replace_text_at(&mut doc, &path, "문단", "다른").unwrap();
         assert_eq!(n, 0);
         assert_eq!(doc, before);
+    }
+
+    /// The body paragraph laid out the way the writer serializes `**AAA** **AAA**`: text
+    /// "AAA AAA" split into three runs at WCHAR offsets 0..3, 3..4 and 4..7, so the same text
+    /// sits in two runs with a boundary between them. The second paragraph is used because the
+    /// first carries the importer's leading section/column control chars, which a written file
+    /// does not have in the body.
+    fn repeated_run_doc() -> Document {
+        let mut doc = crate::from_markdown::from_markdown("first\n\nAAA AAA\n");
+        let para = &mut doc.sections[0].paragraphs[1];
+        assert_eq!(para.plain_text(), "AAA AAA");
+        assert_eq!(
+            para.chars
+                .iter()
+                .map(HwpChar::wchar_width)
+                .collect::<Vec<_>>(),
+            vec![1u32; 7],
+            "body paragraph must hold seven plain characters"
+        );
+        let bold = para.char_shape_runs[0].1;
+        let plain = CharShapeId(bold.0.wrapping_add(1));
+        para.char_shape_runs = vec![(0, bold), (3, plain), (4, bold)];
+        doc
+    }
+
+    fn at_run(run: usize, chars: Option<(u32, u32)>) -> crate::address::Address {
+        crate::address::Address {
+            section: 0,
+            indices: vec![1, run],
+            checksum: None,
+            chars,
+        }
+    }
+
+    /// A `chars` window rewrites exactly the addressed span (#525): the identical text in the
+    /// sibling run keeps its characters and its shape.
+    #[test]
+    fn replace_text_in_range_rewrites_only_the_window() {
+        let mut doc = repeated_run_doc();
+        let before = doc.sections[0].paragraphs[1].char_shape_runs.clone();
+
+        let n = replace_text_in_range(&mut doc, &at_run(2, Some((4, 7))), "AAA", "ZZZ").unwrap();
+
+        assert_eq!(n, 1);
+        let para = &doc.sections[0].paragraphs[1];
+        assert_eq!(para.plain_text(), "AAA ZZZ");
+        assert_eq!(
+            para.char_shape_runs, before,
+            "an equal-width window must not move a run boundary"
+        );
+    }
+
+    /// `at.run` with no `chars` rewrites the whole run, so the other occurrence stays.
+    #[test]
+    fn replace_text_in_range_whole_run_without_chars() {
+        let mut doc = repeated_run_doc();
+        let n = replace_text_in_range(&mut doc, &at_run(0, None), "AAA", "ZZZ").unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "ZZZ AAA");
+    }
+
+    /// A window whose text is not `from` is a failed drift check, reported as 0 with nothing
+    /// changed - never a rewrite of whatever now sits at the address (#525).
+    #[test]
+    fn replace_text_in_range_reports_a_drifted_window_as_zero() {
+        let mut doc = repeated_run_doc();
+        let before = doc.clone();
+        let n = replace_text_in_range(&mut doc, &at_run(2, Some((4, 7))), "BBB", "ZZZ").unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(doc, before);
+    }
+
+    /// A window bound that falls inside a two-unit character cannot name text, so it is refused
+    /// rather than rounded to the nearest boundary, and the message names the address.
+    #[test]
+    fn replace_text_in_range_refuses_a_window_inside_a_character() {
+        // "𝔸" is a single character of two UTF-16 code units, so offset 1 lands inside it.
+        let mut doc = crate::from_markdown::from_markdown("first\n\n𝔸AAA\n");
+        let para = &mut doc.sections[0].paragraphs[1];
+        assert_eq!(
+            para.chars
+                .iter()
+                .map(HwpChar::wchar_width)
+                .collect::<Vec<_>>(),
+            vec![2u32, 1, 1, 1],
+            "the astral character must count as two WCHAR units"
+        );
+        let error = replace_text_in_range(&mut doc, &at_run(0, Some((1, 4))), "AAA", "ZZZ")
+            .expect_err("a bound inside a character must be refused");
+        assert!(error.contains("at 0.1.0 chars=[1, 4)"), "{error}");
+        assert_eq!(doc.sections[0].paragraphs[1].plain_text(), "𝔸AAA");
     }
 
     #[test]
