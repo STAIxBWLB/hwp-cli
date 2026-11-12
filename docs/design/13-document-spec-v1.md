@@ -21,7 +21,9 @@ stream with different bytes is refused.
 Reporting and transport. The edit report lists the inserted segments: one creation pair
 (`before` null) for each segment `ahwp cat --segments v2` publishes inside the inserted top-level
 paragraphs, read from the document right after the op, so the ids equal what a fresh `cat` shows
-and a run id is directly addressable by `set_format`. `edit-report-v1` caps `changed` at 10,000
+and a run id is directly addressable by `set_format`. One exception (#521): an inserted top-level paragraph that
+publishes no segment (an empty or break-only one) is named by its paragraph id, which a fresh
+`cat` does not list but `move_para` and `delete_para` accept, so every inserted paragraph has an id. `edit-report-v1` caps `changed` at 10,000
 items, and a valid request can publish more (one 100 x 50 table is 15,002 segments), so the
 report keeps the first 10,000 pairs in document order and states the real count in the optional
 `changed_total`; its absence means the list is complete. A coarser report cannot be bounded
