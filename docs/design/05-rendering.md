@@ -53,7 +53,7 @@ body_bottom     = h - (margin_bottom + margin_footer) / 100
 
 The top and bottom sums come from `lineseg::body_box`, which the lineseg synthesis paginates with,
 so the drawn body and the synthesized cache cannot drift on where the body ends
-([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+([#423](https://github.com/STAIxBWLB/agent-hwp/issues/423)).
 
 State variables: `prev_v_pos=-1` (to detect a page reset), `content_bottom=body_top` (the flow
 cursor), `paras_on_page=0`, `page_notes: Vec<&Note>` and `list_state: ListState`.
@@ -73,7 +73,7 @@ cursor), `paras_on_page=0`, `page_notes: Vec<&Note>` and `list_state: ListState`
    orphan the list marker already drawn. This is the mid-paragraph break for documents this tool
    generates, which carry no linesegs at all; without it such a paragraph was emitted in full below
    the page bottom and only the *next* paragraph could paginate
-   ([#282](https://github.com/STAIxBWLB/hwp-cli/issues/282)).
+   ([#282](https://github.com/STAIxBWLB/agent-hwp/issues/282)).
 
 ### 1.3 Paragraph handling branches
 
@@ -83,7 +83,7 @@ Per paragraph, prepare `footnote::para_marks`/`para_notes` (collecting footnote 
 - **When `line_segs` is empty (fallback)**: an empty paragraph advances `content_bottom` by its
   own space-before plus the one line synthesis writes for it (`lineseg::paragraph_metrics`
   advance), so the anchor the flow records is a position the flow itself consumes; a default
-  paragraph therefore keeps its 16 pt step ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
+  paragraph therefore keeps its 16 pt step ([#422](https://github.com/STAIxBWLB/agent-hwp/issues/422)).
   Its space-after and the raw-vs-half spacing unit stay out of that advance (#415).
   Otherwise the whole paragraph is shaped with `shape_range_notes` and broken greedily against
   `body_width` by `place_wrapped`. `baseline_y = content_bottom + spacing_top + max_size*1.2`, and
@@ -149,7 +149,7 @@ After the paragraph, `layout_para_objects` places tables, images, text boxes, sh
    later page, #233). A cache record whose text range is empty adds no height, except an empty
    paragraph's own line: the blank carries no text but still occupies a line, so a trailing or lone
    empty paragraph keeps contributing its line bottom to the row instead of collapsing the cell to
-   its margins ([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)). Hancom's HWPX export keeps
+   its margins ([#422](https://github.com/STAIxBWLB/agent-hwp/issues/422)). Hancom's HWPX export keeps
    the declared minimum height under a taller cache, and an edit that re-synthesizes a cell keeps the
    pre-edit height (#245); in both cases the row grows to the cache total, and `layout_box_para_iter`
    draws a continuation run below the previous line (`run_shift`, inside one paragraph) or below the
@@ -320,7 +320,7 @@ v_pos      = 0   // accumulated relative to the page
 
 `content_h` is `lineseg::body_box`'s height, the same four margins `layout_document_pages`
 subtracts, so the header and footer bands are not line space in either path
-([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+([#423](https://github.com/STAIxBWLB/agent-hwp/issues/423)).
 
 Per paragraph, `spacing_top` is added to v_pos (except the first paragraph), `fill_nested` fills the
 line layout inside cells and text boxes first, and then the total table height is computed. **When a
@@ -341,7 +341,7 @@ top (`BodyAnchor::v_pos`) and whether that first line opened a page (`starts_pag
 base cursor, so genuine caches and HWP5 identity are untouched. The anchor carries only the
 paragraph's *first* line, so a multiline paragraph's later lines paginate by `compute_linesegs`
 alone and its own fit rule decides them (§2.3), independently of the pass that produced the anchor
-([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+([#423](https://github.com/STAIxBWLB/agent-hwp/issues/423)).
 
 The prepass returns a `BodyAnchors`: one `Option<BodyAnchor>` slot per paragraph plus a `completed`
 flag (#426). A slot is `None` when the pass stopped before that paragraph was visited, so an
@@ -367,7 +367,7 @@ PARA_LINE_SEG records are limited to what the edit moved. Both sides of that sea
 `v_pos`, and a re-synthesis that restarts the section at 0 puts the first edited paragraph *above* the
 saved cache of the paragraph before it. `layout_document_pages` reads that step back as a page
 boundary (`seg.v_pos < prev_v_pos`) and draws the change on the next page
-([#462](https://github.com/STAIxBWLB/hwp-cli/issues/462)).
+([#462](https://github.com/STAIxBWLB/agent-hwp/issues/462)).
 
 The fix adds one rule and no new geometry: the writer measures the prefix it will restore and passes
 one `lineseg::BodySeed` per section (`synthesize_linesegs_seeded`, which takes a
@@ -384,7 +384,7 @@ so `v_pos + line_height + line_spacing` reads back `max(base, advance)`: with FI
 base line, or FIXED 0, re-deriving the cursor would move every following paragraph and change
 unseeded synthesis (HWPX or markdown to HWP). `saved_body_cursor` reconstructs the reading from a
 saved record because a saved cache has no other field to offer; that path feeds a seed, never the
-unseeded walk ([#509](https://github.com/STAIxBWLB/hwp-cli/pull/509)).
+unseeded walk ([#509](https://github.com/STAIxBWLB/agent-hwp/pull/509)).
 
 The restore runs twice, around the synthesis. Before it, every paragraph the edit did not change
 gets its saved record back, so the nested caches the output will keep are in place while the walk
@@ -409,7 +409,7 @@ cursor where it is, and `KeepMeasured` keeps the cached prefix, advances the cur
 and re-synthesizes from the first cacheless paragraph. An unedited document runs `Recompute` at the
 top, which maps to `KeepInPlace` for a caption and a generic list and to `Recompute` for a table cell:
 that is base behaviour, so a caption, a generic list and a table nested inside either are synthesized
-exactly as before ([#509](https://github.com/STAIxBWLB/hwp-cli/pull/509)). Only an edited document's
+exactly as before ([#509](https://github.com/STAIxBWLB/agent-hwp/pull/509)). Only an edited document's
 body runs `KeepMeasured`, and it keeps it through captions and cells on that path.
 
 Inside one list the seam is positional, not per paragraph. A list's saved `v_pos` values are
@@ -448,7 +448,7 @@ saturates, because a saved cursor comes from untrusted bytes and an out-of-page 
 page start instead of overflowing. An explicit page break in the seeded paragraph still restarts the
 page. The seed continues the synthesizer's own spacing unit, so the seam
 can sit half a paragraph spacing away from Hangul's saved gap until the unit calibration in
-[#415](https://github.com/STAIxBWLB/hwp-cli/issues/415) lands. A floating-table section reads prepass
+[#415](https://github.com/STAIxBWLB/agent-hwp/issues/415) lands. A floating-table section reads prepass
 anchors instead of the cursor (§2.2.1), so a seed has no effect there.
 
 ### 2.3 Line layout for one paragraph (`compute_linesegs`)
@@ -477,7 +477,7 @@ the two passes can move the last line of a page differently. No local genuine sa
 paragraph at the body bottom (every mid-paragraph page reset in the local corpus happens well above
 it), so neither ratio is established from saved bytes; the cache therefore keeps the rule its own
 saved fields state and the remaining disagreement stays a known gap, not a Hancom claim
-([#423](https://github.com/STAIxBWLB/hwp-cli/issues/423)).
+([#423](https://github.com/STAIxBWLB/agent-hwp/issues/423)).
 
 Shaping (`shape_range`) measures glyph x_advance in pt and breaks lines greedily against
 `seg_width/100` less the indent the renderer will apply inside the line box
@@ -509,7 +509,7 @@ the same ephemeral synthesis as its neighbours, with one exception: an empty par
 synthesized, so it never reaches `marker_for_render` and cannot consume an invisible list number, but
 it still owns exactly one line: that line advances the flow cursor by `paragraph_metrics`, and its
 line bottom is what the row measures, including when it is the cell's last paragraph
-([#422](https://github.com/STAIxBWLB/hwp-cli/issues/422)).
+([#422](https://github.com/STAIxBWLB/agent-hwp/issues/422)).
 
 The table height formula (derived from genuine measurements):
 

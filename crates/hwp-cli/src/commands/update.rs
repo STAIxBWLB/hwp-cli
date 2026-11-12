@@ -19,7 +19,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const REPO: &str = "STAIxBWLB/hwp-cli";
+const REPO: &str = "STAIxBWLB/agent-hwp";
 const BIN: &str = "ahwp";
 const LEGACY_BIN: &str = "hwp";
 

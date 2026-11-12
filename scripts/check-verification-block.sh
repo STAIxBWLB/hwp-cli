@@ -50,7 +50,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-REPO="STAIxBWLB/hwp-cli"
+REPO="STAIxBWLB/agent-hwp"
 WORKFLOW_FILE="release-readiness.yml"
 CONTRACT="hwp-release-readiness-record-v1"
 ARTIFACT_NAME="$CONTRACT"

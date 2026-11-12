@@ -17,7 +17,7 @@
 # 자체 점검:  scripts/update_formula.sh --self-test
 set -euo pipefail
 
-REPO_SLUG="STAIxBWLB/hwp-cli"
+REPO_SLUG="STAIxBWLB/agent-hwp"
 # formula 가 다루는 타깃(윈도우는 brew 대상 아님).
 TARGETS="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu"
 

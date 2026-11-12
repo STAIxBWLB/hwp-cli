@@ -190,7 +190,7 @@ trust() { # <ref> <sha> -> prints "<rc> <trusted>"
         cd "$work" &&
             RUNNER_TEMP="$tmp" \
                 READINESS_REF="$1" EVALUATED_SHA="$2" WORKFLOW_SOURCE_SHA="$(printf 'b%.0s' {1..40})" \
-                RUN_URL="https://github.com/STAIxBWLB/hwp-cli/actions/runs/424242" \
+                RUN_URL="https://github.com/STAIxBWLB/agent-hwp/actions/runs/424242" \
                 RECORD_PATH="$tmp/record.json" GITHUB_OUTPUT="$out" \
                 bash --noprofile --norc -e -o pipefail "$steps/trust-policy-for-the-evaluated-ref.sh"
     ) >"$tmp/trust.log" 2>&1
@@ -308,7 +308,7 @@ PYEOF
 evaluated="$(printf 'a%.0s' {1..40})"
 dispatched="$(printf 'b%.0s' {1..40})"
 released_elsewhere="$(printf 'c%.0s' {1..40})"
-run_url="https://github.com/STAIxBWLB/hwp-cli/actions/runs/424242"
+run_url="https://github.com/STAIxBWLB/agent-hwp/actions/runs/424242"
 (cd "$record_dir" && GATE_FMT="$fmt_entry" GATE_REST="$rest" CHECK_RUNS="" READINESS_REF=v9.9.9 \
     READINESS_SHA="$evaluated" WORKFLOW_SOURCE_SHA="$dispatched" PDFINFO_VERSION="" \
     ORACLE_STATUS="" ORACLE_LOCK_SHA256="" RUN_URL="$run_url" \

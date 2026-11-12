@@ -7,7 +7,7 @@
 
 This document defines a future Remote MCP service for web clients that cannot launch a local
 process. Amazon Quick Web is the first concrete consumer. Implementation remains tracked by
-[issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52).
+[issue #52](https://github.com/STAIxBWLB/agent-hwp/issues/52).
 
 ## 1. Scope and non-goals
 

@@ -514,7 +514,7 @@ Codex cloud environments build their container from a setup script. Install the 
 (no Rust toolchain needed; it fetches the pre-built release archive):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh | sh
 ```
 
 Then register the MCP server as in Codex CLI above.
@@ -550,7 +550,7 @@ contains `SKILL.md` at the zip root, `bootstrap.sh`, the Linux x86_64 `bin/ahwp`
 license files (`LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`):
 
 1. Download `hwp-skill-claude-web.zip` from the
-   [latest release](https://github.com/STAIxBWLB/hwp-cli/releases), along with the
+   [latest release](https://github.com/STAIxBWLB/agent-hwp/releases), along with the
    `hwp-skill-claude-web.zip.sha256` published beside it, and check the archive against it.
 2. In claude.ai, open Settings → Capabilities → Skills and upload the zip.
 3. In a chat with code execution, run `bash bootstrap.sh` once per session. It installs the
@@ -750,7 +750,7 @@ Native Web integration requires an authenticated Streamable HTTP MCP service, te
 storage, and content/artifact transfer instead of client-local path arguments. It is not implemented
 in this release. The implementation contract is documented in
 [Remote MCP transport](../design/20-remote-mcp.md) and tracked in
-[issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52).
+[issue #52](https://github.com/STAIxBWLB/agent-hwp/issues/52).
 
 ## The `hwpx` skill has been absorbed
 

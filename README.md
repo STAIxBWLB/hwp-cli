@@ -4,7 +4,7 @@
 
 > A clean-room Rust toolkit to read, convert, render, write and AI-edit HWP 5.0 / HWPX documents with no Hancom Office or COM dependency. Runs on Linux / macOS / CI.
 
-[![CI](https://github.com/STAIxBWLB/hwp-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/STAIxBWLB/hwp-cli/actions/workflows/ci.yml)
+[![CI](https://github.com/STAIxBWLB/agent-hwp/actions/workflows/ci.yml/badge.svg)](https://github.com/STAIxBWLB/agent-hwp/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)](Cargo.toml)
 
@@ -119,7 +119,7 @@ Use `ahwp` for new commands. The `hwp` compatibility name remains available thro
 Installs a release binary without a Rust toolchain. After installation, `ahwp update` self-updates.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh | sh
 ```
 
 The default location is `~/.local/bin` (if it is not on PATH, the script says so). Change the
@@ -137,7 +137,7 @@ Archives are installed only after they match their `.sha256` asset.
 The repository is its own tap (there is no separate `homebrew-*` repository).
 
 ```sh
-brew tap staixbwlb/hwp https://github.com/STAIxBWLB/hwp-cli
+brew tap staixbwlb/hwp https://github.com/STAIxBWLB/agent-hwp
 brew install ahwp
 ahwp --version
 ```
@@ -148,7 +148,7 @@ Intel) and Linux x86_64.
 
 ### Pre-built binaries
 
-Every [release](https://github.com/STAIxBWLB/hwp-cli/releases) attaches per-platform archives and a
+Every [release](https://github.com/STAIxBWLB/agent-hwp/releases) attaches per-platform archives and a
 `.sha256` checksum.
 
 | Platform | Archive |
@@ -171,7 +171,7 @@ Fetch it in the build step instead of committing the binary; then the pinned tag
 to bump:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh \
   | sh -s -- --tag v1.6.0 --dir ./bin
 ```
 
@@ -183,7 +183,7 @@ rendering commands.
 ### Building from source
 
 ```sh
-git clone git@github.com:STAIxBWLB/hwp-cli.git && cd hwp-cli
+git clone git@github.com:STAIxBWLB/agent-hwp.git && cd agent-hwp
 cargo build --release
 cargo install --path crates/hwp-cli   # installs the `ahwp` binary
 ```

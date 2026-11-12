@@ -10,7 +10,7 @@ authentication, isolation, limits, and release gates. This document defines *how
 and *where* it runs. It selects the runtime dependency (doc 20 §8 gate), specifies one
 platform-neutral Rust HTTP adapter, and specifies two deployment tiers that share it.
 
-[Issue #52](https://github.com/STAIxBWLB/hwp-cli/issues/52) was closed as deferred because the
+[Issue #52](https://github.com/STAIxBWLB/agent-hwp/issues/52) was closed as deferred because the
 remote service had no named consumer, owner, OAuth policy, or budget, and it asks for a fresh
 scoped delivery issue once those exist. This document supplies them, and the delivery issue that
 accompanies it is the activation record.

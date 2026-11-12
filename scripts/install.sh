@@ -1,7 +1,7 @@
 #!/bin/sh
 # agent-hwp installer without Homebrew, for macOS/Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --tag v1.6.0 --dir ~/bin
 #
 # Prefer canonical ahwp release archives; older releases may provide only hwp archives.
@@ -10,7 +10,7 @@
 # Existing environment variables remain HWP_INSTALL_DIR and HWP_TAG.
 set -eu
 
-REPO="STAIxBWLB/hwp-cli"
+REPO="STAIxBWLB/agent-hwp"
 BIN="ahwp"
 COMPAT_BIN="hwp"
 DIR="${HWP_INSTALL_DIR:-$HOME/.local/bin}"

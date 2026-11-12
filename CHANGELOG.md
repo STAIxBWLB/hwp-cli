@@ -10,6 +10,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Compatibility**
+
+- The repository is now `STAIxBWLB/agent-hwp`, renamed from `STAIxBWLB/hwp-cli`, and the old name
+  redirects for web, git, API and release downloads. Release archives, the installer one-liner,
+  the Homebrew tap URL, `ahwp update` and the release scripts read the new name; a script that
+  hardcodes the old URL keeps working through the redirect but should be repointed
+  ([#510](https://github.com/STAIxBWLB/agent-hwp/issues/510)).
+
 **Added**
 
 - `edit-ops-v1` `replace` accepts a run address, so a caller can rewrite one selected run or one
@@ -23,7 +31,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   delete, while a run reading that would follow an op changing that paragraph's length is refused
   with nothing written. Additive to `edit-ops-v1` — the
   paragraph-addressed form and the whole-document default are unchanged
-  ([#525](https://github.com/STAIxBWLB/hwp-cli/issues/525)).
+  ([#525](https://github.com/STAIxBWLB/agent-hwp/issues/525)).
 
 **Fixed**
 
@@ -32,7 +40,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   segment, so it used to get no id and a client could not move or delete it afterwards; its paragraph id,
   which `move_para` and `delete_para` accept, now takes its place. The report shape and
   `schema_version` are unchanged; only the `changed` description moved, so the pinned schema hash
-  changed ([#521](https://github.com/STAIxBWLB/hwp-cli/issues/521)).
+  changed ([#521](https://github.com/STAIxBWLB/agent-hwp/issues/521)).
 
 ## [1.6.1]
 

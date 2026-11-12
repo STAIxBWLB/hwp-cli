@@ -15,7 +15,7 @@ English is canonical; `SKILL.ko.md` is the full Korean mirror and both are alway
 together.
 
 Install: `brew install staixbwlb/hwp/ahwp`, or
-`curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/hwp-cli/main/scripts/install.sh | sh`.
+`curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh | sh`.
 `ahwp skill export [-o DIR] [--install claude-code|codex|amazon-quick]` materializes this
 skill from the binary. Amazon Quick Desktop profiles can be selected with
 `--quick-profile ID_OR_ABSOLUTE_PATH`.
@@ -212,11 +212,11 @@ The analyze, edit-one-section and guard workflows below were run verbatim agains
 
 When a native HWP/HWPX form is supplied, edit that form; use Markdown when reauthoring is
 intended. Before starting, check `ahwp --version` against the
-[versioned capability evidence](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/original-form-capabilities-v1.json).
+[versioned capability evidence](https://github.com/STAIxBWLB/agent-hwp/blob/main/skills/hwp/references/original-form-capabilities-v1.json).
 The complete #417-#420 workflow first ships in v1.5.0; v1.4.0 and earlier releases do not support
 `document.original_form` certification.
 
-Follow the [canonical original-form workflow](https://github.com/STAIxBWLB/hwp-cli/blob/main/skills/hwp/references/editing-recipes.md#original-form-workflow):
+Follow the [canonical original-form workflow](https://github.com/STAIxBWLB/agent-hwp/blob/main/skills/hwp/references/editing-recipes.md#original-form-workflow):
 
 1. Discover the source identity and exact occurrences; extract the native range with its resource
    and address report, then discover the extracted source again.
@@ -395,7 +395,7 @@ ahwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.j
 
 ### Review and apply native form bindings
 
-Before binding supplied forms, read the [canonical binding recipe](https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/ai-integrations.md#review-and-apply-native-form-bindings) for the closed plan schema, copy maps and refusal boundaries.
+Before binding supplied forms, read the [canonical binding recipe](https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/ai-integrations.md#review-and-apply-native-form-bindings) for the closed plan schema, copy maps and refusal boundaries.
 
 ```bash
 ahwp slots source.hwpx --json --forms --occurrences > local-catalog.json
@@ -487,7 +487,7 @@ succeeds on an absolute path under the configured LocalLow root (for example
 that discovery alone proves file access.
 After a connector edit, refresh or start a new chat instead of reusing an old generated tool prefix.
 The copy-paste operator and AI runbook is:
-`https://github.com/STAIxBWLB/hwp-cli/blob/main/docs/manual/amazon-quick-desktop.md`.
+`https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/amazon-quick-desktop.md`.
 
 Tools (23):
 

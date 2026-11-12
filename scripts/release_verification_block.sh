@@ -29,7 +29,7 @@ usage() {
     echo "usage: scripts/release_verification_block.sh <version> <readiness-run-url>" >&2
     echo "       scripts/release_verification_block.sh --self-test" >&2
     echo "  example: scripts/release_verification_block.sh 0.18.0 \\" >&2
-    echo "           https://github.com/STAIxBWLB/hwp-cli/actions/runs/1234567890" >&2
+    echo "           https://github.com/STAIxBWLB/agent-hwp/actions/runs/1234567890" >&2
 }
 
 # --- self-test (no repository side effects: everything happens in a temporary file) -------------
@@ -39,8 +39,8 @@ if [ "${1:-}" = "--self-test" ]; then
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT
     cl="$tmpdir/CHANGELOG.md"
-    url1="https://github.com/STAIxBWLB/hwp-cli/actions/runs/111"
-    url2="https://github.com/STAIxBWLB/hwp-cli/actions/runs/222"
+    url1="https://github.com/STAIxBWLB/agent-hwp/actions/runs/111"
+    url2="https://github.com/STAIxBWLB/agent-hwp/actions/runs/222"
     cat >"$cl" <<'EOF'
 # Changelog
 
@@ -154,9 +154,9 @@ if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?
     exit 1
 fi
 if ! printf '%s' "$run_url" |
-    grep -Eq '^https://github\.com/STAIxBWLB/hwp-cli/actions/runs/[0-9]+(/[A-Za-z0-9/_-]+)?$'; then
+    grep -Eq '^https://github\.com/STAIxBWLB/agent-hwp/actions/runs/[0-9]+(/[A-Za-z0-9/_-]+)?$'; then
     echo "오류: 이 저장소의 actions run URL이 아닙니다: '$run_url'" >&2
-    echo "      예: https://github.com/STAIxBWLB/hwp-cli/actions/runs/1234567890" >&2
+    echo "      예: https://github.com/STAIxBWLB/agent-hwp/actions/runs/1234567890" >&2
     exit 1
 fi
 if ! grep -q "^## \[$version\]" "$changelog"; then

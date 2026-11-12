@@ -33,7 +33,7 @@ AGENTS.md. This file holds rationale and history only, no directives.
 ## Branch · PR policy
 
 - The repository used to work as a fork that sent PRs to an upstream. That setup is retired;
-  `STAIxBWLB/hwp-cli` (origin) is the canonical repository.
+  `STAIxBWLB/agent-hwp` (origin) is the canonical repository.
 - CI always runs the public PDF oracle gate on `ubuntu-24.04`, which carries the pinned
   `pdfinfo version 24.02.0`.
 
