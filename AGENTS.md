@@ -164,6 +164,11 @@ ripwire . --recall="<topic>" # the docs/design and .ripwire_notes rows that answ
 
 ## Things the agent gets wrong
 
+- 2026-11-14 (#543): for emitted-text offset/range changes, add an exhaustive small-input
+  invariant test with style boundaries, both whitespace movement directions and three or more
+  runs sharing a span. Check control survival, both coordinate spaces and ordered, disjoint
+  sibling ranges. Compare against a recorded baseline and report drift before changing fixtures.
+  Revisit when: offset reviews stop finding cases outside the invariant coverage, or the model changes.
 - 2026-11-08 (#410): before changing geometry serialized into native line caches, cite genuine
   saved-file bytes or a format specification section for the exact field and context (body, cell,
   caption or text box). Body measurements do not establish nested-list rules. Revisit when:

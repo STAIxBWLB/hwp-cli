@@ -8,8 +8,8 @@
   "required": ["schema_version", "contract", "markdown", "segments"],
   "properties": {
     "schema_version": {
-      "const": "1.1",
-      "description": "Version of this envelope contract. An OPTIONAL field added to an existing kind is a minor bump: `1.1` added `source_chars` on `run` segments, and a consumer that ignores unknown fields reads a `1.1` envelope exactly as it read `1.0`. Removing a field, renaming one, or changing what an existing field means is a new major schema, because this envelope is closed in that direction: no field disappears or changes meaning inside a major."
+      "const": "1.2",
+      "description": "Version of this envelope contract. An OPTIONAL field added to an existing kind is a minor bump: `1.1` added `source_chars` on `run` segments and `1.2` added `controls` on `run` segments, and a consumer that ignores unknown fields reads a `1.1` envelope exactly as it read `1.0`. Removing a field, renaming one, or changing what an existing field means is a new major schema, because this envelope is closed in that direction: no field disappears or changes meaning inside a major."
     },
     "contract": {
       "const": "hwp-segment-envelope-v2",
@@ -33,11 +33,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "path", "char_range", "style", "direct"],
-      "$comment": "`dependentSchemas` enforces the kind restriction each of `ctrl_id`, `name` and `source_chars` states, in the direction the field implies the kind and nothing more: a `para` segment carrying a `ctrl_id` or a `source_chars` would otherwise validate. It does NOT enforce the converse, that a segment of that kind carries the field - `required` cannot single out one kind, so that half is a property of the emitter and no description here claims it.",
+      "$comment": "`dependentSchemas` enforces the kind restriction each of `ctrl_id`, `name`, `source_chars` and `controls` states, in the direction the field implies the kind and nothing more: a `para` segment carrying a `ctrl_id` or a `source_chars` would otherwise validate. It does NOT enforce the converse, that a segment of that kind carries the field - `required` cannot single out one kind, so that half is a property of the emitter and no description here claims it.",
       "dependentSchemas": {
         "ctrl_id": { "properties": { "kind": { "enum": ["field", "bookmark"] } } },
         "name": { "properties": { "kind": { "const": "bookmark" } } },
-        "source_chars": { "properties": { "kind": { "const": "run" } } }
+        "source_chars": { "properties": { "kind": { "const": "run" } } },
+        "controls": { "properties": { "kind": { "const": "run" } } }
       },
       "properties": {
         "id": {
@@ -70,6 +71,35 @@
         "source_chars": {
           "$ref": "#/$defs/source_chars",
           "description": "The source characters this `run` piece emitted. Present on `run` segments and on no other kind, and that is the direction this object's `dependentSchemas` ENFORCES: a `para`, `table` or `bookmark` segment carrying this field does not validate. The converse - EVERY `run` segment carrying one - is an EMITTER PROPERTY THIS SCHEMA DOES NOT EXPRESS, because `required` cannot single out one kind, and the walk does not publish a piece that emitted no source text: a control-only run yields no `run` segment at all, so the field is absent there because the segment is. ABSOLUTE UTF-16 CODE UNITS INTO THE SOURCE PARAGRAPH, the same unit and origin as `edit-ops-v1` `address.chars` and `render-layout-v1` `source_chars`: a caller copies `start` and `end` into a run-range op's `address.chars` as `[start, end]` with no conversion, which is what distinguishes this field from `char_range` (Unicode scalars into the emitted markdown, emphasis markers included) - the two spaces differ on any document with a non-BMP character, a table or a control anchor, and NOTHING CONVERTS BETWEEN THEM. NEVER ZERO-LENGTH: `end > start` always holds, and a piece with nothing to report is not published rather than carrying an empty range. ONE VALUE PER CONTIGUOUS PIECE: a run a block control interrupts is published once per piece and each piece carries ITS OWN range, so `source_chars` pairs with that piece's `char_range`; the interrupting control's own characters belong to no piece, so no piece spans it, and the pieces of one run neither overlap nor leave a gap. Inline controls - a field start/end, a bookmark - sit inside a run's own source span and are counted, exactly as `address.chars` counts them. The last piece of a paragraph ends at the paragraph's own length, where the stored paragraph break is the paragraph's last character; that is the same bound `address.chars` is resolved against, so the published range is always one an op accepts."
+        },
+        "controls": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/run_control" },
+          "description": "The character controls this `run` piece projected as ordinary text, in document order (https://github.com/STAIxBWLB/agent-hwp/issues/543). The markdown cannot tell a typed space from a non-breaking or fixed-width space, or a typed `-` from a soft hyphen, so a consumer that turns a selection of run text into a text replace needs this list to see that the stored characters differ from the projection. Four controls are listed: `tab` (code 9, an 8-unit inline control, projected as a space), `hyphen` (code 24, projected as `-`), `nb_space` (code 30, projected as a space) and `fw_space` (code 31, projected as a space). Line breaks are not listed: they end the line rather than projecting as run text. PRESENT ONLY WHEN THE PIECE PROJECTED AT LEAST ONE OF THEM: a run with none omits the key rather than carrying an empty array, so the projected text and every other field are unchanged. `run` segments only, enforced by this object's `dependentSchemas`. A control whose projected character the emitter trimmed away (leading or trailing whitespace of a table cell, a blank line the cleanup collapsed) did not reach the markdown and is not listed. One list per piece: a run a block control interrupts lists each control on the piece that emitted it."
+        }
+      }
+    },
+    "run_control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "at", "source"],
+      "description": "One projected character control inside a `run` piece, located in both coordinate spaces the piece carries.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["tab", "hyphen", "nb_space", "fw_space"],
+          "description": "Which control: `tab` (TAB, code 9), `hyphen` (HYPHEN, code 24), `nb_space` (NB_SPACE, code 30) or `fw_space` (FW_SPACE, code 31)."
+        },
+        "at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The Unicode scalar offset of the projected character in `markdown`, the space `char_range` indexes: `markdown[at]` is that character (a space, or `-` for `hyphen`). Always inside this piece's own `char_range`, so a consumer tests a selection against it with no conversion."
+        },
+        "source": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The control's offset in absolute UTF-16 code units into the source paragraph, the space `source_chars` and `edit-ops-v1` `address.chars` use. Always inside this piece's `source_chars`. A `tab` occupies 8 code units starting here; the other three occupy one."
         }
       }
     },

@@ -12,10 +12,11 @@ use hwp_convert::{Segment, StyleLevel};
 
 /// The version of the envelope contract, carried in every envelope.
 ///
-/// `1.1` adds the optional `source_chars` on `run` segments (issue #517). An additive optional
+/// `1.1` adds the optional `source_chars` on `run` segments (issue #517), and `1.2` the optional
+/// `controls` on `run` segments (issue #543). An additive optional
 /// field is a minor bump: a consumer that ignores unknown fields keeps working, and no existing
 /// field changed. Removing or renaming one is still a new major.
-pub const SEGMENT_ENVELOPE_SCHEMA_VERSION: &str = "1.1";
+pub const SEGMENT_ENVELOPE_SCHEMA_VERSION: &str = "1.2";
 /// The contract name, carried in every envelope.
 pub const SEGMENT_ENVELOPE_CONTRACT: &str = "hwp-segment-envelope-v2";
 
@@ -58,6 +59,21 @@ pub fn segment_json(s: &Segment) -> serde_json::Value {
             "start": chars.start,
             "end": chars.end,
         });
+    }
+    // Omitted rather than empty: only a run that projected a tab, hyphen, non-breaking or
+    // fixed-width space control carries it (issue #543).
+    if !s.controls.is_empty() {
+        v["controls"] = s
+            .controls
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "kind": c.kind.as_str(),
+                    "at": c.at,
+                    "source": c.source,
+                })
+            })
+            .collect();
     }
     v
 }

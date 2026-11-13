@@ -76,11 +76,10 @@
 //! nothing itself. `crates/hwp-render/src/segment_id.rs` carries a deliberate second copy of that
 //! rule, so changing what a kind hashes is a two-crate change.
 //!
-//! A run's range covers everything the run emitted, its own emphasis markers included. That is a
-//! property, not an accident of the walk: excluding the markers would leave them belonging to no
-//! run at all, and the boundary the walk reads — after `close_span` has finished moving the
-//! previous span's whitespace outside its markers, and before the next span's opening marker is
-//! pushed — is the only offset in that sequence that does not shift under the move.
+//! A run's range includes its emitted emphasis markers. The walk records boundaries between
+//! closing the previous emphasis span and opening the next one. After cleanup, reconciliation
+//! expands a surviving control's owning range and bounds its siblings to keep the pieces disjoint;
+//! recorded boundaries can therefore change when emphasis relocates whitespace.
 //!
 //! Run segments are numbered off [`crate::segment_id::canonical_char_shape_runs`], never off
 //! `Paragraph::char_shape_runs`: `run_id` indexes the canonical list, so walking the raw list
@@ -276,6 +275,44 @@ pub struct SourceChars {
     pub end: u32,
 }
 
+/// A character control a `run` piece projected as ordinary text (#543). The projected
+/// character alone cannot tell a typed space from a non-breaking one, so the envelope names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunControlKind {
+    /// `TAB` (code 9, an 8-unit inline control), projected as a space in markdown.
+    Tab,
+    /// `HYPHEN` (code 24), projected as `-`.
+    Hyphen,
+    /// `NB_SPACE` (code 30), projected as a space.
+    NbSpace,
+    /// `FW_SPACE` (code 31), projected as a space.
+    FwSpace,
+}
+
+impl RunControlKind {
+    /// The wire name the envelope publishes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunControlKind::Tab => "tab",
+            RunControlKind::Hyphen => "hyphen",
+            RunControlKind::NbSpace => "nb_space",
+            RunControlKind::FwSpace => "fw_space",
+        }
+    }
+}
+
+/// One projected control inside a `run` piece, in both coordinate spaces the piece carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunControl {
+    pub kind: RunControlKind,
+    /// Unicode scalar offset of the projected character in the markdown, the space
+    /// [`Segment::start`]/[`Segment::end`] index. Always inside the piece's own range.
+    pub at: usize,
+    /// The control's WCHAR offset in the source paragraph, the space
+    /// [`Segment::source_chars`] and `edit-ops-v1` `address.chars` use.
+    pub source: u32,
+}
+
 /// One emitted range, its IR coordinates, its id and its style.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
@@ -304,6 +341,9 @@ pub struct Segment {
     /// published as a segment at all, so a `run` here always carries a non-empty range. See the
     /// module doc, "Source offsets".
     pub source_chars: Option<SourceChars>,
+    /// The tab, hyphen, non-breaking and fixed-width space controls this `run` piece projected
+    /// as text, in document order (#543). Empty on every other kind and on a run with none.
+    pub controls: Vec<RunControl>,
 }
 
 /// A span recorded during emission, in the byte coordinates of the buffer being written.
@@ -324,6 +364,10 @@ pub(crate) struct RawSeg {
     /// The source-paragraph WCHAR span this piece emitted, for a `run` piece that emitted text.
     /// Recorded in the same coordinates `address.chars` takes, so no conversion happens anywhere.
     pub source: Option<(u32, u32)>,
+    /// `run` only: each projected control as (kind, byte offset of its projected character in
+    /// this buffer, source WCHAR offset). The byte offset follows the same rebasing as
+    /// `start`/`end`, and an entry whose character did not reach the output is dropped.
+    pub controls: Vec<(RunControlKind, usize, u32)>,
 }
 
 /// The markdown of [`crate::markdown::to_markdown_with`], plus the v2 segment vector.
@@ -338,35 +382,101 @@ pub fn to_markdown_with_segments_v2(
     Ok((markdown, segments))
 }
 
+/// Reconciles sibling run intervals in emission order without choosing a move direction.
+/// Cleanup-surviving controls constrain their owning run; a forward control bound and a
+/// reverse sibling boundary keep intervals disjoint without excluding those controls.
+fn reconcile_run_ranges(segments: &mut [Segment]) {
+    let mut groups: std::collections::BTreeMap<(usize, Vec<usize>), Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, segment) in segments.iter().enumerate() {
+        if segment.kind == SegmentKind::Run {
+            let mut parent = segment.path.indices.clone();
+            parent.pop();
+            groups
+                .entry((segment.path.section, parent))
+                .or_default()
+                .push(index);
+        }
+    }
+    for indices in groups.values() {
+        let mut prefix_control_end = 0usize;
+        for &index in indices {
+            let run = &mut segments[index];
+            if let Some(start) = run.controls.iter().map(|control| control.at).min() {
+                run.start = run.start.min(start);
+            }
+            if let Some(end) = run.controls.iter().map(|control| control.at + 1).max() {
+                run.end = run.end.max(end);
+            }
+            run.start = run.start.max(prefix_control_end);
+            run.end = run.end.max(run.start);
+            if let Some(end) = run.controls.iter().map(|control| control.at + 1).max() {
+                prefix_control_end = prefix_control_end.max(end);
+            }
+        }
+        let mut next_start = usize::MAX;
+        for &index in indices.iter().rev() {
+            let run = &mut segments[index];
+            run.end = run.end.min(next_start);
+            run.start = run.start.min(run.end);
+            next_start = run.start;
+        }
+    }
+}
+
 /// Turns recorded byte spans into the published scalar-offset vector.
 ///
 /// `remap` carries each raw byte offset through the cleanup deletion map and on to a Unicode
 /// scalar offset — the same two steps the v1 `build_segments` performs.
-pub(crate) fn finalize(raw: Vec<RawSeg>, mut remap: impl FnMut(usize) -> usize) -> Vec<Segment> {
-    let mut out: Vec<Segment> = raw
-        .into_iter()
-        .filter_map(|seg| {
-            let start = remap(seg.start);
-            let end = remap(seg.end).max(start);
-            (end > start || seg.kind.may_be_empty() || seg.point).then_some(Segment {
-                kind: seg.kind,
-                id: seg.id,
-                path: seg.path,
-                start,
-                end,
-                style: seg.style,
-                ctrl_id: seg.ctrl_id,
-                name: seg.name,
-                // A zero-length source span is omitted, never published: the contract says a
-                // run with no source text carries no `source_chars`, and an empty range would
-                // be a second way to say the same thing.
-                source_chars: seg
-                    .source
-                    .filter(|&(s, e)| e > s)
-                    .map(|(s, e)| SourceChars { start: s, end: e }),
+pub(crate) fn finalize(
+    raw: Vec<RawSeg>,
+    mut remap: impl FnMut(usize) -> usize,
+    mut survives: impl FnMut(usize) -> bool,
+) -> Vec<Segment> {
+    let mut out: Vec<Segment> =
+        raw.into_iter()
+            .filter_map(|seg| {
+                let start = remap(seg.start);
+                let end = remap(seg.end).max(start);
+                // Cleanup removes deleted characters. Reconciliation below makes each surviving
+                // control constrain the range of the run that emitted it.
+                let controls: Vec<RunControl> = seg
+                    .controls
+                    .iter()
+                    .filter(|&&(_, byte, _)| survives(byte))
+                    .map(|&(kind, byte, source)| RunControl {
+                        kind,
+                        at: remap(byte),
+                        source,
+                    })
+                    .collect();
+                (end > start || !controls.is_empty() || seg.kind.may_be_empty() || seg.point)
+                    .then_some(Segment {
+                        kind: seg.kind,
+                        id: seg.id,
+                        path: seg.path,
+                        start,
+                        end,
+                        style: seg.style,
+                        ctrl_id: seg.ctrl_id,
+                        name: seg.name,
+                        // A zero-length source span is omitted, never published: the contract says a
+                        // run with no source text carries no `source_chars`, and an empty range would
+                        // be a second way to say the same thing.
+                        source_chars: seg
+                            .source
+                            .filter(|&(s, e)| e > s)
+                            .map(|(s, e)| SourceChars { start: s, end: e }),
+                        controls,
+                    })
             })
-        })
-        .collect();
+            .collect();
+    reconcile_run_ranges(&mut out);
+    out.retain(|segment| {
+        segment.kind != SegmentKind::Run
+            || segment.end > segment.start
+            || !segment.controls.is_empty()
+    });
     // Document order, with the container ahead of what it contains. `end` descending settles
     // the nested case; where the two ranges are *identical* - a single-run cell is exactly its
     // run - it cannot, so the depth of the positional path breaks the tie: a container's path is
@@ -1658,5 +1768,682 @@ mod tests {
             "blue is the high byte"
         );
         assert_eq!(colorref_to_hex(0x00EE_2211), "#1122EE");
+    }
+}
+
+#[cfg(test)]
+mod run_control_tests {
+    //! #543: the tab, hyphen, non-breaking and fixed-width space controls a run projects as
+    //! text are published with their offset in both coordinate spaces.
+    use super::*;
+    use crate::markdown::MarkdownOptions;
+    use hwp_model::ids::{BorderFillId, CharShapeId, ParaShapeId};
+    use hwp_model::units::HwpUnit;
+    use hwp_model::{
+        Cell, CharShape, Control, Document, GenericControl, HwpChar, ParaShape, Paragraph, Section,
+        Style, Table, ctrl_char,
+    };
+
+    /// `a<TAB>b<HYPHEN>c<NB_SPACE>d<FW_SPACE>e`: every control sits between ordinary text.
+    fn controls_para(shape: u16) -> Paragraph {
+        let mut chars = vec![HwpChar::Text('a')];
+        chars.push(HwpChar::InlineCtrl {
+            code: ctrl_char::TAB,
+            payload: vec![0; 12],
+        });
+        chars.push(HwpChar::Text('b'));
+        chars.push(HwpChar::CharCtrl(ctrl_char::HYPHEN));
+        chars.push(HwpChar::Text('c'));
+        chars.push(HwpChar::CharCtrl(ctrl_char::NB_SPACE));
+        chars.push(HwpChar::Text('d'));
+        chars.push(HwpChar::CharCtrl(ctrl_char::FW_SPACE));
+        chars.push(HwpChar::Text('e'));
+        Paragraph {
+            chars,
+            char_shape_runs: vec![(0, CharShapeId(shape))],
+            ..Default::default()
+        }
+    }
+
+    fn doc_of(paragraphs: Vec<Paragraph>) -> Document {
+        let mut doc = Document {
+            sections: vec![Section {
+                paragraphs,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        doc.header.char_shapes = vec![
+            CharShape::default(),
+            // Bold, so the emphasis close relocates whitespace around the projected spaces.
+            CharShape {
+                attr: 0b10,
+                ..Default::default()
+            },
+        ];
+        doc.header.para_shapes = vec![ParaShape::default()];
+        doc.header.styles = vec![Style {
+            name: "바탕글".into(),
+            char_shape: CharShapeId(0),
+            para_shape: ParaShapeId(0),
+            ..Default::default()
+        }];
+        doc
+    }
+
+    fn emit(doc: &Document) -> (String, Vec<Segment>) {
+        to_markdown_with_segments_v2(doc, &MarkdownOptions::default()).expect("no media_dir")
+    }
+
+    /// Asserts the four controls of [`controls_para`] on `run`, each `at` resolving to its
+    /// projected character in `md` and each `source` to the control's WCHAR offset.
+    fn assert_four(md: &str, run: &Segment) {
+        let chars: Vec<char> = md.chars().collect();
+        let got: Vec<(&str, char, u32)> = run
+            .controls
+            .iter()
+            .map(|c| (c.kind.as_str(), chars[c.at], c.source))
+            .collect();
+        // Source offsets: a=0, TAB=1..9 (8 units), b=9, HYPHEN=10, c=11, NB=12, d=13, FW=14.
+        assert_eq!(
+            got,
+            vec![
+                ("tab", ' ', 1),
+                ("hyphen", '-', 10),
+                ("nb_space", ' ', 12),
+                ("fw_space", ' ', 14)
+            ],
+            "{run:#?}\n{md:?}"
+        );
+        for c in &run.controls {
+            assert!(
+                run.start <= c.at && c.at < run.end,
+                "at inside the piece: {c:?}"
+            );
+            let span = run.source_chars.expect("run source span");
+            assert!(span.start <= c.source && c.source < span.end, "{c:?}");
+        }
+    }
+
+    fn the_run(segs: &[Segment], indices: &[usize]) -> Segment {
+        let runs: Vec<&Segment> = segs
+            .iter()
+            .filter(|s| s.kind == SegmentKind::Run && s.path.indices == indices)
+            .collect();
+        assert_eq!(runs.len(), 1, "{segs:#?}");
+        runs[0].clone()
+    }
+
+    #[test]
+    fn a_top_level_run_publishes_each_projected_control() {
+        let (md, segs) = emit(&doc_of(vec![controls_para(0)]));
+        assert_four(&md, &the_run(&segs, &[0, 0]));
+    }
+
+    /// Bold closes by moving whitespace outside its markers; the controls follow it.
+    #[test]
+    fn a_bold_run_keeps_each_control_on_its_projected_character() {
+        let (md, segs) = emit(&doc_of(vec![controls_para(1)]));
+        assert!(md.contains("**"), "{md}");
+        assert_four(&md, &the_run(&segs, &[0, 0]));
+    }
+
+    /// A bold run that starts and ends with a projected space: the emphasis close moves both
+    /// spaces outside its markers, and each control follows its own character.
+    #[test]
+    fn a_control_relocated_outside_bold_markers_keeps_its_offset() {
+        let p = Paragraph {
+            chars: vec![
+                HwpChar::Text('x'),
+                HwpChar::CharCtrl(ctrl_char::FW_SPACE),
+                HwpChar::Text('a'),
+                HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                HwpChar::Text('y'),
+            ],
+            // x plain, FW_SPACE..NB_SPACE bold, y plain.
+            char_shape_runs: vec![
+                (0, CharShapeId(0)),
+                (1, CharShapeId(1)),
+                (4, CharShapeId(0)),
+            ],
+            ..Default::default()
+        };
+        let (md, segs) = emit(&doc_of(vec![p]));
+        assert!(
+            md.contains(" **a** "),
+            "whitespace moved outside the markers: {md:?}"
+        );
+        let chars: Vec<char> = md.chars().collect();
+        let bold = the_run(&segs, &[0, 1]);
+        let got: Vec<(&str, char, u32)> = bold
+            .controls
+            .iter()
+            .map(|c| (c.kind.as_str(), chars[c.at], c.source))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("fw_space", ' ', 1), ("nb_space", ' ', 3)],
+            "{bold:#?} {md:?}"
+        );
+        for c in &bold.controls {
+            assert!(bold.start <= c.at && c.at < bold.end, "{c:?} {bold:?}");
+        }
+    }
+
+    /// 555-P2-1: one emphasis span covers two runs with different shape ids but the same marks,
+    /// so it outlives run A. Closing it before the plain `b` moves A's trailing projected spaces
+    /// past the closing `**`; they must stay listed on A, inside A's own range.
+    #[test]
+    fn a_closed_runs_relocated_controls_stay_on_that_run() {
+        let p = Paragraph {
+            chars: vec![
+                HwpChar::Text('a'),
+                HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                HwpChar::CharCtrl(ctrl_char::FW_SPACE),
+                HwpChar::Text('b'),
+            ],
+            // Bold A at 0, bold B at 2 (same marks, different id), plain at 3.
+            char_shape_runs: vec![
+                (0, CharShapeId(1)),
+                (2, CharShapeId(2)),
+                (3, CharShapeId(0)),
+            ],
+            ..Default::default()
+        };
+        let mut doc = doc_of(vec![p]);
+        doc.header.char_shapes.push(CharShape {
+            attr: 0b10,
+            base_size: 1100,
+            ..Default::default()
+        });
+        let (md, segs) = emit(&doc);
+        let chars: Vec<char> = md.chars().collect();
+        let listed: Vec<(&str, u32)> = segs
+            .iter()
+            .filter(|s| s.kind == SegmentKind::Run)
+            .flat_map(|run| {
+                for c in &run.controls {
+                    assert!(
+                        run.start <= c.at && c.at < run.end,
+                        "{c:?} outside {run:?} in {md:?}"
+                    );
+                    assert_eq!(chars[c.at], ' ', "{c:?} {md:?}");
+                }
+                run.controls.iter().map(|c| (c.kind.as_str(), c.source))
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            vec![("nb_space", 1), ("fw_space", 2)],
+            "{segs:#?} {md:?}"
+        );
+        // Pieces of one paragraph stay disjoint and in order.
+        let runs: Vec<&Segment> = segs.iter().filter(|s| s.kind == SegmentKind::Run).collect();
+        for w in runs.windows(2) {
+            assert!(w[0].end <= w[1].start, "{:?} overlaps {:?}", w[0], w[1]);
+        }
+    }
+
+    /// 555-P2-2: three or more runs share one emphasis span. `pattern` lists each run's
+    /// character after `a` (None = the run is a plain `x` with no control); every run is bold
+    /// with its own shape id, then a plain `b` closes the span. Every control must be listed on
+    /// its own piece and the pieces must stay disjoint.
+    fn shared_span_case(pattern: &[Option<u16>]) {
+        let mut chars = vec![HwpChar::Text('a')];
+        let mut runs = vec![(0u32, CharShapeId(1))];
+        for (i, code) in pattern.iter().enumerate() {
+            let at = chars.len() as u32;
+            if i > 0 {
+                runs.push((at, CharShapeId(2 + i as u16)));
+            }
+            chars.push(match code {
+                Some(code) => HwpChar::CharCtrl(*code),
+                None => HwpChar::Text('x'),
+            });
+        }
+        runs.push((chars.len() as u32, CharShapeId(0)));
+        chars.push(HwpChar::Text('b'));
+        let p = Paragraph {
+            chars,
+            char_shape_runs: runs,
+            ..Default::default()
+        };
+        let mut doc = doc_of(vec![p]);
+        for i in 0..pattern.len() {
+            doc.header.char_shapes.push(CharShape {
+                attr: 0b10,
+                base_size: 1100 + 100 * i as i32,
+                ..Default::default()
+            });
+        }
+        let (md, segs) = emit(&doc);
+        let chars: Vec<char> = md.chars().collect();
+        let runs: Vec<&Segment> = segs.iter().filter(|s| s.kind == SegmentKind::Run).collect();
+        let listed: usize = runs.iter().map(|r| r.controls.len()).sum();
+        let expected = pattern.iter().filter(|c| c.is_some()).count();
+        assert_eq!(listed, expected, "every control listed: {segs:#?} {md:?}");
+        for r in &runs {
+            for c in &r.controls {
+                assert!(
+                    r.start <= c.at && c.at < r.end,
+                    "{c:?} outside {r:?} in {md:?}"
+                );
+                assert!(matches!(chars[c.at], ' ' | '-'), "{c:?} {md:?}");
+            }
+        }
+        for w in runs.windows(2) {
+            assert!(
+                w[0].end <= w[1].start,
+                "{:?} overlaps {:?} in {md:?}",
+                (w[0].start, w[0].end),
+                (w[1].start, w[1].end)
+            );
+        }
+    }
+
+    /// The review's probe: `a NB FW NB b`, bold runs at 0, 2 and 3, plain at 4.
+    #[test]
+    fn three_runs_sharing_one_span_stay_disjoint() {
+        shared_span_case(&[
+            Some(ctrl_char::NB_SPACE),
+            Some(ctrl_char::FW_SPACE),
+            Some(ctrl_char::NB_SPACE),
+        ]);
+    }
+
+    /// The middle run carries no control; its neighbours still stay disjoint around it.
+    #[test]
+    fn a_middle_run_without_a_control_stays_disjoint() {
+        shared_span_case(&[Some(ctrl_char::NB_SPACE), None, Some(ctrl_char::FW_SPACE)]);
+        shared_span_case(&[
+            Some(ctrl_char::NB_SPACE),
+            Some(ctrl_char::FW_SPACE),
+            None,
+            Some(ctrl_char::NB_SPACE),
+        ]);
+    }
+
+    #[test]
+    fn a_run_without_controls_publishes_none() {
+        let p = Paragraph {
+            chars: "a b-c".chars().map(HwpChar::Text).collect(),
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        let (_, segs) = emit(&doc_of(vec![p]));
+        assert!(segs.iter().all(|s| s.controls.is_empty()), "{segs:#?}");
+    }
+
+    fn host(control: Control, ctrl_id: [u8; 4]) -> Paragraph {
+        let mut host = Paragraph {
+            chars: vec![HwpChar::Text('x')],
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        host.controls.push(control);
+        host.chars.push(HwpChar::ExtCtrl {
+            code: ctrl_char::OBJECT,
+            ctrl_id,
+            payload: Vec::new(),
+            ctrl_index: Some(0),
+        });
+        host
+    }
+
+    #[test]
+    fn a_run_inside_a_table_cell_publishes_its_controls() {
+        let cell = Cell {
+            list_attr: 0,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: HwpUnit(1000),
+            height: HwpUnit(1000),
+            margins: [0; 4],
+            border_fill: BorderFillId::default(),
+            header_tail: Vec::new(),
+            paragraphs: vec![controls_para(0)],
+        };
+        let table = Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId::default(),
+            table_tail: Vec::new(),
+            cells: vec![cell],
+            caption: None,
+            extras: Vec::new(),
+        };
+        let (md, segs) = emit(&doc_of(vec![host(Control::Table(table), *b"tbl ")]));
+        let run = segs
+            .iter()
+            .find(|s| s.kind == SegmentKind::Run && !s.controls.is_empty())
+            .unwrap_or_else(|| panic!("cell run with controls: {segs:#?}"));
+        assert!(run.path.indices.len() > 2, "{run:?}");
+        assert_four(&md, run);
+    }
+
+    #[test]
+    fn a_run_inside_a_text_box_publishes_its_controls() {
+        let g = GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![controls_para(0)],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        };
+        let (md, segs) = emit(&doc_of(vec![host(Control::Generic(g), *b"gso ")]));
+        let run = segs
+            .iter()
+            .find(|s| s.kind == SegmentKind::Run && !s.controls.is_empty())
+            .unwrap_or_else(|| panic!("text-box run with controls: {segs:#?}"));
+        assert!(run.path.indices.len() > 2, "{run:?}");
+        assert_four(&md, run);
+    }
+    /// The six no-control digits and twelve full-corpus digits both encode
+    /// (source symbol, shape), least-significant position first.
+    fn exhaustive_document(symbols: &[usize], shapes: &[u16]) -> Document {
+        let mut runs = Vec::new();
+        for (position, &shape) in shapes.iter().enumerate() {
+            if position == 0 || shapes[position - 1] != shape {
+                runs.push((position as u32, CharShapeId(shape)));
+            }
+        }
+        let paragraph = Paragraph {
+            chars: symbols
+                .iter()
+                .map(|symbol| match symbol {
+                    0 => HwpChar::Text('x'),
+                    1 => HwpChar::Text(' '),
+                    2 => HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                    3 => HwpChar::CharCtrl(ctrl_char::FW_SPACE),
+                    _ => unreachable!(),
+                })
+                .collect(),
+            char_shape_runs: runs,
+            ..Default::default()
+        };
+        let mut document = doc_of(vec![paragraph]);
+        document.header.char_shapes.push(CharShape {
+            attr: 2,
+            base_size: 1100,
+            ..Default::default()
+        });
+        document
+    }
+
+    /// Expected survival and ownership come only from source symbols and shape
+    /// changes. The actual Markdown supplies scalar positions after removing
+    /// generated emphasis markers and line feeds, neither of which is input here.
+    fn assert_source_projection(symbols: &[usize], shapes: &[u16], md: &str, segments: &[Segment]) {
+        let projected: String = symbols
+            .iter()
+            .map(|symbol| if *symbol == 0 { 'x' } else { ' ' })
+            .collect();
+        let markdown: Vec<_> = md.chars().collect();
+        let positions: Vec<_> = markdown
+            .iter()
+            .enumerate()
+            .filter_map(|(at, character)| (!matches!(*character, '*' | '\n')).then_some(at))
+            .collect();
+        let plain: String = positions.iter().map(|at| markdown[*at]).collect();
+        assert_eq!(
+            plain,
+            projected.trim(),
+            "projection alignment: {symbols:?} {shapes:?} {md:?}"
+        );
+        if symbols.iter().all(|symbol| *symbol != 0) {
+            assert!(
+                md.is_empty(),
+                "all-space output must be empty: {symbols:?} {shapes:?} {md:?}"
+            );
+        }
+        let leading = symbols
+            .iter()
+            .position(|symbol| *symbol == 0)
+            .unwrap_or(symbols.len());
+        let trailing = symbols
+            .iter()
+            .rposition(|symbol| *symbol == 0)
+            .map_or(leading, |at| at + 1);
+        let mut owner = 0usize;
+        let mut expected = Vec::new();
+        for source in 0..symbols.len() {
+            if source > 0 && shapes[source - 1] != shapes[source] {
+                owner += 1;
+            }
+            if source >= leading && source < trailing && symbols[source] >= 2 {
+                expected.push((
+                    if symbols[source] == 2 {
+                        "nb_space"
+                    } else {
+                        "fw_space"
+                    },
+                    positions[source - leading],
+                    source as u32,
+                    0usize,
+                    vec![0usize, owner],
+                ));
+            }
+        }
+        let mut actual = Vec::new();
+        let mut runs: Vec<_> = segments
+            .iter()
+            .filter(|segment| segment.kind == SegmentKind::Run)
+            .collect();
+        for run in &runs {
+            let bounds = run
+                .source_chars
+                .expect("a published run has a source range");
+            assert!(bounds.start < bounds.end && bounds.end <= symbols.len() as u32);
+            for control in &run.controls {
+                assert!(
+                    run.start <= control.at && control.at < run.end,
+                    "control outside own piece: {run:?} {md:?}"
+                );
+                assert_eq!(
+                    markdown.get(control.at),
+                    Some(&' '),
+                    "control projection: {control:?} {md:?}"
+                );
+                assert!(
+                    bounds.start <= control.source && control.source < bounds.end,
+                    "control outside source span: {control:?} {bounds:?}"
+                );
+                actual.push((
+                    control.kind.as_str(),
+                    control.at,
+                    control.source,
+                    run.path.section,
+                    run.path.indices.clone(),
+                ));
+            }
+        }
+        expected.sort();
+        actual.sort();
+        assert_eq!(
+            actual, expected,
+            "every surviving control belongs to its source run exactly once: {symbols:?} {shapes:?} {md:?}"
+        );
+        runs.sort_by_key(|run| {
+            let source = run.source_chars.unwrap();
+            (source.start, source.end, run.path.indices.clone())
+        });
+        for pair in runs.windows(2) {
+            assert!(
+                pair[0].end <= pair[1].start,
+                "source-ordered sibling runs overlap: {symbols:?} {shapes:?} {md:?} {:?} {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn exhaustive_small_inputs_preserve_controls_ranges_and_main_text() {
+        use sha2::{Digest, Sha256};
+        use std::collections::BTreeSet;
+        let invalid: Vec<(usize, usize)> = serde_json::from_str(include_str!(
+            "../tests/fixtures/run-control-invalid-main-cases.json"
+        ))
+        .unwrap();
+        assert_eq!(invalid.len(), 188);
+        assert!(invalid.windows(2).all(|pair| pair[0] < pair[1]));
+        let invalid: BTreeSet<_> = invalid.into_iter().collect();
+        let mut seen_invalid = BTreeSet::new();
+        let mut text_hash = Sha256::new();
+        let mut valid_ranges_hash = Sha256::new();
+        let mut total = 0usize;
+        let mut no_controls = 0usize;
+        let mut valid_count = 0usize;
+        for len in 0..=5usize {
+            for case in 0..12usize.pow(len as u32) {
+                let mut value = case;
+                let mut symbols = Vec::new();
+                let mut shapes = Vec::new();
+                for _ in 0..len {
+                    let digit = value % 12;
+                    value /= 12;
+                    symbols.push(digit / 3);
+                    shapes.push((digit % 3) as u16);
+                }
+                let (md, segments) = emit(&exhaustive_document(&symbols, &shapes));
+                // All inputs, including the 188 previously invalid main cases, must
+                // satisfy these invariants. The exception affects only the range digest.
+                assert_source_projection(&symbols, &shapes, &md, &segments);
+                let text_receipt = serde_json::json!({"case": case, "len": len, "markdown": md});
+                text_hash.update(serde_json::to_vec(&text_receipt).unwrap());
+                text_hash.update(b"\n");
+                if symbols.iter().all(|symbol| *symbol < 2) {
+                    no_controls += 1;
+                    let mut old_case = 0usize;
+                    let mut place = 1usize;
+                    for (symbol, shape) in symbols.iter().zip(&shapes) {
+                        old_case += (symbol * 3 + usize::from(*shape)) * place;
+                        place *= 6;
+                    }
+                    let key = (len, old_case);
+                    if invalid.contains(&key) {
+                        seen_invalid.insert(key);
+                    } else {
+                        valid_count += 1;
+                        let runs: Vec<_> = segments
+                            .iter()
+                            .filter(|segment| segment.kind == SegmentKind::Run)
+                            .map(|run| {
+                                let path = serde_json::json!([
+                                    serde_json::json!(run.path.section),
+                                    serde_json::json!(run.path.indices)
+                                ]);
+                                let source =
+                                    run.source_chars.map(|source| [source.start, source.end]);
+                                serde_json::json!({
+                                    "path": path,
+                                    "range": [run.start, run.end],
+                                    "source": source
+                                })
+                            })
+                            .collect();
+                        let receipt = serde_json::json!({
+                            "case": old_case,
+                            "len": len,
+                            "markdown": md,
+                            "runs": runs
+                        });
+                        valid_ranges_hash.update(serde_json::to_vec(&receipt).unwrap());
+                        valid_ranges_hash.update(b"\n");
+                    }
+                }
+                total += 1;
+            }
+        }
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(total, 271453);
+        assert_eq!(no_controls, 9331);
+        assert_eq!(valid_count, 9143);
+        assert_eq!(seen_invalid, invalid);
+        // Measured using full main 2a33240 emitter sources and this exact public corpus.
+        assert_eq!(
+            hex(&text_hash.finalize()),
+            "4a563b04d3149cfd3f3e0abbcb74f457b5f1e9502b5bac9126bc1d3edb3d2308",
+            "all-case Markdown must remain byte-identical to main"
+        );
+        assert_eq!(
+            hex(&valid_ranges_hash.finalize()),
+            "480f0ff70859ad9fe46502a1dc4ace1163e1e6c6e59323a1511b79b6f15b2c9d",
+            "valid no-control Markdown/ranges/source/path must remain identical to main"
+        );
+        eprintln!(
+            "#543/#557: corrected all 188 invalid main no-control cases; all 9331 are disjoint, valid 9143 preserve their exact receipt digest; all 271453 inputs preserve main Markdown"
+        );
+    }
+
+    #[test]
+    fn leading_shared_emphasis_keeps_the_control_on_its_source_run() {
+        let mut document = exhaustive_document(&[0, 1, 2, 0, 0], &[0, 1, 2, 2, 0]);
+        document.sections[0].paragraphs[0].chars[3] = HwpChar::Text('a');
+        document.sections[0].paragraphs[0].chars[4] = HwpChar::Text('b');
+        let (md, segments) = emit(&document);
+        assert_eq!(md, "x  **a**b\n\n");
+        let controls: Vec<_> = segments
+            .iter()
+            .filter(|run| run.kind == SegmentKind::Run)
+            .flat_map(|run| {
+                run.controls.iter().map(move |control| {
+                    (
+                        control.kind.as_str(),
+                        control.at,
+                        control.source,
+                        run.path.indices.clone(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            controls,
+            [("nb_space", 2, 2, vec![0, 2])],
+            "the leading control survives on the run that emitted it"
+        );
+    }
+
+    #[test]
+    fn trimmed_no_control_runs_do_not_overlap_the_first_visible_character() {
+        let symbols = [1, 1, 0];
+        let shapes = [2, 1, 0];
+        let (md, segments) = emit(&exhaustive_document(&symbols, &shapes));
+        assert_eq!(md, "x\n\n");
+        let runs: Vec<_> = segments
+            .iter()
+            .filter(|run| run.kind == SegmentKind::Run)
+            .collect();
+        assert_eq!(
+            runs.len(),
+            1,
+            "#557: trimmed whitespace must not leave a ghost run on x"
+        );
+        assert_eq!((runs[0].start, runs[0].end), (0, 1));
+        assert_eq!(runs[0].source_chars, Some(SourceChars { start: 2, end: 3 }));
+        assert_eq!(runs[0].path.indices, [0, 2]);
+        assert_source_projection(&symbols, &shapes, &md, &segments);
     }
 }
