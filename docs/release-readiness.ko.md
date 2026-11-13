@@ -52,9 +52,9 @@
 
 ## macOS 서명과 공증
 
-macOS 릴리스 작업에는 저장소 Actions secret이 필요합니다(Settings > Secrets and variables >
-Actions). 값이 없으면 업로드 action 실행 전에 해당 macOS 작업을 중단하며, ad-hoc 서명으로
-대체하지 않습니다.
+macOS 릴리스 작업에는 저장소의 `Settings > Secrets and variables > Actions`에 등록한
+Actions secret이 필요합니다. 값이 없으면 업로드 action 실행 전에 해당 macOS 작업을 중단하며,
+ad-hoc 서명으로 대체하지 않습니다.
 
 - `APPLE_CERTIFICATE`: Developer ID Application `.p12`의 base64 인코딩 값
 - `APPLE_CERTIFICATE_PASSWORD`: 해당 `.p12`의 암호

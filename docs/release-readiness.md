@@ -51,8 +51,9 @@ Hancom pixel parity, or prove cross-platform-identical raster bytes.
 
 ## macOS signing and notarization
 
-The macOS release legs require these repository Actions secrets (Settings > Secrets and variables
-> Actions). Missing values stop the macOS leg before the upload action; there is no ad-hoc fallback.
+The macOS release legs require these repository Actions secrets under
+`Settings > Secrets and variables > Actions`. Missing values stop the macOS leg before the upload
+action; there is no ad-hoc fallback.
 
 - `APPLE_CERTIFICATE`: base64-encoded Developer ID Application `.p12`
 - `APPLE_CERTIFICATE_PASSWORD`: password for that `.p12`
