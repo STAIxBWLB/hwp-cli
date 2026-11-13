@@ -213,6 +213,42 @@ pub(crate) fn inspect_document_merge_losses(
     report
 }
 
+/// Static recovery instructions must name the operation's real loss opt-in boundary.
+fn font_type_info_acceptance_hint(context: &str) -> &'static str {
+    match context {
+        "convert" => {
+            " 손실을 수용하려면 ahwp convert를 --strict 없이 다시 실행하거나 MCP hwp_convert에 strict: false를 지정하세요."
+        }
+        "merge" => {
+            " 손실을 수용하려면 ahwp merge를 --strict 없이 다시 실행하거나 MCP hwp_merge에 strict: false를 지정하세요."
+        }
+        "edit" => {
+            " 손실을 수용하려면 ahwp convert를 --strict 없이 실행하거나 MCP hwp_convert에 strict: false를 지정해 .hwpx 입력을 먼저 .hwp로 변환한 뒤, 변환된 파일로 ahwp edit 또는 MCP hwp_edit를 다시 실행하세요."
+        }
+        "fill" => {
+            " 손실을 수용하려면 ahwp convert를 --strict 없이 실행하거나 MCP hwp_convert에 strict: false를 지정해 .hwpx 입력/템플릿을 먼저 .hwp로 변환한 뒤, 변환된 파일로 ahwp fill 또는 MCP hwp_fill을 다시 실행하세요."
+        }
+        "new" => {
+            " 손실을 수용하려면 ahwp new로 .hwpx 결과를 먼저 생성한 뒤, ahwp convert를 --strict 없이 실행하거나 MCP hwp_convert에 strict: false를 지정해 그 결과를 .hwp로 변환하세요."
+        }
+        "compose" => {
+            " 손실을 수용하려면 ahwp compose로 .hwpx 결과를 먼저 생성한 뒤, ahwp convert를 --strict 없이 실행하거나 MCP hwp_convert에 strict: false를 지정해 그 결과를 .hwp로 변환하세요."
+        }
+        "split" => {
+            " ahwp split은 입력 형식을 유지합니다. 손실을 수용하려면 ahwp convert를 --strict 없이 실행하거나 MCP hwp_convert에 strict: false를 지정해 .hwpx 원본을 먼저 .hwp로 변환한 뒤, 변환된 파일로 ahwp split 또는 MCP hwp_split을 다시 실행하세요."
+        }
+        "corpus" => {
+            " 손실을 수용하려면 corpus 매니페스트를 .hwpx 산출물로 구성해 ahwp corpus를 실행한 뒤, 검증 게이트 밖에서 ahwp convert를 --strict 없이 실행해 해당 산출물을 .hwp로 변환하세요. corpus 게이트의 손실 검사는 우회하지 마세요."
+        }
+        "apply_form_bindings" => {
+            " 손실을 수용하려면 ahwp convert를 --strict 없이 실행하거나 MCP hwp_convert에 strict: false를 지정해 .hwpx 원본을 먼저 .hwp로 변환하세요. 변환으로 원본 해시가 달라지므로 변환된 파일에서 discovery와 바인딩 계획을 새로 만들고 apply_form_bindings를 다시 실행하세요."
+        }
+        _ => {
+            " 손실을 수용하려면 ahwp convert를 --strict 없이 실행하거나 MCP hwp_convert에 strict: false를 지정해 .hwpx 입력을 먼저 .hwp로 변환한 뒤, 변환된 파일로 원래 작업을 다시 실행하세요."
+        }
+    }
+}
+
 pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow::Result<()> {
     if report.is_lossless() {
         return Ok(());
@@ -245,7 +281,8 @@ pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow:
         .iter()
         .any(|event| event.code == PreservationCode::FontTypeInfoUnrepresentable)
     {
-        remedy.push_str("\n해결: 글꼴 분류 정보의 HWP5 변환 매핑이 확인되지 않았습니다. .hwpx 출력으로 원본 정보를 보존하세요.");
+        remedy.push_str("\n해결: 글꼴 분류 정보의 HWP5 변환 매핑이 확인되지 않았습니다. 원본 정보를 보존하려면 .hwpx 형식을 유지하세요.");
+        remedy.push_str(font_type_info_acceptance_hint(context));
     }
     anyhow::bail!(
         "{context}: 보존 불가 데이터 {}건을 제거하거나 변경할 수 없어 출력을 게시하지 않습니다\n{}{remedy}",
@@ -731,6 +768,138 @@ mod tests {
         assert!(report.events.iter().all(|event| {
             !event.code.as_str().contains("private") && !event.code.as_str().contains('/')
         }));
+    }
+
+    fn assert_font_recovery(context: &str, expected: &[&str]) {
+        let mut report = PreservationReport::new();
+        report.record(PreservationEvent::new(
+            PreservationCode::FontTypeInfoUnrepresentable,
+            PreservationResourceKind::Metadata,
+            PreservationDisposition::Unrepresentable,
+            2,
+        ));
+        let error = reject_loss(context, &report).unwrap_err().to_string();
+        assert!(error.contains("font_type_info_unrepresentable: 2 item(s)"));
+        assert!(
+            error.contains(".hwpx"),
+            "the preservation alternative must remain"
+        );
+        for text in expected {
+            assert!(
+                error.contains(text),
+                "{context} font loss recovery must name {text}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn font_recovery_convert_names_its_loss_opt_in() {
+        assert_font_recovery(
+            "convert",
+            &[
+                "ahwp convert를 --strict 없이 다시 실행",
+                "MCP hwp_convert에 strict: false",
+            ],
+        );
+    }
+
+    #[test]
+    fn font_recovery_merge_names_its_loss_opt_in() {
+        assert_font_recovery(
+            "merge",
+            &[
+                "ahwp merge를 --strict 없이 다시 실행",
+                "MCP hwp_merge에 strict: false",
+            ],
+        );
+    }
+
+    #[test]
+    fn font_recovery_edit_requires_conversion_before_retry() {
+        assert_font_recovery(
+            "edit",
+            &[
+                "ahwp convert를 --strict 없이",
+                ".hwpx 입력을 먼저 .hwp로 변환",
+                "변환된 파일로 ahwp edit",
+                "MCP hwp_edit",
+            ],
+        );
+    }
+
+    #[test]
+    fn font_recovery_fill_requires_conversion_before_retry() {
+        assert_font_recovery(
+            "fill",
+            &[
+                "ahwp convert를 --strict 없이",
+                ".hwpx 입력/템플릿을 먼저 .hwp로 변환",
+                "변환된 파일로 ahwp fill",
+                "MCP hwp_fill",
+            ],
+        );
+    }
+
+    #[test]
+    fn font_recovery_new_generates_hwpx_before_conversion() {
+        assert_font_recovery(
+            "new",
+            &[
+                "ahwp new로 .hwpx 결과를 먼저 생성",
+                "ahwp convert를 --strict 없이",
+                "그 결과를 .hwp로 변환",
+            ],
+        );
+    }
+
+    #[test]
+    fn font_recovery_compose_generates_hwpx_before_conversion() {
+        assert_font_recovery(
+            "compose",
+            &[
+                "ahwp compose로 .hwpx 결과를 먼저 생성",
+                "ahwp convert를 --strict 없이",
+                "그 결과를 .hwp로 변환",
+            ],
+        );
+    }
+
+    #[test]
+    fn font_recovery_split_keeps_source_format_and_converts_before_retry() {
+        assert_font_recovery(
+            "split",
+            &[
+                "ahwp split은 입력 형식을 유지",
+                "ahwp convert를 --strict 없이",
+                "변환된 파일로 ahwp split",
+            ],
+        );
+    }
+
+    #[test]
+    fn font_recovery_corpus_keeps_acceptance_outside_the_gate() {
+        assert_font_recovery(
+            "corpus",
+            &[
+                "매니페스트를 .hwpx 산출물로 구성",
+                "ahwp corpus",
+                "검증 게이트 밖에서 ahwp convert를 --strict 없이",
+                ".hwp로 변환",
+            ],
+        );
+    }
+
+    #[test]
+    fn font_recovery_form_bindings_requires_new_discovery_and_plan() {
+        assert_font_recovery(
+            "apply_form_bindings",
+            &[
+                "ahwp convert를 --strict 없이",
+                "원본 해시가 달라지므로",
+                "discovery와 바인딩 계획을 새로",
+                "apply_form_bindings를 다시 실행",
+            ],
+        );
     }
 
     #[test]
