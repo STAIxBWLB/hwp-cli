@@ -5363,6 +5363,11 @@ fn canonical_document(
         if !canonical.header.numberings.is_empty() || synthesized_numbering {
             let used = hwp5::write::referenced_numbering_levels(&canonical);
             let native_levels = hwp5::write::synthesized_numbering_levels();
+            let factory_extensions = [
+                (hwp_model::NumFmt::CircledHangulSyllable, "^8"),
+                (hwp_model::NumFmt::HangulJamo, ""),
+                (hwp_model::NumFmt::RomanLower, ""),
+            ];
             let raw = canonical.header.numberings.len();
             // emit_doc_info compares the seven native markers by template/start/drawn format
             // and excludes unreferenced extension levels; mirror exactly that visible policy.
@@ -5386,6 +5391,19 @@ fn canonical_document(
                         })
                     && (native_levels.len()..levels.len())
                         .all(|index| !used.contains(&(definition, index)))
+                    && levels
+                        .iter()
+                        .skip(native_levels.len())
+                        .enumerate()
+                        .all(|(index, level)| {
+                            factory_extensions
+                                .get(index)
+                                .is_some_and(|(format, template)| {
+                                    level.start == 1
+                                        && level.fmt == *format
+                                        && level.template == *template
+                                })
+                        })
                 {
                     *levels = native_levels.clone();
                 }
