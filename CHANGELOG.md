@@ -10,6 +10,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Compatibility**
+
+- Native HWP5 preservation gates used by `edit`, `fill`, `new`/`compose`, `split`, `corpus`
+  and `apply_form_bindings` now refuse unmapped HWPX font `typeInfo` when it reaches native
+  output, even without `--verify`. CLI `convert` and `merge` warn unless `--strict` is given;
+  MCP conversion remains strict by default. To accept the loss explicitly, run
+  `ahwp convert in.hwpx -o in.hwp` without `--strict` (or MCP `hwp_convert` with `strict: false`)
+  before editing/filling the native file. New/compose and corpus can produce HWPX first, then
+  convert that result outside the loss-sensitive publishing gate. Recreate discovery and
+  binding plans after conversion because the source hash changes. `split` retains its input
+  format and form bindings require matching native formats; this does not add cross-format
+  output to either command.
+
 **Fixed**
 
 - `edit --verify` projects known HWP5 writer materialization when editing HWPX into `.hwp`,
