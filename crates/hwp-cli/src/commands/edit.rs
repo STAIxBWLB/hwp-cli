@@ -4906,6 +4906,91 @@ fn is_default_secpr_projection(children: &[String]) -> bool {
     tokens(children).is_some_and(|actual| Some(actual) == *default)
 }
 
+/// Preserve native raw numbering bytes and compare the formats those known bytes actually draw.
+fn canonicalize_hwp_numberings(document: &mut hwp_model::Document, hwpx_source: bool) {
+    if hwp5::numbering::is_official_eight_level_contract(&document.header.numbering_levels) {
+        return;
+    }
+    let reader_default = hwp5::write::synthesized_numbering_levels();
+    let mut native_default = reader_default.clone();
+    for (level, format) in native_default
+        .iter_mut()
+        .zip(hwp5::write::DEFAULT_NUMBERING_FORMATS)
+    {
+        level.fmt = format;
+    }
+    let raw_count = document.header.numberings.len();
+    let used = hwp5::write::referenced_numbering_levels(document);
+    let no_heading_shapes = document
+        .header
+        .para_shapes
+        .iter()
+        .all(|shape| !matches!(shape.head_type(), 1 | 2));
+    let records = hwp5::write::numbering_records(&document.header);
+    // emit_doc_info always emits at least one fallback record, even without a modeled definition.
+    if raw_count == 0 && document.header.numbering_levels.is_empty() {
+        document
+            .header
+            .numbering_levels
+            .push(native_default.clone());
+    }
+    let factory_extensions = [
+        (hwp_model::NumFmt::CircledHangulSyllable, "^8"),
+        (hwp_model::NumFmt::HangulJamo, ""),
+        (hwp_model::NumFmt::RomanLower, ""),
+    ];
+    for (definition, levels) in document.header.numbering_levels.iter_mut().enumerate() {
+        if definition < raw_count {
+            // parse_numbering_levels omits selectors. Only this exact measured default record
+            // plus its unedited reader view can be interpreted using the writer's drawn formats.
+            if *levels == reader_default
+                && hwp5::write::is_materialized_default_numberings(
+                    std::slice::from_ref(&records[definition]),
+                    std::slice::from_ref(&reader_default),
+                )
+            {
+                *levels = native_default.clone();
+            }
+            continue;
+        }
+        let unused_factory_palette = no_heading_shapes
+            && levels.len() == 7
+            && levels.iter().enumerate().all(|(index, level)| {
+                level.start == 1
+                    && level.fmt == hwp_model::NumFmt::Digit
+                    && level.template == format!("^{}.", index + 1)
+            });
+        let exact_native_prefix = levels.len() >= native_default.len()
+            && levels[..native_default.len()] == native_default;
+        let unused_factory_extensions =
+            levels
+                .iter()
+                .skip(native_default.len())
+                .enumerate()
+                .all(|(index, level)| {
+                    !used.contains(&(definition, native_default.len() + index))
+                        && factory_extensions
+                            .get(index)
+                            .is_some_and(|(format, template)| {
+                                level.start == 1
+                                    && level.fmt == *format
+                                    && level.template == *template
+                            })
+                });
+        // write_numberings materializes the unused HWPX schema palette; emit_doc_info uses
+        // native defaults and excludes unused extension levels. Custom values remain compared.
+        if unused_factory_palette
+            || (exact_native_prefix && unused_factory_extensions)
+            || (!hwpx_source && *levels == reader_default)
+        {
+            *levels = native_default.clone();
+        }
+    }
+    // numbering_records preserves every existing payload/child and supplies only missing
+    // fallback records. Keep those bytes in the digest rather than clearing unknown resources.
+    document.header.numberings = records;
+}
+
 fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
     if hwp_convert::field::is_field_ctrl_id(&generic.ctrl_id) {
         // HWP5 exposes CTRL_DATA both as raw and as an extracted extra.
@@ -5345,93 +5430,9 @@ fn canonical_document(
         {
             canonical.header.numbering_levels.clear();
         }
-        // An edit may graft definitions past an HWP5 source's raw records. The writer emits a
-        // record for each (#377): the default NUMBERING, which re-reads as the default levels.
-        // Project the same records, and the levels of a grafted definition the default record
-        // stands for: every level counts from 1, in digits or in the record's own format for
-        // that level (a markdown list takes Hancom's default ladder, #382). Any other start or
-        // format is lost in the default record, so it is left to fail the comparison.
-        // A non-HWP5 document with ordered lists has modeled levels but no raw records; the
-        // writer synthesizes one default record per definition (`numbering_records`), unless
-        // the official eight-level contract applies (it writes its own records). Project that
-        // the same way, so a list the default record can draw compares equal (#472 compose).
-        let synthesized_numbering = canonical.header.numberings.is_empty()
-            && !canonical.header.numbering_levels.is_empty()
-            && !hwp5::numbering::is_official_eight_level_contract(
-                &canonical.header.numbering_levels,
-            );
-        if !canonical.header.numberings.is_empty() || synthesized_numbering {
-            let used = hwp5::write::referenced_numbering_levels(&canonical);
-            let native_levels = hwp5::write::synthesized_numbering_levels();
-            let factory_extensions = [
-                (hwp_model::NumFmt::CircledHangulSyllable, "^8"),
-                (hwp_model::NumFmt::HangulJamo, ""),
-                (hwp_model::NumFmt::RomanLower, ""),
-            ];
-            let raw = canonical.header.numberings.len();
-            // emit_doc_info compares the seven native markers by template/start/drawn format
-            // and excludes unreferenced extension levels; mirror exactly that visible policy.
-            // This does not claim byte preservation of unused HWPX numbering definitions.
-            for (definition, levels) in canonical
-                .header
-                .numbering_levels
-                .iter_mut()
-                .enumerate()
-                .skip(raw)
-            {
-                if levels.len() >= native_levels.len()
-                    && levels
-                        .iter()
-                        .take(native_levels.len())
-                        .enumerate()
-                        .all(|(index, level)| {
-                            level.start == native_levels[index].start
-                                && level.template == native_levels[index].template
-                                && level.fmt == hwp5::write::DEFAULT_NUMBERING_FORMATS[index]
-                        })
-                    && (native_levels.len()..levels.len())
-                        .all(|index| !used.contains(&(definition, index)))
-                    && levels
-                        .iter()
-                        .skip(native_levels.len())
-                        .enumerate()
-                        .all(|(index, level)| {
-                            factory_extensions
-                                .get(index)
-                                .is_some_and(|(format, template)| {
-                                    level.start == 1
-                                        && level.fmt == *format
-                                        && level.template == *template
-                                })
-                        })
-                {
-                    *levels = native_levels.clone();
-                }
-            }
-            canonical.header.numberings = hwp5::write::numbering_records(&canonical.header);
-            for levels in canonical.header.numbering_levels.iter_mut().skip(raw) {
-                if levels.iter().enumerate().all(|(index, level)| {
-                    level.start <= 1
-                        && native_levels
-                            .get(index)
-                            .is_some_and(|native| level.template == native.template)
-                        && (level.fmt == hwp_model::NumFmt::Digit
-                            || hwp5::write::DEFAULT_NUMBERING_FORMATS.get(index)
-                                == Some(&level.fmt))
-                }) {
-                    *levels = hwp5::write::synthesized_numbering_levels();
-                }
-            }
-        }
+        canonicalize_hwp_numberings(&mut canonical, doc.meta.source_format == "hwpx");
         if !canonical.header.bullets.is_empty() {
             canonical.header.bullets = hwp5::write::bullet_records(&canonical.header);
-        }
-        if hwp5::write::is_materialized_default_numberings(
-            &canonical.header.numberings,
-            &canonical.header.numbering_levels,
-        ) {
-            canonical.header.numberings.clear();
-            canonical.header.numbering_levels.clear();
         }
         if hwp5::write::is_materialized_generated_bullets(
             &canonical.header.bullets,
