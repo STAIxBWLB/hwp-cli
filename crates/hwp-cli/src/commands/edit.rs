@@ -4809,13 +4809,13 @@ fn projection_xml_tokens(xml: &str) -> Option<Vec<ProjectionXmlToken>> {
                     Event::Start(element) | Event::Empty(element) => element,
                     _ => unreachable!(),
                 };
-                let name = element.name().as_ref().to_vec();
+                let name = element.name().as_ref().as_bytes().to_vec();
                 let mut attributes = element
                     .attributes()
                     .map(|attribute| {
                         let attribute = attribute.ok()?;
                         Some((
-                            attribute.key.as_ref().to_vec(),
+                            attribute.key.as_ref().as_bytes().to_vec(),
                             attribute
                                 .decode_and_unescape_value(reader.decoder())
                                 .ok()?
@@ -4829,11 +4829,13 @@ fn projection_xml_tokens(xml: &str) -> Option<Vec<ProjectionXmlToken>> {
                     tokens.push((false, name, Vec::new()));
                 }
             }
-            Event::End(element) => {
-                tokens.push((false, element.name().as_ref().to_vec(), Vec::new()))
-            }
+            Event::End(element) => tokens.push((
+                false,
+                element.name().as_ref().as_bytes().to_vec(),
+                Vec::new(),
+            )),
             Event::Decl(_) => {}
-            Event::Text(text) if text.as_ref().iter().all(u8::is_ascii_whitespace) => {}
+            Event::Text(text) if text.as_ref().as_bytes().iter().all(u8::is_ascii_whitespace) => {}
             Event::Eof => return Some(tokens),
             _ => return None,
         }
