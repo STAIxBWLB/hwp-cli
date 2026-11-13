@@ -5174,10 +5174,11 @@ fn canonical_document(
                         // retain actual raw bytes (including unknown tails) and compare placement too.
                         let (width, height) = hwp5::write::table_grid_totals(table);
                         if let Some(placement) = table.placement.as_mut()
-                            && (placement.width <= 0 || placement.height <= 0)
+                            && placement.width <= 0
+                            && placement.height <= 0
                         {
-                            // emit_table replaces both unset/nonpositive dimensions with grid
-                            // totals; positive explicit geometry is never changed here.
+                            // emit_table replaces the pair with grid totals. Only a wholly unset pair
+                            // is representation scaffolding; mixed pairs lose a positive value and refuse.
                             placement.width = width;
                             placement.height = height;
                         }
@@ -5452,27 +5453,6 @@ fn canonical_document(
         {
             canonical.header.tab_defs.clear();
             canonical.header.tab_stops.clear();
-        }
-        // write_numberings emits this unused seven-digit palette as HWPX schema scaffolding;
-        // emit_doc_info replaces it with native defaults. Never ignore a used/custom definition.
-        if canonical.header.numberings.is_empty()
-            && canonical.header.numbering_levels.len() == 1
-            && canonical.header.numbering_levels[0].len() == 7
-            && canonical.header.numbering_levels[0]
-                .iter()
-                .enumerate()
-                .all(|(index, level)| {
-                    level.start == 1
-                        && level.fmt == hwp_model::NumFmt::Digit
-                        && level.template == format!("^{}.", index + 1)
-                })
-            && canonical
-                .header
-                .para_shapes
-                .iter()
-                .all(|shape| !matches!(shape.head_type(), 1 | 2))
-        {
-            canonical.header.numbering_levels.clear();
         }
         canonicalize_hwp_numberings(&mut canonical, &doc.meta.source_format);
         if !canonical.header.bullets.is_empty() {
@@ -5953,15 +5933,22 @@ fn verify_composed_hwp_numbering(
         out: &mut Vec<UsedLevel>,
     ) -> anyhow::Result<()> {
         for paragraph in paragraphs {
-            let shape = doc.header.para_shapes.get(paragraph.para_shape.0 as usize)
-                .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 문단 모양 참조가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+            let shape = doc
+                .header
+                .para_shapes
+                .get(paragraph.para_shape.0 as usize)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "번호 검증 실패: 문단 모양 참조가 없습니다. HWPX 출력으로 다시 시도하세요"
+                    )
+                })?;
             if shape.head_type() == 2 {
                 let index = shape.head_level().saturating_sub(1) as usize;
                 let definition = shape.numbering_id as usize;
                 let levels = doc.header.numbering_levels.get(definition)
-                    .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 번호 정의 {definition}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+                    .ok_or_else(|| anyhow::anyhow!("번호 검증 실패: 번호 정의 {definition}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
                 let level = levels.get(index)
-                    .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 번호 정의 {definition}의 level {index}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+                    .ok_or_else(|| anyhow::anyhow!("번호 검증 실패: 번호 정의 {definition}의 level {index}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
                 let mut format = level.fmt;
                 if drawn
                     && doc.header.numberings.get(definition).is_some_and(|raw| {
@@ -6027,7 +6014,7 @@ fn verify_composed_hwp_numbering(
             .map(|level| format!("번호 정의 {}, level {}", level.0, level.1))
             .unwrap_or_else(|| "사용된 번호 수준".into());
         anyhow::bail!(
-            "합성 번호 검증 실패: {location}의 template/start/format이 요청과 다릅니다. HWPX 출력으로 다시 시도하거나 HWP 기본 번호 형식을 사용하세요"
+            "번호 검증 실패: {location}의 template/start/format이 요청과 다릅니다. HWPX 출력으로 다시 시도하거나 HWP 기본 번호 형식을 사용하세요"
         );
     }
     Ok(())
@@ -6255,7 +6242,15 @@ mod tests {
         let signature = |document: &hwp_model::Document| {
             semantic_signature_for(document, Some(SemanticTarget::Hwp))
         };
-        for (width, height) in [(0, 100), (100, 0), (-1, 100), (100, -1), (0, 0)] {
+        for (width, height) in [
+            (0, 100),
+            (100, 0),
+            (-1, 100),
+            (100, -1),
+            (0, 0),
+            (-1, -1),
+            (-1, 0),
+        ] {
             let mut base =
                 hwp_convert::from_markdown("| Field | Value |\n| --- | --- |\n| alpha | 1 |\n");
             table(&mut base).placement = Some(hwp_model::GsoPlacement {
@@ -6275,11 +6270,19 @@ mod tests {
             placement.height = grid.1;
             native.common_data = hwp5::write::synthesized_table_common_data(native);
             native.table_tail = vec![0, 0];
-            assert_eq!(
-                signature(&base),
-                signature(&materialized),
-                "nonpositive placement ({width}, {height}) must project both writer grid dimensions"
-            );
+            if width > 0 || height > 0 {
+                assert_ne!(
+                    signature(&base),
+                    signature(&materialized),
+                    "mixed placement ({width}, {height}) must not hide its positive dimension loss"
+                );
+            } else {
+                assert_eq!(
+                    signature(&base),
+                    signature(&materialized),
+                    "wholly unset placement ({width}, {height}) materializes the grid"
+                );
+            }
 
             let mut raw = materialized.clone();
             table(&mut raw).common_data.push(0x5a);
