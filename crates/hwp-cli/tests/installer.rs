@@ -3,8 +3,8 @@
 #[cfg(unix)]
 #[test]
 fn installer_contract() {
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../scripts/tests/install.sh");
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/tests/install.sh");
     let output = std::process::Command::new("bash")
         .arg(script)
         .output()

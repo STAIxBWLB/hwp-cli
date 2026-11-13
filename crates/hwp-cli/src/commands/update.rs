@@ -612,10 +612,7 @@ mod tests {
                 Ok(true)
             },
         );
-        assert!(
-            result.is_err(),
-            "a transport failure stops the update"
-        );
+        assert!(result.is_err(), "a transport failure stops the update");
         assert_eq!(requests, vec![bridge_names("ahwp")[0].clone()]);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -641,10 +638,7 @@ mod tests {
                 Ok(true)
             },
         );
-        assert!(
-            result.is_err(),
-            "a missing checksum stops the update"
-        );
+        assert!(result.is_err(), "a missing checksum stops the update");
         assert_eq!(requests, bridge_names("ahwp"));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -667,10 +661,7 @@ mod tests {
                 Ok(true)
             },
         );
-        assert!(
-            result.is_err(),
-            "a checksum mismatch stops the update"
-        );
+        assert!(result.is_err(), "a checksum mismatch stops the update");
         assert_eq!(requests, bridge_names("ahwp"));
         std::fs::remove_dir_all(dir).unwrap();
     }
