@@ -221,6 +221,8 @@ struct Body {
     /// run piece can close at the right source offset wherever the flush happens. One cursor,
     /// assigned once per character, so the segment path and the text path cannot drift.
     source_pos: u32,
+    /// A control boundary can precede the Text-driven emphasis transition.
+    source_is_control: bool,
 }
 
 impl Deref for Body {
@@ -303,13 +305,19 @@ impl Body {
             .filter(|run| run.kind == SegmentKind::Run)
         {
             for movement in moves {
-                run.start = movement.boundary(run.start);
-                run.end = movement.boundary(run.end);
+                if run.start_follows_deletions {
+                    run.start = movement.boundary(run.start);
+                }
+                if run.end_follows_deletions {
+                    run.end = movement.boundary(run.end);
+                }
             }
         }
         if let Some(run) = self.open_run.as_mut() {
             for movement in moves {
-                run.start = movement.boundary(run.start);
+                if run.start_follows_deletions {
+                    run.start = movement.boundary(run.start);
+                }
             }
             // Its end is an unset sentinel until close_run_at records the current cursor.
         }
@@ -336,6 +344,7 @@ impl Body {
     fn close_run_at(&mut self, at: usize) {
         if let Some(mut seg) = self.open_run.take() {
             seg.end = at.max(seg.start);
+            seg.end_follows_deletions = self.source_is_control;
             if let Some((source_start, _)) = seg.source {
                 seg.source = Some((source_start, self.source_pos));
             }
@@ -927,10 +936,12 @@ fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> 
     let close = marks.close(html);
     body.push_str(&close);
     body.push_str(&trail);
-    moves.push(ByteMove::Insert {
-        at: span.content_at + kept_len,
-        len: close.len(),
-    });
+    if !trail.is_empty() {
+        moves.push(ByteMove::Insert {
+            at: span.content_at + kept_len,
+            len: close.len(),
+        });
+    }
     // Move leading whitespace before the opening markers.
     if lead_len > 0 {
         let lead = body[span.content_at..span.content_at + lead_len].to_string();
@@ -1238,6 +1249,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
         // ends at THIS character rather than the previous one - and a control's own characters
         // belong to no piece.
         body.source_pos = wchar_pos;
+        body.source_is_control = !matches!(ch, HwpChar::Text(_));
         // Transition marks using the character shape at the current position.
         // Close and reopen all marks on change to keep nesting consistent.
         if let HwpChar::Text(_) = ch {
@@ -1376,6 +1388,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
     // The walk has consumed the whole paragraph, so the last piece's source span ends at the
     // paragraph's end — the same bound `run_wchar_bounds` gives the last canonical run.
     body.source_pos = wchar_pos;
+    body.source_is_control = false;
     body.close_open();
     flush_inline(&mut body, &mut fragments);
     fragments
@@ -1410,6 +1423,8 @@ fn para_segment(
         point,
         source: None,
         controls: Vec::new(),
+        start_follows_deletions: false,
+        end_follows_deletions: false,
     })
 }
 
@@ -1443,6 +1458,8 @@ fn open_run_segment(
         // Filled in by `close_run_at`: the end is only known when the piece ends.
         source: Some((source_at, source_at)),
         controls: Vec::new(),
+        start_follows_deletions: body.source_is_control,
+        end_follows_deletions: false,
     });
 }
 
@@ -1473,6 +1490,8 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             point: false,
             source: None,
             controls: Vec::new(),
+            start_follows_deletions: false,
+            end_follows_deletions: false,
         });
     } else if code == ctrl_char::FIELD_START && crate::field::is_field_ctrl_id(&g.ctrl_id) {
         body.open_fields.push(RawSeg {
@@ -1487,6 +1506,8 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             point: false,
             source: None,
             controls: Vec::new(),
+            start_follows_deletions: false,
+            end_follows_deletions: false,
         });
     }
 }
@@ -1574,6 +1595,8 @@ fn render_control(
                     point: false,
                     source: None,
                     controls: Vec::new(),
+                    start_follows_deletions: false,
+                    end_follows_deletions: false,
                 });
             }
         }
@@ -1605,6 +1628,8 @@ fn render_control(
                     point: false,
                     source: None,
                     controls: Vec::new(),
+                    start_follows_deletions: false,
+                    end_follows_deletions: false,
                 });
             }
             push_block(body, marks, ctx.html_mode, fragments, block, span);
@@ -1855,6 +1880,8 @@ fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body
                 point: false,
                 source: None,
                 controls: Vec::new(),
+                start_follows_deletions: false,
+                end_follows_deletions: false,
             });
         }
         if let Some(slot) = grid[row].get_mut(cell.col as usize) {
@@ -1980,6 +2007,8 @@ fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Bod
                     point: false,
                     source: None,
                     controls: Vec::new(),
+                    start_follows_deletions: false,
+                    end_follows_deletions: false,
                 });
             }
         }

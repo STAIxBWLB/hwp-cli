@@ -368,6 +368,11 @@ pub(crate) struct RawSeg {
     /// this buffer, source WCHAR offset). The byte offset follows the same rebasing as
     /// `start`/`end`, and an entry whose character did not reach the output is dropped.
     pub controls: Vec<(RunControlKind, usize, u32)>,
+    /// Run cuts recorded at a control precede the next Text-driven emphasis transition and
+    /// follow deleted markers. Text-derived cuts retain their existing whitespace/marker
+    /// affinity, which need not attribute typed spaces or generated delimiters to one owner.
+    pub start_follows_deletions: bool,
+    pub end_follows_deletions: bool,
 }
 
 /// The markdown of [`crate::markdown::to_markdown_with`], plus the v2 segment vector.
