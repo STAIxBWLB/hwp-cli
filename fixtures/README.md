@@ -12,8 +12,8 @@
 > `HWP_REQUIRE_FIXTURES=1` turns every such skip into a failure except the optional sets below
 > (#275).
 >
-> **Exception: `samples/` is committed**, containing anonymized samples of the repository owner's own
-> documents and fully synthetic public regression packages. Tests depend on these without skipping.
+> **Exception: `samples/` is committed**, being anonymized test samples of the repository owner's own
+> documents, which the tests depend on hard (no skipping).
 
 ## samples/ (committed)
 
@@ -31,25 +31,6 @@
     same public information as the repository commit author.
   - Update procedure: the owner edits and saves in Hancom → check that no real names remain (zero
     hits) → confirm `hwp validate` passes → commit the replaced file.
-- `style-tables-opaque.hwpx`: a fully synthetic byte-stability fixture for `edit --style-tables`
-  with a raw-backed `hp:container`; this is not a genuine Hancom export or derived from private bytes.
-  - Origin: release `ahwp 1.6.2` generated a new document from this fresh public GFM table:
-    `| Field | Value |`, `| --- | --- |`, `| alpha | 1 |`. Its metadata identifies it as an
-    `agent-hwp synthetic fixture`, with no real person or institution data.
-  - Construction: the writer-generated header, `Contents/content.hpf`, and other package entries
-    are retained. A sibling paragraph was appended before `</hs:sec>` using the public container
-    pattern in `crates/hwpx/tests/roundtrip_preserve.rs`: container id `77`, size `1000` by `500`,
-    and one `hp:subList` paragraph containing `STYLE-TABLES-OPAQUE-SYNTHETIC-MARKER`. Paragraph ids
-    are `9000` (outer) and `9001` (inside the container). No `imgBrush` or image payload is present.
-  - Regeneration: run `ahwp new --from source.md --strict -o generated.hwpx` with the table above
-    and repeated `--set-meta` values `title=Public synthetic opaque-container table`,
-    `author=agent-hwp synthetic fixture`, and
-    `subject=Fully synthetic parser/writer regression fixture; not a Hancom export`.
-    Then append that public XML pattern to `Contents/section0.xml` and repack the original entries
-    in order, retaining `mimetype` as the first stored entry. It contains one 2-row, 2-column table
-    and a separate raw-backed Generic container; the table is not nested inside that container.
-  - Scope: parser/writer preservation and repeated-styling byte stability only. It establishes no
-    Hancom layout, native-opening, or rendering ground truth.
 
 ## hwp5/
 

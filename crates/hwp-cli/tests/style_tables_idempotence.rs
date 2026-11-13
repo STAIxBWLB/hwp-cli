@@ -10,12 +10,15 @@
 //! detector, not a redundant check.
 //!
 //! Deliberately does NOT assert on page counts or glyph metrics (CI render fonts differ from
-//! local ones). The byte-stability inputs are committed markdown and a fully synthetic HWPX,
-//! so those checks never skip. A separate guarded private case checks the image-fill refusal;
-//! it is not evidence of byte stability when that fixture is absent.
+//! local ones). The byte-stability inputs are public markdown and a fully synthetic HWPX built
+//! at test time, so those checks never skip. A separate guarded private case checks the image-fill
+//! refusal; it is not evidence of byte stability when that fixture is absent.
 
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use zip::write::SimpleFileOptions;
 
 #[path = "common/fixture_skip.rs"]
 mod fixture_skip;
@@ -68,6 +71,61 @@ fn new_from(md: &Path, out: &Path, extra_args: &[&str]) {
     let status = cmd.status().unwrap();
     assert!(status.success(), "hwp new --from {md:?} -o {out:?} failed");
 }
+
+/// Build a complete package with the tested CLI, then append only the public raw-container
+/// pattern from hwpx/tests/roundtrip_preserve.rs. No installed release or private bytes are used.
+fn build_opaque_container_hwpx(dir: &Path) -> PathBuf {
+    let markdown = write_md(
+        dir,
+        "synthetic.md",
+        "| Field | Value |\n| --- | --- |\n| alpha | 1 |\n",
+    );
+    let generated = dir.join("generated.hwpx");
+    new_from(
+        &markdown,
+        &generated,
+        &[
+            "--strict",
+            "--set-meta",
+            "title=Public synthetic opaque-container table",
+            "--set-meta",
+            "author=agent-hwp synthetic fixture",
+            "--set-meta",
+            "subject=Fully synthetic parser/writer regression fixture; not a Hancom export",
+        ],
+    );
+    let mut input = zip::ZipArchive::new(std::fs::File::open(&generated).unwrap()).unwrap();
+    assert!(
+        input.by_name("Contents/content.hpf").is_ok(),
+        "the generated fixture must include its complete package manifest"
+    );
+    let source = dir.join("synthetic.hwpx");
+    let mut output = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
+    let mut appended = false;
+    for index in 0..input.len() {
+        let mut entry = input.by_index(index).unwrap();
+        let name = entry.name().to_owned();
+        let options = SimpleFileOptions::default().compression_method(entry.compression());
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        if name == "Contents/section0.xml" {
+            let mut section = String::from_utf8(bytes).unwrap();
+            let closing = section
+                .rfind("</hs:sec>")
+                .expect("the CLI-generated section must have its closing element");
+            section.insert_str(closing, SYNTHETIC_CONTAINER_PARAGRAPH);
+            bytes = section.into_bytes();
+            appended = true;
+        }
+        output.start_file(name, options).unwrap();
+        output.write_all(&bytes).unwrap();
+    }
+    output.finish().unwrap();
+    assert!(appended, "the fixture must exercise the raw container path");
+    source
+}
+
+const SYNTHETIC_CONTAINER_PARAGRAPH: &str = r#"<hp:p id="9000" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:container id="77" zOrder="3"><hp:sz width="1000" height="500"/><hp:subList><hp:p id="9001" paraPrIDRef="0" styleIDRef="0" pageBreak="0" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t>STYLE-TABLES-OPAQUE-SYNTHETIC-MARKER</hp:t></hp:run></hp:p></hp:subList></hp:container></hp:run></hp:p>"#;
 
 fn style_tables(input: &Path, output: &Path) {
     let r = hwp()
@@ -455,7 +513,7 @@ fn table_record(control: &serde_json::Value) -> Option<TableRecord> {
     Some(TableRecord { cols, cells })
 }
 
-/// D-08 coverage for the raw-backed generic case from #133, using only committed synthetic data.
+/// D-08 coverage for the raw-backed generic case from #133, using a test-generated public package.
 ///
 /// An HWPX carrying an `hp:container` (an opaque run-level object whose captured XML is the
 /// ONLY lossless serialization source) is the case the earlier tests missed: they covered
@@ -472,10 +530,10 @@ fn table_record(control: &serde_json::Value) -> Option<TableRecord> {
 /// native compatibility evidence. Every pass still runs the semantic `--verify` self-check.
 #[test]
 fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/samples/style-tables-opaque.hwpx");
+    let dir = test_dir("opaque-container");
+    let source = build_opaque_container_hwpx(&dir);
     let document = hwpx::read_document(&source)
-        .expect("the committed synthetic fixture must always be available")
+        .expect("the generated synthetic package must be readable")
         .document;
     assert!(
         document.sections.iter().any(|section| {
@@ -508,7 +566,6 @@ fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
         !raw.contains("imgBrush"),
         "the synthetic raw container must have no image fill"
     );
-    let dir = test_dir("opaque-container");
     let first = dir.join("s1.hwpx");
     let second = dir.join("s2.hwpx");
     let third = dir.join("s3.hwpx");
