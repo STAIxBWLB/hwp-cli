@@ -70,15 +70,7 @@ impl Fixture {
             .unwrap();
         assert_refused(&run, &output);
         let value = read_report(&report);
-        // stderr keeps the human sentence; the report carries only the code's fixed,
-        // content-free sentence (#348).
-        let code = value["refusal"]["code"].as_str().unwrap();
-        assert_eq!(
-            value["refusal"]["message"],
-            hwp_cli::refusal::fixed_message(code),
-            "{value}"
-        );
-        assert!(!run.stderr.is_empty());
+        assert!(!run.stderr.is_empty(), "stderr keeps the human sentence");
         value
     }
 }
@@ -120,6 +112,13 @@ fn legacy_flag_refusal_writes_the_report() {
     let fixture = Fixture::new("legacy");
     let report = fixture.refused("legacy", &["--add-row", "99"]);
     assert_eq!(report["refusal"]["code"], "unclassified");
+    // The report carries only the code's fixed, content-free sentence (#348); stderr keeps
+    // the full one.
+    assert_eq!(
+        report["refusal"]["message"],
+        hwp_cli::refusal::fixed_message("unclassified"),
+        "{report}"
+    );
     assert!(!report.to_string().contains("#99"), "{report}");
     assert_eq!(report["ops"], json!([]));
 }
