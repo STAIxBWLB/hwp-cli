@@ -1937,6 +1937,85 @@ mod run_control_tests {
         }
     }
 
+    /// 555-P2-2: three or more runs share one emphasis span. `pattern` lists each run's
+    /// character after `a` (None = the run is a plain `x` with no control); every run is bold
+    /// with its own shape id, then a plain `b` closes the span. Every control must be listed on
+    /// its own piece and the pieces must stay disjoint.
+    fn shared_span_case(pattern: &[Option<u16>]) {
+        let mut chars = vec![HwpChar::Text('a')];
+        let mut runs = vec![(0u32, CharShapeId(1))];
+        for (i, code) in pattern.iter().enumerate() {
+            let at = chars.len() as u32;
+            if i > 0 {
+                runs.push((at, CharShapeId(2 + i as u16)));
+            }
+            chars.push(match code {
+                Some(code) => HwpChar::CharCtrl(*code),
+                None => HwpChar::Text('x'),
+            });
+        }
+        runs.push((chars.len() as u32, CharShapeId(0)));
+        chars.push(HwpChar::Text('b'));
+        let p = Paragraph {
+            chars,
+            char_shape_runs: runs,
+            ..Default::default()
+        };
+        let mut doc = doc_of(vec![p]);
+        for i in 0..pattern.len() {
+            doc.header.char_shapes.push(CharShape {
+                attr: 0b10,
+                base_size: 1100 + 100 * i as i32,
+                ..Default::default()
+            });
+        }
+        let (md, segs) = emit(&doc);
+        let chars: Vec<char> = md.chars().collect();
+        let runs: Vec<&Segment> = segs.iter().filter(|s| s.kind == SegmentKind::Run).collect();
+        let listed: usize = runs.iter().map(|r| r.controls.len()).sum();
+        let expected = pattern.iter().filter(|c| c.is_some()).count();
+        assert_eq!(listed, expected, "every control listed: {segs:#?} {md:?}");
+        for r in &runs {
+            for c in &r.controls {
+                assert!(
+                    r.start <= c.at && c.at < r.end,
+                    "{c:?} outside {r:?} in {md:?}"
+                );
+                assert!(matches!(chars[c.at], ' ' | '-'), "{c:?} {md:?}");
+            }
+        }
+        for w in runs.windows(2) {
+            assert!(
+                w[0].end <= w[1].start,
+                "{:?} overlaps {:?} in {md:?}",
+                (w[0].start, w[0].end),
+                (w[1].start, w[1].end)
+            );
+        }
+    }
+
+    /// The review's probe: `a NB FW NB b`, bold runs at 0, 2 and 3, plain at 4.
+    #[test]
+    fn three_runs_sharing_one_span_stay_disjoint() {
+        shared_span_case(&[
+            Some(ctrl_char::NB_SPACE),
+            Some(ctrl_char::FW_SPACE),
+            Some(ctrl_char::NB_SPACE),
+        ]);
+    }
+
+    /// The middle run carries no control; its neighbours still stay disjoint around it.
+    #[test]
+    fn a_middle_run_without_a_control_stays_disjoint() {
+        shared_span_case(&[Some(ctrl_char::NB_SPACE), None, Some(ctrl_char::FW_SPACE)]);
+        shared_span_case(&[
+            Some(ctrl_char::NB_SPACE),
+            Some(ctrl_char::FW_SPACE),
+            None,
+            Some(ctrl_char::NB_SPACE),
+        ]);
+    }
+
     #[test]
     fn a_run_without_controls_publishes_none() {
         let p = Paragraph {
