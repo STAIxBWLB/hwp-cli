@@ -6592,7 +6592,7 @@ mod tests {
     }
 
     /// Compile through HWPX to bypass the HWP authoring guard, then exercise the existing
-    /// compose verification entry point against the actual substituted HWP output. This
+    /// compose/edit verification entry point against the actual substituted HWP output. This
     /// backstop must work even if a future caller accidentally omits the early guard.
     #[test]
     fn compose_hwp_verification_rejects_template_format_and_start_substitution() {
@@ -6645,7 +6645,7 @@ mod tests {
                 )
                 .unwrap()
                 .document;
-                for origin in ["document-spec-v1", "document-spec-v2"] {
+                for origin in ["document-spec-v1", "document-spec-v2", "hwpx"] {
                     expected.meta.source_format = origin.into();
                     let output = dir.join(format!("{kind}-{location}-{origin}.hwp"));
                     crate::commands::convert::write_hwp_structural(&expected, &output).unwrap();
@@ -6654,10 +6654,17 @@ mod tests {
                         result.is_err(),
                         "{origin}/{kind}/{location}: compose verification must detect substituted used numbering"
                     );
+                    let message = result.unwrap_err().to_string();
                     assert!(
-                        result.unwrap_err().to_string().contains("HWPX"),
+                        message.contains("HWPX"),
                         "numbering refusal names a repair step"
                     );
+                    if origin == "hwpx" {
+                        assert!(
+                            message.starts_with("번호 검증 실패"),
+                            "HWPX edits need a generic numbering refusal label: {message}"
+                        );
+                    }
                 }
             }
         }
