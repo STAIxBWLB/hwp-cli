@@ -4907,7 +4907,7 @@ fn is_default_secpr_projection(children: &[String]) -> bool {
 }
 
 /// Preserve native raw numbering bytes and compare the formats those known bytes actually draw.
-fn canonicalize_hwp_numberings(document: &mut hwp_model::Document, hwpx_source: bool) {
+fn canonicalize_hwp_numberings(document: &mut hwp_model::Document, source_format: &str) {
     if hwp5::numbering::is_official_eight_level_contract(&document.header.numbering_levels) {
         return;
     }
@@ -4962,6 +4962,19 @@ fn canonicalize_hwp_numberings(document: &mut hwp_model::Document, hwpx_source: 
             });
         let exact_native_prefix = levels.len() >= native_default.len()
             && levels[..native_default.len()] == native_default;
+        // compile_lists fills undeclared slots with Digit/^N. for its renderer. The HWP
+        // authoring guard validates every declared marker/start and every used format first.
+        // Recognize only that bounded compiler pattern, never arbitrary HWPX definitions.
+        let composed_renderer_defaults =
+            matches!(source_format, "document-spec-v1" | "document-spec-v2")
+                && levels.len() == native_default.len()
+                && levels.iter().enumerate().all(|(index, level)| {
+                    level.start == 1
+                        && level.fmt == hwp_model::NumFmt::Digit
+                        && (level.template == native_default[index].template
+                            || level.template == format!("^{}.", index + 1))
+                        && (!used.contains(&(definition, index)) || *level == native_default[index])
+                });
         let unused_factory_extensions =
             levels
                 .iter()
@@ -4987,7 +5000,8 @@ fn canonicalize_hwp_numberings(document: &mut hwp_model::Document, hwpx_source: 
         // supplies one unused Digit/^8 slot. All other custom values remain compared.
         if unused_factory_palette
             || (exact_native_prefix && unused_factory_extensions)
-            || (!hwpx_source && *levels == reader_default)
+            || composed_renderer_defaults
+            || (source_format != "hwpx" && *levels == reader_default)
         {
             *levels = native_default.clone();
         }
@@ -5460,7 +5474,7 @@ fn canonical_document(
         {
             canonical.header.numbering_levels.clear();
         }
-        canonicalize_hwp_numberings(&mut canonical, doc.meta.source_format == "hwpx");
+        canonicalize_hwp_numberings(&mut canonical, &doc.meta.source_format);
         if !canonical.header.bullets.is_empty() {
             canonical.header.bullets = hwp5::write::bullet_records(&canonical.header);
         }
