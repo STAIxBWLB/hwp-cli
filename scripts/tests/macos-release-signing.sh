@@ -49,10 +49,16 @@ case "$1" in
         if [ "$1" = -R ]; then requirement="$2"; break; fi
         shift
     done
+    # codesign treats a plain requirement argument as a file, not inline text.
+    case "$requirement" in
+        =*) ;;
+        '') ;;
+        *) [ -f "$requirement" ] || exit 1 ;;
+    esac
     # Model a different certificate team: only a pinned requirement detects it.
     if [ "${MOCK_TEAM:-valid}" = wrong ] && [ -n "$requirement" ]; then exit 1; fi
     if [ "${MOCK_REQUIRE_TEAM:-0}" = 1 ]; then
-        [ "$requirement" = 'anchor apple generic and certificate leaf[subject.OU] = "AB12CD34EF"' ] || exit 1
+        [ "$requirement" = '=anchor apple generic and certificate leaf[subject.OU] = "AB12CD34EF"' ] || exit 1
     fi
     ;;
 -dv)
@@ -98,6 +104,7 @@ count=0
 [ ! -f "$RUNNER_TEMP/assessment-count" ] || read -r count <"$RUNNER_TEMP/assessment-count"
 count=$((count + 1))
 printf '%s\n' "$count" >"$RUNNER_TEMP/assessment-count"
+echo "assessment-detail: fixture-attempt-$count" >&2
 case "${MOCK_SPCTL:-accepted}" in
     rejected) echo "${!#}: rejected"; exit 1 ;;
     wrong-source) echo "${!#}: accepted"; echo 'source=Developer ID'; exit 0 ;;
@@ -171,8 +178,35 @@ followup_case() {
             [ ! -s "$MOCK_CALLS" ]
             ;;
         invalid-team)
-            expect_failure 'exactly 10 ASCII letters or digits' env APPLE_TEAM_ID='invalid team' bash "$helper" verify-archive "$tmp/signed.tar.gz"
+            expect_failure 'exactly 10 uppercase ASCII letters or digits' env APPLE_TEAM_ID='invalid team' bash "$helper" verify-archive "$tmp/signed.tar.gz"
             [ ! -s "$MOCK_CALLS" ]
+            ;;
+        prepare-missing-team)
+            expect_failure 'APPLE_TEAM_ID is missing' env -u APPLE_TEAM_ID bash "$helper" prepare
+            grep -F 'Actions > Variables' "$tmp/log" >/dev/null
+            [ ! -s "$MOCK_CALLS" ]
+            ;;
+        prepare-invalid-team|prepare-lowercase-team)
+            expected='INVALID'
+            [ "$selected" != prepare-lowercase-team ] || expected=ab12cd34ef
+            expect_failure 'exactly 10 uppercase ASCII letters or digits' env APPLE_TEAM_ID="$expected" bash "$helper" prepare
+            [ ! -s "$MOCK_CALLS" ]
+            ;;
+        verify-lowercase-team)
+            expect_failure 'exactly 10 uppercase ASCII letters or digits' env APPLE_TEAM_ID=ab12cd34ef bash "$helper" verify-archive "$tmp/signed.tar.gz"
+            [ ! -s "$MOCK_CALLS" ]
+            ;;
+        mismatch-remedy)
+            expect_failure 'Code signature verification failed' env MOCK_TEAM=wrong bash "$helper" verify-archive "$tmp/signed.tar.gz"
+            grep -F 'APPLE_TEAM_ID in repository Actions Variables' "$tmp/log" >/dev/null || { echo 'FAIL: signature refusal must name APPLE_TEAM_ID Variables' >&2; exit 1; }
+            grep -F 'APPLE_CERTIFICATE in repository Actions Secrets' "$tmp/log" >/dev/null || { echo 'FAIL: signature refusal must name APPLE_CERTIFICATE Secrets' >&2; exit 1; }
+            ;;
+        gatekeeper-detail)
+            expect_failure 'Gatekeeper install assessment did not accept' env MOCK_SPCTL=rejected bash "$helper" verify-archive "$tmp/signed.tar.gz"
+            grep -Fx 'assessment-detail: fixture-attempt-3' "$tmp/log" >/dev/null || { echo 'FAIL: refusal must retain the final Gatekeeper assessment detail' >&2; exit 1; }
+            if grep -E '^assessment-detail: fixture-attempt-[12]$' "$tmp/log" >/dev/null; then
+                echo 'FAIL: refusal must print only the final Gatekeeper assessment' >&2; exit 1
+            fi
             ;;
         wrong-team)
             expect_failure 'Code signature verification failed' env MOCK_TEAM=wrong bash "$helper" verify-archive "$tmp/signed.tar.gz"
@@ -234,7 +268,7 @@ if [ -n "${MACOS_SIGNING_CASE:-}" ]; then
     followup_case "$MACOS_SIGNING_CASE"
     exit 0
 fi
-for selected in missing-team invalid-team wrong-team designated-team gatekeeper-rejected gatekeeper-source gatekeeper-exit gatekeeper-retry duplicate-identity security-create-keychain security-list-keychains security-unlock-keychain security-set-keychain-settings security-import security-set-key-partition-list security-find-identity; do
+for selected in prepare-missing-team prepare-invalid-team prepare-lowercase-team verify-lowercase-team mismatch-remedy gatekeeper-detail missing-team invalid-team wrong-team designated-team gatekeeper-rejected gatekeeper-source gatekeeper-exit gatekeeper-retry duplicate-identity security-create-keychain security-list-keychains security-unlock-keychain security-set-keychain-settings security-import security-set-key-partition-list security-find-identity; do
     followup_case "$selected"
 done
 

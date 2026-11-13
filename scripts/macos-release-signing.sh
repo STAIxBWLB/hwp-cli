@@ -27,7 +27,7 @@ require_secrets() {
 require_team() {
     local LC_ALL=C
     [ -n "${APPLE_TEAM_ID:-}" ] || fail 'APPLE_TEAM_ID is missing. Set APPLE_TEAM_ID in repository Settings > Secrets and variables > Actions > Variables, then rerun Release.'
-    [[ "$APPLE_TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]] || fail 'APPLE_TEAM_ID must contain exactly 10 ASCII letters or digits. Correct it in repository Settings > Secrets and variables > Actions > Variables, then rerun Release.'
+    [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || fail 'APPLE_TEAM_ID must contain exactly 10 uppercase ASCII letters or digits. Correct it in repository Settings > Secrets and variables > Actions > Variables, then rerun Release.'
 }
 
 require_macos() {
@@ -63,7 +63,7 @@ write_notary_key() {
 verify_binary() {
     local binary="$1" details
     require_team
-    codesign --verify --strict --verbose=2 -R "anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" "$binary" || fail 'Code signature verification failed. Rebuild and sign the macOS asset with the configured Developer ID Application certificate.'
+    codesign --verify --strict --verbose=2 -R "=anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" "$binary" || fail 'Code signature verification failed. Compare APPLE_TEAM_ID in repository Actions Variables with the Developer ID team of APPLE_CERTIFICATE in repository Actions Secrets, correct the variable or certificate, then rebuild and rerun Release.'
     if ! details="$(codesign -dv --verbose=4 "$binary" 2>&1)"; then
         fail 'Cannot inspect the code signature. Rebuild and sign the macOS asset before uploading it.'
     fi
@@ -89,6 +89,7 @@ verify_gatekeeper() {
         fi
         if [ "$attempt" -lt 3 ]; then sleep 10; fi
     done
+    printf '%s\n' "$assessment" >&2
     fail 'Gatekeeper install assessment did not accept a Notarized Developer ID asset after 3 attempts, 10 seconds apart (20 seconds of retry delay). Ticket propagation may be delayed; check notarization and network access, then rerun Release.'
 }
 
@@ -120,6 +121,7 @@ PY
 
 case "${1:-}" in
     prepare)
+        require_team
         require_secrets APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER_ID
         require_macos
         : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required on the release runner}"
