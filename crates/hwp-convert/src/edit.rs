@@ -176,7 +176,7 @@ fn is_explicit_form_value(cell: &hwp_model::Cell, wanted: &str) -> bool {
 
 /// Opaque HWP5 range marks (format 5.0 section 4.3.5); no saved layout is available locally.
 pub(crate) const PARA_RANGE_TAG: u16 = 0x10 + 54;
-pub(crate) const RANGE_TAG_SHIFT_REFUSAL: &str = "미해석 PARA_RANGE_TAG 구간 표시가 있어 WCHAR 위치가 바뀌거나 표시를 잃는 문단 재작성을 지원하지 않습니다. 같은 WCHAR 길이의 텍스트 치환을 사용하거나 한글에서 구간 표시를 제거한 파일로 다시 실행하세요.";
+pub const RANGE_TAG_SHIFT_REFUSAL: &str = "미해석 PARA_RANGE_TAG 구간 표시가 있어 WCHAR 위치가 바뀌거나 표시를 잃는 문단 재작성을 지원하지 않습니다. 같은 WCHAR 길이의 텍스트 치환을 사용하거나 한글에서 구간 표시를 제거한 파일로 다시 실행하세요.";
 
 pub(crate) fn paragraph_has_range_tags(para: &Paragraph) -> bool {
     para.extras
@@ -2276,7 +2276,13 @@ fn insert_para_after_anchor(
             return Ok(1);
         }
     }
-    Err(format!("앵커를 찾을 수 없습니다: {anchor}"))
+    Err(anchor_not_found_message(anchor))
+}
+
+/// The exact refusal `add_table`/`clone_table` return when no top-level paragraph holds
+/// `anchor`. Callers that know the anchor classify by equality with this, never by parsing.
+pub fn anchor_not_found_message(anchor: &str) -> String {
+    format!("앵커를 찾을 수 없습니다: {anchor}")
 }
 
 /// How a cloned table treats source cell content (#78).

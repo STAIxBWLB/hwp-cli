@@ -12,6 +12,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use hwp_cli::cli::EditArgs;
+use hwp_cli::refusal::{self, Refusal};
 use hwp_convert::{CharFormat, ImageSize};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -481,6 +482,9 @@ pub struct EditReport {
     /// D-14: true for a `--dry-run` report. A dry-run and a real run of the same batch produce
     /// reports that differ only in this field.
     pub dry_run: bool,
+    /// #531: set only on a refused run's report: the run-level refusal (the same object the
+    /// refused op carries, when one op refused).
+    pub refusal: Option<Refusal>,
 }
 
 /// Which of the `edit-ops-v1` `op` enum this outcome describes — spelled the same way
@@ -563,6 +567,10 @@ pub struct OpOutcome {
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_style: Option<hwp_cli::insert_blocks::MissingStylePolicy>,
+    /// #531: why a failed op refused, as a stable code, structured values and the human
+    /// sentence. Present only on the op that refused the run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refusal: Option<Refusal>,
 }
 
 /// `edit-report-v1` caps `ops[].changed` at this many items (`maxItems`). A valid
@@ -584,6 +592,8 @@ struct EditReportV1<'a> {
     ops: &'a [OpOutcome],
     applied_count: usize,
     failed_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refusal: Option<&'a Refusal>,
 }
 
 impl EditReportV1<'_> {
@@ -595,15 +605,40 @@ impl EditReportV1<'_> {
             .count();
         let failed_count = report.ops.len() - applied_count;
         EditReportV1 {
-            schema_version: "1.0",
+            schema_version: "1.1",
             contract: "hwp-edit-report-v1",
             output: &report.output,
             dry_run: report.dry_run,
             ops: &report.ops,
             applied_count,
             failed_count,
+            refusal: report.refusal.as_ref(),
         }
     }
+}
+
+/// #531: `reject_preservation_loss` for `edit`, with the refusal classified as
+/// `preservation_loss` and every event's code and count in `values.events`. The message is
+/// exactly what `reject_preservation_loss` says, so stderr does not change.
+fn reject_edit_preservation_loss(report: &hwp_model::PreservationReport) -> anyhow::Result<()> {
+    let Err(error) = crate::commands::reject_preservation_loss("edit", report) else {
+        return Ok(());
+    };
+    let events: Vec<serde_json::Value> = report
+        .events
+        .iter()
+        .map(|event| {
+            serde_json::json!({
+                "code": event.code,
+                "resource": event.resource,
+                "disposition": event.disposition,
+                "count": event.count,
+            })
+        })
+        .collect();
+    Err(anyhow::Error::new(
+        Refusal::new(refusal::PRESERVATION_LOSS, error.to_string()).with("events", events),
+    ))
 }
 
 /// EDT-06: carries a fully-populated [`EditReport`] alongside an aborted `execute()` run
@@ -617,15 +652,95 @@ impl EditReportV1<'_> {
 pub(crate) struct EditAbort {
     pub(crate) report: EditReport,
     reason: String,
+    /// #531: the error an op refused with. When set, Display and `source()` are this error's,
+    /// so stderr and the MCP message stay exactly what they were before the report rode along.
+    inner: Option<anyhow::Error>,
 }
 
 impl std::fmt::Display for EditAbort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.reason)
+        match &self.inner {
+            Some(inner) => write!(f, "{inner}"),
+            None => write!(f, "{}", self.reason),
+        }
     }
 }
 
-impl std::error::Error for EditAbort {}
+impl std::error::Error for EditAbort {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner
+            .as_ref()
+            .and_then(|inner| AsRef::<dyn std::error::Error>::as_ref(inner).source())
+    }
+}
+
+/// #531: classifies the error one typed op refused with. A [`Refusal`] already in the chain
+/// wins; otherwise only the op kind and exact equality with a fixed refusal sentence decide,
+/// so user text inside a message can never select a code.
+fn classify_op_error(operation: &TypedEditOperation, error: &anyhow::Error) -> Refusal {
+    if let Some(refusal) = Refusal::find_in(error) {
+        return refusal;
+    }
+    let message = error.to_string();
+    if let TypedEditOperation::AddTable { anchor, .. } = operation
+        && message == hwp_convert::anchor_not_found_message(anchor)
+    {
+        return Refusal::new(refusal::ADD_TABLE_ANCHOR_NOT_FOUND, message)
+            .with("anchor", anchor.as_str());
+    }
+    Refusal::from_convert_message(message)
+}
+
+/// #531: the run-level refusal for an error that carries no classified op (load, preflight,
+/// conflict, writer and verifier failures, and the legacy flags).
+fn classify_run_error(error: &anyhow::Error) -> Refusal {
+    Refusal::find_in(error).unwrap_or_else(|| Refusal::from_convert_message(format!("{error:#}")))
+}
+
+/// #531: the refusal an `execute` error carries: the classified run-level refusal of an
+/// aborted batch, else the error's own classification.
+pub(crate) fn refusal_of(error: &anyhow::Error) -> Option<Refusal> {
+    match error.downcast_ref::<EditAbort>() {
+        Some(abort) => abort.report.refusal.clone(),
+        None => Some(classify_run_error(error)),
+    }
+}
+
+/// #531: a refused run whose error carries no report of its own still gets an
+/// `edit-report-v1` report: no op outcomes, and the run-level refusal.
+fn refused_run_report(output: &Path, dry_run: bool, error: &anyhow::Error) -> EditReport {
+    EditReport {
+        output: output.display().to_string(),
+        applied: 0,
+        warnings: Vec::new(),
+        preservation: hwp_model::PreservationReport::new(),
+        ops: Vec::new(),
+        dry_run,
+        refusal: Some(classify_run_error(error)),
+    }
+}
+
+/// #531: `hwp edit --ops` failed while reading or normalizing the ops file, before a plan
+/// existed. Writes the refused-run report `--report`/`--dry-run` asked for, then lets the
+/// caller propagate the same error.
+pub fn emit_refused_before_plan(
+    output: &Path,
+    report: Option<std::path::PathBuf>,
+    dry_run: bool,
+    error: &anyhow::Error,
+) -> anyhow::Result<()> {
+    let plan = EditPlan {
+        operations: Vec::new(),
+        typed_operations: Vec::new(),
+        ops_input: None,
+        verify: false,
+        allow_partial: false,
+        dry_run,
+        report,
+        assets: AssetPlan::default(),
+    };
+    emit_edit_report(&plan, &refused_run_report(output, dry_run, error))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputFormat {
@@ -1000,8 +1115,11 @@ pub fn run(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<()> {
             // EDT-06/D-14: an aborted run still leaves a diagnosable artifact when `--report`
             // was given — write it, then propagate the SAME error `err` carries (EditAbort's
             // Display reproduces the original bail! message verbatim).
+            // #531: every other refused run gets a report too, with its run-level refusal.
             if let Some(abort) = err.downcast_ref::<EditAbort>() {
                 emit_edit_report(plan, &abort.report)?;
+            } else {
+                emit_edit_report(plan, &refused_run_report(output, plan.dry_run, &err))?;
             }
             Err(err)
         }
@@ -1037,6 +1155,9 @@ pub(crate) fn emit_edit_report(plan: &EditPlan, report: &EditReport) -> anyhow::
     }
     Ok(())
 }
+
+const NO_APPLICABLE_EDITS_REASON: &str = "적용 가능한 편집이 없어 출력을 게시하지 않습니다 \
+     (--replace/--set-cell/--set-field/--set-meta 등 요청 확인)";
 
 pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<EditReport> {
     if plan
@@ -1105,6 +1226,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             // One outcome per typed replace, equal to the apply loop's for the same batch (#332).
             ops: report.ops,
             dry_run: plan.dry_run,
+            refusal: None,
         });
     }
 
@@ -1594,8 +1716,16 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     let rows: Vec<Vec<String>> = serde_json::from_str(json).with_context(|| {
                         format!("--add-table 행 데이터는 문자열 배열의 배열이어야 합니다: {json:?}")
                     })?;
-                    hwp_convert::add_table(&mut doc, anchor, &rows)
-                        .map_err(|e| anyhow::anyhow!(e))?;
+                    hwp_convert::add_table(&mut doc, anchor, &rows).map_err(|message| {
+                        if message == hwp_convert::anchor_not_found_message(anchor) {
+                            anyhow::Error::new(
+                                Refusal::new(refusal::ADD_TABLE_ANCHOR_NOT_FOUND, message)
+                                    .with("anchor", anchor),
+                            )
+                        } else {
+                            anyhow::anyhow!(message)
+                        }
+                    })?;
                     eprintln!(
                         "표 삽입: {anchor:?} 뒤 ({}x{})",
                         rows.len(),
@@ -1856,7 +1986,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         }
         let edits_before = edits;
         let unapplied_before = unapplied.len();
-        apply_typed_operation(
+        if let Err(error) = apply_typed_operation(
             operation,
             &mut doc,
             &mut edits,
@@ -1867,7 +1997,37 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             &mut offsets,
             output_format,
             &plan.assets.context(),
-        )?;
+        ) {
+            // #531: the op that refused carries the classified refusal; the report keeps every
+            // earlier op's outcome, and the error propagates unchanged.
+            let refusal = classify_op_error(operation, &error);
+            let op = typed_op_kind(operation);
+            ops_outcomes.push(OpOutcome {
+                index,
+                op: op.to_string(),
+                status: OpStatus::Failed,
+                pieces_touched: 0,
+                changed: Vec::new(),
+                changed_total: None,
+                missing_style: None,
+                reason: Some(format!("{op}: refused ({})", refusal.code)),
+                refusal: Some(refusal.clone()),
+            });
+            return Err(EditAbort {
+                report: EditReport {
+                    output: output.display().to_string(),
+                    applied: 0,
+                    warnings: Vec::new(),
+                    preservation: hwp_model::PreservationReport::new(),
+                    ops: ops_outcomes,
+                    dry_run: plan.dry_run,
+                    refusal: Some(refusal),
+                },
+                reason: String::new(),
+                inner: Some(error),
+            }
+            .into());
+        }
         if tables_before.is_some_and(|before| table_count(&doc) != before) {
             tables_changed_by.get_or_insert(index);
         }
@@ -1895,6 +2055,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 changed: Vec::new(),
                 changed_total: None,
                 missing_style: None,
+                refusal: None,
                 reason: Some(failure_reason(operation)),
             });
             continue;
@@ -1920,6 +2081,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 changed: Vec::new(),
                 changed_total: None,
                 missing_style: None,
+                refusal: None,
                 reason: None,
             });
             continue;
@@ -1940,6 +2102,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 changed: Vec::new(),
                 changed_total: None,
                 missing_style: None,
+                refusal: None,
                 reason: Some("적용되지 않음 (사전 검증 단계에서 이미 확인됨)".to_string()),
             });
             continue;
@@ -1967,6 +2130,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             changed,
             changed_total,
             reason: None,
+            refusal: None,
             missing_style: match operation {
                 TypedEditOperation::InsertBlocks { request, .. } => Some(request.missing_style),
                 _ => None,
@@ -1987,8 +2151,12 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 preservation: hwp_model::PreservationReport::new(),
                 ops: ops_outcomes,
                 dry_run: plan.dry_run,
+                // The failed ops already say which requests missed (`ops[].status`); values
+                // stay empty so the fast path and the apply loop report alike (#332, #348).
+                refusal: Some(Refusal::new(refusal::UNAPPLIED_REQUESTS, reason.clone())),
             },
             reason,
+            inner: None,
         }
         .into());
     }
@@ -2008,10 +2176,13 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 preservation: hwp_model::PreservationReport::new(),
                 ops: ops_outcomes,
                 dry_run: plan.dry_run,
+                refusal: Some(Refusal::new(
+                    refusal::NO_APPLICABLE_EDITS,
+                    NO_APPLICABLE_EDITS_REASON,
+                )),
             },
-            reason: "적용 가능한 편집이 없어 출력을 게시하지 않습니다 \
-             (--replace/--set-cell/--set-field/--set-meta 등 요청 확인)"
-                .to_string(),
+            reason: NO_APPLICABLE_EDITS_REASON.to_string(),
+            inner: None,
         }
         .into());
     }
@@ -2046,7 +2217,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     };
     let verify_staged = |staged: &Path, writer_report: &hwp_model::WriteReport| {
         if output_format.supports_verify() {
-            crate::commands::reject_preservation_loss("edit", &writer_report.preservation)?;
+            reject_edit_preservation_loss(&writer_report.preservation)?;
         }
         if plan.verify {
             verify_output(staged, Some(&doc))?;
@@ -2096,6 +2267,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         preservation: writer_report.preservation,
         ops: ops_outcomes,
         dry_run: plan.dry_run,
+        refusal: None,
     })
 }
 
@@ -3200,6 +3372,7 @@ fn fast_path_outcomes(plan: &EditPlan, matched: &[bool]) -> Vec<OpOutcome> {
             changed: Vec::new(),
             changed_total: None,
             missing_style: None,
+            refusal: None,
             reason: (!matched).then(|| failure_reason(operation)),
         })
         .collect()
@@ -3275,7 +3448,7 @@ fn patch_replacements_staged(
     let ops = fast_path_outcomes(plan, &matched);
     // EDT-06/D-14 on the fast path: every abort below carries the report, so `--report` (CLI)
     // and `report` (MCP) still get a diagnosable artifact, as on the apply-loop path.
-    let abort = |reason: String| -> anyhow::Error {
+    let abort = |code: &'static str, reason: String| -> anyhow::Error {
         EditAbort {
             report: EditReport {
                 output: output.display().to_string(),
@@ -3284,16 +3457,19 @@ fn patch_replacements_staged(
                 preservation: hwp_model::PreservationReport::new(),
                 ops: ops.clone(),
                 dry_run: plan.dry_run,
+                refusal: Some(Refusal::new(code, reason.clone())),
             },
             reason,
+            inner: None,
         }
         .into()
     };
     if let Some(reason) = first_unapplied {
-        return Err(abort(reason));
+        return Err(abort(refusal::UNAPPLIED_REQUESTS, reason));
     }
     if applied_requests == 0 {
         return Err(abort(
+            refusal::NO_APPLICABLE_EDITS,
             "적용 가능한 편집이 없어 출력을 게시하지 않습니다".to_string(),
         ));
     }
@@ -3301,6 +3477,7 @@ fn patch_replacements_staged(
     let final_doc = load_document(&current)?;
     if semantic_signature(&original) == semantic_signature(&final_doc) {
         return Err(abort(
+            refusal::NO_APPLICABLE_EDITS,
             "순차 치환의 최종 결과가 원문과 같아 출력을 게시하지 않습니다 \
              (상쇄되는 --replace 요청 확인)"
                 .to_string(),
@@ -3741,14 +3918,14 @@ fn apply_typed_operation(
         TypedEditOperation::InsertBlocks { request, .. } => {
             let target = resolved_target.expect("insert_blocks address preflight");
             let current = offsets.current_path(&target.path)?;
-            let count = hwp_cli::insert_blocks::apply(
+            let count = hwp_cli::insert_blocks::apply_classified(
                 doc,
                 &current,
                 request,
                 output_format == OutputFormat::Hwp,
                 assets,
             )
-            .map_err(|error| anyhow::anyhow!(error))?;
+            .map_err(anyhow::Error::new)?;
             let mut inserted = current;
             let start = inserted
                 .indices

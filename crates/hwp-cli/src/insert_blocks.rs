@@ -14,6 +14,7 @@ use crate::document_spec::{
     MAX_BLOCKS, MetadataSpec, PageSpec, RunSpec, SectionSpec, SpecVersion, StyleSpec,
     validate_spec_in_width,
 };
+use crate::refusal::{self, Refusal};
 
 #[derive(Debug, Clone, Copy, Deserialize, Default, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -339,14 +340,14 @@ struct StyleResolver<'a, 'b> {
     max_style: u16,
 }
 impl StyleResolver<'_, '_> {
-    fn resolve(&mut self, name: &str) -> Result<StyleId, String> {
+    fn resolve(&mut self, name: &str) -> Result<StyleId, Refusal> {
         if let Some(id) = self.resolved.get(name) {
             return Ok(*id);
         }
         if !self.active.insert(name.to_owned()) {
-            return Err(format!(
+            return Err(Refusal::new(refusal::INSERT_BLOCKS_STYLE_CYCLE, format!(
                 "스타일 '{name}'의 based_on 순환 참조로 삽입을 거부했습니다. styles의 상속 순환을 제거한 뒤 다시 시도하세요"
-            ));
+            )).with("style", name));
         }
         let matches: Vec<_> = self
             .target
@@ -355,24 +356,24 @@ impl StyleResolver<'_, '_> {
             .collect();
         let id = if let [entry] = matches.as_slice() {
             if entry.kind != Some(StyleKind::Paragraph) {
-                return Err(format!(
+                return Err(Refusal::new(refusal::INSERT_BLOCKS_STYLE_NOT_PARAGRAPH, format!(
                     "스타일 '{name}'의 종류가 paragraph가 아니거나 알려져 있지 않습니다. hwp styles에서 문단 스타일을 선택하세요"
-                ));
+                )).with("style", name));
             }
             self.compiler
                 .register_target_style(name, StyleId(entry.id))
-                .map_err(|error| format!("스타일 '{name}'의 정의를 해석할 수 없습니다: {error}. styles와 원본 문서의 서식 참조/표 크기를 확인한 뒤 다시 시도하세요"))?;
+                .map_err(|error| Refusal::new(refusal::INSERT_BLOCKS_INVALID_DEFINITION, format!("스타일 '{name}'의 정의를 해석할 수 없습니다: {error}. styles와 원본 문서의 서식 참조/표 크기를 확인한 뒤 다시 시도하세요")).with("style", name).with("detail", error.to_string()))?;
             self.validation
                 .insert(name.to_owned(), StyleSpec::default());
             StyleId(entry.id)
         } else if !matches.is_empty() {
-            return Err(format!(
+            return Err(Refusal::new(refusal::INSERT_BLOCKS_DUPLICATE_STYLE, format!(
                 "스타일 '{name}'이 대상 문서에 여러 개 있어 삽입을 거부했습니다. 원본 문서의 중복 이름을 정리한 뒤 hwp styles에서 확인하세요"
-            ));
+            )).with("style", name));
         } else {
-            let definition = self.request.styles.get(name).filter(|_| matches!(self.request.missing_style, MissingStylePolicy::Create)).ok_or_else(|| format!(
+            let definition = self.request.styles.get(name).filter(|_| matches!(self.request.missing_style, MissingStylePolicy::Create)).ok_or_else(|| Refusal::new(refusal::INSERT_BLOCKS_UNKNOWN_STYLE, format!(
                 "스타일 '{name}'을 대상 문서에서 찾을 수 없습니다. styles 정의를 제공하고 missing_style=create로 다시 시도하거나 hwp styles에서 기존 스타일을 선택하세요"
-            ))?.clone();
+            )).with("style", name).with("missing_style", self.request.missing_style.as_str()))?.clone();
             let base = match &definition.based_on {
                 Some(parent) => self.resolve(parent)?,
                 None => StyleId(0),
@@ -380,15 +381,15 @@ impl StyleResolver<'_, '_> {
             let id = self
                 .compiler
                 .compile_style_over(name, &definition, base)
-                .map_err(|error| format!("스타일 '{name}'의 정의를 해석할 수 없습니다: {error}. styles와 원본 문서의 서식 참조/표 크기를 확인한 뒤 다시 시도하세요"))?;
+                .map_err(|error| Refusal::new(refusal::INSERT_BLOCKS_INVALID_DEFINITION, format!("스타일 '{name}'의 정의를 해석할 수 없습니다: {error}. styles와 원본 문서의 서식 참조/표 크기를 확인한 뒤 다시 시도하세요")).with("style", name).with("detail", error.to_string()))?;
             self.validation.insert(name.to_owned(), definition);
             id
         };
         if id.0 > self.max_style {
-            return Err(format!(
+            return Err(Refusal::new(refusal::INSERT_BLOCKS_STYLE_ID_OVERFLOW, format!(
                 "스타일 '{name}'의 번호 {}를 HWP의 1바이트 범위에 저장할 수 없습니다. HWPX 출력으로 다시 시도하세요",
                 id.0
-            ));
+            )).with("style", name).with("style_id", id.0).with("max_style_id", self.max_style));
         }
         self.active.remove(name);
         self.resolved.insert(name.to_owned(), id);
@@ -412,6 +413,18 @@ pub fn apply(
     hwp_output: bool,
     assets: &AssetContext,
 ) -> Result<usize, String> {
+    apply_classified(doc, target, request, hwp_output, assets).map_err(|refusal| refusal.message)
+}
+
+/// [`apply`] with its refusal classified for `edit-report-v1` (#531). The message is the same
+/// sentence `apply` returns; user-typed names travel in `values`, never in the code.
+pub fn apply_classified(
+    doc: &mut Document,
+    target: &SegmentPath,
+    request: &InsertBlocks,
+    hwp_output: bool,
+    assets: &AssetContext,
+) -> Result<usize, Refusal> {
     let container_mm = check_target(doc, target, request.before())?;
     if request.styles.len() > 256 || request.lists.len() > 256 {
         return Err(
@@ -494,7 +507,10 @@ pub fn apply(
             blocks: request.blocks.clone(),
         }],
     };
-    validate_spec_in_width(&validation, base_dir, Some(container_mm)).map_err(|error| format!("insert_blocks 블록/스타일/목록 정의가 유효하지 않습니다: {error}. DocumentSpec v1 정의를 수정한 뒤 다시 시도하세요 (삽입 위치의 폭은 {container_mm:.1}mm입니다)"))?;
+    validate_spec_in_width(&validation, base_dir, Some(container_mm)).map_err(|error| {
+        let message = format!("insert_blocks 블록/스타일/목록 정의가 유효하지 않습니다: {error}. DocumentSpec v1 정의를 수정한 뒤 다시 시도하세요 (삽입 위치의 폭은 {container_mm:.1}mm입니다)");
+        spec_refusal(&error.issues(), &validation, container_mm, message)
+    })?;
     if hwp_output {
         check_hwp_lists(doc, request, &lists)?;
     }
@@ -514,7 +530,8 @@ pub fn apply(
             return Err(format!(
                 "대상 문서에 같은 이름의 다른 바이너리 '{}'가 이미 있습니다. 이미지 파일을 바꾸거나 다른 이름의 문서에 삽입하세요",
                 stream.name
-            ));
+            )
+            .into());
         }
     }
     let streams = plan_streams(doc, &compiled.bin_streams);
@@ -526,7 +543,8 @@ pub fn apply(
     hwp_convert::document_merge::renumber_inserted_objects(doc, &mut paragraphs)?;
     // The only fallible step that touches the target: it validates before it splices, so a
     // refusal leaves `doc` exactly as it was.
-    hwp_convert::structure::insert_paragraphs_at(doc, target, request.before(), paragraphs)?;
+    hwp_convert::structure::insert_paragraphs_at(doc, target, request.before(), paragraphs)
+        .map_err(Refusal::from_convert_message)?;
     doc.header = compiled.header;
     for mut stream in compiled.bin_streams {
         if streams.shared.contains(&stream.name) {
@@ -540,6 +558,49 @@ pub fn apply(
         }
     }
     Ok(count)
+}
+
+/// Classifies a `validate_spec_in_width` failure. Every issue keeps its own code and its path
+/// as a list of segments (style and list names stay whole, whatever they contain), so a name
+/// such as `a; layout_overflow at $.z: b` cannot pose as a second issue. The refusal code is
+/// `layout_overflow` when any issue has that code, else `insert_blocks.invalid_definition`
+/// when an issue sits under `$.styles` or `$.lists`, else `insert_blocks.invalid_spec`.
+fn spec_refusal(
+    issues: &[crate::document_spec::SpecIssue],
+    spec: &DocumentSpec,
+    container_mm: f32,
+    message: String,
+) -> Refusal {
+    let names: Vec<&str> = spec
+        .styles
+        .keys()
+        .chain(spec.lists.keys())
+        .map(String::as_str)
+        .collect();
+    let listed: Vec<serde_json::Value> = issues
+        .iter()
+        .map(|issue| {
+            serde_json::json!({
+                "code": issue.code,
+                "path": refusal::split_spec_path(&issue.path, &names),
+                "message": issue.message,
+            })
+        })
+        .collect();
+    let code = if issues.iter().any(|issue| issue.code == "layout_overflow") {
+        refusal::LAYOUT_OVERFLOW
+    } else if issues
+        .iter()
+        .any(|issue| issue.path.starts_with("$.styles") || issue.path.starts_with("$.lists"))
+    {
+        refusal::INSERT_BLOCKS_INVALID_DEFINITION
+    } else {
+        refusal::INSERT_BLOCKS_INVALID_SPEC
+    };
+    let container = (f64::from(container_mm) * 10.0).round() / 10.0;
+    Refusal::new(code, message)
+        .with("issues", listed)
+        .with("container_width_mm", container)
 }
 
 /// What to do with each compiled image stream before it joins the target.

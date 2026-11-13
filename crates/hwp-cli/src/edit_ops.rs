@@ -142,9 +142,29 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
     }
     entries
         .into_iter()
-        .map(OpsEntry::into_typed)
-        .collect::<Result<Vec<_>, String>>()
-        .map_err(|error| anyhow::anyhow!("{error}"))
+        .enumerate()
+        .map(|(index, entry)| {
+            let keep_requested = entry.keep_together_requested();
+            entry.into_typed().map_err(|error| match keep_requested {
+                // #531: only the keep_together arm builds these two sentences, both starting
+                // with fixed text; an address error from the same entry does not.
+                Some(requested)
+                    if error.starts_with(hwp_convert::KEEP_TOGETHER_REFUSAL)
+                        || error.starts_with("keep_together에 keep_with_next") =>
+                {
+                    anyhow::Error::new(
+                        hwp_cli::refusal::Refusal::new(
+                            hwp_cli::refusal::KEEP_TOGETHER_UNSUPPORTED,
+                            error,
+                        )
+                        .with("op_index", index)
+                        .with("requested", requested),
+                    )
+                }
+                _ => anyhow::anyhow!("{error}"),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
 }
 
 /// Tag one typed MCP payload. The transport chooses its operation, not a nested `op`.
@@ -775,6 +795,29 @@ impl OpsEntry {
     /// Convert a schema-valid raw entry into Op. Enforce semantic constraints here:
     /// exactly one selector, paired dimensions, minimum counts and exclusive line spacing.
     /// Error wording matches the MCP tool_edit boundary.
+    /// #531: for a keep_together entry, the keep fields it asked for (possibly none).
+    fn keep_together_requested(&self) -> Option<Vec<&'static str>> {
+        let OpsEntry::KeepTogether {
+            keep_with_next,
+            keep_lines,
+            break_before_shape,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(
+            [
+                ("keep_with_next", keep_with_next.is_some()),
+                ("keep_lines", keep_lines.is_some()),
+                ("break_before_shape", break_before_shape.is_some()),
+            ]
+            .into_iter()
+            .filter_map(|(name, set)| set.then_some(name))
+            .collect(),
+        )
+    }
+
     pub(crate) fn into_typed(self) -> Result<TypedEditOperation, String> {
         match self {
             OpsEntry::ApplyFormBindings { request } => {

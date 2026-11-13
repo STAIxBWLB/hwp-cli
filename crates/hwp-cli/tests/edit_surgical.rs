@@ -542,12 +542,14 @@ fn table_op_inside_opaque_container_fails_closed() {
     let src_bytes = std::fs::read(&src).unwrap();
     let out = tmp("surgical_container_tbl_out.hwpx");
 
+    let report = tmp("surgical_container_tbl_report.json");
     let r = hwp()
         .arg("edit")
         .arg(&src)
         .arg("-o")
         .arg(&out)
-        .args(["--set-cell", "0:0:0=변경시도"])
+        .args(["--set-cell", "0:0:0=변경시도", "--report"])
+        .arg(&report)
         .output()
         .unwrap();
     assert!(
@@ -565,6 +567,19 @@ fn table_op_inside_opaque_container_fails_closed() {
         std::fs::read(&src).unwrap(),
         src_bytes,
         "입력 파일은 그대로여야 한다"
+    );
+    // #531: the refused run still writes edit-report-v1 with `preservation_loss` and the
+    // event codes as values.
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report).expect("refused run writes the report"))
+            .unwrap();
+    assert_eq!(report["refusal"]["code"], "preservation_loss", "{report}");
+    let events = report["refusal"]["values"]["events"].as_array().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event["code"] == "opaque_control_unrepresentable"),
+        "{report}"
     );
 }
 

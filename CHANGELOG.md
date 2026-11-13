@@ -10,6 +10,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Added**
+
+- `edit` and MCP `hwp_edit`: a refused run writes the `edit-report-v1` report that `--report`
+  names (and `--dry-run` prints it). The report, now schema version 1.1, carries a `refusal`
+  object with a stable `code`, the structured `values` (anchor, style name, widths in mm, the
+  issue path as a list of segments) and the human `message`; the refusing op carries the same
+  object, and MCP returns it as `structuredContent.refusal`. Clients classify on the code instead
+  of parsing Korean prose, so a user value such as a style named `a; layout_overflow at $.z: b`
+  can no longer pose as another refusal. Existing fields are unchanged
+  ([#531](https://github.com/STAIxBWLB/agent-hwp/issues/531)).
+
 **Fixed**
 
 - HWPX writes report dropped HWP5 `PARA_RANGE_TAG` records and their count as

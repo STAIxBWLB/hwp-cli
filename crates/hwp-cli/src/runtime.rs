@@ -323,7 +323,16 @@ fn real_main() -> anyhow::Result<()> {
         ),
         Cmd::Edit(args) => {
             if args.ops.is_some() {
-                let (input, output, plan) = commands::edit::EditPlan::from_ops(args)?;
+                // #531: an ops file refused while loading still leaves the requested report.
+                let refused = (args.output.clone(), args.report.clone(), args.dry_run);
+                let (input, output, plan) = match commands::edit::EditPlan::from_ops(args) {
+                    Ok(built) => built,
+                    Err(error) => {
+                        let (output, report, dry_run) = refused;
+                        commands::edit::emit_refused_before_plan(&output, report, dry_run, &error)?;
+                        return Err(error);
+                    }
+                };
                 commands::edit::run(&input, &output, &plan)
             } else {
                 let (input, output, plan) = commands::edit::EditPlan::from_args(args);
