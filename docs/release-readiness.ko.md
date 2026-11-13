@@ -89,11 +89,11 @@ codesign --verify --strict --verbose=2 ./ahwp
 codesign -dv --verbose=4 ./ahwp
 codesign --verify --strict --verbose=2 ./hwp
 codesign -dv --verbose=4 ./hwp
-spctl --assess --type execute --verbose=2 ./ahwp
-spctl --assess --type execute --verbose=2 ./hwp
+spctl --assess --type install --verbose=2 ./ahwp
+spctl --assess --type install --verbose=2 ./hwp
 ```
 
 `x86_64-apple-darwin` archive에서도 서명과 Gatekeeper 검사를 반복합니다. authority는 Developer ID
 Application이어야 하며, 서명에는 hardened runtime과 secure timestamp가 있어야 합니다.
-Gatekeeper도 공증된 두 명령을 허용해야 합니다. readiness는 태그를 만들거나 이 실제 검증을
-수행하지 않습니다.
+Gatekeeper의 기대 출력은 `accepted`와 `source=Notarized Developer ID`입니다. readiness는
+태그를 만들거나 이 실제 검증을 수행하지 않습니다.

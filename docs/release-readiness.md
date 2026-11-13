@@ -86,11 +86,11 @@ codesign --verify --strict --verbose=2 ./ahwp
 codesign -dv --verbose=4 ./ahwp
 codesign --verify --strict --verbose=2 ./hwp
 codesign -dv --verbose=4 ./hwp
-spctl --assess --type execute --verbose=2 ./ahwp
-spctl --assess --type execute --verbose=2 ./hwp
+spctl --assess --type install --verbose=2 ./ahwp
+spctl --assess --type install --verbose=2 ./hwp
 ```
 
 Repeat signature and Gatekeeper assessment with the `x86_64-apple-darwin` archive. The authority must
 be Developer ID Application, the signatures must carry hardened runtime and a secure timestamp, and
-Gatekeeper must accept the notarized commands. Readiness does not create a tag or perform this live
-check.
+The expected Gatekeeper output is `accepted` with `source=Notarized Developer ID`. Readiness does
+not create a tag or perform this live check.
