@@ -32,7 +32,9 @@ These changes ship as 2.0.0.
   first run `hwp update --tag v1.6.2` and then `ahwp update`. MCP tool names (`hwp_*`), the skill
   name `hwp`, the `HWP_*` environment
   variables and the schema ids are unchanged. `formula_renames.json` stays, so a machine still
-  on formula `hwp` migrates on its next `brew update`
+  on formula `hwp` migrates on its next `brew update`. `form-discovery-v1` `next_step` keeps
+  its stable token `"hwp fields"`, which now means `ahwp fields`; a consumer that shows it to a
+  person should print `ahwp fields`
   ([#510](https://github.com/STAIxBWLB/agent-hwp/issues/510)).
 
 **Compatibility**

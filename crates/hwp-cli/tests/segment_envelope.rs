@@ -37,7 +37,9 @@ fn sample() -> PathBuf {
 /// content hash, matching the pins edit-ops-v1 and edit-report-v1 already carry in edit_ops.rs.
 /// Any schema edit — even a description tweak — must consciously update this constant, because
 /// hwp-editor parses this contract from a separate repository and silent drift is an API break.
-/// Re-pinned deliberately for #543: schema_version 1.2 adds the optional `controls` array on
+/// Re-pinned deliberately for #510 T8: description text only, `hwp <subcommand>` became
+/// `ahwp <subcommand>` and the `controls` hyphen wording dropped "soft" (no ground truth for
+/// it, 555-N3). Before that, re-pinned deliberately for #543: schema_version 1.2 adds the optional `controls` array on
 /// `run` segments, its `$defs/run_control`, and the matching `dependentSchemas` entry. Before
 /// that, re-pinned deliberately for the #518 nit: only the `$defs/segment` `$comment` and the
 /// `source_chars` description changed, so that neither claims the converse rule (`kind = run`
@@ -57,7 +59,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "0ade3d78a203309b3283ea0fbfab73619f129eba051dd37647e8b2c7e96325f2",
+        actual, "421cbbded6bd78df10d12459a1586b1e559570d76e875edf4068a5dd9d78ae7a",
         "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
     );
 }
