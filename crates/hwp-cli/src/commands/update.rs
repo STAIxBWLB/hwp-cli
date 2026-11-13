@@ -781,20 +781,21 @@ mod tests {
                 "install.sh에 {triple} 없음 (update와 자산 이름 규칙 불일치)"
             );
         }
-        // Both prefix attempts must use the same tag/target/archive rule.
+        // install.sh and `update` share one `ahwp-<tag>-<target>` asset rule (#510 Phase 4).
         for declaration in [
             "BIN=\"ahwp\"",
-            "COMPAT_BIN=\"hwp\"",
-            "asset_base=\"$1-$TAG-$target\"",
+            "asset_base=\"$BIN-$TAG-$target\"",
             "asset=\"$asset_base.tar.gz\"",
-            "fetch_archive \"$BIN\"",
-            "fetch_archive \"$COMPAT_BIN\"",
         ] {
             assert!(
                 script.contains(declaration),
-                "installer/updater bridge naming drift: missing {declaration}"
+                "installer/updater naming drift: missing {declaration}"
             );
         }
+        assert!(
+            !script.contains("COMPAT_BIN"),
+            "install.sh still carries the retired hwp fallback"
+        );
     }
 
     #[test]
@@ -910,9 +911,9 @@ mod tests {
         let dir = tmp("extract").with_extension("d");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let name = if cfg!(windows) { "hwp.exe" } else { "hwp" };
-        std::fs::write(dir.join(name), b"#!/bin/sh\necho hwp 9.9.9\n").unwrap();
-        let archive = dir.join("hwp-v9.9.9-test.tar.gz");
+        let name = if cfg!(windows) { "ahwp.exe" } else { "ahwp" };
+        std::fs::write(dir.join(name), b"#!/bin/sh\necho ahwp 9.9.9\n").unwrap();
+        let archive = dir.join("ahwp-v9.9.9-test.tar.gz");
         let ok = Command::new("tar")
             .arg("-czf")
             .arg(&archive)
