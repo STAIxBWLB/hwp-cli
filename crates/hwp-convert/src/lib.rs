@@ -39,12 +39,12 @@ pub use bookmark::{
 pub use csv::to_csv;
 pub use docx::to_docx;
 pub use edit::{
-    CloneTextMode, FormCellCandidate, ObjectKind, add_col, add_rows, add_rows_at, add_table,
-    add_table_column, add_table_columns, apply_meta, clone_table, delete_object,
-    delete_table_column, delete_table_row, find_form_cells_by_label, merge_cells,
-    normalize_form_label, replace_text, replace_text_at, replace_text_in_range,
-    replace_text_in_window, set_cell, set_table_placement, split_cell, table_dims,
-    table_placement_stats,
+    CloneTextMode, FormCellCandidate, ObjectKind, RANGE_TAG_SHIFT_REFUSAL, add_col, add_rows,
+    add_rows_at, add_table, add_table_column, add_table_columns, anchor_not_found_message,
+    apply_meta, clone_table, delete_object, delete_table_column, delete_table_row,
+    find_form_cells_by_label, merge_cells, normalize_form_label, replace_text, replace_text_at,
+    replace_text_in_range, replace_text_in_window, set_cell, set_table_placement, split_cell,
+    table_dims, table_placement_stats,
 };
 pub use field::{
     FieldInfo, PlaceholderInfo, create_field, create_hyperlink, hyperlink_url, list_fields,
@@ -85,8 +85,9 @@ pub use segment_id::{
     table_id,
 };
 pub use structure::{
-    delete_paragraph, delete_paragraph_at, insert_paragraph, insert_paragraph_at,
-    insert_paragraph_checked, move_paragraph, text_in_unwritable_object,
+    SECTION_OWNER_INSERT_REFUSAL, SECTION_OWNER_MOVE_REFUSAL, delete_paragraph,
+    delete_paragraph_at, insert_paragraph, insert_paragraph_at, insert_paragraph_checked,
+    move_paragraph, text_in_unwritable_object,
 };
 pub use style::{display_width, style_table, style_tables};
 pub use styles::{NamedStyle, StyleKind, StyleTableTooLarge, list_named_styles};

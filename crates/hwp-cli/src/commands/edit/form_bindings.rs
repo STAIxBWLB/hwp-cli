@@ -146,8 +146,10 @@ pub(super) fn execute(
             changed_total: None,
             reason: None,
             missing_style: None,
+            refusal: None,
         }],
         dry_run: edit.dry_run,
+        refusal: None,
     })
 }
 

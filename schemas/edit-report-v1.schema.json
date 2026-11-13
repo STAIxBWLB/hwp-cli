@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hwp-cli.staix.net/schemas/edit-report-v1.schema.json",
   "title": "hwp-edit-report-v1",
-  "description": "Machine-readable account of what `hwp edit --report <path>` (and `--dry-run`) did: every op's status, how many IR pieces it touched, and the segment ids it changed as before/after pairs. Content-free — no paragraph text, no replacement strings and no user-supplied patterns (T-07-22).",
+  "description": "Machine-readable account of what `hwp edit --report <path>` (and `--dry-run`) did: every op's status, how many IR pieces it touched, and the segment ids it changed as before/after pairs. Since 1.1 a refused run writes this report too, with a top-level `refusal` and, when one op refused, the same `refusal` on that op (#531). Content-free outside `refusal` — no paragraph text, no replacement strings and no user-supplied patterns (T-07-22). A `refusal` names the structured inputs it refused on in `refusal.values`; `refusal.message` is a fixed, content-free sentence per code that never quotes request text, patterns, anchors, URLs, field or bookmark names or error chains (#348). The full human sentence goes to stderr only. Classify on `refusal.code`, never on the message.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,7 +15,10 @@
     "failed_count"
   ],
   "properties": {
-    "schema_version": { "const": "1.0" },
+    "schema_version": {
+      "enum": ["1.0", "1.1"],
+      "description": "1.1 (#531) adds the optional `refusal` objects and writes the report on refused runs; every 1.0 field is unchanged. Writers emit 1.1."
+    },
     "contract": { "const": "hwp-edit-report-v1" },
     "output": { "type": "string" },
     "dry_run": {
@@ -28,9 +31,32 @@
       "items": { "$ref": "#/$defs/opOutcome" }
     },
     "applied_count": { "type": "integer", "minimum": 0 },
-    "failed_count": { "type": "integer", "minimum": 0 }
+    "failed_count": { "type": "integer", "minimum": 0 },
+    "refusal": {
+      "$ref": "#/$defs/refusal",
+      "description": "Present only when the run was refused and nothing was published (1.1). When an op refused, equal to that op's `refusal`; when the refusal was not tied to one op (loading, preflight, ops-file validation, writer or preservation checks), `ops` may be empty."
+    }
   },
   "$defs": {
+    "refusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "values", "message"],
+      "properties": {
+        "code": {
+          "enum": ["range_tag_shift", "keep_together_unsupported", "section_owner_insert", "section_owner_move", "add_table.anchor_not_found", "insert_blocks.unknown_style", "insert_blocks.invalid_definition", "insert_blocks.style_not_paragraph", "insert_blocks.duplicate_style", "insert_blocks.style_cycle", "insert_blocks.style_id_overflow", "layout_overflow", "insert_blocks.invalid_spec", "preservation_loss", "unapplied_requests", "no_applicable_edits", "unclassified"],
+          "description": "Stable snake_case id, named like the preservation-report-v1 event codes. `range_tag_shift`: An edit would move or drop an uninterpreted PARA_RANGE_TAG range mark. values: {}. `keep_together_unsupported`: keep_together is not supported (no Hangul-saved evidence). values: op_index (integer), requested (list of keep field names). `section_owner_insert`: An insertion would land in front of a section's setup paragraph. values: {}. `section_owner_move`: A move would land in front of a section's setup paragraph. values: {}. `add_table.anchor_not_found`: No top-level paragraph contains the add_table anchor. values: anchor (string, as given). `insert_blocks.unknown_style`: A style used by insert_blocks is not in the target and was not created (no definition, or missing_style=refuse). values: style (string), missing_style (create|refuse). `insert_blocks.invalid_definition`: A style definition could not be compiled, or the DocumentSpec issues sit under $.styles or $.lists. values: style and detail (string) for a compile failure; issues and container_width_mm for a validation failure. `insert_blocks.style_not_paragraph`: The named target style is not a paragraph style. values: style. `insert_blocks.duplicate_style`: The target holds the style name more than once. values: style. `insert_blocks.style_cycle`: based_on forms a cycle. values: style. `insert_blocks.style_id_overflow`: The style id does not fit HWP's one byte. values: style, style_id, max_style_id (integers). `layout_overflow`: DocumentSpec validation found a width that exceeds the insertion container. values: issues (list of {code, path, message, measured_width_mm?}, path a list of segments: strings, and integers for array indices; measured_width_mm is the image or table width, or the column sum, that overflowed, one decimal), container_width_mm (number, one decimal). `insert_blocks.invalid_spec`: DocumentSpec validation failed with no layout_overflow and no style or list issue. values: issues, container_width_mm, as for layout_overflow. `preservation_loss`: The writer would remove or change data it cannot preserve. values: events (list of {code, resource, disposition, count}; code is a preservation-report-v1 event code). `unapplied_requests`: Some requests matched nothing and --allow-partial was not given. values: {}; the failed entries of `ops` name which requests missed. `no_applicable_edits`: No request changed the document. values: {}. `unclassified`: Any other refusal. values: {}. Its message is the fixed sentence for `unclassified`; the full sentence is on stderr only."
+        },
+        "values": {
+          "type": "object",
+          "description": "The structured inputs behind the refusal, per code (see `code`). User-typed strings (anchors, style names) appear here as given, never spliced into `code` or into a path segment."
+        },
+        "message": {
+          "type": "string",
+          "description": "A fixed, content-free sentence for `code` (Korean); it never interpolates request content (#348). The full human sentence is on stderr only. Its wording may change between releases."
+        }
+      }
+    },
     "opOutcome": {
       "type": "object",
       "additionalProperties": false,
@@ -74,6 +100,10 @@
           "type": "integer",
           "minimum": 10001,
           "description": "Present only when this op produced more id pairs than the 10000 that `changed` may carry: the real number of pairs. `changed` then holds the first 10000 in document order and the rest are not listed; they are still addressable, because every id is the one `hwp cat --segments v2` publishes for the output. Absent means `changed` is complete. A valid insert_blocks request can exceed the cap (for example one 100 x 50 table publishes 15002 segments: the paragraph, the table, and a cell, a cell paragraph and a run for each of its 5000 cells), and this field keeps the report valid instead of dropping the edit's id list silently."
+        },
+        "refusal": {
+          "$ref": "#/$defs/refusal",
+          "description": "Present only on the failed op that refused the run (1.1)."
         },
         "reason": {
           "type": ["string", "null"],

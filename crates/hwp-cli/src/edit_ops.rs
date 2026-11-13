@@ -74,6 +74,20 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     parse_ops_value(value)
 }
 
+/// #531: whether an ops file (path or `-`) names `apply_form_bindings` anywhere. A refused
+/// form-binding batch publishes only its receipt, so the pre-plan refusal report is skipped.
+/// Unreadable input counts as not binding; stdin was already consumed and reads as empty.
+pub(crate) fn ops_file_names_form_bindings(ops: &std::path::Path) -> bool {
+    ops.as_os_str() != "-"
+        && std::fs::read(ops)
+            .map(|bytes| {
+                bytes
+                    .windows(b"apply_form_bindings".len())
+                    .any(|window| window == b"apply_form_bindings")
+            })
+            .unwrap_or(false)
+}
+
 /// Validate every JSON channel against the same closed vocabulary before normalization.
 pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<TypedEditOperation>> {
     let entries = value.as_array().ok_or_else(|| anyhow::anyhow!(
@@ -142,9 +156,36 @@ pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<Ty
     }
     entries
         .into_iter()
-        .map(OpsEntry::into_typed)
-        .collect::<Result<Vec<_>, String>>()
-        .map_err(|error| anyhow::anyhow!("{error}"))
+        .enumerate()
+        .map(|(index, entry)| {
+            let keep_requested = entry.keep_together_requested();
+            entry.into_typed().map_err(|error| match keep_requested {
+                // #531: only the keep_together arm builds these two sentences, both starting
+                // with fixed text; an address error from the same entry does not.
+                Some(requested) if is_keep_together_refusal(&error) => anyhow::Error::new(
+                    hwp_cli::refusal::Refusal::new(
+                        hwp_cli::refusal::KEEP_TOGETHER_UNSUPPORTED,
+                        error,
+                    )
+                    .with("op_index", index)
+                    .with("requested", requested),
+                ),
+                _ => anyhow::anyhow!("{error}"),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+/// Head of the keep_together refusal for an entry that names no keep field.
+pub(crate) const KEEP_TOGETHER_MISSING_FIELD: &str =
+    "keep_together에 keep_with_next, keep_lines, break_before_shape 중 하나가 필요합니다.";
+
+/// #531: true for the two sentences the keep_together arm of [`OpsEntry::into_typed`] refuses
+/// with. Both start with a fixed constant, so user text cannot match; an address error from
+/// the same entry does not.
+pub(crate) fn is_keep_together_refusal(message: &str) -> bool {
+    message.starts_with(hwp_convert::KEEP_TOGETHER_REFUSAL)
+        || message.starts_with(KEEP_TOGETHER_MISSING_FIELD)
 }
 
 /// Tag one typed MCP payload. The transport chooses its operation, not a nested `op`.
@@ -772,6 +813,29 @@ pub(crate) enum OpsEntry {
 }
 
 impl OpsEntry {
+    /// #531: for a keep_together entry, the keep fields it asked for (possibly none).
+    fn keep_together_requested(&self) -> Option<Vec<&'static str>> {
+        let OpsEntry::KeepTogether {
+            keep_with_next,
+            keep_lines,
+            break_before_shape,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(
+            [
+                ("keep_with_next", keep_with_next.is_some()),
+                ("keep_lines", keep_lines.is_some()),
+                ("break_before_shape", break_before_shape.is_some()),
+            ]
+            .into_iter()
+            .filter_map(|(name, set)| set.then_some(name))
+            .collect(),
+        )
+    }
+
     /// Convert a schema-valid raw entry into Op. Enforce semantic constraints here:
     /// exactly one selector, paired dimensions, minimum counts and exclusive line spacing.
     /// Error wording matches the MCP tool_edit boundary.
@@ -1129,7 +1193,7 @@ impl OpsEntry {
                 .collect();
                 if requested.is_empty() {
                     return Err(format!(
-                        "keep_together에 keep_with_next, keep_lines, break_before_shape 중 하나가 필요합니다. {}",
+                        "{KEEP_TOGETHER_MISSING_FIELD} {}",
                         hwp_convert::KEEP_TOGETHER_REFUSAL
                     ));
                 }

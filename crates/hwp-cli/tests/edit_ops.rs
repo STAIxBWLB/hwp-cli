@@ -2962,7 +2962,7 @@ fn edit_report_schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "c9aa40f4761a04edef8130c1a639c3f31bbf062151cab623548eaaa687ff17c0",
+        actual, "663692e89029633fb5b7b34798e15f4a09633f1f7d7b2a86773241c2b4bb1877",
         "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -3874,6 +3874,20 @@ fn fast_path_replace_report_matches_the_apply_loop_report() {
         "the abort must come from the fast path: {fast_stderr}"
     );
     assert!(!dir.join("abort-fast.hwpx").exists());
+    // #531: both aborts carry the same refusal code; only the human sentence differs (the fast
+    // path names its run-boundary limitation), so it is compared apart from the rest.
+    let (mut fast_report, mut slow_report) = (fast_report, slow_report);
+    assert_eq!(fast_report["refusal"]["code"], "unapplied_requests");
+    assert_eq!(
+        fast_report["refusal"]["code"],
+        slow_report["refusal"]["code"]
+    );
+    for report in [&mut fast_report, &mut slow_report] {
+        report["refusal"]
+            .as_object_mut()
+            .expect("an aborted run carries a refusal")
+            .remove("message");
+    }
     assert_eq!(fast_report, slow_report);
 }
 

@@ -417,6 +417,44 @@ with nothing written, naming the cause: put `set_format` first, or run the edits
 Results are structural; this manual makes no claim about the page count Hangul will show.
 Evidence and limits are recorded in `docs/design/07-hangul-compat-rules.md` (J1 to J3).
 
+### Classify a refused edit
+
+A refused `ahwp edit` still writes the `edit-report-v1` file that `--report` names, and
+`--dry-run` still prints it. The report (schema version 1.1) carries a top-level `refusal`
+object, and when one op refused, that op's entry carries the same object with `status:
+"failed"`. MCP `hwp_edit` returns the same object as `structuredContent.refusal` of its error
+result, and writes the same report to its `report` argument for any refusal raised after the
+arguments are read. Stderr and the MCP error text keep the full Korean sentence for people;
+`refusal.message` is a fixed, content-free sentence per code that never quotes request content
+(#348). An MCP refusal raised while the arguments are still being read (for example
+`keep_together`) comes back only in `structuredContent`, with no file at the `report` argument
+because no edit plan exists yet; other argument errors (a malformed or out-of-root argument) may
+come back with no `structuredContent.refusal` at all. An `apply_form_bindings` batch publishes
+only its receipt, refused or not.
+
+```json
+{"code":"insert_blocks.unknown_style","values":{"style":"Heading 9","missing_style":"refuse"},"message":"..."}
+```
+
+Branch on `code`, never on `message`. Values the user typed (anchors, style names) appear in
+`values` as given; an issue path is a list of segments, so a style named
+`a; layout_overflow at $.z: b` stays one segment and cannot pose as a second issue.
+
+| `code` | `values` |
+| --- | --- |
+| `range_tag_shift` | none |
+| `keep_together_unsupported` | `op_index`, `requested` (keep field names) |
+| `section_owner_insert`, `section_owner_move` | none |
+| `add_table.anchor_not_found` | `anchor` |
+| `insert_blocks.unknown_style` | `style`, `missing_style` |
+| `insert_blocks.invalid_definition` | `style` and `detail`, or `issues` and `container_width_mm` |
+| `insert_blocks.style_not_paragraph`, `insert_blocks.duplicate_style`, `insert_blocks.style_cycle` | `style` |
+| `insert_blocks.style_id_overflow` | `style`, `style_id`, `max_style_id` |
+| `layout_overflow`, `insert_blocks.invalid_spec` | `issues` (`code`, `path` as a list, `message`, and for an overflow `measured_width_mm`), `container_width_mm` |
+| `preservation_loss` | `events` (`code`, `resource`, `disposition`, `count`) |
+| `unapplied_requests`, `no_applicable_edits` | none; failed `ops` entries name the misses |
+| `unclassified` | none; any refusal not listed above |
+
 ### The preservation ledger
 
 `convert`, `merge` and `split` record every item they could not preserve in the typed

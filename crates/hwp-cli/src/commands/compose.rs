@@ -130,6 +130,7 @@ pub(crate) fn execute_text_with_source_and_fonts(
                     code: "policy_conflict".to_string(),
                     path: "$.policy".to_string(),
                     message: "--allow-visual-fallback is deprecated and cannot override DocumentSpec v2 target policies".to_string(),
+                    measured_tenths_mm: None,
                 }],
             }));
         }

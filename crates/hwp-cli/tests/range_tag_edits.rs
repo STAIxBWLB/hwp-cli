@@ -392,3 +392,26 @@ fn edit_hwpx_refuses_range_tag_loss() {
         );
     }
 }
+
+/// #531: the refused run still writes edit-report-v1, and the refusing op carries
+/// `range_tag_shift`.
+#[test]
+fn range_tag_refusal_is_reported_with_its_code() {
+    let workspace = Workspace::new("report", false, true);
+    let ops = workspace.dir.join("ops.json");
+    let report = workspace.dir.join("report.json");
+    std::fs::write(&ops, r#"[{"op":"replace","address":{"at":{"section":0,"paragraph":1}},"from":"anchor","to":"expanded anchor"}]"#).unwrap();
+    let result = workspace.edit(&[
+        "--ops",
+        ops.to_str().unwrap(),
+        "--report",
+        report.to_str().unwrap(),
+    ]);
+    workspace.assert_refusal(result);
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report).expect("refused run writes the report"))
+            .unwrap();
+    assert_eq!(report["refusal"]["code"], "range_tag_shift", "{report}");
+    assert_eq!(report["ops"][0]["status"], "failed");
+    assert_eq!(report["ops"][0]["refusal"]["code"], "range_tag_shift");
+}

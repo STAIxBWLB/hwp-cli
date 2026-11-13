@@ -1177,6 +1177,7 @@ fn issue(code: &str, path: impl Into<String>, message: impl Into<String>) -> Spe
         code: code.to_string(),
         path: path.into(),
         message: message.into(),
+        measured_tenths_mm: None,
     }
 }
 

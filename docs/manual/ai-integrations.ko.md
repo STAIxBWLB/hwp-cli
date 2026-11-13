@@ -398,6 +398,42 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 결과는 구조 기준이며, 이 문서는 한글에서 보이는 쪽 수를 보장하지 않는다. 근거와 한계는
 `docs/design/07-hangul-compat-rules.ko.md`(J1~J3)에 있다.
 
+### 거부된 편집 분류
+
+`ahwp edit`가 거부되어도 `--report`로 지정한 `edit-report-v1` 파일은 기록되고, `--dry-run`도
+보고서를 출력한다. 보고서(스키마 버전 1.1)는 최상위 `refusal` 객체를 담고, 연산 하나가
+거부했으면 그 연산 항목도 `status: "failed"`와 함께 같은 객체를 담는다. MCP `hwp_edit`는 오류
+결과의 `structuredContent.refusal`로 같은 객체를 돌려준다. stderr는 사람이 읽는 한국어 문장을
+그대로 유지하고, MCP 오류 텍스트도 같은 문장을 담는다. `refusal.message`는 코드마다 정해진 고정
+문장이며 요청 내용을 인용하지 않는다(#348). 인자를 다 읽은 뒤 나온 MCP 거부는 `report` 인자
+경로에도 같은 보고서를 쓴다. MCP 인자를 읽는 단계에서 나온 거부(예: `keep_together`)는
+`structuredContent`로만 돌아오고, 아직 편집 계획이 없으므로 `report` 인자 경로에는 파일을 쓰지
+않는다. 그 밖의 인자 오류(형식이 잘못되었거나 허용 경로 밖인 인자)는 `structuredContent.refusal`
+없이 돌아올 수 있다. `apply_form_bindings` 배치는 거부되어도 receipt만 남긴다.
+
+```json
+{"code":"insert_blocks.unknown_style","values":{"style":"Heading 9","missing_style":"refuse"},"message":"..."}
+```
+
+분기는 `message`가 아니라 `code`로 한다. 사용자가 입력한 값(앵커, 스타일 이름)은 `values`에
+입력 그대로 들어간다. 이슈 경로는 세그먼트 목록이라 `a; layout_overflow at $.z: b`라는 이름의
+스타일도 세그먼트 하나로 남아 두 번째 이슈처럼 보일 수 없다.
+
+| `code` | `values` |
+| --- | --- |
+| `range_tag_shift` | 없음 |
+| `keep_together_unsupported` | `op_index`, `requested`(keep 필드 이름) |
+| `section_owner_insert`, `section_owner_move` | 없음 |
+| `add_table.anchor_not_found` | `anchor` |
+| `insert_blocks.unknown_style` | `style`, `missing_style` |
+| `insert_blocks.invalid_definition` | `style`와 `detail`, 또는 `issues`와 `container_width_mm` |
+| `insert_blocks.style_not_paragraph`, `insert_blocks.duplicate_style`, `insert_blocks.style_cycle` | `style` |
+| `insert_blocks.style_id_overflow` | `style`, `style_id`, `max_style_id` |
+| `layout_overflow`, `insert_blocks.invalid_spec` | `issues`(`code`, 목록인 `path`, `message`, 넘친 경우 `measured_width_mm`), `container_width_mm` |
+| `preservation_loss` | `events`(`code`, `resource`, `disposition`, `count`) |
+| `unapplied_requests`, `no_applicable_edits` | 없음. 실패한 `ops` 항목이 놓친 요청을 알려 준다 |
+| `unclassified` | 없음. 위에 없는 모든 거부 |
+
 ### 보존 손실 원장
 
 `convert`·`merge`·`split`은 보존하지 못한 항목을 모두 `hwp-preservation-report-v1` 원장에

@@ -171,10 +171,10 @@ pub fn text_in_unwritable_object(doc: &Document, text: &str) -> bool {
 /// Cause and remedy shared by every entry point that would place another paragraph in front of a
 /// section's setup paragraph, so `insert_blocks`, addressed `insert_para`, anchored `insert_para`
 /// and `move_para` explain the same boundary the same way.
-const SECTION_OWNER_INSERT_REFUSAL: &str = "구역 정의 문단 앞에는 삽입할 수 없습니다. insert_blocks는 position=after, insert_para는 before=false로 이 문단 뒤에 삽입하세요";
+pub const SECTION_OWNER_INSERT_REFUSAL: &str = "구역 정의 문단 앞에는 삽입할 수 없습니다. insert_blocks는 position=after, insert_para는 before=false로 이 문단 뒤에 삽입하세요";
 
 /// Cause and remedy for a move that would land in front of a section's setup paragraph.
-const SECTION_OWNER_MOVE_REFUSAL: &str = "구역 정의 문단 앞으로는 이동할 수 없습니다. 이동 대상 위치를 구역 정의 문단 뒤(본문 인덱스 1 이상)로 지정하세요";
+pub const SECTION_OWNER_MOVE_REFUSAL: &str = "구역 정의 문단 앞으로는 이동할 수 없습니다. 이동 대상 위치를 구역 정의 문단 뒤(본문 인덱스 1 이상)로 지정하세요";
 
 /// Insert a text paragraph after or before the first paragraph containing anchor; return whether inserted.
 /// The new paragraph inherits the anchor's character/paragraph shapes. Search body,
