@@ -10,6 +10,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Fixed**
+
+- `edit --verify` projects known HWP5 writer materialization when editing HWPX into `.hwp`,
+  including default package/section metadata and synthesized table records. Custom unmapped
+  formatting and opaque-content losses still refuse publication ([#444](https://github.com/STAIxBWLB/agent-hwp/issues/444)).
+
 ## [1.6.3]
 
 **Compatibility**

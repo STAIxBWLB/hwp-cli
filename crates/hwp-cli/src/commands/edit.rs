@@ -4848,7 +4848,14 @@ fn is_hwpx_version_provenance(xml: &str) -> bool {
             for (name, value) in attributes {
                 if matches!(
                     name.as_slice(),
-                    b"application" | b"appVersion" | b"os" | b"buildNumber"
+                    b"application"
+                        | b"appVersion"
+                        | b"os"
+                        | b"buildNumber"
+                        | b"major"
+                        | b"minor"
+                        | b"micro"
+                        | b"xmlVersion"
                 ) {
                     value.clear();
                 }
