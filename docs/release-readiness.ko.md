@@ -63,6 +63,10 @@ ad-hoc 서명으로 대체하지 않습니다.
 - `APPLE_API_KEY_ID`: App Store Connect API key ID
 - `APPLE_API_ISSUER_ID`: App Store Connect issuer ID
 
+저장소의 `Settings > Secrets and variables > Actions > Variables`에는 Actions **variable**
+`APPLE_TEAM_ID`도 등록합니다. 값은 10자리 Apple Developer team ID이며, 비밀값이 아닌 공개
+서명자 메타데이터입니다. 값이 없거나 형식이 잘못되면 검증을 중단합니다.
+
 workflow는 인증서를 접근이 제한된 임시 keychain에 가져온 뒤, 유효한 Developer ID Application
 identity 하나를 pinned upload action에 전달하고 `codesign-options: runtime`을 지정합니다.
 Developer ID 서명은 기본적으로 timestamp를 포함합니다. helper는 secure timestamp, hardened
@@ -72,8 +76,12 @@ runtime, Developer ID Application authority를 확인한 뒤, 서명된 실행 �
 API key, keychain은 helper와 항상 실행되는 cleanup 단계에서 제거합니다.
 
 Linux의 alias 재포장 이후 macOS 작업이 각 아키텍처의 archive를 다운로드해 `ahwp`와 `hwp`의
-바이트가 같은지 비교하고 두 코드 서명을 모두 검증합니다. 이 작업이 통과해야 attestation과
-공개 릴리스가 진행됩니다. 단일 실행 파일에는 ticket을 staple할 수 없으므로 Gatekeeper가 공증
+바이트가 같은지 비교합니다. 두 코드 서명은 Apple anchor와 `vars.APPLE_TEAM_ID`의 인증서
+leaf team ID 요구 조건으로 검증합니다. 두 명령에 `spctl --assess --type install --verbose=2`도
+실행하며, 성공 종료와 `accepted`, `source=Notarized Developer ID`를 모두 요구합니다. ticket
+전파 지연을 위해 각 명령을 최대 3회 검사하고 회차 사이에 10초를 기다립니다(명령당 재시도
+대기 최대 20초). 횟수를 소진하면 재시도 한도와 다음 진단 방법을 알리고 작업을 실패 처리합니다.
+이 작업이 통과해야 attestation과 공개 릴리스가 진행됩니다. 단일 실행 파일에는 ticket을 staple할 수 없으므로 Gatekeeper가 공증
 ticket을 온라인으로 조회합니다.
 
 readiness는 자격증명을 사용하지 않는 `--dry-run` 경로만 실행합니다. shell mock은 Apple 서비스
@@ -85,9 +93,11 @@ readiness는 자격증명을 사용하지 않는 `--dry-run` 경로만 실행합
 ```bash
 gh release download v1.6.3 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v1.6.3-aarch64-apple-darwin.tar.gz'
 tar -xzf ahwp-v1.6.3-aarch64-apple-darwin.tar.gz
-codesign --verify --strict --verbose=2 ./ahwp
+APPLE_TEAM_ID="$(gh variable get APPLE_TEAM_ID --repo STAIxBWLB/agent-hwp)"
+signer_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+codesign --verify --strict --verbose=2 -R="$signer_requirement" ./ahwp
 codesign -dv --verbose=4 ./ahwp
-codesign --verify --strict --verbose=2 ./hwp
+codesign --verify --strict --verbose=2 -R="$signer_requirement" ./hwp
 codesign -dv --verbose=4 ./hwp
 spctl --assess --type install --verbose=2 ./ahwp
 spctl --assess --type install --verbose=2 ./hwp

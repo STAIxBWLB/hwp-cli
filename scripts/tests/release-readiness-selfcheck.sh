@@ -602,6 +602,19 @@ for outcome in failure success cancelled; do
         "$(printf '%s' "$entry" | cut -f1-2)" "$(printf 'macos-signing-dry-run\t%s' "$expected")"
 done
 
+cp "$ROOT/scripts/macos-release-signing.sh" "$tmp/macos-controller/scripts/"
+target_rc=0
+(cd "$tmp/macos-controller" && RUNNER_TEMP="$tmp/runner" \
+    bash "$steps/target-macos-signing-dry-run.sh") >"$tmp/macos-present.log" 2>&1 || target_rc=$?
+same "present signing script completes the credential-free target" "$target_rc" 0
+output="$tmp/macos-controller-present.output"
+: >"$output"
+(cd "$tmp/macos-controller" && OUTCOME=success READINESS_REF=current \
+    GITHUB_OUTPUT="$output" bash "$steps/gate-macos-signing-dry-run.sh")
+entry="$(out_value "$output" entry)"
+same "present script with runner outcome success records pass" \
+    "$(printf '%s' "$entry" | cut -f1-2)" "$(printf 'macos-signing-dry-run\tpass')"
+
 if [ "$fail" -ne 0 ]; then
     echo "== release-readiness self-check: FAILED" >&2
     exit 1
