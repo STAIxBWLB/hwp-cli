@@ -17,7 +17,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   formatting and opaque-content losses still refuse publication ([#444](https://github.com/STAIxBWLB/agent-hwp/issues/444)).
 - Native HWP5 output now reports `font_type_info_unrepresentable` with a content-free font count
   for unmapped HWPX classification metadata. Edit/fill preservation gates refuse it with a
-  `.hwpx` remedy; CLI conversion and merge report the loss and refuse under `--strict`.
+  `.hwpx` remedy; CLI conversion and merge report the loss and refuse under `--strict`
+  (MCP `hwp_convert` remains strict by default).
   The font mapping remains tracked under [#540](https://github.com/STAIxBWLB/agent-hwp/issues/540).
 
 ## [1.6.3]
