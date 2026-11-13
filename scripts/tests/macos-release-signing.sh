@@ -52,6 +52,13 @@ echo xcrun >>"$MOCK_CALLS"
 case " $* " in *' --wait '*) ;; *) exit 1 ;; esac
 case " $* " in *' --output-format json '*) ;; *) exit 1 ;; esac
 case "$3" in *.zip) [ -f "$3" ] ;; *) exit 1 ;; esac
+python3 - "$3" <<'PYZIPCHECK'
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    assert archive.namelist() == ["ahwp"]
+    assert archive.read("ahwp") == b"signed executable\n"
+PYZIPCHECK
 if [ "${MOCK_NOTARY:-Accepted}" = malformed ]; then
     echo not-json
 else

@@ -131,7 +131,12 @@ case "${1:-}" in
         key_file="$work/notary-auth.p8"
         trap 'rm -f "$key_file"' EXIT
         write_notary_key "$key_file"
-        (cd "$work/notary" && zip -q "$work/notary.zip" ahwp)
+        python3 - "$work/notary/ahwp" "$work/notary.zip" <<'PYZIP'
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[2], "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    archive.write(sys.argv[1], "ahwp")
+PYZIP
         if ! xcrun notarytool submit "$work/notary.zip" --key "$key_file" \
             --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
             --wait --output-format json >"$work/notary-result.json" 2>"$work/notary-error.log"; then
