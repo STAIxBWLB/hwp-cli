@@ -221,3 +221,35 @@ fn named_field_tab_refuses_to_shift_a_tagged_range_before_publication() {
     // A serialized HWP tab occupies eight WCHARs, so this changes the value width.
     workspace.assert_refusal(workspace.edit(&["--set-field", "entry=	"]));
 }
+
+#[test]
+fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
+    for cell in [false, true] {
+        let workspace = Workspace::new(if cell { "convert-cell" } else { "convert-body" }, cell, true);
+        let output = workspace.dir.join("converted.hwpx");
+        let report = workspace.dir.join("loss.json");
+        for strict in [false, true] {
+            if output.exists() {
+                std::fs::remove_file(&output).unwrap();
+            }
+            let mut command = Command::new(env!("CARGO_BIN_EXE_hwp"));
+            command.arg("convert").arg(&workspace.source).arg("-o").arg(&output)
+                .arg("--loss-report").arg(&report);
+            if strict {
+                command.arg("--strict");
+            }
+            let result = command.output().unwrap();
+            let ledger: serde_json::Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+            let event = ledger["events"].as_array().unwrap().iter()
+                .find(|event| event["code"] == "paragraph_range_tag_unrepresentable");
+            assert!(event.is_some(), "PARA_RANGE_TAG loss must be reported: {ledger}");
+            let event = event.unwrap();
+            assert_eq!(event["count"], 1);
+            assert_eq!(event["resource"], "metadata");
+            assert_eq!(event["disposition"], "unrepresentable");
+            assert_eq!(result.status.success(), !strict, "{}", String::from_utf8_lossy(&result.stderr));
+            assert_eq!(output.exists(), !strict, "strict loss must not publish");
+            assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+        }
+    }
+}
