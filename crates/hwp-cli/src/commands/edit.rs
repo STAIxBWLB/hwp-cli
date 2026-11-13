@@ -6073,6 +6073,181 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hwp_caption_table_projection_visits_every_caption_owner() {
+        fn inner_table(document: &mut hwp_model::Document) -> &mut hwp_model::Table {
+            let owner = document.sections[0].paragraphs[0]
+                .controls
+                .last_mut()
+                .unwrap();
+            let caption = match owner {
+                hwp_model::Control::Table(table) => table.caption.as_mut(),
+                hwp_model::Control::Picture(picture) => picture.caption.as_mut(),
+                hwp_model::Control::Generic(generic) => generic.caption.as_mut(),
+                _ => None,
+            }
+            .unwrap();
+            match &mut caption.paragraphs[0].controls[0] {
+                hwp_model::Control::Table(table) => table,
+                _ => panic!("nested caption table"),
+            }
+        }
+        let signature = |document: &hwp_model::Document| {
+            semantic_signature_for(document, Some(SemanticTarget::Hwp))
+        };
+        let table_document =
+            hwp_convert::from_markdown("| Field | Value |\n| --- | --- |\n| alpha | 1 |\n");
+        let mut table = table_document
+            .sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::Table(table) => Some(table.clone()),
+                _ => None,
+            })
+            .unwrap();
+        table.placement = Some(hwp_model::GsoPlacement {
+            width: 1200,
+            height: 600,
+            ..Default::default()
+        });
+        for owner_kind in ["table", "picture", "generic"] {
+            let mut base = hwp_convert::from_markdown("Caption owner.\n");
+            let mut paragraph = base.sections[0].paragraphs[0].clone();
+            paragraph.controls = vec![hwp_model::Control::Table(table.clone())];
+            let caption = Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 100,
+                width: None,
+                last_width: 1200,
+                paragraphs: vec![paragraph],
+            });
+            let owner = match owner_kind {
+                "table" => {
+                    let mut owner = table.clone();
+                    owner.caption = caption;
+                    hwp_model::Control::Table(owner)
+                }
+                "picture" => hwp_model::Control::Picture(hwp_model::Picture {
+                    common_data: Vec::new(),
+                    width: hwp_model::HwpUnit(1200),
+                    height: hwp_model::HwpUnit(600),
+                    treat_as_char: true,
+                    z_order: 0,
+                    vert_offset: 0,
+                    horz_offset: 0,
+                    description: None,
+                    crop: None,
+                    flip: 0,
+                    rotation: None,
+                    brightness: 0,
+                    contrast: 0,
+                    effect_flags: 0,
+                    effects_raw: Vec::new(),
+                    caption,
+                    bin_ref: hwp_model::BinRef::ItemRef("caption-owner.png".into()),
+                    extras: Vec::new(),
+                }),
+                "generic" => hwp_model::Control::Generic(hwp_model::GenericControl {
+                    ctrl_id: *b"test",
+                    data: Vec::new(),
+                    paragraph_lists: Vec::new(),
+                    extras: Vec::new(),
+                    raw_children: Vec::new(),
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: None,
+                    caption,
+                    hwpx_raw_xml: None,
+                    container_box: None,
+                }),
+                _ => unreachable!(),
+            };
+            base.sections[0].paragraphs[0].controls.push(owner);
+            let mut materialized = base.clone();
+            let inner = inner_table(&mut materialized);
+            inner.common_data = hwp5::write::synthesized_table_common_data(inner);
+            inner.table_tail = vec![0, 0];
+            assert_eq!(
+                signature(&base),
+                signature(&materialized),
+                "{owner_kind} caption must project its nested table's exact writer materialization"
+            );
+            let mut opaque = materialized.clone();
+            inner_table(&mut opaque).common_data.push(0x5a);
+            assert_ne!(
+                signature(&base),
+                signature(&opaque),
+                "{owner_kind} caption must retain nested opaque payload bytes"
+            );
+            let mut geometry = materialized.clone();
+            inner_table(&mut geometry).placement.as_mut().unwrap().width += 1;
+            assert_ne!(
+                signature(&base),
+                signature(&geometry),
+                "{owner_kind} caption must retain nested table geometry"
+            );
+        }
+    }
+
+    #[test]
+    fn hwp_table_grid_projection_matches_only_the_writer_fallback() {
+        fn table(document: &mut hwp_model::Document) -> &mut hwp_model::Table {
+            document
+                .sections
+                .iter_mut()
+                .flat_map(|section| &mut section.paragraphs)
+                .flat_map(|paragraph| &mut paragraph.controls)
+                .find_map(|control| match control {
+                    hwp_model::Control::Table(table) => Some(table),
+                    _ => None,
+                })
+                .unwrap()
+        }
+        let signature = |document: &hwp_model::Document| {
+            semantic_signature_for(document, Some(SemanticTarget::Hwp))
+        };
+        for (width, height) in [(0, 100), (100, 0), (-1, 100), (100, -1), (0, 0)] {
+            let mut base =
+                hwp_convert::from_markdown("| Field | Value |\n| --- | --- |\n| alpha | 1 |\n");
+            table(&mut base).placement = Some(hwp_model::GsoPlacement {
+                width,
+                height,
+                ..Default::default()
+            });
+            let grid = hwp5::write::table_grid_totals(table(&mut base));
+            assert!(
+                grid.0 > 0 && grid.1 > 0,
+                "public table must supply a positive grid"
+            );
+            let mut materialized = base.clone();
+            let native = table(&mut materialized);
+            let placement = native.placement.as_mut().unwrap();
+            placement.width = grid.0;
+            placement.height = grid.1;
+            native.common_data = hwp5::write::synthesized_table_common_data(native);
+            native.table_tail = vec![0, 0];
+            assert_eq!(
+                signature(&base),
+                signature(&materialized),
+                "nonpositive placement ({width}, {height}) must project both writer grid dimensions"
+            );
+
+            let mut raw = materialized.clone();
+            table(&mut raw).common_data.push(0x5a);
+            let mut raw_unset = raw.clone();
+            table(&mut raw_unset).placement.as_mut().unwrap().width = width;
+            table(&mut raw_unset).placement.as_mut().unwrap().height = height;
+            assert_ne!(
+                signature(&raw),
+                signature(&raw_unset),
+                "native raw payloads must not activate geometry fallback"
+            );
+        }
+    }
+
+    #[test]
     fn hwp_projection_keeps_custom_header_and_section_data() {
         let base = hwp_convert::from_markdown("Baseline input.\n\nSecond paragraph.\n");
         let signature =
