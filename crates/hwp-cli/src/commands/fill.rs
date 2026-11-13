@@ -1,15 +1,13 @@
-//! `hwp fill` — 템플릿 채우기.
+//! `ahwp fill`: fill native document templates.
 //!
-//! 세 경로: (1) **자리표시자 치환**(기본) — `Contents/section*.xml`의 `{{name}}`만
-//! 외과 치환하고 나머지 패키지 엔트리(미리보기·compat·BinData)를 바이트 보존(hwpx
-//! 입력 전용). (2) **데이터 구동 표 채우기** — `--data`에 `tables` 지시가 있으면 IR로
-//! 읽어 표 행을 데이터 수만큼 늘리고(add_rows) 셀을 채운 뒤 다시 쓴다(.hwp/.hwpx 모두).
-//! (3) **부분(part) 채우기** — `--set name=@part.md` 또는 `--data`의 `parts` 맵이 있으면
-//! `{{name}}`만 담긴 앵커 문단을 부분 파일(md+HTML 혼합, 계약 docs/design/18)의 블록으로
-//! 교체한다(IR 경로, .hwp/.hwpx 모두 — Maru 부분별 작성·조합 워크플로).
-//! (4) **양식 채우기** (`--forms`, hwpx) — slots and Korean form fields (label cells, inline
-//! `라벨: 값`, blanks, checkboxes; `hwp_convert::fill_form_fields`) in one IR pass, written the
-//! way `hwp edit` writes hwpx: sections re-serialized, every other entry raw-copied.
+//! Four paths: (1) default placeholder replacement surgically changes only `{{name}}` in
+//! `Contents/section*.xml`, preserving every other package entry byte-for-byte (HWPX only).
+//! (2) Data-driven table filling reads `--data tables` into the IR, grows rows with `add_rows`,
+//! fills cells and rewrites either native format. (3) Part filling uses `--set name=@part.md`
+//! or the `--data parts` map to replace standalone `{{name}}` anchor paragraphs with Markdown
+//! and HTML blocks (IR path, both formats; docs/design/18). (4) Form filling (`--forms`, HWPX)
+//! fills slots and Korean form fields (label cells, inline `label: value`, blanks and
+//! checkboxes) in one IR pass, reserializing sections while raw-copying other entries.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -46,7 +44,7 @@ pub fn run(
             let text = std::fs::read_to_string(d)?;
             let mut value: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| anyhow::anyhow!("--data JSON 파싱 실패 ({}): {e}", d.display()))?;
-            // parts의 상대 경로는 --data 파일 위치 기준으로 해석한다.
+            // Resolve relative part paths against the --data file directory.
             if let Some(dir) = d.parent()
                 && let Some(serde_json::Value::Object(parts)) = value.get_mut("parts")
             {
@@ -103,16 +101,16 @@ pub fn execute(
     forms: bool,
     roots: &[PathBuf],
 ) -> anyhow::Result<FillReport> {
-    // 데이터에 `tables`가 (객체 항목의) 비어있지 않은 배열이면 IR 기반 표 채우기로 분기.
-    // 객체-배열만 인정해, "tables"라는 이름의 평범한 자리표시자(예: 문자열 배열 값)가
-    // 표 채우기로 오인 라우팅돼 실패하지 않게 한다(평문 fill 경로로 떨어뜨림).
+    // A nonempty array of objects under `tables` selects IR table filling.
+    // Requiring objects keeps an ordinary placeholder named "tables" (for example, a string
+    // array) on the plain-fill path rather than misrouting it into table filling.
     let has_tables = data_value
         .as_ref()
         .and_then(|v| v.get("tables"))
         .and_then(serde_json::Value::as_array)
         .is_some_and(|arr| !arr.is_empty() && arr.iter().all(serde_json::Value::is_object));
 
-    // 부분(part) 채우기 수집: --set name=@path (`@@`는 리터럴 '@') + --data의 parts 맵.
+    // Collect --set name=@path (`@@` is a literal '@') and the --data parts map.
     let mut part_paths: BTreeMap<String, PathBuf> = BTreeMap::new();
     if let Some(serde_json::Value::Object(map)) = data_value
         && let Some(serde_json::Value::Object(parts)) = map.get("parts")
@@ -165,7 +163,7 @@ pub fn execute(
         );
     }
 
-    // 기본 경로: {{name}} 자리표시자 바이트 보존 치환(hwpx 전용).
+    // Default path: byte-preserving {{name}} placeholder replacement (HWPX only).
     let mut values: BTreeMap<String, String> = BTreeMap::new();
     if let Some(serde_json::Value::Object(map)) = data_value {
         for (k, v) in map {
@@ -191,8 +189,8 @@ pub fn execute(
         return execute_forms(input, output, &values, allow_partial);
     }
 
-    // 자리표시자 치환은 HWPX(ZIP) 패키지 외과 수술 전용 — .hwp는 모호한 ZIP 오류 대신 명확히 거절.
-    // (.hwp 표 채우기는 위 --data tables 경로가 IR로 처리한다.)
+    // Placeholder replacement requires HWPX package surgery; refuse HWP5 explicitly rather
+    // than reporting an ambiguous ZIP error. HWP5 table fills use the IR branch above.
     if crate::format::detect(input)? != crate::format::FileFormat::Hwpx {
         anyhow::bail!(
             "{}: 자리표시자 치환(기본 fill)은 HWPX 입력 전용입니다 (.hwp는 --data의 tables 표 채우기만 지원)",
@@ -389,8 +387,9 @@ fn replaced_total(values: &BTreeMap<String, String>, counts: &BTreeMap<String, u
 /// placeholder path does. When the output is the input's own format, the published bytes are a
 /// private, size-bound snapshot of the input, checked to still read as `original`, the document
 /// the fill examined. The other HWP format (`.hwp`/`.hwpx`) makes the fill a plain conversion,
-/// so it goes through `hwp convert` (the fill writer's re-read check does not hold across
-/// formats); any other extension is refused, as the writer refuses it.
+/// so it goes through strict native conversion with fill-specific preservation diagnostics
+/// (the fill writer's re-read check does not hold across formats). Loss cannot be accepted
+/// implicitly by a zero-match fill; any other extension is refused, as the writer refuses it.
 fn publish_unchanged(
     input: &Path,
     output: &Path,
@@ -412,11 +411,12 @@ fn publish_unchanged(
         );
     }
     if output_ext.as_deref() != Some(same_format) {
-        let report = crate::commands::convert::execute(
+        let report = crate::commands::convert::execute_for_context(
+            crate::commands::convert::PreservationContext::Fill,
             input,
             output,
             None,
-            false,
+            true,
             None,
             false,
             false,
@@ -445,18 +445,18 @@ fn publish_unchanged(
     Ok(hwp_model::WriteReport::new())
 }
 
-/// 데이터 구동 표 채우기. `data`는 다음 형태:
+/// Data-driven table filling. `data` has this shape:
 /// ```json
 /// {
-///   "fields": {"부서": "기획팀"},
+///   "fields": {"department": "Planning"},
 ///   "tables": [
 ///     {"table": 0, "start_row": 1, "template_row": 1,
-///      "rows": [["노트북", "5"], ["모니터", "10"]]}
+///      "rows": [["Laptop", "5"], ["Monitor", "10"]]}
 ///   ]
 /// }
 /// ```
-/// `fields`(선택)는 `{{키}}`를 본문 전역 치환한다. 각 표는 `start_row`(기본 1)부터
-/// `rows` 길이만큼 행이 차도록 자동으로 늘린 뒤(add_rows) 셀을 채운다.
+/// Optional `fields` replaces `{{key}}` throughout the body. Starting at `start_row`
+/// (default 1), each table grows with `add_rows` to fit `rows`, then fills its cells.
 fn fill_tables_ir(
     input: &Path,
     output: &Path,
@@ -471,12 +471,12 @@ fn fill_tables_ir(
     let mut warnings = Vec::new();
     let mut unmatched_fields = Vec::new();
 
-    // 1) fields: {{키}} → 값. 우선순위: 최상위 스칼라(flat 스키마 호환) < data.fields < --set.
+    // 1) Literal fields. Precedence: top-level scalars (flat-schema compatibility) < data.fields < --set.
     let mut fields: BTreeMap<String, String> = BTreeMap::new();
     if let serde_json::Value::Object(top) = data {
         for (k, v) in top {
             if k == "fields" || k == "tables" || v.is_object() || v.is_array() {
-                continue; // 예약 키·복합값 제외 — 최상위 스칼라만 흡수.
+                continue; // Exclude reserved keys and compound values; collect top-level scalars only.
             }
             fields.insert(k.clone(), value_to_string(v));
         }
@@ -502,7 +502,7 @@ fn fill_tables_ir(
     }
     filled += replaced_total(&fields, &field_counts);
 
-    // 2) tables: 행 자동 증식 + 셀 채우기
+    // 2) Tables: grow rows and fill cells.
     let tables = data
         .get("tables")
         .and_then(serde_json::Value::as_array)
@@ -527,7 +527,7 @@ fn fill_tables_ir(
 
         let (cur_rows, _cols) = hwp_convert::table_dims(&mut doc, table_index)
             .ok_or_else(|| anyhow::anyhow!("표 #{table_index}를 찾을 수 없습니다"))?;
-        // start_row가 현재 행 수를 넘으면 그 사이가 빈 행으로 채워진다 — 보통 실수이므로 경고.
+        // A start_row beyond the current end creates blank rows, usually a mistake; warn.
         if start_row as usize > cur_rows as usize {
             warnings.push(format!(
                 "tables[{ti}] start_row={start_row} > 현재 행 수 {cur_rows}: 사이 {}행을 빈 행으로 추가",
@@ -658,7 +658,8 @@ fn fill_parts_ir(
             let baseline_dir = workspace.join("template-baseline");
             std::fs::create_dir(&baseline_dir)?;
             let baseline = baseline_dir.join(name);
-            let conversion = crate::commands::convert::execute(
+            let conversion = crate::commands::convert::execute_for_context(
+                crate::commands::convert::PreservationContext::Fill,
                 snapshot,
                 &baseline,
                 Some(format),
@@ -708,12 +709,12 @@ fn fill_parts_same_format(
     let mut warnings = Vec::new();
     let mut unmatched = Vec::new();
 
-    // 1) fields: 평문 자리표시자 치환 (fill_tables_ir와 동일 규칙).
+    // 1) Fields: literal placeholder replacement, with the same rules as fill_tables_ir.
     let mut fields: BTreeMap<String, String> = BTreeMap::new();
     if let Some(serde_json::Value::Object(top)) = data {
         for (k, v) in top {
             if k == "fields" || k == "parts" || k == "tables" || v.is_object() || v.is_array() {
-                continue; // 예약 키·복합값 제외 — 최상위 스칼라만 흡수.
+                continue; // Exclude reserved keys and compound values; collect top-level scalars only.
             }
             fields.insert(k.clone(), value_to_string(v));
         }
@@ -752,8 +753,8 @@ fn fill_parts_same_format(
                 {
                     anchors.push((section_index, para_index, name));
                 } else if tokens.iter().any(|token| token.name == name_str) {
-                    // 앵커 문단은 자리표시자만으로 구성돼야 한다 — 문장 중간의
-                    // {{name}}은 블록 교체가 성립하지 않으므로 필드 치환으로 안내.
+                    // An anchor paragraph must contain only the placeholder. A {{name}} inside a
+                    // sentence cannot be replaced by blocks; direct the caller to field replacement.
                     let anchor = format!("{{{{{name}}}}}");
                     if !allow_partial {
                         anyhow::bail!(
@@ -779,7 +780,7 @@ fn fill_parts_same_format(
     }
     filled += replaced_total(&fields, &field_counts);
 
-    // 4) parts: 앵커 문단 → 부분 블록 교체. A part with no anchor is not imported.
+    // 4) Parts: replace anchor paragraphs with blocks. A part with no anchor is not imported.
     let mut counts = BTreeMap::new();
     let mut blocks_by_name: BTreeMap<&String, Vec<hwp_model::Paragraph>> = BTreeMap::new();
     for (name, path) in part_paths {
@@ -810,9 +811,9 @@ fn fill_parts_same_format(
         for w in &part_warnings {
             eprintln!("경고: {w}");
         }
-        // hwpx 왕복으로 writer 정규형에 맞춘다 — 템플릿은 파일에서 읽은 정규형이라,
-        // 비정규 부수 필드(음영·attr1·글꼴 속성 등)가 그대로 이식되면 쓰기→재읽기
-        // 의미 불변식 검증(verify_document)이 깨진다.
+        // Round-trip through HWPX to obtain the writer-normalized form, matching the template
+        // loaded from disk. Transplanting unnormalized shading, attr1, font attributes or other
+        // incidental fields would break the write/read semantic invariant in verify_document.
         let part = roundtrip_hwpx(&part_direct)
             .with_context(|| format!("부분 문서 정규화(hwpx 왕복) 실패: {}", path.display()))?;
         let blocks = hwp_convert::merge::part_paragraphs(&mut doc, &part)
@@ -863,7 +864,7 @@ fn fill_parts_same_format(
     })
 }
 
-/// 문단의 표시 텍스트(문자만) — 앵커 판별용 단순 추출.
+/// Extract only displayed paragraph characters for simple anchor matching.
 fn paragraph_text(para: &hwp_model::Paragraph) -> String {
     para.chars
         .iter()
@@ -885,8 +886,8 @@ fn fill_part_temp_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("hwp_fill_part_{}_{seq}.hwpx", std::process::id()))
 }
 
-/// 부분 문서를 hwpx로 썼다가 다시 읽어 writer 정규형으로 만든다 (임시 파일 사용).
-/// 왕복이 첫 문단에 secd/cold를 재합성하므로 벗겨낸다 — 부분은 구역 정의를 가지면 안 된다.
+/// Normalize a part through a temporary HWPX write/read round trip.
+/// Strip the synthesized secd/cold controls from its first paragraph: parts cannot own sections.
 fn roundtrip_hwpx(doc: &hwp_model::Document) -> anyhow::Result<hwp_model::Document> {
     roundtrip_hwpx_at(doc, &fill_part_temp_path())
 }
@@ -911,8 +912,8 @@ fn roundtrip_hwpx_at(
     result
 }
 
-/// hwpx 왕복이 합성한 구역/단 정의(secd/cold)를 문단에서 벗긴다.
-/// 앵커 문자 제거 → WCHAR 위치 보정 → controls 재연결 순으로 처리한다.
+/// Remove section/column definitions (secd/cold) synthesized by the HWPX round trip.
+/// Remove anchor characters, adjust WCHAR positions, then reconnect controls in that order.
 fn strip_section_controls(para: &mut hwp_model::Paragraph) {
     use hwp_model::{Control, HwpChar};
     let has = para.controls.iter().any(|c| match c {
@@ -923,7 +924,7 @@ fn strip_section_controls(para: &mut hwp_model::Paragraph) {
     if !has {
         return;
     }
-    // 1) 앵커 문자 제거 — (원래 WCHAR 위치, 폭) 기록.
+    // 1) Remove anchor characters, recording their original WCHAR positions and widths.
     let mut removed: Vec<(u32, u32)> = Vec::new();
     let mut orig_pos = 0u32;
     let mut kept = Vec::with_capacity(para.chars.len());
@@ -938,13 +939,13 @@ fn strip_section_controls(para: &mut hwp_model::Paragraph) {
         orig_pos += width;
     }
     para.chars = kept;
-    // 2) 컨트롤 제거.
+    // 2) Remove the corresponding controls.
     para.controls.retain(|c| match c {
         Control::SectionDef(_) => false,
         Control::Generic(g) => g.ctrl_id != *b"cold",
         _ => true,
     });
-    // 3) char_shape_runs 위치 보정 (제거된 문자 폭만큼 앞으로).
+    // 3) Shift char_shape_runs positions backward by the removed character widths.
     for (pos, _) in &mut para.char_shape_runs {
         let shift: u32 = removed
             .iter()
@@ -954,7 +955,7 @@ fn strip_section_controls(para: &mut hwp_model::Paragraph) {
         *pos -= shift;
     }
     para.char_shape_runs.dedup();
-    // 4) ExtCtrl ↔ controls 등장순서 재연결.
+    // 4) Reconnect ExtCtrl references to controls in occurrence order.
     hwp_convert::field::relink_ctrl_index(para);
 }
 
@@ -1159,7 +1160,7 @@ pub fn report_json(report: &FillReport) -> serde_json::Value {
     }
 }
 
-/// JSON 값을 셀/필드 문자열로 — 문자열은 그대로, null은 빈 칸, 수/불리언은 표기.
+/// Convert JSON to cell/field text: strings verbatim, null as empty, numbers/booleans formatted.
 fn value_to_string(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
