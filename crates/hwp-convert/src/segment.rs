@@ -76,11 +76,10 @@
 //! nothing itself. `crates/hwp-render/src/segment_id.rs` carries a deliberate second copy of that
 //! rule, so changing what a kind hashes is a two-crate change.
 //!
-//! A run's range covers everything the run emitted, its own emphasis markers included. That is a
-//! property, not an accident of the walk: excluding the markers would leave them belonging to no
-//! run at all, and the boundary the walk reads — after `close_span` has finished moving the
-//! previous span's whitespace outside its markers, and before the next span's opening marker is
-//! pushed — is the only offset in that sequence that does not shift under the move.
+//! A run's range includes its emitted emphasis markers. The walk records boundaries between
+//! closing the previous emphasis span and opening the next one. After cleanup, reconciliation
+//! expands a surviving control's owning range and bounds its siblings to keep the pieces disjoint;
+//! recorded boundaries can therefore change when emphasis relocates whitespace.
 //!
 //! Run segments are numbered off [`crate::segment_id::canonical_char_shape_runs`], never off
 //! `Paragraph::char_shape_runs`: `run_id` indexes the canonical list, so walking the raw list
@@ -2155,5 +2154,296 @@ mod run_control_tests {
             .unwrap_or_else(|| panic!("text-box run with controls: {segs:#?}"));
         assert!(run.path.indices.len() > 2, "{run:?}");
         assert_four(&md, run);
+    }
+    /// The six no-control digits and twelve full-corpus digits both encode
+    /// (source symbol, shape), least-significant position first.
+    fn exhaustive_document(symbols: &[usize], shapes: &[u16]) -> Document {
+        let mut runs = Vec::new();
+        for (position, &shape) in shapes.iter().enumerate() {
+            if position == 0 || shapes[position - 1] != shape {
+                runs.push((position as u32, CharShapeId(shape)));
+            }
+        }
+        let paragraph = Paragraph {
+            chars: symbols
+                .iter()
+                .map(|symbol| match symbol {
+                    0 => HwpChar::Text('x'),
+                    1 => HwpChar::Text(' '),
+                    2 => HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                    3 => HwpChar::CharCtrl(ctrl_char::FW_SPACE),
+                    _ => unreachable!(),
+                })
+                .collect(),
+            char_shape_runs: runs,
+            ..Default::default()
+        };
+        let mut document = doc_of(vec![paragraph]);
+        document.header.char_shapes.push(CharShape {
+            attr: 2,
+            base_size: 1100,
+            ..Default::default()
+        });
+        document
+    }
+
+    /// Expected survival and ownership come only from source symbols and shape
+    /// changes. The actual Markdown supplies scalar positions after removing
+    /// generated emphasis markers and line feeds, neither of which is input here.
+    fn assert_source_projection(symbols: &[usize], shapes: &[u16], md: &str, segments: &[Segment]) {
+        let projected: String = symbols
+            .iter()
+            .map(|symbol| if *symbol == 0 { 'x' } else { ' ' })
+            .collect();
+        let markdown: Vec<_> = md.chars().collect();
+        let positions: Vec<_> = markdown
+            .iter()
+            .enumerate()
+            .filter_map(|(at, character)| (!matches!(*character, '*' | '\n')).then_some(at))
+            .collect();
+        let plain: String = positions.iter().map(|at| markdown[*at]).collect();
+        assert_eq!(
+            plain,
+            projected.trim(),
+            "projection alignment: {symbols:?} {shapes:?} {md:?}"
+        );
+        if symbols.iter().all(|symbol| *symbol != 0) {
+            assert!(
+                md.is_empty(),
+                "all-space output must be empty: {symbols:?} {shapes:?} {md:?}"
+            );
+        }
+        let leading = symbols
+            .iter()
+            .position(|symbol| *symbol == 0)
+            .unwrap_or(symbols.len());
+        let trailing = symbols
+            .iter()
+            .rposition(|symbol| *symbol == 0)
+            .map_or(leading, |at| at + 1);
+        let mut owner = 0usize;
+        let mut expected = Vec::new();
+        for source in 0..symbols.len() {
+            if source > 0 && shapes[source - 1] != shapes[source] {
+                owner += 1;
+            }
+            if source >= leading && source < trailing && symbols[source] >= 2 {
+                expected.push((
+                    if symbols[source] == 2 {
+                        "nb_space"
+                    } else {
+                        "fw_space"
+                    },
+                    positions[source - leading],
+                    source as u32,
+                    0usize,
+                    vec![0usize, owner],
+                ));
+            }
+        }
+        let mut actual = Vec::new();
+        let mut runs: Vec<_> = segments
+            .iter()
+            .filter(|segment| segment.kind == SegmentKind::Run)
+            .collect();
+        for run in &runs {
+            let bounds = run
+                .source_chars
+                .expect("a published run has a source range");
+            assert!(bounds.start < bounds.end && bounds.end <= symbols.len() as u32);
+            for control in &run.controls {
+                assert!(
+                    run.start <= control.at && control.at < run.end,
+                    "control outside own piece: {run:?} {md:?}"
+                );
+                assert_eq!(
+                    markdown.get(control.at),
+                    Some(&' '),
+                    "control projection: {control:?} {md:?}"
+                );
+                assert!(
+                    bounds.start <= control.source && control.source < bounds.end,
+                    "control outside source span: {control:?} {bounds:?}"
+                );
+                actual.push((
+                    control.kind.as_str(),
+                    control.at,
+                    control.source,
+                    run.path.section,
+                    run.path.indices.clone(),
+                ));
+            }
+        }
+        expected.sort();
+        actual.sort();
+        assert_eq!(
+            actual, expected,
+            "every surviving control belongs to its source run exactly once: {symbols:?} {shapes:?} {md:?}"
+        );
+        runs.sort_by_key(|run| {
+            let source = run.source_chars.unwrap();
+            (source.start, source.end, run.path.indices.clone())
+        });
+        for pair in runs.windows(2) {
+            assert!(
+                pair[0].end <= pair[1].start,
+                "source-ordered sibling runs overlap: {symbols:?} {shapes:?} {md:?} {:?} {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn exhaustive_small_inputs_preserve_controls_ranges_and_main_text() {
+        use sha2::{Digest, Sha256};
+        use std::collections::BTreeSet;
+        let invalid: Vec<(usize, usize)> = serde_json::from_str(include_str!(
+            "../tests/fixtures/run-control-invalid-main-cases.json"
+        ))
+        .unwrap();
+        assert_eq!(invalid.len(), 188);
+        assert!(invalid.windows(2).all(|pair| pair[0] < pair[1]));
+        let invalid: BTreeSet<_> = invalid.into_iter().collect();
+        let mut seen_invalid = BTreeSet::new();
+        let mut text_hash = Sha256::new();
+        let mut valid_ranges_hash = Sha256::new();
+        let mut total = 0usize;
+        let mut no_controls = 0usize;
+        let mut valid_count = 0usize;
+        for len in 0..=5usize {
+            for case in 0..12usize.pow(len as u32) {
+                let mut value = case;
+                let mut symbols = Vec::new();
+                let mut shapes = Vec::new();
+                for _ in 0..len {
+                    let digit = value % 12;
+                    value /= 12;
+                    symbols.push(digit / 3);
+                    shapes.push((digit % 3) as u16);
+                }
+                let (md, segments) = emit(&exhaustive_document(&symbols, &shapes));
+                // All inputs, including the 188 previously invalid main cases, must
+                // satisfy these invariants. The exception affects only the range digest.
+                assert_source_projection(&symbols, &shapes, &md, &segments);
+                let text_receipt = serde_json::json!({"case": case, "len": len, "markdown": md});
+                text_hash.update(serde_json::to_vec(&text_receipt).unwrap());
+                text_hash.update(b"\n");
+                if symbols.iter().all(|symbol| *symbol < 2) {
+                    no_controls += 1;
+                    let mut old_case = 0usize;
+                    let mut place = 1usize;
+                    for (symbol, shape) in symbols.iter().zip(&shapes) {
+                        old_case += (symbol * 3 + usize::from(*shape)) * place;
+                        place *= 6;
+                    }
+                    let key = (len, old_case);
+                    if invalid.contains(&key) {
+                        seen_invalid.insert(key);
+                    } else {
+                        valid_count += 1;
+                        let runs: Vec<_> = segments
+                            .iter()
+                            .filter(|segment| segment.kind == SegmentKind::Run)
+                            .map(|run| {
+                                let path = serde_json::json!([
+                                    serde_json::json!(run.path.section),
+                                    serde_json::json!(run.path.indices)
+                                ]);
+                                let source =
+                                    run.source_chars.map(|source| [source.start, source.end]);
+                                serde_json::json!({
+                                    "path": path,
+                                    "range": [run.start, run.end],
+                                    "source": source
+                                })
+                            })
+                            .collect();
+                        let receipt = serde_json::json!({
+                            "case": old_case,
+                            "len": len,
+                            "markdown": md,
+                            "runs": runs
+                        });
+                        valid_ranges_hash.update(serde_json::to_vec(&receipt).unwrap());
+                        valid_ranges_hash.update(b"\n");
+                    }
+                }
+                total += 1;
+            }
+        }
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(total, 271453);
+        assert_eq!(no_controls, 9331);
+        assert_eq!(valid_count, 9143);
+        assert_eq!(seen_invalid, invalid);
+        // Measured using full main 2a33240 emitter sources and this exact public corpus.
+        assert_eq!(
+            hex(&text_hash.finalize()),
+            "4a563b04d3149cfd3f3e0abbcb74f457b5f1e9502b5bac9126bc1d3edb3d2308",
+            "all-case Markdown must remain byte-identical to main"
+        );
+        assert_eq!(
+            hex(&valid_ranges_hash.finalize()),
+            "480f0ff70859ad9fe46502a1dc4ace1163e1e6c6e59323a1511b79b6f15b2c9d",
+            "valid no-control Markdown/ranges/source/path must remain identical to main"
+        );
+        eprintln!(
+            "#543/#557: corrected all 188 invalid main no-control cases; all 9331 are disjoint, valid 9143 preserve their exact receipt digest; all 271453 inputs preserve main Markdown"
+        );
+    }
+
+    #[test]
+    fn leading_shared_emphasis_keeps_the_control_on_its_source_run() {
+        let mut document = exhaustive_document(&[0, 1, 2, 0, 0], &[0, 1, 2, 2, 0]);
+        document.sections[0].paragraphs[0].chars[3] = HwpChar::Text('a');
+        document.sections[0].paragraphs[0].chars[4] = HwpChar::Text('b');
+        let (md, segments) = emit(&document);
+        assert_eq!(md, "x  **a**b\n\n");
+        let controls: Vec<_> = segments
+            .iter()
+            .filter(|run| run.kind == SegmentKind::Run)
+            .flat_map(|run| {
+                run.controls.iter().map(move |control| {
+                    (
+                        control.kind.as_str(),
+                        control.at,
+                        control.source,
+                        run.path.indices.clone(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            controls,
+            [("nb_space", 2, 2, vec![0, 2])],
+            "the leading control survives on the run that emitted it"
+        );
+    }
+
+    #[test]
+    fn trimmed_no_control_runs_do_not_overlap_the_first_visible_character() {
+        let symbols = [1, 1, 0];
+        let shapes = [2, 1, 0];
+        let (md, segments) = emit(&exhaustive_document(&symbols, &shapes));
+        assert_eq!(md, "x\n\n");
+        let runs: Vec<_> = segments
+            .iter()
+            .filter(|run| run.kind == SegmentKind::Run)
+            .collect();
+        assert_eq!(
+            runs.len(),
+            1,
+            "#557: trimmed whitespace must not leave a ghost run on x"
+        );
+        assert_eq!((runs[0].start, runs[0].end), (0, 1));
+        assert_eq!(runs[0].source_chars, Some(SourceChars { start: 2, end: 3 }));
+        assert_eq!(runs[0].path.indices, [0, 2]);
+        assert_source_projection(&symbols, &shapes, &md, &segments);
     }
 }
