@@ -1118,7 +1118,13 @@ pub fn run(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<()> {
             // #531: every other refused run gets a report too, with its run-level refusal.
             if let Some(abort) = err.downcast_ref::<EditAbort>() {
                 emit_edit_report(plan, &abort.report)?;
-            } else {
+            } else if !plan
+                .typed_operations
+                .iter()
+                .any(|op| matches!(op, TypedEditOperation::ApplyFormBindings { .. }))
+            {
+                // apply_form_bindings refuses a separate --report: its receipt is the only
+                // artifact it may publish, refused or not.
                 emit_edit_report(plan, &refused_run_report(output, plan.dry_run, &err))?;
             }
             Err(err)
