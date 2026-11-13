@@ -387,6 +387,7 @@ fn run_multi_inner(
                             font_dirs.clone(),
                             options,
                             Some(document),
+                            PreservationContext::Convert,
                         )?,
                         None => execute_with_options(
                             input,
@@ -472,6 +473,22 @@ fn target_extension(target: ConvertFormat) -> &'static str {
     }
 }
 
+/// The operation whose preservation policy owns a nested conversion refusal.
+#[derive(Clone, Copy)]
+pub(crate) enum PreservationContext {
+    Convert,
+    Fill,
+}
+
+impl PreservationContext {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Convert => "convert",
+            Self::Fill => "fill",
+        }
+    }
+}
+
 /// Conversion service shared by hwp convert and MCP.
 ///
 /// Do not publish destination until validation finishes. Markdown image sidecars share
@@ -506,6 +523,37 @@ pub fn execute(
     )
 }
 
+/// Default-option conversion for a caller whose preservation refusal belongs to another
+/// operation. It shares the same ledger, validation and publication path as `execute`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_for_context(
+    context: PreservationContext,
+    input: &Path,
+    output: &Path,
+    to: Option<ConvertFormat>,
+    strict: bool,
+    loss_report: Option<&Path>,
+    preserve_layout: bool,
+    embed_bin: bool,
+    md_opts: &MdOpts,
+    font_dirs: Vec<PathBuf>,
+) -> anyhow::Result<ConvertReport> {
+    execute_with_preloaded_document(
+        input,
+        output,
+        to,
+        strict,
+        loss_report,
+        preserve_layout,
+        embed_bin,
+        md_opts,
+        font_dirs,
+        &LoadOptions::default(),
+        None,
+        context,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn execute_with_options(
     input: &Path,
@@ -537,6 +585,7 @@ pub fn execute_with_options(
         font_dirs,
         options,
         preloaded,
+        PreservationContext::Convert,
     )
 }
 
@@ -553,6 +602,7 @@ fn execute_with_preloaded_document(
     font_dirs: Vec<PathBuf>,
     options: &LoadOptions<'_>,
     preloaded: Option<PreloadedDocument>,
+    preservation_context: PreservationContext,
 ) -> anyhow::Result<ConvertReport> {
     let target = match to {
         Some(t) => t,
@@ -770,7 +820,10 @@ fn execute_with_preloaded_document(
         }
         if matches!(target, ConvertFormat::Hwp | ConvertFormat::Hwpx) {
             if preserve_same_native_container || strict {
-                crate::commands::reject_preservation_loss("convert", &report.preservation)?;
+                crate::commands::reject_preservation_loss(
+                    preservation_context.as_str(),
+                    &report.preservation,
+                )?;
             }
             load_document(staged)
                 .with_context(|| format!("변환 문서 재읽기 실패: {}", staged.display()))?;

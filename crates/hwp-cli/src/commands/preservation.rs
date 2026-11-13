@@ -222,9 +222,23 @@ pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow:
         .iter()
         .any(|event| event.code == PreservationCode::ParagraphRangeTagUnrepresentable)
     {
-        "\n해결: .hwp 출력 경로를 사용하거나 한글에서 범위 표시를 제거한 뒤 다시 실행하세요. 손실을 수용하려면 ahwp convert를 --strict 없이 실행한 후 .hwpx를 편집하세요."
+        let accept_loss = match context {
+            "merge" => {
+                " 손실을 수용하려면 ahwp merge를 --strict 없이 다시 실행하거나 MCP hwp_merge에 strict: false를 지정하세요."
+            }
+            "convert" => {
+                " 손실을 수용하려면 ahwp convert를 --strict 없이 다시 실행하거나 MCP hwp_convert에 strict: false를 지정하세요."
+            }
+            "edit" | "fill" => {
+                " 손실을 수용하려면 ahwp convert를 --strict 없이 실행하거나 MCP hwp_convert에 strict: false를 지정해 먼저 .hwpx로 변환한 뒤 변환된 파일로 원래 작업을 다시 실행하세요."
+            }
+            _ => "",
+        };
+        format!(
+            "\n해결: .hwp 출력 경로를 사용하거나 한글에서 구간 표시를 제거한 뒤 다시 실행하세요.{accept_loss}"
+        )
     } else {
-        ""
+        String::new()
     };
     anyhow::bail!(
         "{context}: 보존 불가 데이터 {}건을 제거하거나 변경할 수 없어 출력을 게시하지 않습니다\n{}{remedy}",

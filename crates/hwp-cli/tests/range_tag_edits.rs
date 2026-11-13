@@ -236,6 +236,9 @@ fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
             if output.exists() {
                 std::fs::remove_file(&output).unwrap();
             }
+            if report.exists() {
+                std::fs::remove_file(&report).unwrap();
+            }
             let mut command = Command::new(env!("CARGO_BIN_EXE_hwp"));
             command
                 .arg("convert")
@@ -248,6 +251,10 @@ fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
                 command.arg("--strict");
             }
             let result = command.output().unwrap();
+            assert!(
+                report.is_file(),
+                "convert must write a fresh loss report even on strict refusal"
+            );
             let ledger: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
             let event = ledger["events"]
@@ -271,6 +278,16 @@ fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
             );
             assert_eq!(output.exists(), !strict, "strict loss must not publish");
             assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+            if strict {
+                let message = String::from_utf8_lossy(&result.stderr);
+                assert!(
+                    message.contains("ahwp convert")
+                        && message.contains("hwp_convert")
+                        && message.contains("strict: false"),
+                    "convert recovery must name the CLI and MCP loss opt-ins: {message}"
+                );
+                assert!(message.contains("구간 표시"), "{message}");
+            }
         }
     }
 }
@@ -389,6 +406,201 @@ fn edit_hwpx_refuses_range_tag_loss() {
         assert!(
             message.contains("ahwp convert") && message.contains("--strict 없이"),
             "missing opt-in loss remedy: {message}"
+        );
+        assert!(
+            message.contains("hwp_convert") && message.contains("strict: false"),
+            "edit recovery must name the MCP conversion loss opt-in: {message}"
+        );
+        assert!(message.contains("구간 표시"), "{message}");
+    }
+}
+
+#[test]
+fn merge_hwpx_reports_range_loss_and_names_its_own_loss_opt_in() {
+    let tagged = Workspace::new("merge-tagged", false, true);
+    let ordinary = Workspace::new("merge-ordinary", false, false);
+    let output = tagged.dir.join("merged.hwpx");
+    let report = tagged.dir.join("merge-loss.json");
+    for strict in [false, true] {
+        for artifact in [&output, &report] {
+            if artifact.exists() {
+                std::fs::remove_file(artifact).unwrap();
+            }
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ahwp"));
+        command
+            .arg("merge")
+            .arg(&tagged.source)
+            .arg(&ordinary.source)
+            .arg("-o")
+            .arg(&output)
+            .arg("--loss-report")
+            .arg(&report);
+        if strict {
+            command.arg("--strict");
+        }
+        let result = command.output().unwrap();
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.success(), !strict, "{message}");
+        assert_eq!(output.exists(), !strict);
+        assert!(report.is_file(), "merge must leave fresh loss evidence");
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        let event = ledger["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["code"] == "paragraph_range_tag_unrepresentable")
+            .expect("merge must report its dropped range-tag record");
+        assert_eq!(event["count"], 1);
+        if strict {
+            assert!(
+                message.contains("ahwp merge")
+                    && message.contains("hwp_merge")
+                    && message.contains("strict: false"),
+                "merge recovery must name merge-specific loss opt-ins: {message}"
+            );
+            assert!(!message.contains("ahwp convert"), "{message}");
+            assert!(message.contains("구간 표시"), "{message}");
+        } else {
+            assert!(
+                message.contains("paragraph_range_tag_unrepresentable"),
+                "non-strict merge must warn about its range-tag loss: {message}"
+            );
+        }
+        assert_eq!(std::fs::read(&tagged.source).unwrap(), tagged.bytes);
+        assert_eq!(std::fs::read(&ordinary.source).unwrap(), ordinary.bytes);
+    }
+}
+
+#[test]
+fn fill_hwpx_zero_match_refuses_range_tag_loss() {
+    for cell in [false, true] {
+        let mut workspace = Workspace::new(
+            if cell {
+                "fill-zero-cell"
+            } else {
+                "fill-zero-body"
+            },
+            true,
+            cell,
+        );
+        if !cell {
+            let mut document = hwp5::read_document(&workspace.source).unwrap().document;
+            document.sections[0].paragraphs[0]
+                .extras
+                .push(OpaqueRecord {
+                    tag: 0x46,
+                    data: b"opaque range sentinel".to_vec(),
+                    children: Vec::new(),
+                });
+            hwp5::write_document(&document, &workspace.source, &hwp5::WriteOptions::default())
+                .unwrap();
+            workspace.bytes = std::fs::read(&workspace.source).unwrap();
+            let reread = hwp5::read_document(&workspace.source).unwrap().document;
+            assert_eq!(
+                reread.sections[0].paragraphs[0]
+                    .extras
+                    .iter()
+                    .filter(|record| record.tag == 0x46)
+                    .count(),
+                1
+            );
+        }
+        let data = workspace.dir.join("tables.json");
+        std::fs::write(
+            &data,
+            r#"{"missing":"value","tables":[{"table":0,"rows":[]}]}"#,
+        )
+        .unwrap();
+        let output = workspace.dir.join("filled.hwpx");
+        let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
+            .arg("fill")
+            .arg(&workspace.source)
+            .arg("-o")
+            .arg(&output)
+            .arg("--data")
+            .arg(&data)
+            .arg("--allow-partial")
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "zero-match cross-format fill must refuse range-tag loss"
+        );
+        assert!(!output.exists(), "refused zero-match fill must not publish");
+        assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            message.contains("paragraph_range_tag_unrepresentable"),
+            "{message}"
+        );
+        assert!(
+            message.contains("fill: 보존 불가"),
+            "fill refusal must name its own operation: {message}"
+        );
+        assert!(
+            message.contains("먼저 .hwpx로 변환한 뒤")
+                && message.contains("변환된 파일로 원래 작업을 다시 실행"),
+            "zero-match fill refusal must require convert-first and retry: {message}"
+        );
+    }
+}
+
+#[test]
+fn fill_parts_hwpx_refusal_names_convert_first_recovery() {
+    for cell in [false, true] {
+        let mut workspace = Workspace::new(
+            if cell {
+                "fill-parts-cell"
+            } else {
+                "fill-parts-body"
+            },
+            cell,
+            true,
+        );
+        let mut document = hwp5::read_document(&workspace.source).unwrap().document;
+        document.sections[0].paragraphs.push(hwp_model::Paragraph {
+            chars: "{{body}}".chars().map(hwp_model::HwpChar::Text).collect(),
+            ..hwp_model::Paragraph::default()
+        });
+        hwp5::write_document(&document, &workspace.source, &hwp5::WriteOptions::default()).unwrap();
+        workspace.bytes = std::fs::read(&workspace.source).unwrap();
+        let part = workspace.dir.join("part.md");
+        std::fs::write(&part, "Public replacement part.\n").unwrap();
+        let output = workspace.dir.join("filled.hwpx");
+        let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
+            .arg("fill")
+            .arg(&workspace.source)
+            .arg("-o")
+            .arg(&output)
+            .arg("--set")
+            .arg(format!("body=@{}", part.display()))
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "parts fill must refuse range-tag loss"
+        );
+        assert!(!output.exists(), "refused parts fill must not publish");
+        assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            message.contains("paragraph_range_tag_unrepresentable"),
+            "{message}"
+        );
+        assert!(
+            message.contains("먼저 .hwpx로 변환한 뒤")
+                && message.contains("변환된 파일로 원래 작업을 다시 실행"),
+            "fill-parts refusal must require convert-first and retry: {message}"
+        );
+        assert!(
+            message.contains("fill: 보존 불가"),
+            "fill-parts refusal must name its own operation: {message}"
+        );
+        assert!(
+            message.contains("hwp_convert") && message.contains("strict: false"),
+            "fill-parts recovery must include the MCP conversion opt-in: {message}"
         );
     }
 }

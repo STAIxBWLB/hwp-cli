@@ -34,11 +34,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 **Fixed**
 
 - HWPX writes report dropped HWP5 `PARA_RANGE_TAG` records and their count as
-  `paragraph_range_tag_unrepresentable` loss events. `edit` and MCP `hwp_edit` from HWP5 to
-  `.hwpx` refuse publication and suggest keeping `.hwp` output, removing marks in Hangul, or
-  explicitly accepting the loss through `ahwp convert` without `--strict` before editing.
-  `convert`, `merge` and `split` warn without `--strict` and refuse with it; `--loss-report`
-  retains the evidence ([#529](https://github.com/STAIxBWLB/agent-hwp/issues/529)).
+  `paragraph_range_tag_unrepresentable` loss events. `edit`, `fill`, MCP `hwp_edit` and MCP
+  `hwp_fill` from HWP5 to `.hwpx` refuse publication. MCP `hwp_convert` refuses by default;
+  `strict: false` explicitly accepts the reported loss. CLI `convert` and `merge` warn without
+  `--strict` and refuse with it. Recovery names the appropriate CLI/MCP conversion or merge
+  opt-in, `.hwp` output, or removing range marks in Hangul; `--loss-report` retains the evidence
+  ([#529](https://github.com/STAIxBWLB/agent-hwp/issues/529)).
 - macOS release assets now require Developer ID Application signing, hardened runtime, a secure
   timestamp and Apple notarization with `Accepted` status. Publication waits for signature and
   byte-equality verification of the downloaded, repacked `ahwp` and `hwp`; missing signing or

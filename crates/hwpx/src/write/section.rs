@@ -16,7 +16,7 @@ use hwp_model::{
 
 use crate::write::templates::{color_attr, esc};
 
-// HWP5 paragraph range-tag record id; its payload stays opaque without a verified HWPX mapping.
+// HWP5 range-tag record id (한글문서파일형식 5.0 §4.3.5); the payload has no verified HWPX mapping.
 const PARA_RANGE_TAG: u16 = 0x10 + 54;
 
 /// 동봉할 바이너리(이미지) 수집기.
