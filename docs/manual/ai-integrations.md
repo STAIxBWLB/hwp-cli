@@ -423,9 +423,14 @@ A refused `ahwp edit` still writes the `edit-report-v1` file that `--report` nam
 `--dry-run` still prints it. The report (schema version 1.1) carries a top-level `refusal`
 object, and when one op refused, that op's entry carries the same object with `status:
 "failed"`. MCP `hwp_edit` returns the same object as `structuredContent.refusal` of its error
-result. Stderr keeps the Korean sentence for people. An MCP refusal raised while the arguments
-are still being read (for example `keep_together`) comes back only in `structuredContent`; no
-file is written to the `report` argument, because no edit plan exists yet.
+result, and writes the same report to its `report` argument for any refusal raised after the
+arguments are read. Stderr and the MCP error text keep the full Korean sentence for people;
+`refusal.message` is a fixed, content-free sentence per code that never quotes request content
+(#348). An MCP refusal raised while the arguments are still being read (for example
+`keep_together`) comes back only in `structuredContent`, with no file at the `report` argument
+because no edit plan exists yet; other argument errors (a malformed or out-of-root argument) may
+come back with no `structuredContent.refusal` at all. An `apply_form_bindings` batch publishes
+only its receipt, refused or not.
 
 ```json
 {"code":"insert_blocks.unknown_style","values":{"style":"Heading 9","missing_style":"refuse"},"message":"..."}
@@ -445,7 +450,7 @@ Branch on `code`, never on `message`. Values the user typed (anchors, style name
 | `insert_blocks.invalid_definition` | `style` and `detail`, or `issues` and `container_width_mm` |
 | `insert_blocks.style_not_paragraph`, `insert_blocks.duplicate_style`, `insert_blocks.style_cycle` | `style` |
 | `insert_blocks.style_id_overflow` | `style`, `style_id`, `max_style_id` |
-| `layout_overflow`, `insert_blocks.invalid_spec` | `issues` (`code`, `path` as a list, `message`), `container_width_mm` |
+| `layout_overflow`, `insert_blocks.invalid_spec` | `issues` (`code`, `path` as a list, `message`, and for an overflow `measured_width_mm`), `container_width_mm` |
 | `preservation_loss` | `events` (`code`, `resource`, `disposition`, `count`) |
 | `unapplied_requests`, `no_applicable_edits` | none; failed `ops` entries name the misses |
 | `unclassified` | none; any refusal not listed above |

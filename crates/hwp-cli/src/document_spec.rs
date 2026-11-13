@@ -439,6 +439,11 @@ pub struct SpecIssue {
     pub code: String,
     pub path: String,
     pub message: String,
+    /// #531: for `layout_overflow`, the measured width in mm (image or table width, or the
+    /// column sum) that exceeded the container, in tenths of a mm (an integer keeps `Eq`).
+    /// `None` for a non-finite sum. Not part of the compose report.
+    #[serde(skip)]
+    pub measured_tenths_mm: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -487,16 +492,19 @@ impl ComposeError {
                 code: "parse_error".to_string(),
                 path: "$".to_string(),
                 message: format!("{format:?}: {message}"),
+                measured_tenths_mm: None,
             }],
             Self::Asset { path, message } => vec![SpecIssue {
                 code: "asset_error".to_string(),
                 path: path.display().to_string(),
                 message: message.clone(),
+                measured_tenths_mm: None,
             }],
             Self::Compile { path, message } => vec![SpecIssue {
                 code: "compile_error".to_string(),
                 path: path.clone(),
                 message: message.clone(),
+                measured_tenths_mm: None,
             }],
         }
     }
@@ -531,6 +539,7 @@ pub fn parse_spec(input: &str, format: SpecInputFormat) -> Result<DocumentSpec, 
                 code: "limit_exceeded".to_string(),
                 path: "$".to_string(),
                 message: format!("spec is {} bytes; maximum is {MAX_SPEC_BYTES}", input.len()),
+                measured_tenths_mm: None,
             }],
         });
     }
@@ -560,6 +569,7 @@ pub fn infer_input_format(path: &Path) -> Result<SpecInputFormat, ComposeError> 
                 code: "unsupported_input_format".to_string(),
                 path: "$".to_string(),
                 message: "spec extension must be .json, .yaml, or .yml".to_string(),
+                measured_tenths_mm: None,
             }],
         }),
     }
@@ -613,7 +623,18 @@ impl Validator<'_> {
             code: code.to_string(),
             path: path.into(),
             message: message.into(),
+            measured_tenths_mm: None,
         });
+    }
+
+    /// A `layout_overflow` issue that also records the measured width (#531).
+    fn overflow(&mut self, path: impl Into<String>, measured_mm: f32, message: impl Into<String>) {
+        self.issue("layout_overflow", path, message);
+        if let Some(issue) = self.issues.last_mut() {
+            issue.measured_tenths_mm = measured_mm
+                .is_finite()
+                .then(|| (f64::from(measured_mm) * 10.0).round() as i64);
+        }
     }
 
     fn validate(&mut self) {
@@ -1152,9 +1173,9 @@ impl Validator<'_> {
                 } => {
                     self.validate_positive_dimension(*width_mm, &format!("{block_path}.width_mm"));
                     if *width_mm > body_width_mm {
-                        self.issue(
-                            "layout_overflow",
+                        self.overflow(
                             format!("{block_path}.width_mm"),
+                            *width_mm,
                             format!("image width exceeds body width {body_width_mm:.2} mm"),
                         );
                     }
@@ -1371,9 +1392,9 @@ impl Validator<'_> {
             } => {
                 self.validate_positive_dimension(*width_mm, &format!("{path}.width_mm"));
                 if *width_mm > body_width_mm {
-                    self.issue(
-                        "layout_overflow",
+                    self.overflow(
                         format!("{path}.width_mm"),
+                        *width_mm,
                         format!("image width exceeds body width {body_width_mm:.2} mm"),
                     );
                 }
@@ -1488,9 +1509,9 @@ impl Validator<'_> {
             column_sum += column.width_mm;
         }
         if !column_sum.is_finite() || column_sum > body_width_mm {
-            self.issue(
-                "layout_overflow",
+            self.overflow(
                 format!("{path}.columns"),
+                column_sum,
                 format!(
                     "column widths total {column_sum:.2} mm; body width is {body_width_mm:.2} mm"
                 ),
@@ -1499,9 +1520,9 @@ impl Validator<'_> {
         if let Some(width) = width_mm {
             self.validate_positive_dimension(width, &format!("{path}.width_mm"));
             if width > body_width_mm {
-                self.issue(
-                    "layout_overflow",
+                self.overflow(
                     format!("{path}.width_mm"),
+                    width,
                     format!("table width exceeds body width {body_width_mm:.2} mm"),
                 );
             }

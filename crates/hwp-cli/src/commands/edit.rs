@@ -642,7 +642,8 @@ fn reject_edit_preservation_loss(report: &hwp_model::PreservationReport) -> anyh
 }
 
 /// EDT-06: carries a fully-populated [`EditReport`] alongside an aborted `execute()` run
-/// (unapplied requests without `--allow-partial`, or zero applicable edits) so `run()` can still
+/// (unapplied requests without `--allow-partial`, zero applicable edits, or, since #531, one
+/// typed op that refused, whose classified refusal rides on that op's outcome) so `run()` can still
 /// write `--report`'s file — a caller diagnosing why nothing applied needs the `ops` array, not
 /// only an error string. `Display` reproduces exactly the message the old bare `anyhow::bail!`
 /// produced, so existing callers that match on the error text see no change. `pub(crate)` since
@@ -1116,19 +1117,34 @@ pub fn run(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<()> {
             // was given — write it, then propagate the SAME error `err` carries (EditAbort's
             // Display reproduces the original bail! message verbatim).
             // #531: every other refused run gets a report too, with its run-level refusal.
-            if let Some(abort) = err.downcast_ref::<EditAbort>() {
-                emit_edit_report(plan, &abort.report)?;
-            } else if !plan
-                .typed_operations
-                .iter()
-                .any(|op| matches!(op, TypedEditOperation::ApplyFormBindings { .. }))
-            {
-                // apply_form_bindings refuses a separate --report: its receipt is the only
-                // artifact it may publish, refused or not.
-                emit_edit_report(plan, &refused_run_report(output, plan.dry_run, &err))?;
+            // Best-effort: a report-write failure warns on stderr and never masks the refusal.
+            if let Err(write_error) = emit_refused_report(plan, output, &err) {
+                eprintln!("경고: 거부 보고서를 쓰지 못했습니다: {write_error:#}");
             }
             Err(err)
         }
+    }
+}
+
+/// #531: writes the edit-report-v1 artifact for a refused run: the aborted batch's own report
+/// (EDT-06), else the refused-run report with the run-level refusal. apply_form_bindings
+/// refuses a separate report: its receipt is the only artifact it may publish, refused or not.
+/// Shared by the CLI `run()` and the MCP `hwp_edit` error path.
+pub(crate) fn emit_refused_report(
+    plan: &EditPlan,
+    output: &Path,
+    err: &anyhow::Error,
+) -> anyhow::Result<()> {
+    if let Some(abort) = err.downcast_ref::<EditAbort>() {
+        emit_edit_report(plan, &abort.report)
+    } else if plan
+        .typed_operations
+        .iter()
+        .any(|op| matches!(op, TypedEditOperation::ApplyFormBindings { .. }))
+    {
+        Ok(())
+    } else {
+        emit_edit_report(plan, &refused_run_report(output, plan.dry_run, err))
     }
 }
 

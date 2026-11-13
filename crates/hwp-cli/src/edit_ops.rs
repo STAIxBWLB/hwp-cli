@@ -74,6 +74,20 @@ pub(crate) fn load_ops(path: &Path) -> anyhow::Result<Vec<TypedEditOperation>> {
     parse_ops_value(value)
 }
 
+/// #531: whether an ops file (path or `-`) names `apply_form_bindings` anywhere. A refused
+/// form-binding batch publishes only its receipt, so the pre-plan refusal report is skipped.
+/// Unreadable input counts as not binding; stdin was already consumed and reads as empty.
+pub(crate) fn ops_file_names_form_bindings(ops: &std::path::Path) -> bool {
+    ops.as_os_str() != "-"
+        && std::fs::read(ops)
+            .map(|bytes| {
+                bytes
+                    .windows(b"apply_form_bindings".len())
+                    .any(|window| window == b"apply_form_bindings")
+            })
+            .unwrap_or(false)
+}
+
 /// Validate every JSON channel against the same closed vocabulary before normalization.
 pub(crate) fn parse_ops_value(value: serde_json::Value) -> anyhow::Result<Vec<TypedEditOperation>> {
     let entries = value.as_array().ok_or_else(|| anyhow::anyhow!(

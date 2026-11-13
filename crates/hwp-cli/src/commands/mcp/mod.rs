@@ -1856,7 +1856,8 @@ fn tool_edit_structured(args: &Value, ctx: &dyn FileAuthority) -> McpToolResult 
             if crate::edit_ops::is_keep_together_refusal(&message) {
                 let requested: Vec<&str> = ["keep_with_next", "keep_lines", "break_before_shape"]
                     .into_iter()
-                    .filter(|key| item.get(*key).is_some())
+                    // Non-null only, as the CLI's keep_together_requested counts them.
+                    .filter(|key| item.get(*key).is_some_and(|value| !value.is_null()))
                     .collect();
                 let refusal = hwp_cli::refusal::Refusal::new(
                     hwp_cli::refusal::KEEP_TOGETHER_UNSUPPORTED,
@@ -1962,10 +1963,10 @@ fn tool_edit_structured(args: &Value, ctx: &dyn FileAuthority) -> McpToolResult 
         // still emits the edit-report-v1 artifact when a report path was given, exactly what
         // run() does for the CLI --report path. The write is best-effort — the client's
         // primary signal is the abort reason, so a report-write failure never masks it.
-        if wants_report
-            && let Some(abort) = error.downcast_ref::<crate::commands::edit::EditAbort>()
-        {
-            let _ = crate::commands::edit::emit_edit_report(&plan, &abort.report);
+        // #531: every other refused run writes the refused-run report too, as the CLI's
+        // run() does; apply_form_bindings keeps its receipt as its only artifact.
+        if wants_report {
+            let _ = crate::commands::edit::emit_refused_report(&plan, &output, &error);
         }
         let message = format!("{error:#}");
         match crate::commands::edit::refusal_of(&error) {
@@ -4311,7 +4312,16 @@ mod tests {
         let refusal = &response["structuredContent"]["refusal"];
         assert_eq!(refusal["code"], "add_table.anchor_not_found", "{response}");
         assert_eq!(refusal["values"]["anchor"], "없는 앵커");
-        assert_eq!(refusal["message"], "앵커를 찾을 수 없습니다: 없는 앵커");
+        assert_eq!(
+            refusal["message"],
+            hwp_cli::refusal::fixed_message("add_table.anchor_not_found")
+        );
+        assert!(
+            response["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("없는 앵커")
+        );
         let written: Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
         assert_eq!(&written["refusal"], refusal);
         assert_eq!(&written["ops"][0]["refusal"], refusal);
@@ -4341,6 +4351,61 @@ mod tests {
         assert_eq!(refusal["code"], "keep_together_unsupported", "{response}");
         assert_eq!(refusal["values"]["op_index"], 1, "{response}");
         assert!(!output.exists());
+        let _ = std::fs::remove_file(&source);
+    }
+
+    /// #531 P2: a refusal that is not an aborted batch (here the input does not load) still
+    /// writes the refused-run report to the `report` argument, as the CLI does.
+    #[test]
+    fn hwp_edit_non_abort_refusal_writes_the_report() {
+        let source = temp_file("refusal-load-source.hwpx");
+        std::fs::write(&source, b"not a document").unwrap();
+        let output = temp_file("refusal-load-out.hwpx");
+        let report = temp_file("refusal-load-report.json");
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(&report);
+        let mut args = json!({
+            "input": source,
+            "output": output,
+            "report": report,
+            "replace": [{"from": "a", "to": "b"}],
+        });
+        let response = call_tool("hwp_edit", &mut args, &ctx());
+        assert_eq!(response["isError"], true, "{response}");
+        let written: Value = serde_json::from_slice(
+            &std::fs::read(&report).expect("MCP writes the refused-run report (#531)"),
+        )
+        .unwrap();
+        assert_eq!(
+            &written["refusal"], &response["structuredContent"]["refusal"],
+            "{written}"
+        );
+        assert!(!output.exists());
+        for path in [&source, &report] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// #531: a keep field given as null is not requested, as in the CLI.
+    #[test]
+    fn hwp_edit_keep_together_requested_skips_null_fields() {
+        let source = temp_file("refusal-keep-null-source.hwpx");
+        create_hwpx(&source, "본문");
+        let output = temp_file("refusal-keep-null-out.hwpx");
+        let mut args = json!({
+            "input": source,
+            "output": output,
+            "keep_together": [{"address": {"at": {"section": 0, "paragraph": 0}},
+                "keep_lines": true, "keep_with_next": null}],
+        });
+        let response = call_tool("hwp_edit", &mut args, &ctx());
+        let refusal = &response["structuredContent"]["refusal"];
+        assert_eq!(refusal["code"], "keep_together_unsupported", "{response}");
+        assert_eq!(
+            refusal["values"]["requested"],
+            json!(["keep_lines"]),
+            "{response}"
+        );
         let _ = std::fs::remove_file(&source);
     }
 

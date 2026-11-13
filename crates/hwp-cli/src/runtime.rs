@@ -324,12 +324,28 @@ fn real_main() -> anyhow::Result<()> {
         Cmd::Edit(args) => {
             if args.ops.is_some() {
                 // #531: an ops file refused while loading still leaves the requested report.
-                let refused = (args.output.clone(), args.report.clone(), args.dry_run);
+                let refused = (
+                    args.output.clone(),
+                    args.report.clone(),
+                    args.dry_run,
+                    args.ops.clone(),
+                );
                 let (input, output, plan) = match commands::edit::EditPlan::from_ops(args) {
                     Ok(built) => built,
                     Err(error) => {
-                        let (output, report, dry_run) = refused;
-                        commands::edit::emit_refused_before_plan(&output, report, dry_run, &error)?;
+                        let (output, report, dry_run, ops) = refused;
+                        // apply_form_bindings publishes only its receipt, as in run(); the
+                        // write is best-effort so it never masks the refusal.
+                        let binding = ops
+                            .as_deref()
+                            .is_some_and(crate::edit_ops::ops_file_names_form_bindings);
+                        if !binding
+                            && let Err(write_error) = commands::edit::emit_refused_before_plan(
+                                &output, report, dry_run, &error,
+                            )
+                        {
+                            eprintln!("경고: 거부 보고서를 쓰지 못했습니다: {write_error:#}");
+                        }
                         return Err(error);
                     }
                 };

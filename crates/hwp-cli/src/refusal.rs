@@ -50,19 +50,54 @@ pub const UNAPPLIED_REQUESTS: &str = "unapplied_requests";
 pub const NO_APPLICABLE_EDITS: &str = "no_applicable_edits";
 pub const UNCLASSIFIED: &str = "unclassified";
 
+/// The fixed, content-free sentence `refusal.message` carries for each code (#348, #531).
+/// It never interpolates request text, patterns, anchors, URLs, names or error chains; the
+/// structured inputs live in `values`, and the full prose goes to stderr only.
+pub fn fixed_message(code: &str) -> &'static str {
+    match code {
+        RANGE_TAG_SHIFT => {
+            "편집이 해석하지 않은 범위 태그(PARA_RANGE_TAG)를 옮기거나 지우게 되어 거부했습니다"
+        }
+        KEEP_TOGETHER_UNSUPPORTED => "keep_together는 아직 지원하지 않습니다",
+        SECTION_OWNER_INSERT => "구역 설정 문단 앞에 삽입하게 되어 거부했습니다",
+        SECTION_OWNER_MOVE => "구역 설정 문단 앞으로 이동하게 되어 거부했습니다",
+        ADD_TABLE_ANCHOR_NOT_FOUND => "add_table 앵커를 담은 최상위 문단이 없습니다",
+        INSERT_BLOCKS_UNKNOWN_STYLE => "insert_blocks가 쓰는 스타일이 대상 문서에 없습니다",
+        INSERT_BLOCKS_INVALID_DEFINITION => {
+            "insert_blocks 스타일 또는 목록 정의가 올바르지 않습니다"
+        }
+        INSERT_BLOCKS_STYLE_NOT_PARAGRAPH => "insert_blocks 대상 스타일이 문단 스타일이 아닙니다",
+        INSERT_BLOCKS_DUPLICATE_STYLE => "대상 문서에 같은 이름의 스타일이 둘 이상 있습니다",
+        INSERT_BLOCKS_STYLE_CYCLE => "스타일의 based_on이 순환합니다",
+        INSERT_BLOCKS_STYLE_ID_OVERFLOW => "스타일 번호가 HWP의 1바이트 범위를 넘습니다",
+        LAYOUT_OVERFLOW => "삽입할 블록의 너비가 삽입 위치의 너비를 넘습니다",
+        INSERT_BLOCKS_INVALID_SPEC => "insert_blocks 블록 정의가 올바르지 않습니다",
+        PRESERVATION_LOSS => "보존할 수 없는 데이터를 지우거나 바꾸게 되어 거부했습니다",
+        UNAPPLIED_REQUESTS => "적용되지 않은 편집 요청이 있습니다",
+        NO_APPLICABLE_EDITS => "문서를 바꾼 편집 요청이 없습니다",
+        _ => "편집이 거부되었습니다",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Refusal {
     pub code: &'static str,
     pub values: Map<String, Value>,
-    pub message: String,
+    /// [`fixed_message`] for `code`: what edit-report-v1 and MCP `structuredContent` carry.
+    pub message: &'static str,
+    /// The full human sentence for stderr and the MCP error text. Never serialized, since it
+    /// may quote request content (#348).
+    #[serde(skip)]
+    pub prose: String,
 }
 
 impl Refusal {
-    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(code: &'static str, prose: impl Into<String>) -> Self {
         Self {
             code,
             values: Map::new(),
-            message: message.into(),
+            message: fixed_message(code),
+            prose: prose.into(),
         }
     }
 
@@ -103,7 +138,7 @@ impl Refusal {
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
+        f.write_str(&self.prose)
     }
 }
 
@@ -222,6 +257,17 @@ mod tests {
             hwp_convert::RANGE_TAG_SHIFT_REFUSAL
         );
         assert_eq!(Refusal::from_convert_message(quoted).code, UNCLASSIFIED);
+    }
+
+    #[test]
+    fn serialized_message_is_the_fixed_sentence() {
+        let refusal = Refusal::new(UNAPPLIED_REQUESTS, "--replace \"secret\"=>\"x\"");
+        let json = serde_json::to_string(&refusal).unwrap();
+        assert!(!json.contains("secret"), "{json}");
+        assert_eq!(refusal.to_string(), "--replace \"secret\"=>\"x\"");
+        for code in REFUSAL_CODES {
+            assert!(!fixed_message(code).is_empty());
+        }
     }
 
     #[test]

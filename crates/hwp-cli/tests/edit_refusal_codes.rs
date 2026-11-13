@@ -70,10 +70,15 @@ impl Fixture {
             .unwrap();
         assert_refused(&run, &output);
         let value = read_report(&report);
-        // stderr keeps the human sentence; the report carries the same sentence.
-        let stderr = String::from_utf8_lossy(&run.stderr);
-        let message = value["refusal"]["message"].as_str().unwrap();
-        assert!(stderr.contains(message), "{stderr} vs {message}");
+        // stderr keeps the human sentence; the report carries only the code's fixed,
+        // content-free sentence (#348).
+        let code = value["refusal"]["code"].as_str().unwrap();
+        assert_eq!(
+            value["refusal"]["message"],
+            hwp_cli::refusal::fixed_message(code),
+            "{value}"
+        );
+        assert!(!run.stderr.is_empty());
         value
     }
 }
@@ -115,7 +120,7 @@ fn legacy_flag_refusal_writes_the_report() {
     let fixture = Fixture::new("legacy");
     let report = fixture.refused("legacy", &["--add-row", "99"]);
     assert_eq!(report["refusal"]["code"], "unclassified");
-    assert_eq!(report["refusal"]["message"], "표 #99를 찾을 수 없습니다");
+    assert!(!report.to_string().contains("#99"), "{report}");
     assert_eq!(report["ops"], json!([]));
 }
 
@@ -247,6 +252,8 @@ fn layout_overflow_carries_the_measured_widths() {
         issue["path"],
         json!(["$", "sections", 0, "blocks", 0, "columns"])
     );
+    // The column sum that overflowed is in `values`, not only in the prose.
+    assert_eq!(issue["measured_width_mm"], 400.0, "{report}");
 }
 
 #[test]
@@ -258,4 +265,81 @@ fn unapplied_requests_list_the_requests() {
     );
     assert_eq!(report["refusal"]["code"], "unapplied_requests", "{report}");
     assert_eq!(report["ops"][0]["status"], "failed");
+}
+
+/// #348: the report never re-leaks request content, even inside `refusal.message`.
+#[test]
+fn unapplied_report_does_not_leak_request_text() {
+    let fixture = Fixture::new("leak");
+    for (label, ops) in [
+        (
+            "leak-replace",
+            json!([{"op":"replace","from":"없는 비밀-from","to":"PRIVATE-TO-7731"}]),
+        ),
+        (
+            "leak-replace-two",
+            json!([{"op":"replace","from":"Body","to":"PRIVATE-TO-7731"},
+                   {"op":"replace","from":"없는 비밀-from","to":"PRIVATE-TO-7731"}]),
+        ),
+    ] {
+        let report = fixture.refused_ops(label, ops);
+        let text = report.to_string();
+        assert!(!text.contains("PRIVATE-TO-7731"), "{text}");
+        assert!(!text.contains("없는 비밀-from"), "{text}");
+    }
+}
+
+/// #531: an invalid apply_form_bindings ops file publishes no refused-run report; its receipt
+/// is the only artifact a form-binding batch may publish, as on the run() path.
+#[test]
+fn invalid_form_binding_ops_write_no_report() {
+    let fixture = Fixture::new("binding");
+    let ops_path = fixture.dir.join("binding.json");
+    std::fs::write(
+        &ops_path,
+        serde_json::to_vec(
+            &json!([{"op":"apply_form_bindings"},{"op":"replace","from":"a","to":"b"}]),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let output = fixture.dir.join("binding.hwpx");
+    let report = fixture.dir.join("binding.report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&fixture.base)
+        .arg("-o")
+        .arg(&output)
+        .arg("--ops")
+        .arg(&ops_path)
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert_refused(&run, &output);
+    assert!(
+        !report.exists(),
+        "a form-binding batch writes no separate report"
+    );
+}
+
+/// #531: a report that cannot be written warns and never masks the refusal itself.
+#[test]
+fn report_write_failure_keeps_the_refusal() {
+    let fixture = Fixture::new("unwritable");
+    let output = fixture.dir.join("unwritable.hwpx");
+    let report = fixture.dir.join("no-such-dir").join("report.json");
+    let run = hwp()
+        .arg("edit")
+        .arg(&fixture.base)
+        .arg("-o")
+        .arg(&output)
+        .args(["--add-row", "99"])
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert_refused(&run, &output);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("표 #99를 찾을 수 없습니다"), "{stderr}");
 }

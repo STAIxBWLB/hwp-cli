@@ -413,7 +413,7 @@ pub fn apply(
     hwp_output: bool,
     assets: &AssetContext,
 ) -> Result<usize, String> {
-    apply_classified(doc, target, request, hwp_output, assets).map_err(|refusal| refusal.message)
+    apply_classified(doc, target, request, hwp_output, assets).map_err(|refusal| refusal.prose)
 }
 
 /// [`apply`] with its refusal classified for `edit-report-v1` (#531). The message is the same
@@ -580,11 +580,16 @@ fn spec_refusal(
     let listed: Vec<serde_json::Value> = issues
         .iter()
         .map(|issue| {
-            serde_json::json!({
+            let mut entry = serde_json::json!({
                 "code": issue.code,
                 "path": refusal::split_spec_path(&issue.path, &names),
                 "message": issue.message,
-            })
+            });
+            // #531: the measured width (image or table width, or the column sum) in mm.
+            if let Some(tenths) = issue.measured_tenths_mm {
+                entry["measured_width_mm"] = serde_json::json!(tenths as f64 / 10.0);
+            }
+            entry
         })
         .collect();
     let code = if issues.iter().any(|issue| issue.code == "layout_overflow") {
