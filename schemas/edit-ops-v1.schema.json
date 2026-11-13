@@ -630,7 +630,7 @@
     },
     "charRange": {
       "type": "array",
-      "description": "A [start, end) WCHAR sub-range, in UTF-16 code units absolute within the source paragraph (A1) — the same coordinate space `restyle_range` already takes, matching render-layout-v1's source_chars and document_split.rs's ParagraphAddress.wchar_offset. This is a DIFFERENT coordinate space from segment-envelope-v2's char_range (Unicode scalars into the rendered markdown); nothing converts between them, so a caller holding a char_range from `hwp cat --segments v2` must convert before composing this field.",
+      "description": "A [start, end) WCHAR sub-range, in UTF-16 code units absolute within the source paragraph (A1) — the same coordinate space `restyle_range` already takes, matching render-layout-v1's source_chars and document_split.rs's ParagraphAddress.wchar_offset. This is a DIFFERENT coordinate space from segment-envelope-v2's char_range (Unicode scalars into the rendered markdown); nothing converts between them, so a caller holding a char_range from `ahwp cat --segments v2` must convert before composing this field.",
       "items": { "type": "integer", "minimum": 0, "maximum": 1048575 },
       "minItems": 2,
       "maxItems": 2
