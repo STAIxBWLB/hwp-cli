@@ -476,22 +476,52 @@ fn merge_hwpx_reports_range_loss_and_names_its_own_loss_opt_in() {
 #[test]
 fn fill_hwpx_zero_match_refuses_range_tag_loss() {
     for cell in [false, true] {
-        let workspace = Workspace::new(
+        let mut workspace = Workspace::new(
             if cell {
                 "fill-zero-cell"
             } else {
                 "fill-zero-body"
             },
-            cell,
             true,
+            cell,
         );
+        if !cell {
+            let mut document = hwp5::read_document(&workspace.source).unwrap().document;
+            document.sections[0].paragraphs[0]
+                .extras
+                .push(OpaqueRecord {
+                    tag: 0x46,
+                    data: b"opaque range sentinel".to_vec(),
+                    children: Vec::new(),
+                });
+            hwp5::write_document(&document, &workspace.source, &hwp5::WriteOptions::default())
+                .unwrap();
+            workspace.bytes = std::fs::read(&workspace.source).unwrap();
+            let reread = hwp5::read_document(&workspace.source).unwrap().document;
+            assert_eq!(
+                reread.sections[0].paragraphs[0]
+                    .extras
+                    .iter()
+                    .filter(|record| record.tag == 0x46)
+                    .count(),
+                1
+            );
+        }
+        let data = workspace.dir.join("tables.json");
+        std::fs::write(
+            &data,
+            r#"{"missing":"value","tables":[{"table":0,"rows":[]}]}"#,
+        )
+        .unwrap();
         let output = workspace.dir.join("filled.hwpx");
         let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
             .arg("fill")
             .arg(&workspace.source)
             .arg("-o")
             .arg(&output)
-            .args(["--set", "missing=value", "--allow-partial"])
+            .arg("--data")
+            .arg(&data)
+            .arg("--allow-partial")
             .output()
             .unwrap();
         assert!(
