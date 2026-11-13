@@ -36,7 +36,10 @@ fn set_meta_value_cannot_forge_an_error_line() {
         .args(["--set-meta", "title=x\nError: forged", "--add-row", "99"])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "the --add-row 99 refusal must fail the run");
+    assert!(
+        !out.status.success(),
+        "the --add-row 99 refusal must fail the run"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     let first_error = stderr
         .lines()
