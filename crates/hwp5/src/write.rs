@@ -4021,19 +4021,15 @@ fn table_grid_totals(table: &Table) -> (i32, i32) {
     )
 }
 
-fn emit_table(
-    table: &Table,
-    synthesize: bool,
-    preserve_linesegs: bool,
-    add_tracking_tail: bool,
-    report: &mut WriteReport,
-) -> RecordNode {
+/// Synthesizes the object-common payload used for a table with no native `common_data`.
+///
+/// The returned bytes exclude the four-byte control ID. This is the existing `emit_table`
+/// synthesis for HWP 5.0 §4.3.9 tables 69/70, including the measured placement attributes,
+/// grid-size fallback, instance ID and empty object description. It does not inspect or
+/// normalize native raw payloads; `emit_table` preserves those verbatim instead.
+pub fn synthesized_table_common_data(table: &Table) -> Vec<u8> {
     let mut w = ByteWriter::new();
-    w.write_bytes(b" lbt");
-    if !table.common_data.is_empty() {
-        // HWP5 origin: preserve original object-common attributes unchanged.
-        w.write_bytes(&table.common_data);
-    } else if let Some(pl) = &table.placement {
+    if let Some(pl) = &table.placement {
         // HWPX origin: synthesize from hp:pos/hp:sz/hp:outMargin and zOrder placement. Previously
         // forcing 0x082A2210 (treat-as-character off) made inline tables float outside body flow,
         // causing Hangul relayout overlaps/blank pages.
@@ -4084,6 +4080,24 @@ fn emit_table(
         w.write_u32(0); // instance id
         w.write_i32(0); // Prevent page splitting.
         w.write_u16(0); // Object-description length WORD (len=0), required by specification table 69 for 46-byte consistency.
+    }
+    w.into_bytes()
+}
+
+fn emit_table(
+    table: &Table,
+    synthesize: bool,
+    preserve_linesegs: bool,
+    add_tracking_tail: bool,
+    report: &mut WriteReport,
+) -> RecordNode {
+    let mut w = ByteWriter::new();
+    w.write_bytes(b" lbt");
+    if !table.common_data.is_empty() {
+        // HWP5 origin: preserve original object-common attributes unchanged.
+        w.write_bytes(&table.common_data);
+    } else {
+        w.write_bytes(&synthesized_table_common_data(table));
     }
 
     let mut tw = ByteWriter::new();
@@ -6960,6 +6974,32 @@ mod tests {
             cells: Vec::new(),
             caption: None,
             extras: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn synthesized_table_common_payload_matches_emission_without_replacing_raw_bytes() {
+        for placement in [
+            None,
+            Some(hwp_model::GsoPlacement {
+                width: 40000,
+                height: 20000,
+                z_order: 3,
+                out_margins: [11, 22, 33, 44],
+                ..Default::default()
+            }),
+        ] {
+            let mut table = synth_table(placement);
+            let payload = synthesized_table_common_data(&table);
+            let emitted = emit_table(&table, true, false, false, &mut WriteReport::new());
+            assert_eq!(payload.len(), 42);
+            assert_eq!(&emitted.data[4..], payload);
+
+            // Native payloads, including unknown suffix bytes, remain authoritative.
+            table.common_data = [payload.as_slice(), &[0xa5, 0x5a]].concat();
+            table.common_data[0] ^= 0x80;
+            let emitted = emit_table(&table, true, false, false, &mut WriteReport::new());
+            assert_eq!(&emitted.data[4..], table.common_data);
         }
     }
 
