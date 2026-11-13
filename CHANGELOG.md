@@ -44,6 +44,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `.hwpx` remedy; CLI conversion and merge report the loss and refuse under `--strict`
   (MCP `hwp_convert` remains strict by default).
   The font mapping remains tracked under [#540](https://github.com/STAIxBWLB/agent-hwp/issues/540).
+- `cat --segments v2`: sibling run ranges remain ordered and disjoint when emphasis moves
+  leading or trailing whitespace across run boundaries. Surviving projected controls stay on
+  the run that emitted them. This also removes overlapping ranges caused by leading-trim
+  collapse; the Markdown text is unchanged
+  ([#557](https://github.com/STAIxBWLB/agent-hwp/issues/557)).
 
 
 ## [1.6.3]
