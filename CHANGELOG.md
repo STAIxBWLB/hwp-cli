@@ -76,6 +76,10 @@ These changes ship as 2.0.0.
   the run that emitted them. This also removes overlapping ranges caused by leading-trim
   collapse; the Markdown text is unchanged
   ([#557](https://github.com/STAIxBWLB/agent-hwp/issues/557)).
+- `cat --segments v2`: visible non-whitespace text retains its owning run when a
+  whitespace-only emphasis span collapses. The published run ID, style and source range now
+  identify the visible text instead of a preceding trimmed space; Markdown is unchanged
+  ([#558](https://github.com/STAIxBWLB/agent-hwp/issues/558)).
 
 
 ## [1.6.3]
