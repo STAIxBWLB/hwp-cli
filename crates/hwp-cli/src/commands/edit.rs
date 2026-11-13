@@ -4793,6 +4793,224 @@ enum SemanticTarget {
     Hwpx,
 }
 
+type ProjectionXmlToken = (bool, Vec<u8>, Vec<(Vec<u8>, String)>);
+
+/// Compare known package defaults without mistaking XML spacing or attribute order for data.
+/// Unknown elements, attributes and non-whitespace text still participate in equality.
+fn projection_xml_tokens(xml: &str) -> Option<Vec<ProjectionXmlToken>> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut tokens = Vec::new();
+    loop {
+        match reader.read_event().ok()? {
+            event @ (Event::Start(_) | Event::Empty(_)) => {
+                let empty = matches!(&event, Event::Empty(_));
+                let element = match event {
+                    Event::Start(element) | Event::Empty(element) => element,
+                    _ => unreachable!(),
+                };
+                let name = element.name().as_ref().as_bytes().to_vec();
+                let mut attributes = element
+                    .attributes()
+                    .map(|attribute| {
+                        let attribute = attribute.ok()?;
+                        Some((
+                            attribute.key.as_ref().as_bytes().to_vec(),
+                            quick_xml::escape::unescape(attribute.value.as_ref())
+                                .ok()?
+                                .into_owned(),
+                        ))
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                attributes.sort();
+                tokens.push((true, name.clone(), attributes));
+                if empty {
+                    tokens.push((false, name, Vec::new()));
+                }
+            }
+            Event::End(element) => tokens.push((
+                false,
+                element.name().as_ref().as_bytes().to_vec(),
+                Vec::new(),
+            )),
+            Event::Decl(_) => {}
+            Event::Text(text) if text.as_ref().as_bytes().iter().all(u8::is_ascii_whitespace) => {}
+            Event::Eof => return Some(tokens),
+            _ => return None,
+        }
+    }
+}
+
+fn is_hwpx_version_provenance(xml: &str) -> bool {
+    let normalize = |text| {
+        let mut tokens = projection_xml_tokens(text)?;
+        for (_, _, attributes) in &mut tokens {
+            for (name, value) in attributes {
+                if matches!(
+                    name.as_slice(),
+                    b"application"
+                        | b"appVersion"
+                        | b"os"
+                        | b"buildNumber"
+                        | b"major"
+                        | b"minor"
+                        | b"micro"
+                        | b"xmlVersion"
+                ) {
+                    value.clear();
+                }
+            }
+        }
+        Some(tokens)
+    };
+    normalize(xml).is_some_and(|tokens| Some(tokens) == normalize(hwpx::DEFAULT_VERSION_XML))
+}
+
+fn is_default_secpr_projection(children: &[String]) -> bool {
+    fn tokens(children: &[String]) -> Option<Vec<Vec<ProjectionXmlToken>>> {
+        children
+            .iter()
+            .map(|child| {
+                if child == hwp_model::SECPR_PAGEPR_SLOT {
+                    Some(vec![(true, b"modeled-pagePr".to_vec(), Vec::new())])
+                } else {
+                    projection_xml_tokens(child)
+                }
+            })
+            .collect()
+    }
+    // write_default_sec_pr owns these measured defaults. Materialize that constant template
+    // once, never the source document, rather than duplicating native/XML property values here.
+    static DEFAULT: std::sync::OnceLock<Option<Vec<Vec<ProjectionXmlToken>>>> =
+        std::sync::OnceLock::new();
+    let default = DEFAULT.get_or_init(|| {
+        let document = hwp_convert::from_markdown("Projection defaults.\n");
+        let xml = hwpx::write::section::write_section_with_report(
+            &document,
+            document.sections.first()?,
+            false,
+            &mut hwpx::write::section::BinCollector::default(),
+            &mut hwp_model::WriteReport::new(),
+        );
+        let (section, _) = hwpx::read::section::parse_section(&xml).ok()?;
+        let children = section
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::SectionDef(def) => Some(&def.secpr_raw_children),
+                _ => None,
+            })?;
+        tokens(children)
+    });
+    tokens(children).is_some_and(|actual| Some(actual) == *default)
+}
+
+/// Preserve native raw numbering bytes and compare the formats those known bytes actually draw.
+fn canonicalize_hwp_numberings(document: &mut hwp_model::Document, source_format: &str) {
+    if hwp5::numbering::is_official_eight_level_contract(&document.header.numbering_levels) {
+        return;
+    }
+    let reader_default = hwp5::write::synthesized_numbering_levels();
+    let mut native_default = reader_default.clone();
+    for (level, format) in native_default
+        .iter_mut()
+        .zip(hwp5::write::DEFAULT_NUMBERING_FORMATS)
+    {
+        level.fmt = format;
+    }
+    let raw_count = document.header.numberings.len();
+    let used = hwp5::write::referenced_numbering_levels(document);
+    let no_heading_shapes = document
+        .header
+        .para_shapes
+        .iter()
+        .all(|shape| !matches!(shape.head_type(), 1 | 2));
+    let records = hwp5::write::numbering_records(&document.header);
+    // emit_doc_info always emits at least one fallback record, even without a modeled definition.
+    if raw_count == 0 && document.header.numbering_levels.is_empty() {
+        document
+            .header
+            .numbering_levels
+            .push(native_default.clone());
+    }
+    let factory_extensions = [
+        (hwp_model::NumFmt::CircledHangulSyllable, "^8"),
+        (hwp_model::NumFmt::HangulJamo, ""),
+        (hwp_model::NumFmt::RomanLower, ""),
+    ];
+    for (definition, levels) in document.header.numbering_levels.iter_mut().enumerate() {
+        if definition < raw_count {
+            // parse_numbering_levels omits selectors. Only this exact measured default record
+            // plus its unedited reader view can be interpreted using the writer's drawn formats.
+            if *levels == reader_default
+                && hwp5::write::is_materialized_default_numberings(
+                    std::slice::from_ref(&records[definition]),
+                    std::slice::from_ref(&reader_default),
+                )
+            {
+                *levels = native_default.clone();
+            }
+            continue;
+        }
+        let unused_factory_palette = no_heading_shapes
+            && levels.len() == 7
+            && levels.iter().enumerate().all(|(index, level)| {
+                level.start == 1
+                    && level.fmt == hwp_model::NumFmt::Digit
+                    && level.template == format!("^{}.", index + 1)
+            });
+        let exact_native_prefix = levels.len() >= native_default.len()
+            && levels[..native_default.len()] == native_default;
+        // compile_lists fills undeclared slots with Digit/^N. for its renderer. The HWP
+        // authoring guard validates every declared marker/start and every used format first.
+        // Recognize only that bounded compiler pattern, never arbitrary HWPX definitions.
+        let composed_renderer_defaults =
+            matches!(source_format, "document-spec-v1" | "document-spec-v2")
+                && levels.len() == native_default.len()
+                && levels.iter().enumerate().all(|(index, level)| {
+                    level.start == 1
+                        && level.fmt == hwp_model::NumFmt::Digit
+                        && (level.template == native_default[index].template
+                            || level.template == format!("^{}.", index + 1))
+                        && (!used.contains(&(definition, index)) || *level == native_default[index])
+                });
+        let unused_factory_extensions =
+            levels
+                .iter()
+                .skip(native_default.len())
+                .enumerate()
+                .all(|(index, level)| {
+                    !used.contains(&(definition, native_default.len() + index))
+                        && (factory_extensions
+                            .get(index)
+                            .is_some_and(|(format, template)| {
+                                level.start == 1
+                                    && level.fmt == *format
+                                    && level.template == *template
+                            })
+                            || (levels.len() == 8
+                                && index == 0
+                                && level.start == 1
+                                && level.fmt == hwp_model::NumFmt::Digit
+                                && level.template == "^8"))
+                });
+        // write_numberings materializes the unused HWPX schema palette; emit_doc_info uses
+        // native defaults and excludes unused extension levels. authored_ordered_levels also
+        // supplies one unused Digit/^8 slot. All other custom values remain compared.
+        if unused_factory_palette
+            || (exact_native_prefix && unused_factory_extensions)
+            || composed_renderer_defaults
+            || (source_format != "hwpx" && *levels == reader_default)
+        {
+            *levels = native_default.clone();
+        }
+    }
+    // numbering_records preserves every existing payload/child and supplies only missing
+    // fallback records. Keep those bytes in the digest rather than clearing unknown resources.
+    document.header.numberings = records;
+}
+
 fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
     if hwp_convert::field::is_field_ctrl_id(&generic.ctrl_id) {
         // HWP5 exposes CTRL_DATA both as raw and as an extracted extra.
@@ -4926,8 +5144,46 @@ fn canonical_document(
             paragraph.char_shape_runs = projected;
         }
         for control in &mut paragraph.controls {
+            if matches!(target, Some(SemanticTarget::Hwp)) {
+                // emit_caption_records writes a full paragraph list, including nested tables.
+                // Apply the same native projection to every caption exactly once.
+                let caption = match control {
+                    hwp_model::Control::Table(table) => table.caption.as_mut(),
+                    hwp_model::Control::Picture(picture) => picture.caption.as_mut(),
+                    hwp_model::Control::Generic(generic) => generic.caption.as_mut(),
+                    hwp_model::Control::SectionDef(_) => None,
+                };
+                if let Some(caption) = caption {
+                    for paragraph in &mut caption.paragraphs {
+                        canonicalize_paragraph(paragraph, target, source_doc);
+                    }
+                }
+            }
             match control {
                 hwp_model::Control::Table(table) => {
+                    if matches!(target, Some(SemanticTarget::Hwp)) && table.table_tail.is_empty() {
+                        // emit_table materializes the table-70 zero region-attribute count;
+                        // nonempty tails, including unmodeled region data, remain byte-compared.
+                        table.table_tail = vec![0, 0];
+                    }
+                    if matches!(target, Some(SemanticTarget::Hwp))
+                        && table.common_data.is_empty()
+                        && table.placement.is_some()
+                    {
+                        // emit_table materializes this exact table-69 payload from modeled placement;
+                        // retain actual raw bytes (including unknown tails) and compare placement too.
+                        let (width, height) = hwp5::write::table_grid_totals(table);
+                        if let Some(placement) = table.placement.as_mut()
+                            && placement.width <= 0
+                            && placement.height <= 0
+                        {
+                            // emit_table replaces the pair with grid totals. Only a wholly unset pair
+                            // is representation scaffolding; mixed pairs lose a positive value and refuse.
+                            placement.width = width;
+                            placement.height = height;
+                        }
+                        table.common_data = hwp5::write::synthesized_table_common_data(table);
+                    }
                     if matches!(target, Some(SemanticTarget::Hwpx))
                         && table.common_data.is_empty()
                         && table.placement.is_none()
@@ -5042,25 +5298,35 @@ fn canonical_document(
                         }
                     }
                 }
-                hwp_model::Control::SectionDef(def) => match target {
-                    Some(SemanticTarget::Hwpx)
-                        if hwpx::write::section::is_generated_default_secpr_children(
-                            &def.secpr_raw_children,
-                        ) =>
+                hwp_model::Control::SectionDef(def) => {
+                    if matches!(target, Some(SemanticTarget::Hwp))
+                        && (is_default_secpr_projection(&def.secpr_raw_children)
+                            || def.secpr_raw_children == [hwp_model::SECPR_PAGEPR_SLOT])
                     {
+                        // emit_section_def writes the modeled page/default native children, not
+                        // HWPX default XML scaffolding; custom section XML remains compared.
                         def.secpr_raw_children.clear();
                     }
-                    Some(SemanticTarget::Hwp)
-                        if hwp5::write::is_materialized_default_section_def(def) =>
-                    {
-                        def.data.clear();
-                        def.extras.clear();
-                        def.footnote_shape_raw = None;
-                        def.endnote_shape_raw = None;
-                        def.page_border_fills_raw.clear();
+                    match target {
+                        Some(SemanticTarget::Hwpx)
+                            if hwpx::write::section::is_generated_default_secpr_children(
+                                &def.secpr_raw_children,
+                            ) =>
+                        {
+                            def.secpr_raw_children.clear();
+                        }
+                        Some(SemanticTarget::Hwp)
+                            if hwp5::write::is_materialized_default_section_def(def) =>
+                        {
+                            def.data.clear();
+                            def.extras.clear();
+                            def.footnote_shape_raw = None;
+                            def.endnote_shape_raw = None;
+                            def.page_border_fills_raw.clear();
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 hwp_model::Control::Picture(picture) => {
                     if let Some(bytes) = source_doc.resolve_bin(&picture.bin_ref) {
                         let writer_generated = matches!(target, Some(SemanticTarget::Hwp))
@@ -5081,6 +5347,24 @@ fn canonical_document(
 
     let mut canonical = doc.clone();
     if matches!(target, Some(SemanticTarget::Hwp)) {
+        // emit_doc_info has no HWPX package slots: only the exact empty-caret default is
+        // scaffolding; custom settings that lack a modeled counterpart remain a refusal.
+        if canonical.hwpx_settings_xml.as_deref().is_some_and(|xml| {
+            projection_xml_tokens(xml).is_some_and(|tokens| {
+                Some(tokens) == projection_xml_tokens(hwpx::DEFAULT_SETTINGS_XML)
+            })
+        }) {
+            canonical.hwpx_settings_xml = None;
+        }
+        // write_document constructs native version/container metadata instead; recognized
+        // HCFVersion producer/platform fields are provenance, while extensions stay compared.
+        if canonical
+            .hwpx_version_xml
+            .as_deref()
+            .is_some_and(is_hwpx_version_provenance)
+        {
+            canonical.hwpx_version_xml = None;
+        }
         // The HWP5 writer re-encodes a non-HWP5 IR's numbered levels zero-based (#472), and
         // the reread HWP5 IR keeps those on-disk bits; project the expected side the same way
         // while its source format is still known.
@@ -5138,51 +5422,41 @@ fn canonical_document(
                 .cmp(&right.name)
                 .then_with(|| left.data.cmp(&right.data))
         });
-        if hwp5::write::is_materialized_default_tab_defs(
-            &canonical.header.tab_defs,
-            &canonical.header.tab_stops,
-        ) {
+        let default_hwpx_tab = canonical.header.tab_defs.is_empty()
+            && ((canonical.header.tab_stops.len() == 1
+                && canonical.header.tab_stops[0].attr == 0
+                && canonical.header.tab_stops[0].items.is_empty()
+                && canonical
+                    .header
+                    .para_shapes
+                    .iter()
+                    .all(|shape| shape.tab_def_id == 0))
+                || (canonical.header.tab_stops.len() == 3
+                    && canonical
+                        .header
+                        .para_shapes
+                        .iter()
+                        .all(|shape| shape.tab_def_id < 3)
+                    && canonical
+                        .header
+                        .tab_stops
+                        .iter()
+                        .enumerate()
+                        .all(|(index, tab)| tab.attr == index as u32 && tab.items.is_empty())));
+        // emit_doc_info expands the single unconfigured HWPX tab slot to three native defaults;
+        // references to custom/auto tabs and every item/leader/position remain significant.
+        if default_hwpx_tab
+            || hwp5::write::is_materialized_default_tab_defs(
+                &canonical.header.tab_defs,
+                &canonical.header.tab_stops,
+            )
+        {
             canonical.header.tab_defs.clear();
             canonical.header.tab_stops.clear();
         }
-        // An edit may graft definitions past an HWP5 source's raw records. The writer emits a
-        // record for each (#377): the default NUMBERING, which re-reads as the default levels.
-        // Project the same records, and the levels of a grafted definition the default record
-        // stands for: every level counts from 1, in digits or in the record's own format for
-        // that level (a markdown list takes Hancom's default ladder, #382). Any other start or
-        // format is lost in the default record, so it is left to fail the comparison.
-        // A non-HWP5 document with ordered lists has modeled levels but no raw records; the
-        // writer synthesizes one default record per definition (`numbering_records`), unless
-        // the official eight-level contract applies (it writes its own records). Project that
-        // the same way, so a list the default record can draw compares equal (#472 compose).
-        let synthesized_numbering = canonical.header.numberings.is_empty()
-            && !canonical.header.numbering_levels.is_empty()
-            && !hwp5::numbering::is_official_eight_level_contract(
-                &canonical.header.numbering_levels,
-            );
-        if !canonical.header.numberings.is_empty() || synthesized_numbering {
-            let raw = canonical.header.numberings.len();
-            canonical.header.numberings = hwp5::write::numbering_records(&canonical.header);
-            for levels in canonical.header.numbering_levels.iter_mut().skip(raw) {
-                if levels.iter().enumerate().all(|(index, level)| {
-                    level.start <= 1
-                        && (level.fmt == hwp_model::NumFmt::Digit
-                            || hwp5::write::DEFAULT_NUMBERING_FORMATS.get(index)
-                                == Some(&level.fmt))
-                }) {
-                    *levels = hwp5::write::synthesized_numbering_levels();
-                }
-            }
-        }
+        canonicalize_hwp_numberings(&mut canonical, &doc.meta.source_format);
         if !canonical.header.bullets.is_empty() {
             canonical.header.bullets = hwp5::write::bullet_records(&canonical.header);
-        }
-        if hwp5::write::is_materialized_default_numberings(
-            &canonical.header.numberings,
-            &canonical.header.numbering_levels,
-        ) {
-            canonical.header.numberings.clear();
-            canonical.header.numbering_levels.clear();
         }
         if hwp5::write::is_materialized_generated_bullets(
             &canonical.header.bullets,
@@ -5209,7 +5483,11 @@ fn canonical_document(
                 shape.attr |= 1 << 18;
             }
             shape.strike = false;
-            if shape.underline_kind() == 0 {
+            // emit_char_shape serializes attr bits (§4.2.6), not the duplicate HWPX legacy
+            // field; a legacy-only active shape that would be lost must remain different.
+            if shape.underline_kind() == 0
+                || shape.underline_shape_code() == ((shape.attr >> 4) & 0xf) as u8
+            {
                 shape.underline_shape = 0;
             }
         }
@@ -5450,6 +5728,17 @@ fn canonical_document(
         }
     }
     for section in &mut canonical.sections {
+        if matches!(target, Some(SemanticTarget::Hwp))
+            && let Some(first) = section.paragraphs.first_mut()
+            && first
+                .controls
+                .iter()
+                .any(|control| matches!(control, hwp_model::Control::SectionDef(_)))
+        {
+            // write_document materializes section/column marker bits only on this paragraph
+            // (genuine-save compatibility rule A13); page/column breaks and unknown bits remain.
+            first.header.break_type |= 0x03;
+        }
         for paragraph in &mut section.paragraphs {
             canonicalize_paragraph(paragraph, target, doc);
         }
@@ -5630,8 +5919,8 @@ impl std::fmt::Display for SemanticVerificationMismatch {
 
 impl std::error::Error for SemanticVerificationMismatch {}
 
-/// Compare the numbering actually used by a composed document before generic projection can
-/// replace modeled definitions with the fallback record. Legacy edit/convert policy is unchanged.
+/// Compare used numbering before projection can replace duplicate modeled definitions with the
+/// native fallback record. HWPX edits and composed documents must retain the markers actually drawn.
 fn verify_composed_hwp_numbering(
     expected: &hwp_model::Document,
     actual: &hwp_model::Document,
@@ -5644,15 +5933,22 @@ fn verify_composed_hwp_numbering(
         out: &mut Vec<UsedLevel>,
     ) -> anyhow::Result<()> {
         for paragraph in paragraphs {
-            let shape = doc.header.para_shapes.get(paragraph.para_shape.0 as usize)
-                .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 문단 모양 참조가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+            let shape = doc
+                .header
+                .para_shapes
+                .get(paragraph.para_shape.0 as usize)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "번호 검증 실패: 문단 모양 참조가 없습니다. HWPX 출력으로 다시 시도하세요"
+                    )
+                })?;
             if shape.head_type() == 2 {
                 let index = shape.head_level().saturating_sub(1) as usize;
                 let definition = shape.numbering_id as usize;
                 let levels = doc.header.numbering_levels.get(definition)
-                    .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 번호 정의 {definition}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+                    .ok_or_else(|| anyhow::anyhow!("번호 검증 실패: 번호 정의 {definition}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
                 let level = levels.get(index)
-                    .ok_or_else(|| anyhow::anyhow!("합성 번호 검증 실패: 번호 정의 {definition}의 level {index}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
+                    .ok_or_else(|| anyhow::anyhow!("번호 검증 실패: 번호 정의 {definition}의 level {index}가 없습니다. HWPX 출력으로 다시 시도하세요"))?;
                 let mut format = level.fmt;
                 if drawn
                     && doc.header.numberings.get(definition).is_some_and(|raw| {
@@ -5718,7 +6014,7 @@ fn verify_composed_hwp_numbering(
             .map(|level| format!("번호 정의 {}, level {}", level.0, level.1))
             .unwrap_or_else(|| "사용된 번호 수준".into());
         anyhow::bail!(
-            "합성 번호 검증 실패: {location}의 template/start/format이 요청과 다릅니다. HWPX 출력으로 다시 시도하거나 HWP 기본 번호 형식을 사용하세요"
+            "번호 검증 실패: {location}의 template/start/format이 요청과 다릅니다. HWPX 출력으로 다시 시도하거나 HWP 기본 번호 형식을 사용하세요"
         );
     }
     Ok(())
@@ -5740,7 +6036,7 @@ fn verify_output_with_success_log(
         if matches!(target, Some(SemanticTarget::Hwp))
             && matches!(
                 expected.meta.source_format.as_str(),
-                "document-spec-v1" | "document-spec-v2"
+                "document-spec-v1" | "document-spec-v2" | "hwpx"
             )
         {
             verify_composed_hwp_numbering(expected, &doc)?;
@@ -5777,8 +6073,526 @@ pub(crate) fn verify_document_quiet(
 mod tests {
     use super::*;
 
+    #[test]
+    fn composed_numbering_fillers_do_not_weaken_hwpx_definition_comparison() {
+        let source = r#"{"version":"1.0","lists":{"o":{"kind":"ordered","levels":[{"marker":"{n}.","start":1},{"marker":"{n}.","start":1},{"marker":"{n})","start":1}]}},"sections":[{"blocks":[{"type":"paragraph","list":{"name":"o","level":0},"runs":[{"type":"text","text":"top"}]},{"type":"paragraph","list":{"name":"o","level":2},"runs":[{"type":"text","text":"deep"}]}]}]}"#;
+        let spec = hwp_cli::document_spec::parse_spec(
+            source,
+            hwp_cli::document_spec::SpecInputFormat::Json,
+        )
+        .unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("hwp444-compose-fillers-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = directory.join("list.hwp");
+        let expected =
+            hwp_cli::document_spec::compile_spec(&spec, &directory, &output, false, false, &[])
+                .unwrap()
+                .document;
+        crate::commands::convert::write_hwp_structural(&expected, &output).unwrap();
+        let actual = hwp5::read_document(&output).unwrap().document;
+        let verification = verify_document_quiet(&output, &expected);
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert!(
+            verification.is_ok(),
+            "validated compose renderer defaults must verify: {verification:?}"
+        );
+        let mut hwpx_source = expected.clone();
+        hwpx_source.meta.source_format = "hwpx".into();
+        assert_ne!(
+            semantic_signature_for(&hwpx_source, Some(SemanticTarget::Hwp)),
+            semantic_signature_for(&actual, Some(SemanticTarget::Hwp)),
+            "the same explicit HWPX definitions have no compiler-default provenance and must remain compared"
+        );
+    }
+
+    #[test]
+    fn hwp_caption_table_projection_visits_every_caption_owner() {
+        fn inner_table(document: &mut hwp_model::Document) -> &mut hwp_model::Table {
+            let owner = document.sections[0].paragraphs[0]
+                .controls
+                .last_mut()
+                .unwrap();
+            let caption = match owner {
+                hwp_model::Control::Table(table) => table.caption.as_mut(),
+                hwp_model::Control::Picture(picture) => picture.caption.as_mut(),
+                hwp_model::Control::Generic(generic) => generic.caption.as_mut(),
+                _ => None,
+            }
+            .unwrap();
+            match &mut caption.paragraphs[0].controls[0] {
+                hwp_model::Control::Table(table) => table,
+                _ => panic!("nested caption table"),
+            }
+        }
+        let signature = |document: &hwp_model::Document| {
+            semantic_signature_for(document, Some(SemanticTarget::Hwp))
+        };
+        let table_document =
+            hwp_convert::from_markdown("| Field | Value |\n| --- | --- |\n| alpha | 1 |\n");
+        let mut table = table_document
+            .sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::Table(table) => Some(table.clone()),
+                _ => None,
+            })
+            .unwrap();
+        table.placement = Some(hwp_model::GsoPlacement {
+            width: 1200,
+            height: 600,
+            ..Default::default()
+        });
+        for owner_kind in ["table", "picture", "generic"] {
+            let mut base = hwp_convert::from_markdown("Caption owner.\n");
+            let mut paragraph = base.sections[0].paragraphs[0].clone();
+            paragraph.controls = vec![hwp_model::Control::Table(table.clone())];
+            let caption = Some(hwp_model::Caption {
+                side: hwp_model::CaptionSide::Bottom,
+                direction: hwp_model::CaptionDirection::Horizontal,
+                gap: 100,
+                width: None,
+                last_width: 1200,
+                paragraphs: vec![paragraph],
+            });
+            let owner = match owner_kind {
+                "table" => {
+                    let mut owner = table.clone();
+                    owner.caption = caption;
+                    hwp_model::Control::Table(owner)
+                }
+                "picture" => hwp_model::Control::Picture(hwp_model::Picture {
+                    common_data: Vec::new(),
+                    width: hwp_model::HwpUnit(1200),
+                    height: hwp_model::HwpUnit(600),
+                    treat_as_char: true,
+                    z_order: 0,
+                    vert_offset: 0,
+                    horz_offset: 0,
+                    description: None,
+                    crop: None,
+                    flip: 0,
+                    rotation: None,
+                    brightness: 0,
+                    contrast: 0,
+                    effect_flags: 0,
+                    effects_raw: Vec::new(),
+                    caption,
+                    bin_ref: hwp_model::BinRef::ItemRef("caption-owner.png".into()),
+                    extras: Vec::new(),
+                }),
+                "generic" => hwp_model::Control::Generic(hwp_model::GenericControl {
+                    ctrl_id: *b"test",
+                    data: Vec::new(),
+                    paragraph_lists: Vec::new(),
+                    extras: Vec::new(),
+                    raw_children: Vec::new(),
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: None,
+                    caption,
+                    hwpx_raw_xml: None,
+                    container_box: None,
+                }),
+                _ => unreachable!(),
+            };
+            base.sections[0].paragraphs[0].controls.push(owner);
+            let mut materialized = base.clone();
+            let inner = inner_table(&mut materialized);
+            inner.common_data = hwp5::write::synthesized_table_common_data(inner);
+            inner.table_tail = vec![0, 0];
+            assert_eq!(
+                signature(&base),
+                signature(&materialized),
+                "{owner_kind} caption must project its nested table's exact writer materialization"
+            );
+            let mut opaque = materialized.clone();
+            inner_table(&mut opaque).common_data.push(0x5a);
+            assert_ne!(
+                signature(&base),
+                signature(&opaque),
+                "{owner_kind} caption must retain nested opaque payload bytes"
+            );
+            let mut geometry = materialized.clone();
+            inner_table(&mut geometry).placement.as_mut().unwrap().width += 1;
+            assert_ne!(
+                signature(&base),
+                signature(&geometry),
+                "{owner_kind} caption must retain nested table geometry"
+            );
+        }
+    }
+
+    #[test]
+    fn hwp_table_grid_projection_matches_only_the_writer_fallback() {
+        fn table(document: &mut hwp_model::Document) -> &mut hwp_model::Table {
+            document
+                .sections
+                .iter_mut()
+                .flat_map(|section| &mut section.paragraphs)
+                .flat_map(|paragraph| &mut paragraph.controls)
+                .find_map(|control| match control {
+                    hwp_model::Control::Table(table) => Some(table),
+                    _ => None,
+                })
+                .unwrap()
+        }
+        let signature = |document: &hwp_model::Document| {
+            semantic_signature_for(document, Some(SemanticTarget::Hwp))
+        };
+        for (width, height) in [
+            (0, 100),
+            (100, 0),
+            (-1, 100),
+            (100, -1),
+            (0, 0),
+            (-1, -1),
+            (-1, 0),
+        ] {
+            let mut base =
+                hwp_convert::from_markdown("| Field | Value |\n| --- | --- |\n| alpha | 1 |\n");
+            table(&mut base).placement = Some(hwp_model::GsoPlacement {
+                width,
+                height,
+                ..Default::default()
+            });
+            let grid = hwp5::write::table_grid_totals(table(&mut base));
+            assert!(
+                grid.0 > 0 && grid.1 > 0,
+                "public table must supply a positive grid"
+            );
+            let mut materialized = base.clone();
+            let native = table(&mut materialized);
+            let placement = native.placement.as_mut().unwrap();
+            placement.width = grid.0;
+            placement.height = grid.1;
+            native.common_data = hwp5::write::synthesized_table_common_data(native);
+            native.table_tail = vec![0, 0];
+            if width > 0 || height > 0 {
+                assert_ne!(
+                    signature(&base),
+                    signature(&materialized),
+                    "mixed placement ({width}, {height}) must not hide its positive dimension loss"
+                );
+            } else {
+                assert_eq!(
+                    signature(&base),
+                    signature(&materialized),
+                    "wholly unset placement ({width}, {height}) materializes the grid"
+                );
+            }
+
+            let mut raw = materialized.clone();
+            table(&mut raw).common_data.push(0x5a);
+            let mut raw_unset = raw.clone();
+            table(&mut raw_unset).placement.as_mut().unwrap().width = width;
+            table(&mut raw_unset).placement.as_mut().unwrap().height = height;
+            assert_ne!(
+                signature(&raw),
+                signature(&raw_unset),
+                "native raw payloads must not activate geometry fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn hwp_projection_keeps_custom_header_and_section_data() {
+        let base = hwp_convert::from_markdown("Baseline input.\n\nSecond paragraph.\n");
+        let signature =
+            |doc: &hwp_model::Document| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        let mut changed = base.clone();
+        changed.header.fonts[0][0].type_info = Some(" extension=\"retained\"".into());
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unmapped font classification XML remains significant"
+        );
+        let mut changed = base.clone();
+        changed.header.tab_stops = vec![hwp_model::TabDef {
+            attr: 0,
+            items: vec![hwp_model::TabItem {
+                pos: 1234,
+                kind: 1,
+                fill: 2,
+            }],
+        }];
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "custom tab positions/kinds/leaders remain significant"
+        );
+        let mut changed = base.clone();
+        changed.header.numbering_levels = vec![hwp5::write::synthesized_numbering_levels()];
+        changed.header.numbering_levels[0][0].template = "custom ^1".into();
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "a custom numbering template must not be replaced by the default in verification"
+        );
+        let mut changed = base.clone();
+        changed.hwpx_settings_xml =
+            Some(hwpx::DEFAULT_SETTINGS_XML.replace("pos=\"0\"", "pos=\"1\""));
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "nondefault caret/settings XML is not default scaffolding"
+        );
+        let mut changed = base.clone();
+        changed.hwpx_version_xml =
+            Some(hwpx::DEFAULT_VERSION_XML.replace("/>", " extension=\"retained\"/>"));
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unknown version attributes remain significant"
+        );
+        let mut changed = base.clone();
+        let def = changed.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|p| &mut p.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::SectionDef(def) => Some(def),
+                _ => None,
+            })
+            .unwrap();
+        def.secpr_raw_children = vec!["<hp:grid lineGrid=\"123\"/>".into()];
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "custom section XML must remain a refusal"
+        );
+        let mut changed = base.clone();
+        changed.sections[0].paragraphs[1].header.break_type ^= 0x03;
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "section-marker projection must not mask another paragraph"
+        );
+        let mut changed = base.clone();
+        changed.sections[0].paragraphs[0].header.break_type |= 0x04;
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "page-break bits remain significant"
+        );
+        let mut legacy = base.clone();
+        legacy.header.char_shapes[0].attr |= 1 << 2;
+        let mut changed = legacy.clone();
+        changed.header.char_shapes[0].underline_shape = 3;
+        assert_ne!(
+            signature(&legacy),
+            signature(&changed),
+            "a legacy-only active underline that HWP5 cannot emit must remain a refusal"
+        );
+    }
+
+    #[test]
+    fn hwp_projection_compares_native_numbering_formats_and_unknown_records() {
+        let mut base = hwp_convert::from_markdown("Baseline input.\n");
+        base.meta.source_format = "hwpx".into();
+        let signature =
+            |doc: &hwp_model::Document| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        let mut factory = base.clone();
+        let mut levels = hwp5::write::synthesized_numbering_levels();
+        for (level, format) in levels
+            .iter_mut()
+            .zip(hwp5::write::DEFAULT_NUMBERING_FORMATS)
+        {
+            level.fmt = format;
+        }
+        for (fmt, template) in [
+            (hwp_model::NumFmt::CircledHangulSyllable, "^8"),
+            (hwp_model::NumFmt::HangulJamo, ""),
+            (hwp_model::NumFmt::RomanLower, ""),
+        ] {
+            levels.push(hwp_model::NumLevel {
+                start: 1,
+                fmt,
+                template: template.into(),
+            });
+        }
+        factory.header.numbering_levels = vec![levels];
+        assert_eq!(
+            signature(&base),
+            signature(&factory),
+            "only native-drawn defaults and unused factory extensions are equivalent"
+        );
+        let mut changed = factory.clone();
+        changed.header.numbering_levels[0][1].fmt = hwp_model::NumFmt::Digit;
+        assert_ne!(
+            signature(&factory),
+            signature(&changed),
+            "reader Digit approximations must not hide a custom HWPX format"
+        );
+        let mut changed = factory.clone();
+        changed.header.numbering_levels[0][9].start = 2;
+        assert_ne!(
+            signature(&factory),
+            signature(&changed),
+            "custom unused extension values remain significant"
+        );
+        let mut native = base.clone();
+        native.header.numberings = hwp5::write::numbering_records(&native.header);
+        native.header.numbering_levels = vec![hwp5::write::synthesized_numbering_levels()];
+        assert_eq!(
+            signature(&base),
+            signature(&native),
+            "the exact measured raw default is interpreted by its drawn selectors"
+        );
+        let mut changed = native.clone();
+        changed.header.numberings[0].data.push(0x5a);
+        assert_ne!(
+            signature(&native),
+            signature(&changed),
+            "unknown numbering suffix bytes remain significant"
+        );
+        let mut changed = native.clone();
+        changed.header.numberings[0]
+            .children
+            .push(hwp_model::OpaqueRecord {
+                tag: 0x3ff,
+                data: vec![0x5a],
+                children: Vec::new(),
+            });
+        assert_ne!(
+            signature(&native),
+            signature(&changed),
+            "unknown numbering children remain significant"
+        );
+    }
+
+    #[test]
+    fn hwp_table_projection_preserves_placement_and_unknown_payload_bytes() {
+        fn table(doc: &mut hwp_model::Document) -> &mut hwp_model::Table {
+            doc.sections
+                .iter_mut()
+                .flat_map(|s| &mut s.paragraphs)
+                .flat_map(|p| &mut p.controls)
+                .find_map(|control| match control {
+                    hwp_model::Control::Table(table) => Some(table),
+                    _ => None,
+                })
+                .unwrap()
+        }
+        let mut base =
+            hwp_convert::from_markdown("| Field | Value |\n| --- | --- |\n| alpha | 1 |\n");
+        table(&mut base).placement = Some(hwp_model::GsoPlacement {
+            width: 1200,
+            height: 600,
+            ..Default::default()
+        });
+        let signature =
+            |doc: &hwp_model::Document| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        let mut materialized = base.clone();
+        let materialized_table = table(&mut materialized);
+        materialized_table.common_data =
+            hwp5::write::synthesized_table_common_data(materialized_table);
+        materialized_table.table_tail = vec![0, 0];
+        assert_eq!(
+            signature(&base),
+            signature(&materialized),
+            "only exact writer materialization is equivalent"
+        );
+        let mut changed = materialized.clone();
+        table(&mut changed).common_data.push(0x5a);
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unknown common-property suffix bytes must not disappear"
+        );
+        let mut changed = materialized.clone();
+        table(&mut changed).table_tail.push(0x5a);
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unknown table region bytes must not disappear"
+        );
+        let mut changed = materialized.clone();
+        table(&mut changed).placement.as_mut().unwrap().width += 1;
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "modeled geometry is still compared"
+        );
+        let mut changed = base.clone();
+        table(&mut changed).placement.as_mut().unwrap().hold_anchor = true;
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unmapped hold-anchor semantics are not normalized away"
+        );
+    }
+
+    #[test]
+    fn hwp_projection_accepts_public_hwpx_roundtrip() {
+        fn differences(
+            left: &serde_json::Value,
+            right: &serde_json::Value,
+            prefix: &str,
+            out: &mut Vec<String>,
+        ) {
+            if left == right {
+                return;
+            }
+            match (left, right) {
+                (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                    let keys: std::collections::BTreeSet<_> = a.keys().chain(b.keys()).collect();
+                    for key in keys {
+                        differences(
+                            a.get(key).unwrap_or(&serde_json::Value::Null),
+                            b.get(key).unwrap_or(&serde_json::Value::Null),
+                            &format!("{prefix}/{key}"),
+                            out,
+                        );
+                    }
+                }
+                (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+                    if a.len() != b.len() {
+                        out.push(format!("{prefix}/length"));
+                    }
+                    for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                        differences(a, b, &format!("{prefix}/{index}"), out);
+                    }
+                }
+                _ => out.push(prefix.to_string()),
+            }
+        }
+        for table in [false, true] {
+            let base = hwp_convert::from_markdown(if table {
+                "| Field | Value |\n| --- | --- |\n| alpha | 1 |\n"
+            } else {
+                "Baseline input.\n"
+            });
+            let stem = std::env::temp_dir()
+                .join(format!("hwp444-projection-{}-{table}", std::process::id()));
+            let input = stem.with_extension("hwpx");
+            let output = stem.with_extension("hwp");
+            hwpx::write_document(&base, &input).unwrap();
+            let expected = hwpx::read_document(&input).unwrap().document;
+            crate::commands::convert::write_hwp_structural(&expected, &output).unwrap();
+            let actual = hwp5::read_document(&output).unwrap().document;
+            let left =
+                serde_json::to_value(canonical_document(&expected, Some(SemanticTarget::Hwp)))
+                    .unwrap();
+            let right =
+                serde_json::to_value(canonical_document(&actual, Some(SemanticTarget::Hwp)))
+                    .unwrap();
+            let mut paths = Vec::new();
+            differences(&left, &right, "", &mut paths);
+            let verification = verify_document_quiet(&output, &expected);
+            std::fs::remove_file(input).unwrap();
+            std::fs::remove_file(output).unwrap();
+            assert!(
+                verification.is_ok(),
+                "faithful synthetic HWPX must verify in HWP5 (table={table}); differing fields={paths:?}; {verification:?}"
+            );
+        }
+    }
+
     /// Compile through HWPX to bypass the HWP authoring guard, then exercise the existing
-    /// compose verification entry point against the actual substituted HWP output. This
+    /// compose/edit verification entry point against the actual substituted HWP output. This
     /// backstop must work even if a future caller accidentally omits the early guard.
     #[test]
     fn compose_hwp_verification_rejects_template_format_and_start_substitution() {
@@ -5831,7 +6645,7 @@ mod tests {
                 )
                 .unwrap()
                 .document;
-                for origin in ["document-spec-v1", "document-spec-v2"] {
+                for origin in ["document-spec-v1", "document-spec-v2", "hwpx"] {
                     expected.meta.source_format = origin.into();
                     let output = dir.join(format!("{kind}-{location}-{origin}.hwp"));
                     crate::commands::convert::write_hwp_structural(&expected, &output).unwrap();
@@ -5840,10 +6654,17 @@ mod tests {
                         result.is_err(),
                         "{origin}/{kind}/{location}: compose verification must detect substituted used numbering"
                     );
+                    let message = result.unwrap_err().to_string();
                     assert!(
-                        result.unwrap_err().to_string().contains("HWPX"),
+                        message.contains("HWPX"),
                         "numbering refusal names a repair step"
                     );
+                    if origin == "hwpx" {
+                        assert!(
+                            message.starts_with("번호 검증 실패"),
+                            "HWPX edits need a generic numbering refusal label: {message}"
+                        );
+                    }
                 }
             }
         }

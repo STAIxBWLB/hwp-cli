@@ -309,7 +309,7 @@
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
-      "maxProperties": 21,
+      "maxProperties": 22,
       "properties": {
         "binary_asset_removed": { "$ref": "#/$defs/lossCount" },
         "binary_relationship_removed": { "$ref": "#/$defs/lossCount" },
@@ -317,6 +317,7 @@
         "control_removed": { "$ref": "#/$defs/lossCount" },
         "document_metadata_superseded": { "$ref": "#/$defs/lossCount" },
         "document_package_passthrough_dropped": { "$ref": "#/$defs/lossCount" },
+        "font_type_info_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "gso_header_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "gso_object_id_renumbered": { "$ref": "#/$defs/lossCount" },
         "gso_shape_unrepresentable": { "$ref": "#/$defs/lossCount" },

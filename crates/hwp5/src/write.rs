@@ -3083,7 +3083,8 @@ fn hwp_string(w: &mut ByteWriter, s: &str) {
 // ─────────────────────────── DocInfo ───────────────────────────
 
 /// Numbering references in paragraphs emitted from the model, excluding raw-only mirrors.
-fn referenced_numbering_levels(doc: &Document) -> BTreeSet<(usize, usize)> {
+/// Numbering definition/level pairs whose markers are emitted by the native writer.
+pub fn referenced_numbering_levels(doc: &Document) -> BTreeSet<(usize, usize)> {
     let mut used = BTreeSet::new();
     let mut pending: Vec<_> = doc.sections.iter().flat_map(|s| &s.paragraphs).collect();
     while let Some(paragraph) = pending.pop() {
@@ -3270,6 +3271,16 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
     }
     for slot in 0..LANG_COUNT {
         for f in &h.fonts[slot] {
+            if f.type_info.is_some() {
+                // FACE_NAME writes only modeled native fields; no verified typeInfo/PANOSE
+                // mapping exists (§4.2.4 tables 20-22), so record each omitted font site.
+                warnings.loss(
+                    PreservationCode::FontTypeInfoUnrepresentable,
+                    PreservationResourceKind::Metadata,
+                    PreservationDisposition::Unrepresentable,
+                    1,
+                );
+            }
             children.push(emit_face_name(f));
         }
     }
@@ -4003,7 +4014,7 @@ fn emit_section_def(def: &SectionDef) -> RecordNode {
 
 /// Sums total table-cell grid width/height, skipping merged cells and adding column/row maxima.
 /// Matches HWPX grid estimation in write/section.rs write_table.
-fn table_grid_totals(table: &Table) -> (i32, i32) {
+pub fn table_grid_totals(table: &Table) -> (i32, i32) {
     let mut col_w = vec![0i64; table.cols.max(1) as usize];
     let mut row_h = vec![0i64; table.rows.max(1) as usize];
     for cell in &table.cells {
@@ -4021,19 +4032,15 @@ fn table_grid_totals(table: &Table) -> (i32, i32) {
     )
 }
 
-fn emit_table(
-    table: &Table,
-    synthesize: bool,
-    preserve_linesegs: bool,
-    add_tracking_tail: bool,
-    report: &mut WriteReport,
-) -> RecordNode {
+/// Synthesizes the object-common payload used for a table with no native `common_data`.
+///
+/// The returned bytes exclude the four-byte control ID. This is the existing `emit_table`
+/// synthesis for HWP 5.0 §4.3.9 tables 69/70, including the measured placement attributes,
+/// grid-size fallback, instance ID and empty object description. It does not inspect or
+/// normalize native raw payloads; `emit_table` preserves those verbatim instead.
+pub fn synthesized_table_common_data(table: &Table) -> Vec<u8> {
     let mut w = ByteWriter::new();
-    w.write_bytes(b" lbt");
-    if !table.common_data.is_empty() {
-        // HWP5 origin: preserve original object-common attributes unchanged.
-        w.write_bytes(&table.common_data);
-    } else if let Some(pl) = &table.placement {
+    if let Some(pl) = &table.placement {
         // HWPX origin: synthesize from hp:pos/hp:sz/hp:outMargin and zOrder placement. Previously
         // forcing 0x082A2210 (treat-as-character off) made inline tables float outside body flow,
         // causing Hangul relayout overlaps/blank pages.
@@ -4084,6 +4091,24 @@ fn emit_table(
         w.write_u32(0); // instance id
         w.write_i32(0); // Prevent page splitting.
         w.write_u16(0); // Object-description length WORD (len=0), required by specification table 69 for 46-byte consistency.
+    }
+    w.into_bytes()
+}
+
+fn emit_table(
+    table: &Table,
+    synthesize: bool,
+    preserve_linesegs: bool,
+    add_tracking_tail: bool,
+    report: &mut WriteReport,
+) -> RecordNode {
+    let mut w = ByteWriter::new();
+    w.write_bytes(b" lbt");
+    if !table.common_data.is_empty() {
+        // HWP5 origin: preserve original object-common attributes unchanged.
+        w.write_bytes(&table.common_data);
+    } else {
+        w.write_bytes(&synthesized_table_common_data(table));
     }
 
     let mut tw = ByteWriter::new();
@@ -6945,6 +6970,38 @@ mod tests {
         std::fs::remove_file(output).unwrap();
     }
 
+    #[test]
+    fn font_type_info_loss_counts_sites_without_exposing_font_metadata() {
+        let mut document = hwp_convert::from_markdown("Font metadata preservation.\n");
+        for (slot, marker) in [(0, "private-font-one"), (1, "private-font-two")] {
+            let font = &mut document.header.fonts[slot][0];
+            font.name = marker.into();
+            font.type_info = Some(format!(" unknown=\"{marker}-classification\""));
+        }
+        let mut report = WriteReport::new();
+        emit_doc_info(&document, &mut report);
+        assert_eq!(report.preservation.events.len(), 1);
+        let event = &report.preservation.events[0];
+        assert_eq!(event.code, PreservationCode::FontTypeInfoUnrepresentable);
+        assert_eq!(event.code.as_str(), "font_type_info_unrepresentable");
+        assert_eq!(event.resource, PreservationResourceKind::Metadata);
+        assert_eq!(event.disposition, PreservationDisposition::Unrepresentable);
+        assert_eq!(event.count, 2);
+        let diagnostic = format!("{:?}", report.preservation);
+        assert!(!diagnostic.contains("private-font"));
+        assert!(!diagnostic.contains("classification"));
+        assert!(!diagnostic.contains("unknown"));
+
+        for language in &mut document.header.fonts {
+            for font in language {
+                font.type_info = None;
+            }
+        }
+        let mut native_report = WriteReport::new();
+        emit_doc_info(&document, &mut native_report);
+        assert!(native_report.preservation.events.is_empty());
+    }
+
     fn synth_table(placement: Option<hwp_model::GsoPlacement>) -> Table {
         Table {
             common_data: Vec::new(),
@@ -6960,6 +7017,32 @@ mod tests {
             cells: Vec::new(),
             caption: None,
             extras: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn synthesized_table_common_payload_matches_emission_without_replacing_raw_bytes() {
+        for placement in [
+            None,
+            Some(hwp_model::GsoPlacement {
+                width: 40000,
+                height: 20000,
+                z_order: 3,
+                out_margins: [11, 22, 33, 44],
+                ..Default::default()
+            }),
+        ] {
+            let mut table = synth_table(placement);
+            let payload = synthesized_table_common_data(&table);
+            let emitted = emit_table(&table, true, false, false, &mut WriteReport::new());
+            assert_eq!(payload.len(), 42);
+            assert_eq!(&emitted.data[4..], payload);
+
+            // Native payloads, including unknown suffix bytes, remain authoritative.
+            table.common_data = [payload.as_slice(), &[0xa5, 0x5a]].concat();
+            table.common_data[0] ^= 0x80;
+            let emitted = emit_table(&table, true, false, false, &mut WriteReport::new());
+            assert_eq!(&emitted.data[4..], table.common_data);
         }
     }
 

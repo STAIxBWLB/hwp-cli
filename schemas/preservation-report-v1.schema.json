@@ -28,6 +28,7 @@
             "control_removed",
             "document_metadata_superseded",
             "document_package_passthrough_dropped",
+            "font_type_info_unrepresentable",
             "gso_header_unrepresentable",
             "gso_object_id_renumbered",
             "gso_shape_unrepresentable",
