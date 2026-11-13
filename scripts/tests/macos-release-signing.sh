@@ -2,7 +2,7 @@
 # Exercise the release helper with fake credentials and fake macOS tools only.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-helper="$root/scripts/macos-release-signing.sh"
+helper="${MACOS_SIGNING_HELPER:-$root/scripts/macos-release-signing.sh}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/runner" "$tmp/home" "$tmp/tmp"
@@ -11,6 +11,7 @@ export RUNNER_TEMP="$tmp/runner" GITHUB_OUTPUT="$tmp/output" MOCK_LOG="$tmp/code
 export APPLE_CERTIFICATE=ZmFrZS1jZXJ0aWZpY2F0ZQ==
 export APPLE_CERTIFICATE_PASSWORD=fixture-certificate-password KEYCHAIN_PASSWORD=fixture-keychain-password
 export APPLE_API_KEY=$'-----BEGIN PRIVATE KEY-----\nfixture-private-key\n-----END PRIVATE KEY-----\n'
+export APPLE_TEAM_ID=AB12CD34EF
 export APPLE_API_KEY_ID=fixture-api-key-id APPLE_API_ISSUER_ID=fixture-api-issuer-id
 
 cat >"$tmp/bin/uname" <<'SH'
@@ -21,11 +22,15 @@ SH
 cat >"$tmp/bin/security" <<'SH'
 #!/usr/bin/env bash
 echo security >>"$MOCK_CALLS"
+[ "${MOCK_SECURITY_FAIL:-}" != "$1" ] || exit 1
 case "$1" in
 create-keychain) touch "${!#}" ;;
 find-identity)
-    if [ "${MOCK_IDENTITY:-valid}" = valid ]; then
+    if [ "${MOCK_IDENTITY:-valid}" != absent ]; then
         echo '  1) 0123456789ABCDEF0123456789ABCDEF01234567 "Developer ID Application: Fixture"'
+        if [ "${MOCK_IDENTITY:-valid}" = duplicate ]; then
+            echo '  2) 1123456789ABCDEF0123456789ABCDEF01234567 "Developer ID Application: Other Fixture"'
+        fi
     fi
     ;;
 delete-keychain) rm -f "$2" ;;
@@ -37,7 +42,19 @@ echo codesign >>"$MOCK_CALLS"
 name="${!#}"; name="${name##*/}"
 printf '%s:%s\n' "$1" "$name" >>"$MOCK_LOG"
 case "$1" in
---verify) [ "${MOCK_VERIFY:-valid}" = valid ] ;;
+--verify)
+    [ "${MOCK_VERIFY:-valid}" = valid ] || exit 1
+    requirement=''
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = -R ]; then requirement="$2"; break; fi
+        shift
+    done
+    # Model a different certificate team: only a pinned requirement detects it.
+    if [ "${MOCK_TEAM:-valid}" = wrong ] && [ -n "$requirement" ]; then exit 1; fi
+    if [ "${MOCK_REQUIRE_TEAM:-0}" = 1 ]; then
+        [ "$requirement" = 'anchor apple generic and certificate leaf[subject.OU] = "AB12CD34EF"' ] || exit 1
+    fi
+    ;;
 -dv)
     [ "${MOCK_AUTHORITY:-valid}" = absent ] || echo 'Authority=Developer ID Application: Fixture' >&2
     [ "${MOCK_RUNTIME:-valid}" = absent ] || echo 'CodeDirectory v=20500 size=100 flags=0x10000(runtime) hashes=1' >&2
@@ -72,6 +89,28 @@ if [ "${MOCK_SUBMIT_FAIL:-0}" = 1 ]; then
     echo 'HTTP 401: fixture notarization authentication failed' >&2
     exit 1
 fi
+SH
+cat >"$tmp/bin/spctl" <<'SH'
+#!/usr/bin/env bash
+echo spctl >>"$MOCK_CALLS"
+[ "$1 $2 $3 $4" = '--assess --type install --verbose=2' ] || exit 1
+count=0
+[ ! -f "$RUNNER_TEMP/assessment-count" ] || read -r count <"$RUNNER_TEMP/assessment-count"
+count=$((count + 1))
+printf '%s\n' "$count" >"$RUNNER_TEMP/assessment-count"
+case "${MOCK_SPCTL:-accepted}" in
+    rejected) echo "${!#}: rejected"; exit 1 ;;
+    wrong-source) echo "${!#}: accepted"; echo 'source=Developer ID'; exit 0 ;;
+    nonzero-accepted) echo "${!#}: accepted"; echo 'source=Notarized Developer ID'; exit 1 ;;
+    retry) if [ "$count" -lt 3 ]; then echo "${!#}: rejected"; exit 1; fi ;;
+esac
+echo "${!#}: accepted"
+echo 'source=Notarized Developer ID'
+SH
+cat >"$tmp/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = 10 ] || exit 1
+echo sleep >>"$MOCK_CALLS"
 SH
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$PATH"
@@ -120,6 +159,80 @@ for altered in (False, True):
                 entry.size = len(data)
                 archive.addfile(entry, io.BytesIO(data))
 PY
+
+followup_case() {
+    local selected="$1" operation expected
+    : >"$MOCK_CALLS"
+    rm -f "$RUNNER_TEMP/assessment-count"
+    case "$selected" in
+        missing-team)
+            expect_failure 'APPLE_TEAM_ID is missing' env -u APPLE_TEAM_ID bash "$helper" verify-archive "$tmp/signed.tar.gz"
+            grep -F 'Settings > Secrets and variables > Actions > Variables' "$tmp/log" >/dev/null
+            [ ! -s "$MOCK_CALLS" ]
+            ;;
+        invalid-team)
+            expect_failure 'exactly 10 ASCII letters or digits' env APPLE_TEAM_ID='invalid team' bash "$helper" verify-archive "$tmp/signed.tar.gz"
+            [ ! -s "$MOCK_CALLS" ]
+            ;;
+        wrong-team)
+            expect_failure 'Code signature verification failed' env MOCK_TEAM=wrong bash "$helper" verify-archive "$tmp/signed.tar.gz"
+            ;;
+        designated-team)
+            env MOCK_REQUIRE_TEAM=1 bash "$helper" verify-archive "$tmp/signed.tar.gz" >"$tmp/log" 2>&1
+            ;;
+        gatekeeper-rejected|gatekeeper-source|gatekeeper-exit)
+            case "$selected" in
+                gatekeeper-rejected) expected=rejected ;;
+                gatekeeper-source) expected=wrong-source ;;
+                gatekeeper-exit) expected=nonzero-accepted ;;
+            esac
+            expect_failure 'Gatekeeper install assessment did not accept' env MOCK_SPCTL="$expected" bash "$helper" verify-archive "$tmp/signed.tar.gz"
+            grep -F 'after 3 attempts, 10 seconds apart' "$tmp/log" >/dev/null
+            grep -F 'rerun Release' "$tmp/log" >/dev/null
+            [ "$(cat "$RUNNER_TEMP/assessment-count")" = 3 ]
+            [ "$(grep -c '^sleep$' "$MOCK_CALLS")" = 2 ]
+            ;;
+        gatekeeper-retry)
+            env MOCK_SPCTL=retry bash "$helper" verify-archive "$tmp/signed.tar.gz" >"$tmp/log" 2>&1
+            [ "$(cat "$RUNNER_TEMP/assessment-count")" = 4 ]
+            [ "$(grep -c '^sleep$' "$MOCK_CALLS")" = 2 ]
+            [ "$(grep -c 'Gatekeeper accepted' "$tmp/log")" = 2 ]
+            ;;
+        duplicate-identity)
+            expect_failure 'exactly one valid Developer ID Application' env MOCK_IDENTITY=duplicate bash "$helper" prepare
+            ;;
+        security-*)
+            operation="${selected#security-}"
+            case "$operation" in
+                create-keychain) expected='Cannot create the temporary signing keychain' ;;
+                list-keychains) expected='Cannot select the temporary signing keychain' ;;
+                unlock-keychain) expected='Cannot unlock the temporary signing keychain' ;;
+                set-keychain-settings) expected='Cannot configure the temporary signing keychain' ;;
+                import) expected='Cannot import the Developer ID certificate' ;;
+                set-key-partition-list) expected='Cannot authorize codesign access to the signing key' ;;
+                find-identity) expected='Cannot inspect signing identities' ;;
+                *) echo 'Unknown security test' >&2; exit 1 ;;
+            esac
+            expect_failure "::error::$expected" env MOCK_SECURITY_FAIL="$operation" bash "$helper" prepare
+            grep -F 'rerun Release' "$tmp/log" >/dev/null
+            grep -E 'KEYCHAIN_PASSWORD|APPLE_CERTIFICATE|runner user keychain settings' "$tmp/log" >/dev/null
+            ;;
+        *) echo 'Unknown follow-up test' >&2; exit 1 ;;
+    esac
+    if grep -E 'fixture-(private-key|certificate-password|keychain-password|api-key-id|api-issuer-id)|ZmFrZS1jZXJ0aWZpY2F0ZQ==' "$tmp/log" >/dev/null; then
+        echo 'FAIL: follow-up diagnostic exposed fixture credentials' >&2
+        exit 1
+    fi
+    echo "macOS signing follow-up case: $selected OK"
+}
+
+if [ -n "${MACOS_SIGNING_CASE:-}" ]; then
+    followup_case "$MACOS_SIGNING_CASE"
+    exit 0
+fi
+for selected in missing-team invalid-team wrong-team designated-team gatekeeper-rejected gatekeeper-source gatekeeper-exit gatekeeper-retry duplicate-identity security-create-keychain security-list-keychains security-unlock-keychain security-set-keychain-settings security-import security-set-key-partition-list security-find-identity; do
+    followup_case "$selected"
+done
 
 submission_id=01234567-89ab-cdef-0123-456789abcdef
 for status in Invalid InProgress; do
