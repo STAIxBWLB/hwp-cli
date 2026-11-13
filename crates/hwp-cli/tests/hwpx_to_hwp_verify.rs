@@ -239,6 +239,7 @@ fn genuinely_unmapped_hwpx_properties_still_refuse_publication() {
         "settings",
         "section",
         "hold-anchor",
+        "font-info",
     ] {
         let dir = workspace(kind);
         let mut source = hwp_convert::from_markdown(
@@ -248,6 +249,9 @@ fn genuinely_unmapped_hwpx_properties_still_refuse_publication() {
         hwpx::write_document(&source, &baseline).unwrap();
         source = hwpx::read_document(&baseline).unwrap().document;
         match kind {
+            "font-info" => {
+                source.header.fonts[0][0].type_info = Some(" extension=\"retained\"".into());
+            }
             "tab" => {
                 source.header.tab_stops = vec![hwp_model::TabDef {
                     attr: 0,
