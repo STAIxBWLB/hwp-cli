@@ -4004,7 +4004,7 @@ fn emit_section_def(def: &SectionDef) -> RecordNode {
 
 /// Sums total table-cell grid width/height, skipping merged cells and adding column/row maxima.
 /// Matches HWPX grid estimation in write/section.rs write_table.
-fn table_grid_totals(table: &Table) -> (i32, i32) {
+pub fn table_grid_totals(table: &Table) -> (i32, i32) {
     let mut col_w = vec![0i64; table.cols.max(1) as usize];
     let mut row_h = vec![0i64; table.rows.max(1) as usize];
     for cell in &table.cells {

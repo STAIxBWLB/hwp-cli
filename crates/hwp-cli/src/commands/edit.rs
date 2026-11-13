@@ -5130,6 +5130,21 @@ fn canonical_document(
             paragraph.char_shape_runs = projected;
         }
         for control in &mut paragraph.controls {
+            if matches!(target, Some(SemanticTarget::Hwp)) {
+                // emit_caption_records writes a full paragraph list, including nested tables.
+                // Apply the same native projection to every caption exactly once.
+                let caption = match control {
+                    hwp_model::Control::Table(table) => table.caption.as_mut(),
+                    hwp_model::Control::Picture(picture) => picture.caption.as_mut(),
+                    hwp_model::Control::Generic(generic) => generic.caption.as_mut(),
+                    hwp_model::Control::SectionDef(_) => None,
+                };
+                if let Some(caption) = caption {
+                    for paragraph in &mut caption.paragraphs {
+                        canonicalize_paragraph(paragraph, target, source_doc);
+                    }
+                }
+            }
             match control {
                 hwp_model::Control::Table(table) => {
                     if matches!(target, Some(SemanticTarget::Hwp)) && table.table_tail.is_empty() {
@@ -5143,6 +5158,15 @@ fn canonical_document(
                     {
                         // emit_table materializes this exact table-69 payload from modeled placement;
                         // retain actual raw bytes (including unknown tails) and compare placement too.
+                        let (width, height) = hwp5::write::table_grid_totals(table);
+                        if let Some(placement) = table.placement.as_mut()
+                            && (placement.width <= 0 || placement.height <= 0)
+                        {
+                            // emit_table replaces both unset/nonpositive dimensions with grid
+                            // totals; positive explicit geometry is never changed here.
+                            placement.width = width;
+                            placement.height = height;
+                        }
                         table.common_data = hwp5::write::synthesized_table_common_data(table);
                     }
                     if matches!(target, Some(SemanticTarget::Hwpx))
