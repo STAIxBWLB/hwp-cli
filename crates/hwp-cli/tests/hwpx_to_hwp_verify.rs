@@ -170,6 +170,78 @@ fn synthetic_hwpx_metadata_edit_verifies_in_hwp() {
 }
 
 #[test]
+fn mixed_table_geometry_refuses_while_wholly_unset_sizes_materialize() {
+    for (width, height) in [(0, 100), (100, -1), (0, 0), (-1, -1), (1200, 600)] {
+        let dir = workspace(&format!("geometry-{width}-{height}"));
+        let source =
+            hwp_convert::from_markdown("| Field | Value |\n| --- | --- |\n| alpha | 1 |\n");
+        let input = dir.join("source.hwpx");
+        hwpx::write_document(&source, &input).unwrap();
+        let temporary = dir.join("geometry.hwpx");
+        rewrite_public_entry(&input, &temporary, "Contents/section0.xml", |mut xml| {
+            assert_eq!(
+                xml.matches("<hp:sz ").count(),
+                1,
+                "the public source has one table size"
+            );
+            let start = xml.find("<hp:sz ").unwrap();
+            let end = start + xml[start..].find("/>").unwrap() + 2;
+            xml.replace_range(start..end, &format!("<hp:sz width=\"{width}\" widthRelTo=\"ABSOLUTE\" height=\"{height}\" heightRelTo=\"ABSOLUTE\" protect=\"0\"/>"));
+            xml
+        });
+        std::fs::remove_file(&input).unwrap();
+        std::fs::rename(&temporary, &input).unwrap();
+        let document = hwpx::read_document(&input).unwrap().document;
+        let table = document
+            .sections
+            .iter()
+            .flat_map(|section| &section.paragraphs)
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .unwrap();
+        let placement = table.placement.as_ref().unwrap();
+        assert_eq!(
+            (placement.width, placement.height),
+            (width, height),
+            "setup must retain both requested dimensions"
+        );
+        let grid = hwp5::write::table_grid_totals(table);
+        let original = std::fs::read(&input).unwrap();
+        let output = dir.join("edited.hwp");
+        let result = metadata_edit(&input, &output);
+        let mixed = (width > 0) != (height > 0);
+        assert_eq!(
+            result.status.success(),
+            !mixed,
+            "mixed geometry must refuse without discarding its positive dimension ({width}, {height}): {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(output.exists(), !mixed);
+        if !mixed {
+            let actual = hwp5::read_document(&output).unwrap().document;
+            let placement = actual
+                .sections
+                .iter()
+                .flat_map(|section| &section.paragraphs)
+                .flat_map(|paragraph| &paragraph.controls)
+                .find_map(|control| match control {
+                    hwp_model::Control::Table(table) => table.placement.as_ref(),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                (placement.width, placement.height),
+                if width > 0 { (width, height) } else { grid }
+            );
+        }
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+    }
+}
+
+#[test]
 fn composed_hwpx_text_edit_verifies_in_hwp() {
     let dir = workspace("compose");
     let spec = dir.join("source.json");
@@ -482,8 +554,18 @@ fn font_classification_loss_is_counted_without_exposing_payload() {
         if strict {
             let message = String::from_utf8_lossy(&result.stderr);
             assert!(
-                message.contains("font_type_info_unrepresentable") && message.contains(".hwpx"),
+                message.contains("font_type_info_unrepresentable")
+                    && message.contains(".hwpx")
+                    && message.contains("--strict 없이"),
                 "{message}"
+            );
+        } else {
+            let edited = dir.join("accepted-edit.hwp");
+            let accepted = metadata_edit(&output, &edited);
+            assert!(
+                accepted.status.success(),
+                "the explicit accept-loss conversion must leave an editable native file: {}",
+                String::from_utf8_lossy(&accepted.stderr)
             );
         }
         assert_eq!(std::fs::read(&input).unwrap(), original);
