@@ -486,7 +486,7 @@ jobs:
             --branch "$branch" --head "$(git rev-parse HEAD)"
 
       # The step above used to end on a warning and exit 0 whether or not the formula actually
-      # moved, so a release could finish green with `brew install hwp` still serving the previous
+      # moved, so a release could finish green with `brew install ahwp` still serving the previous
       # version and nothing failing. This repository IS the tap, so what Homebrew serves is
       # Formula/ahwp.rb on main - read it back and require it to name the released version.
       # Auto-merge is asynchronous (it lands once the PR's checks settle), hence the wait rather

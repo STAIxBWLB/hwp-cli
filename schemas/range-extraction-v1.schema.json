@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hwp-cli.staix.net/schemas/range-extraction-v1.schema.json",
   "title": "hwp-range-extraction-v1",
-  "description": "The report `hwp split --from ... --range-report <file>` publishes with the extracted fragment, and the `range` field of the MCP tool `hwp_split`: which source the selection was made against, which range was taken, where every kept body paragraph and table landed in the fragment, and which binary streams the fragment kept or left out. It carries addresses, hashes and stream names, never document text. The report is closed: a field added, removed or renamed is a new major schema.",
+  "description": "The report `ahwp split --from ... --range-report <file>` publishes with the extracted fragment, and the `range` field of the MCP tool `hwp_split`: which source the selection was made against, which range was taken, where every kept body paragraph and table landed in the fragment, and which binary streams the fragment kept or left out. It carries addresses, hashes and stream names, never document text. The report is closed: a field added, removed or renamed is a new major schema.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -84,7 +84,7 @@
     },
     "addresses": {
       "type": "array",
-      "description": "Every kept source body paragraph in source order, each followed by the tables it holds. A table's ordinal is its position in document order, nested tables included (the numbering `hwp edit --set-cell` uses), counted in the source and, from zero, in the fragment. A table inside a caption is kept in the fragment but has no entry: `--set-cell` gives it no ordinal, so there is nothing to map.",
+      "description": "Every kept source body paragraph in source order, each followed by the tables it holds. A table's ordinal is its position in document order, nested tables included (the numbering `ahwp edit --set-cell` uses), counted in the source and, from zero, in the fragment. A table inside a caption is kept in the fragment but has no entry: `--set-cell` gives it no ordinal, so there is nothing to map.",
       "items": {
         "oneOf": [
           {

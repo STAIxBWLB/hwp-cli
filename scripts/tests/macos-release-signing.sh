@@ -227,11 +227,12 @@ followup_case() {
             ;;
         gatekeeper-retry)
             env MOCK_SPCTL=retry bash "$helper" verify-archive "$tmp/signed.tar.gz" >"$tmp/log" 2>&1
-            [ -f "$RUNNER_TEMP/assessment-count" ] && [ "$(cat "$RUNNER_TEMP/assessment-count")" = 4 ] || {
-                echo 'FAIL: Gatekeeper retry must assess ahwp three times and hwp once' >&2; exit 1;
+            # 2.0 archives carry ahwp alone (#510), so only ahwp is assessed.
+            [ -f "$RUNNER_TEMP/assessment-count" ] && [ "$(cat "$RUNNER_TEMP/assessment-count")" = 3 ] || {
+                echo 'FAIL: Gatekeeper retry must assess ahwp three times and nothing else' >&2; exit 1;
             }
             [ "$(grep -c '^sleep$' "$MOCK_CALLS")" = 2 ]
-            [ "$(grep -c 'Gatekeeper accepted' "$tmp/log")" = 2 ]
+            [ "$(grep -c 'Gatekeeper accepted' "$tmp/log")" = 1 ]
             ;;
         duplicate-identity)
             expect_failure 'exactly one valid Developer ID Application' env MOCK_IDENTITY=duplicate bash "$helper" prepare

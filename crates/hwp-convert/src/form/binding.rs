@@ -190,7 +190,7 @@ impl Scan<'_> {
             cause: cause.map(str::to_owned),
             next_step: cause.map(|_| {
                 if kind == "native_field" {
-                    "ahwp fields".into()
+                    "hwp fields".into()
                 } else {
                     "지원되는 일반 텍스트 위치를 선택하거나 원본 편집기에서 해당 대상을 수정하세요"
                         .into()
