@@ -6016,6 +6016,152 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hwp_projection_keeps_custom_header_and_section_data() {
+        let base = hwp_convert::from_markdown("Baseline input.\n\nSecond paragraph.\n");
+        let signature =
+            |doc: &hwp_model::Document| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        let mut changed = base.clone();
+        changed.header.tab_stops = vec![hwp_model::TabDef {
+            attr: 0,
+            items: vec![hwp_model::TabItem {
+                pos: 1234,
+                kind: 1,
+                fill: 2,
+            }],
+        }];
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "custom tab positions/kinds/leaders remain significant"
+        );
+        let mut changed = base.clone();
+        changed.header.numbering_levels = vec![hwp5::write::synthesized_numbering_levels()];
+        changed.header.numbering_levels[0][0].template = "custom ^1".into();
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "a custom numbering template must not be replaced by the default in verification"
+        );
+        let mut changed = base.clone();
+        changed.hwpx_settings_xml =
+            Some(hwpx::DEFAULT_SETTINGS_XML.replace("pos=\"0\"", "pos=\"1\""));
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "nondefault caret/settings XML is not default scaffolding"
+        );
+        let mut changed = base.clone();
+        changed.hwpx_version_xml =
+            Some(hwpx::DEFAULT_VERSION_XML.replace("/>", " extension=\"retained\"/>"));
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unknown version attributes remain significant"
+        );
+        let mut changed = base.clone();
+        let def = changed.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|p| &mut p.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::SectionDef(def) => Some(def),
+                _ => None,
+            })
+            .unwrap();
+        def.secpr_raw_children = vec!["<hp:grid lineGrid=\"123\"/>".into()];
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "custom section XML must remain a refusal"
+        );
+        let mut changed = base.clone();
+        changed.sections[0].paragraphs[1].header.break_type ^= 0x03;
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "section-marker projection must not mask another paragraph"
+        );
+        let mut changed = base.clone();
+        changed.sections[0].paragraphs[0].header.break_type |= 0x04;
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "page-break bits remain significant"
+        );
+        let mut legacy = base.clone();
+        legacy.header.char_shapes[0].attr |= 1 << 2;
+        let mut changed = legacy.clone();
+        changed.header.char_shapes[0].underline_shape = 3;
+        assert_ne!(
+            signature(&legacy),
+            signature(&changed),
+            "a legacy-only active underline that HWP5 cannot emit must remain a refusal"
+        );
+    }
+
+    #[test]
+    fn hwp_table_projection_preserves_placement_and_unknown_payload_bytes() {
+        fn table(doc: &mut hwp_model::Document) -> &mut hwp_model::Table {
+            doc.sections
+                .iter_mut()
+                .flat_map(|s| &mut s.paragraphs)
+                .flat_map(|p| &mut p.controls)
+                .find_map(|control| match control {
+                    hwp_model::Control::Table(table) => Some(table),
+                    _ => None,
+                })
+                .unwrap()
+        }
+        let mut base =
+            hwp_convert::from_markdown("| Field | Value |\n| --- | --- |\n| alpha | 1 |\n");
+        table(&mut base).placement = Some(hwp_model::GsoPlacement {
+            width: 1200,
+            height: 600,
+            ..Default::default()
+        });
+        let signature =
+            |doc: &hwp_model::Document| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        let mut materialized = base.clone();
+        let materialized_table = table(&mut materialized);
+        materialized_table.common_data =
+            hwp5::write::synthesized_table_common_data(materialized_table);
+        materialized_table.table_tail = vec![0, 0];
+        assert_eq!(
+            signature(&base),
+            signature(&materialized),
+            "only exact writer materialization is equivalent"
+        );
+        let mut changed = materialized.clone();
+        table(&mut changed).common_data.push(0x5a);
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unknown common-property suffix bytes must not disappear"
+        );
+        let mut changed = materialized.clone();
+        table(&mut changed).table_tail.push(0x5a);
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unknown table region bytes must not disappear"
+        );
+        let mut changed = materialized.clone();
+        table(&mut changed).placement.as_mut().unwrap().width += 1;
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "modeled geometry is still compared"
+        );
+        let mut changed = base.clone();
+        table(&mut changed).placement.as_mut().unwrap().hold_anchor = true;
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unmapped hold-anchor semantics are not normalized away"
+        );
+    }
+
+    #[test]
     fn hwp_projection_accepts_public_hwpx_roundtrip() {
         fn differences(
             left: &serde_json::Value,

@@ -172,10 +172,97 @@ fn decorative_shape_loss_still_refuses_publication() {
         !result.status.success(),
         "GE-1 decorative shape loss must refuse"
     );
+    let message = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        message.contains("generic_controls=10->9")
+            || message.contains("opaque_control_unrepresentable"),
+        "GE-1 must refuse for lost control content: {message}"
+    );
     assert!(
         !output.exists(),
         "lossy decorative-shape output must not publish"
     );
+}
+
+#[test]
+fn genuinely_unmapped_hwpx_properties_still_refuse_publication() {
+    for kind in [
+        "tab",
+        "number-template",
+        "settings",
+        "section",
+        "hold-anchor",
+    ] {
+        let dir = workspace(kind);
+        let mut source = hwp_convert::from_markdown(
+            "Baseline input.\n\n| Field | Value |\n| --- | --- |\n| alpha | 1 |\n",
+        );
+        match kind {
+            "tab" => {
+                source.header.tab_stops = vec![hwp_model::TabDef {
+                    attr: 0,
+                    items: vec![hwp_model::TabItem {
+                        pos: 1234,
+                        kind: 1,
+                        fill: 2,
+                    }],
+                }]
+            }
+            "number-template" => {
+                source.header.numbering_levels = vec![hwp5::write::synthesized_numbering_levels()];
+                source.header.numbering_levels[0][0].template = "custom ^1".into();
+            }
+            "settings" => {
+                source.hwpx_settings_xml =
+                    Some(hwpx::DEFAULT_SETTINGS_XML.replace("pos=\"0\"", "pos=\"1\""))
+            }
+            "section" => {
+                let def = source
+                    .sections
+                    .iter_mut()
+                    .flat_map(|s| &mut s.paragraphs)
+                    .flat_map(|p| &mut p.controls)
+                    .find_map(|control| match control {
+                        hwp_model::Control::SectionDef(def) => Some(def),
+                        _ => None,
+                    })
+                    .unwrap();
+                def.secpr_raw_children = vec!["<hp:grid lineGrid=\"123\"/>".into()];
+            }
+            "hold-anchor" => {
+                let table = source
+                    .sections
+                    .iter_mut()
+                    .flat_map(|s| &mut s.paragraphs)
+                    .flat_map(|p| &mut p.controls)
+                    .find_map(|control| match control {
+                        hwp_model::Control::Table(table) => Some(table),
+                        _ => None,
+                    })
+                    .unwrap();
+                table.placement = Some(hwp_model::GsoPlacement {
+                    width: 1200,
+                    height: 600,
+                    hold_anchor: true,
+                    ..Default::default()
+                });
+            }
+            _ => unreachable!(),
+        }
+        let input = dir.join("source.hwpx");
+        hwpx::write_document(&source, &input).unwrap();
+        let original = std::fs::read(&input).unwrap();
+        let output = dir.join("refused.hwp");
+        let result = metadata_edit(&input, &output);
+        assert!(!result.status.success(), "genuine {kind} loss must refuse");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("의미 불변식"),
+            "{kind} must reach semantic verification: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!output.exists(), "{kind} loss must not publish");
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+    }
 }
 
 #[test]
