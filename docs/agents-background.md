@@ -78,3 +78,10 @@ AGENTS.md. This file holds rationale and history only, no directives.
   after #411 recorded an unnecessary Markdown regeneration decision. The canonical recipe and
   capability asset distinguish source-bound mutation, policy-scoped certification, diagnostic
   completeness and person-run native proof; automated evidence does not supply the last layer.
+
+## Change history
+
+- 2026-11-14 (#543): the offset/range convention followed three shared-emphasis review findings:
+  trailing controls outside closed pieces, overlapping pieces after growth, and leading controls
+  relocated before their pieces. These cases motivated exhaustive small-input coverage and an
+  explicit review of baseline drift instead of relying on the individual examples alone.
