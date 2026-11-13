@@ -1848,12 +1848,12 @@ fn tool_edit_structured(args: &Value, ctx: &dyn FileAuthority) -> McpToolResult 
     for item in arg_array(args, "set_indent_level")? {
         operations.push(ops_entry_item(item, "set_indent_level")?);
     }
-    for (index, item) in arg_array(args, "keep_together")?.iter().enumerate() {
+    for item in arg_array(args, "keep_together")? {
+        // #531: op_index is the op's position in the whole batch, as `ops[].index` and the
+        // CLI report it, not its position inside the keep_together array.
+        let index = operations.len();
         operations.push(ops_entry_item(item, "keep_together").map_err(|message| {
-            // #531: the keep_together arm refuses every entry with one of two fixed sentences.
-            if message.starts_with(hwp_convert::KEEP_TOGETHER_REFUSAL)
-                || message.starts_with("keep_together에 keep_with_next")
-            {
+            if crate::edit_ops::is_keep_together_refusal(&message) {
                 let requested: Vec<&str> = ["keep_with_next", "keep_lines", "break_before_shape"]
                     .into_iter()
                     .filter(|key| item.get(*key).is_some())
@@ -4319,6 +4319,29 @@ mod tests {
         for path in [&source, &report] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// #531 review F1: keep_together's `op_index` is its position in the whole batch, the same
+    /// index the CLI reports, so an op ahead of it shifts the index.
+    #[test]
+    fn hwp_edit_keep_together_op_index_is_the_batch_index() {
+        let source = temp_file("refusal-keep-index-source.hwpx");
+        create_hwpx(&source, "본문");
+        let output = temp_file("refusal-keep-index-out.hwpx");
+        let _ = std::fs::remove_file(&output);
+        let mut args = json!({
+            "input": source,
+            "output": output,
+            "replace": [{"from": "본문", "to": "내용"}],
+            "keep_together": [{"address": {"at": {"section": 0, "paragraph": 0}}, "keep_lines": true}],
+        });
+        let response = call_tool("hwp_edit", &mut args, &ctx());
+        assert_eq!(response["isError"], true, "{response}");
+        let refusal = &response["structuredContent"]["refusal"];
+        assert_eq!(refusal["code"], "keep_together_unsupported", "{response}");
+        assert_eq!(refusal["values"]["op_index"], 1, "{response}");
+        assert!(!output.exists());
+        let _ = std::fs::remove_file(&source);
     }
 
     /// `style_tables` rejects an unknown preset name through the same `OfficialPreset::parse`

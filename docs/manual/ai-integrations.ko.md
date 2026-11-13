@@ -404,7 +404,8 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 보고서를 출력한다. 보고서(스키마 버전 1.1)는 최상위 `refusal` 객체를 담고, 연산 하나가
 거부했으면 그 연산 항목도 `status: "failed"`와 함께 같은 객체를 담는다. MCP `hwp_edit`는 오류
 결과의 `structuredContent.refusal`로 같은 객체를 돌려준다. stderr는 사람이 읽는 한국어 문장을
-그대로 유지한다.
+그대로 유지한다. MCP 인자를 읽는 단계에서 나온 거부(예: `keep_together`)는 `structuredContent`로만
+돌아오고, 아직 편집 계획이 없으므로 `report` 인자 경로에는 파일을 쓰지 않는다.
 
 ```json
 {"code":"insert_blocks.unknown_style","values":{"style":"Heading 9","missing_style":"refuse"},"message":"..."}

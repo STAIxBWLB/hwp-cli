@@ -423,7 +423,9 @@ A refused `ahwp edit` still writes the `edit-report-v1` file that `--report` nam
 `--dry-run` still prints it. The report (schema version 1.1) carries a top-level `refusal`
 object, and when one op refused, that op's entry carries the same object with `status:
 "failed"`. MCP `hwp_edit` returns the same object as `structuredContent.refusal` of its error
-result. Stderr keeps the Korean sentence for people.
+result. Stderr keeps the Korean sentence for people. An MCP refusal raised while the arguments
+are still being read (for example `keep_together`) comes back only in `structuredContent`; no
+file is written to the `report` argument, because no edit plan exists yet.
 
 ```json
 {"code":"insert_blocks.unknown_style","values":{"style":"Heading 9","missing_style":"refuse"},"message":"..."}
