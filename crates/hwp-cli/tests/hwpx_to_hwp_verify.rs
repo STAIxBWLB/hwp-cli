@@ -47,6 +47,32 @@ fn synthetic_hwpx_metadata_edit_verifies_in_hwp() {
         // CHAR_SHAPE underline bits are already supported by the writer (§4.2.6).
         source.header.char_shapes[0].attr |= (1 << 2) | (2 << 4);
         source.header.char_shapes[0].underline_shape = 3;
+        source.header.tab_stops = (0..3)
+            .map(|attr| hwp_model::TabDef {
+                attr,
+                items: Vec::new(),
+            })
+            .collect();
+        let mut levels = hwp5::write::synthesized_numbering_levels();
+        for (level, format) in levels
+            .iter_mut()
+            .zip(hwp5::write::DEFAULT_NUMBERING_FORMATS)
+        {
+            level.fmt = format;
+        }
+        // Unused extension levels exercise emit_doc_info's explicit seven-slot fallback policy.
+        for (fmt, template) in [
+            (hwp_model::NumFmt::CircledHangulSyllable, "^8"),
+            (hwp_model::NumFmt::HangulJamo, ""),
+            (hwp_model::NumFmt::RomanLower, ""),
+        ] {
+            levels.push(hwp_model::NumLevel {
+                start: 1,
+                fmt,
+                template: template.into(),
+            });
+        }
+        source.header.numbering_levels = vec![levels];
         let input = dir.join("source.hwpx");
         hwpx::write_document(&source, &input).unwrap();
         let bytes = std::fs::read(&input).unwrap();

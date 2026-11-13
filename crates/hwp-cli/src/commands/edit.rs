@@ -5033,6 +5033,11 @@ fn canonical_document(
         for control in &mut paragraph.controls {
             match control {
                 hwp_model::Control::Table(table) => {
+                    if matches!(target, Some(SemanticTarget::Hwp)) && table.table_tail.is_empty() {
+                        // emit_table materializes the table-70 zero region-attribute count;
+                        // nonempty tails, including unmodeled region data, remain byte-compared.
+                        table.table_tail = vec![0, 0];
+                    }
                     if matches!(target, Some(SemanticTarget::Hwp))
                         && table.common_data.is_empty()
                         && table.placement.is_some()
