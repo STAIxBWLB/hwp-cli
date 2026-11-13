@@ -5291,6 +5291,11 @@ fn canonical_document(
                 || (canonical.header.tab_stops.len() == 3
                     && canonical
                         .header
+                        .para_shapes
+                        .iter()
+                        .all(|shape| shape.tab_def_id < 3)
+                    && canonical
+                        .header
                         .tab_stops
                         .iter()
                         .enumerate()
