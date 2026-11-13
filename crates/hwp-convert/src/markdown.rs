@@ -305,50 +305,6 @@ impl Body {
                 }
             }
         }
-        // A closed run whose trailing projected whitespace the close moved past the closing
-        // marker no longer contains it. Walking the runs in order, each grows its end to its
-        // last control first, then a run that a grown predecessor now overlaps starts at that
-        // predecessor's end instead (growing its own end to match if it passes it). Pieces stay
-        // adjacent and disjoint however many runs share the span, and every listed control
-        // stays inside its own piece (#543). Ranges with no control nearby are unchanged.
-        // Siblings are tracked per parent path, so a nested paragraph's runs (a text box's,
-        // absorbed into this buffer) never push the enclosing paragraph's pieces around.
-        // Only a predecessor that grew (or was pushed) moves the next sibling, so ranges this
-        // relocation did not touch stay exactly what the walk recorded.
-        let mut prev_end: Vec<(Vec<usize>, usize)> = Vec::new();
-        let parent =
-            |seg: &RawSeg| seg.path.indices[..seg.path.indices.len().saturating_sub(1)].to_vec();
-        let closed = self.segs.iter_mut().filter(|s| s.kind == SegmentKind::Run);
-        for run in closed {
-            let key = parent(run);
-            let mut changed = false;
-            if let Some(&(_, end)) = prev_end.iter().find(|(k, _)| *k == key)
-                && run.start < end
-            {
-                run.start = end;
-                run.end = run.end.max(end);
-                changed = true;
-            }
-            if let Some(need) = run.controls.iter().map(|&(_, off, _)| off + 1).max()
-                && need > run.end
-            {
-                run.end = need;
-                changed = true;
-            }
-            prev_end.retain(|(k, _)| *k != key);
-            if changed {
-                prev_end.push((key, run.end));
-            }
-        }
-        // The open run's end is not known yet; `close_run_at` fills it in no lower than start.
-        if let Some(run) = self.open_run.as_mut() {
-            let key = parent(run);
-            if let Some(&(_, end)) = prev_end.iter().find(|(k, _)| *k == key)
-                && run.start < end
-            {
-                run.start = end;
-            }
-        }
     }
 
     /// Closes the open run at the cursor.

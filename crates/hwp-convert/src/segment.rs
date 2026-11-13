@@ -383,6 +383,48 @@ pub fn to_markdown_with_segments_v2(
     Ok((markdown, segments))
 }
 
+/// Reconciles sibling run intervals in emission order without choosing a move direction.
+/// Cleanup-surviving controls constrain their owning run; a forward control bound and a
+/// reverse sibling boundary keep intervals disjoint without excluding those controls.
+fn reconcile_run_ranges(segments: &mut [Segment]) {
+    let mut groups: std::collections::BTreeMap<(usize, Vec<usize>), Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for (index, segment) in segments.iter().enumerate() {
+        if segment.kind == SegmentKind::Run {
+            let mut parent = segment.path.indices.clone();
+            parent.pop();
+            groups
+                .entry((segment.path.section, parent))
+                .or_default()
+                .push(index);
+        }
+    }
+    for indices in groups.values() {
+        let mut prefix_control_end = 0usize;
+        for &index in indices {
+            let run = &mut segments[index];
+            if let Some(start) = run.controls.iter().map(|control| control.at).min() {
+                run.start = run.start.min(start);
+            }
+            if let Some(end) = run.controls.iter().map(|control| control.at + 1).max() {
+                run.end = run.end.max(end);
+            }
+            run.start = run.start.max(prefix_control_end);
+            run.end = run.end.max(run.start);
+            if let Some(end) = run.controls.iter().map(|control| control.at + 1).max() {
+                prefix_control_end = prefix_control_end.max(end);
+            }
+        }
+        let mut next_start = usize::MAX;
+        for &index in indices.iter().rev() {
+            let run = &mut segments[index];
+            run.end = run.end.min(next_start);
+            run.start = run.start.min(run.end);
+            next_start = run.start;
+        }
+    }
+}
+
 /// Turns recorded byte spans into the published scalar-offset vector.
 ///
 /// `remap` carries each raw byte offset through the cleanup deletion map and on to a Unicode
@@ -392,44 +434,50 @@ pub(crate) fn finalize(
     mut remap: impl FnMut(usize) -> usize,
     mut survives: impl FnMut(usize) -> bool,
 ) -> Vec<Segment> {
-    let mut out: Vec<Segment> = raw
-        .into_iter()
-        .filter_map(|seg| {
-            let start = remap(seg.start);
-            let end = remap(seg.end).max(start);
-            // A control whose projected character the cleanup deleted, or that fell outside
-            // the piece, is not published: `at` must index a character the piece emitted.
-            let controls = seg
-                .controls
-                .iter()
-                .filter(|&&(_, byte, _)| survives(byte))
-                .map(|&(kind, byte, source)| RunControl {
-                    kind,
-                    at: remap(byte),
-                    source,
-                })
-                .filter(|c| c.at >= start && c.at < end)
-                .collect();
-            (end > start || seg.kind.may_be_empty() || seg.point).then_some(Segment {
-                kind: seg.kind,
-                id: seg.id,
-                path: seg.path,
-                start,
-                end,
-                style: seg.style,
-                ctrl_id: seg.ctrl_id,
-                name: seg.name,
-                // A zero-length source span is omitted, never published: the contract says a
-                // run with no source text carries no `source_chars`, and an empty range would
-                // be a second way to say the same thing.
-                source_chars: seg
-                    .source
-                    .filter(|&(s, e)| e > s)
-                    .map(|(s, e)| SourceChars { start: s, end: e }),
-                controls,
+    let mut out: Vec<Segment> =
+        raw.into_iter()
+            .filter_map(|seg| {
+                let start = remap(seg.start);
+                let end = remap(seg.end).max(start);
+                // Cleanup removes deleted characters. Reconciliation below makes each surviving
+                // control constrain the range of the run that emitted it.
+                let controls: Vec<RunControl> = seg
+                    .controls
+                    .iter()
+                    .filter(|&&(_, byte, _)| survives(byte))
+                    .map(|&(kind, byte, source)| RunControl {
+                        kind,
+                        at: remap(byte),
+                        source,
+                    })
+                    .collect();
+                (end > start || !controls.is_empty() || seg.kind.may_be_empty() || seg.point)
+                    .then_some(Segment {
+                        kind: seg.kind,
+                        id: seg.id,
+                        path: seg.path,
+                        start,
+                        end,
+                        style: seg.style,
+                        ctrl_id: seg.ctrl_id,
+                        name: seg.name,
+                        // A zero-length source span is omitted, never published: the contract says a
+                        // run with no source text carries no `source_chars`, and an empty range would
+                        // be a second way to say the same thing.
+                        source_chars: seg
+                            .source
+                            .filter(|&(s, e)| e > s)
+                            .map(|(s, e)| SourceChars { start: s, end: e }),
+                        controls,
+                    })
             })
-        })
-        .collect();
+            .collect();
+    reconcile_run_ranges(&mut out);
+    out.retain(|segment| {
+        segment.kind != SegmentKind::Run
+            || segment.end > segment.start
+            || !segment.controls.is_empty()
+    });
     // Document order, with the container ahead of what it contains. `end` descending settles
     // the nested case; where the two ranges are *identical* - a single-run cell is exactly its
     // run - it cannot, so the depth of the positional path breaks the tie: a container's path is
