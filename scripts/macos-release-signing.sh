@@ -154,7 +154,7 @@ except (OSError, ValueError):
 sys.exit(0 if accepted else 1)
 PY
         then
-            fail 'Notarization was not Accepted. Inspect the submission in App Store Connect, correct signing or notarization credentials, and rerun Release.'
+            fail 'Notarization was not Accepted. Inspect the submission with xcrun notarytool history and xcrun notarytool log using the configured API credentials, correct signing or credentials, and rerun Release.'
         fi
         # A bare Mach-O executable cannot be stapled. Gatekeeper retrieves its ticket online.
         echo 'Apple notarization status: Accepted. Bare executable ticket is available to Gatekeeper online.'

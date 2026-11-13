@@ -115,6 +115,8 @@ PY
 
 for status in Invalid malformed InProgress; do
     expect_failure 'Notarization was not Accepted' env MOCK_NOTARY="$status" bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
+    grep -F 'xcrun notarytool history' "$tmp/log" >/dev/null
+    grep -F 'xcrun notarytool log' "$tmp/log" >/dev/null
 done
 expect_failure 'Code signature verification failed' env MOCK_VERIFY=invalid bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
 expect_failure 'not signed by Developer ID Application' env MOCK_AUTHORITY=absent bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
