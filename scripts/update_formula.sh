@@ -5,10 +5,8 @@
 # release.yml's update-formula job calls this on a tag push, and it runs locally too (the release
 # assets must already be published; gh CLI authentication required).
 #
-# The checksum asset name is the legacy `hwp-<tag>-<target>` one the formula's URLs use: 1.x
-# publishes `ahwp-` and `hwp-` names from the same bytes (issue #510's bridge), and the legacy
-# name exists for every released version, so the formula installs at any moment. 2.0.0 retires
-# the legacy assets, and that change moves this name and the formula URLs to `ahwp-` together.
+# The checksum asset name is `ahwp-<tag>-<target>.sha256`, the name the formula's URLs use and
+# the only one 2.0 publishes (issue #510).
 #
 # Each sha256 replaces the one after the url line that names its target triple. That stays correct
 # when the formula's order changes, and a target it cannot place fails the run rather than leaving
@@ -37,7 +35,7 @@ patch_formula() {
     }
     # version "0.2.0"
     /^[[:space:]]*version "/ && !seen_ver { sub(/"[^"]*"/, "\"" ver "\""); seen_ver = 1; print; next }
-    # url ... hwp-v#{version}-<triple>.tar.gz  → 다음 sha256 라인이 이 타깃의 것
+    # url ... ahwp-v#{version}-<triple>.tar.gz  → 다음 sha256 라인이 이 타깃의 것
     /^[[:space:]]*url "/ {
       cur = ""
       for (t in sha) if (index($0, "-" t ".tar.gz") > 0) cur = t
@@ -58,9 +56,9 @@ patch_formula() {
 if [ "${1:-}" = "--self-test" ]; then
   out=$(printf '%s\n' \
     '  version "0.0.1"' \
-    '      url "https://x/hwp-v#{version}-aarch64-apple-darwin.tar.gz"' \
+    '      url "https://x/ahwp-v#{version}-aarch64-apple-darwin.tar.gz"' \
     '      sha256 "old1"' \
-    '      url "https://x/hwp-v#{version}-x86_64-unknown-linux-gnu.tar.gz"' \
+    '      url "https://x/ahwp-v#{version}-x86_64-unknown-linux-gnu.tar.gz"' \
     '      sha256 "old2"' \
     | patch_formula 9.9.9 aarch64-apple-darwin=new1 x86_64-unknown-linux-gnu=new2)
   printf '%s' "$out" | grep -q 'version "9.9.9"' || { echo "self-test FAIL: version"; exit 1; }
@@ -85,7 +83,7 @@ formula="Formula/ahwp.rb"
 
 pairs=""
 for t in $TARGETS; do
-  asset="hwp-v$ver-$t.sha256"
+  asset="ahwp-v$ver-$t.sha256"
   sha="$(gh release download "v$ver" -R "$REPO_SLUG" -p "$asset" -O - 2>/dev/null | sha_only)" || true
   [ -n "$sha" ] || { echo "오류: 체크섬 자산을 받지 못함: $asset" >&2; exit 1; }
   pairs="$pairs $t=$sha"

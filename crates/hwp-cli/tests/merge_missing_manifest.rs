@@ -156,7 +156,7 @@ fn native_case(extension: &str, general: bool) {
     std::fs::create_dir_all(&*dir).unwrap();
     sources(&dir, general);
     let output = format!("merged.{extension}");
-    let run = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let run = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .current_dir(&*dir)
         .args([
             "merge",
@@ -189,7 +189,7 @@ fn strict_case(extension: &str, general: bool) {
     let output = format!("existing.{extension}");
     let sentinel = b"owner-authored existing destination";
     std::fs::write(dir.join(&output), sentinel).unwrap();
-    let run = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let run = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .current_dir(&*dir)
         .args([
             "merge",
@@ -280,7 +280,7 @@ fn native_canonical_remint_case(extension: &str) {
         &dir.join("b-source.hwpx"),
     )
     .unwrap();
-    let convert = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let convert = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .current_dir(&*dir)
         .args(["convert", "b-source.hwpx", "-o", "b.hwp"])
         .output()
@@ -305,7 +305,7 @@ fn native_canonical_remint_case(extension: &str) {
     let a_bytes = std::fs::read(dir.join("a.hwpx")).unwrap();
     let b_bytes = std::fs::read(dir.join("b.hwp")).unwrap();
     let output = format!("canonical-merged.{extension}");
-    let run = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let run = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .current_dir(&*dir)
         .args([
             "merge",
@@ -447,7 +447,7 @@ fn unlisted_primary_case(extension: &str) {
     );
 
     let output = format!("merged.{extension}");
-    let run = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let run = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .current_dir(&*dir)
         .args([
             "merge",

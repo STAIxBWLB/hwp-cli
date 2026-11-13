@@ -43,7 +43,7 @@ the canonical side (`NAME.md`) and Korean as its pair (`NAME.ko.md`).
                /    |    |    \        \
           hwp5   hwpx   hwp-convert   hwp-render
                \    |  ____/  |          /
-                hwp-cli  (bin: `hwp`, depends on all five)
+                hwp-cli  (bin: `ahwp`, depends on all five)
 ```
 
 | Crate | Responsibility |

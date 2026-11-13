@@ -1,13 +1,11 @@
-//! Phase-1 command rename: canonical output and a terminal-only legacy notice.
+//! The command is `ahwp`. 2.0 removed the `hwp` compatibility name (#510 T8): a copy of the
+//! binary named `hwp` behaves exactly like `ahwp`, with no deprecation notice even on a terminal.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn primary() -> PathBuf {
-    // The fallback lets these assertions run against the pre-rename binary too.
-    option_env!("CARGO_BIN_EXE_ahwp")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_hwp")))
+    PathBuf::from(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 struct Alias(PathBuf);
@@ -52,7 +50,7 @@ fn canonical_version_and_help_name_ahwp() {
 }
 
 #[test]
-fn legacy_non_terminal_output_matches_the_canonical_command() {
+fn hwp_named_copy_output_matches_the_canonical_command() {
     let alias = Alias::new("non-terminal");
     for arguments in [
         vec!["--version"],
@@ -69,7 +67,7 @@ fn legacy_non_terminal_output_matches_the_canonical_command() {
 
 #[cfg(unix)]
 #[test]
-fn legacy_terminal_prints_one_deprecation_line() {
+fn hwp_named_copy_prints_no_notice_on_a_terminal() {
     use std::io::Read;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::process::Stdio;
@@ -109,15 +107,11 @@ fn legacy_terminal_prints_one_deprecation_line() {
         assert!(
             !remaining.is_zero(),
             "PTY output did not quiesce within five seconds; inspect descriptor ownership \
-             and rerun legacy_terminal_prints_one_deprecation_line"
+             and rerun hwp_named_copy_prints_no_notice_on_a_terminal"
         );
-        // The child has been reaped. After receiving output, a quiet interval completes the
-        // drain; the retained slave means EOF cannot be used as the completion signal.
-        let wait = if bytes.is_empty() {
-            remaining
-        } else {
-            remaining.min(Duration::from_millis(100))
-        };
+        // The child has been reaped, so anything it wrote is already queued. A short quiet
+        // interval completes the drain; the retained slave means EOF cannot be the signal.
+        let wait = remaining.min(Duration::from_millis(300));
         let mut descriptor = libc::pollfd {
             fd: reader.as_raw_fd(),
             events: libc::POLLIN,
@@ -145,9 +139,8 @@ fn legacy_terminal_prints_one_deprecation_line() {
     }
     drop(parent_terminal);
     let stderr = String::from_utf8(bytes).unwrap();
-    let lines = stderr.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 1, "one notice on terminal stderr: {stderr:?}");
-    assert!(lines[0].contains("deprecated"), "{stderr:?}");
-    assert!(lines[0].contains("ahwp"), "{stderr:?}");
-    assert!(lines[0].contains("2.0"), "{stderr:?}");
+    assert!(
+        stderr.is_empty(),
+        "an hwp-named binary has no special behavior, even on a terminal: {stderr:?}"
+    );
 }

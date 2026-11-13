@@ -14,7 +14,7 @@ use std::process::Command;
 use hwp_model::{Control, Table};
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn test_dir(name: &str) -> PathBuf {

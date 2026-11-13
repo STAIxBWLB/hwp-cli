@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn run(command: &mut Command) -> Output {

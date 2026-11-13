@@ -13,7 +13,7 @@ const CUSTOM: [&str; 7] = ["{n}.", "{n})", "({n})", "{n}-", "[{n}]", "#{n}", "{n
 const DEFAULT: [&str; 7] = ["{n}.", "{n}.", "{n})", "{n})", "({n})", "({n})", "{n}"];
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn workspace(name: &str) -> temp_path::TempPath {

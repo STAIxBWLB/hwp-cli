@@ -201,8 +201,8 @@ jobs:
           fi
 
   # Build platform `ahwp` binaries -> upload archives (tar.gz/zip) + sha256 to the release.
-  # The asset name carries the command name (#510): `ahwp-<tag>-<target>`, with the legacy
-  # `hwp-<tag>-<target>` names republished from the same bytes by `alias-assets` below.
+  # The asset name carries the command name (#510): `ahwp-<tag>-<target>`. 2.0 publishes no
+  # `hwp` alias and no legacy `hwp-<tag>-<target>` names (#510 Phase 4).
   upload-assets:
     needs: create-release
     timeout-minutes: 60 # includes macOS notarization --wait
@@ -262,9 +262,7 @@ jobs:
       - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6
         id: upload
         with:
-          # The binary is `ahwp` since #510's T1; `alias-assets` adds the `hwp`
-          # compatibility name to each archive afterwards, and the action packs what this
-          # name builds. A tag whose tree still names the binary `hwp` fails here.
+          # The binary is `ahwp` (#510); the action packs what this name builds.
           bin: ahwp
           target: ${{ matrix.target }}
           # Empty for the native targets — the action then picks its own default.
@@ -301,108 +299,10 @@ jobs:
           SIGNING_DIRECTORY: ${{ steps.macos-signing.outputs.directory }}
         run: bash scripts/macos-release-signing.sh cleanup "$SIGNING_DIRECTORY"
 
-  # #510's rename bridge: every archive also carries the legacy `hwp` command name, and through
-  # 1.x the same bytes are published under the legacy `hwp-<tag>-<target>` asset name so an
-  # already-installed 1.5 `hwp update` (which fetches that name) keeps upgrading.
-  #
-  # Why here instead of per-OS in upload-assets: the alias has to be inside the archive for
-  # install.sh, the formula and `update` to see one layout, and upload-rust-binary-action packs
-  # only what `bin:` built. Repacking once on one runner keeps that logic in one place instead of
-  # a tar/zip branch in five matrix legs.
-  #
-  # The alias is a hard link on the Unix targets (one binary, two names) and a copy in the
-  # Windows zip, where a link has no meaning. 2.0.0 drops both the alias and the legacy asset
-  # name (issue #510, Phase 4); the major guard below is what retires them.
-  alias-assets:
-    needs: upload-assets
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Add the hwp name and republish the legacy asset names
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          tag="$GITHUB_REF_NAME"
-          major="${tag#v}"
-          major="${major%%.*}"
-          work="$(pwd)/assets"
-          mkdir -p "$work"
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$work" \
-            --pattern "ahwp-$tag-*.tar.gz" --pattern "ahwp-$tag-*.zip"
-          cd "$work"
-
-          # Both names in one archive, asserted from the archive itself rather than trusted.
-          repack_tar() {
-            local archive="$1" dir
-            dir="repack-${archive%.tar.gz}"
-            mkdir -p "$dir"
-            tar -xzf "$archive" -C "$dir"
-            [ -f "$dir/ahwp" ] || { echo "::error::$archive carries no ahwp"; return 1; }
-            ln "$dir/ahwp" "$dir/hwp"
-            mapfile -t entries < <(ls -A "$dir")
-            tar -czf "$archive" -C "$dir" "${entries[@]}"
-            # grep reads all of its input (`>/dev/null`, not -q): under pipefail an early
-            # exit turns a match into a SIGPIPE failure (#368).
-            tar -tzf "$archive" | grep -x 'ahwp' >/dev/null
-            tar -tzf "$archive" | grep -x 'hwp' >/dev/null
-          }
-
-          repack_zip() {
-            local archive="$1" dir absolute
-            dir="repack-${archive%.zip}"
-            absolute="$(pwd)/$archive"
-            mkdir -p "$dir"
-            unzip -q "$archive" -d "$dir"
-            [ -f "$dir/ahwp.exe" ] || { echo "::error::$archive carries no ahwp.exe"; return 1; }
-            cp -p "$dir/ahwp.exe" "$dir/hwp.exe"
-            (cd "$dir" && zip -qr "$absolute" -- *)
-            # Anchored at end of line: `ahwp.exe` contains `hwp.exe`, so an unanchored grep
-            # would match the member that is always present and never fail.
-            unzip -l "$archive" | grep -E '(^|[[:space:]])ahwp\.exe$' >/dev/null
-            unzip -l "$archive" | grep -E '(^|[[:space:]])hwp\.exe$' >/dev/null
-          }
-
-          archives=(ahwp-"$tag"-*.tar.gz ahwp-"$tag"-*.zip)
-          [ "${#archives[@]}" -gt 0 ] || { echo "::error::no ahwp archive was published for $tag"; exit 1; }
-          for archive in "${archives[@]}"; do
-            # The checksum asset drops the archive extension: `ahwp-<tag>-<target>.sha256`, which
-            # is what upload-rust-binary-action publishes, scripts/install.sh fetches, `update`
-            # composes from its asset name and scripts/update_formula.sh reads. Writing it here
-            # with --clobber replaces the action's hash of the pre-repack bytes; leaving that one
-            # in place would fail every checksum check on the release.
-            case "$archive" in
-            *.tar.gz) repack_tar "$archive"; stem="${archive%.tar.gz}" ;;
-            *.zip) repack_zip "$archive"; stem="${archive%.zip}" ;;
-            esac
-            sha256sum "$archive" >"$stem.sha256"
-            if [ "$major" = "1" ]; then
-              legacy="${archive/ahwp-/hwp-}"
-              legacy_stem="${stem/ahwp-/hwp-}"
-              cp "$archive" "$legacy"
-              cmp "$archive" "$legacy"
-              sha256sum "$legacy" >"$legacy_stem.sha256"
-            else
-              echo "$archive: major $major, no legacy hwp- asset (#510 Phase 4)"
-            fi
-          done
-
-          # --clobber replaces the archives and their checksums with the repacked bytes, so a
-          # release never pairs an archive with the other bytes' hash. `*.sha256` also picks up
-          # the legacy sidecars, which upload-assets never publishes.
-          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
-            ahwp-"$tag"-*.tar.gz ahwp-"$tag"-*.sha256 \
-            ahwp-"$tag"-*.zip \
-            hwp-"$tag"-*.tar.gz hwp-"$tag"-*.sha256 \
-            hwp-"$tag"-*.zip
-          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq '.assets[].name' | sort
-
-  # alias-assets repacks on Linux without changing executable bytes. Verify the downloaded
-  # macOS archives after that mutation, before either attestation or public release.
+  # Verify the downloaded macOS archives as published, before either attestation or
+  # public release.
   verify-macos-assets:
-    needs: alias-assets
+    needs: upload-assets
     # The assets are still on a draft release, visible only with push access. This job
     # downloads and verifies them; it never writes release metadata or assets.
     permissions:
@@ -415,7 +315,7 @@ jobs:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     steps:
       - uses: actions/checkout@v7
-      - name: Verify both signed command names in the published archive
+      - name: Verify the signed ahwp executable in the published archive
         shell: bash
         env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
@@ -433,10 +333,9 @@ jobs:
   # Why the binary ships instead of a download script: the claude.ai sandbox network is
   # restricted to registries, so the binary cannot be fetched at runtime (bundling beats downloading).
   # The zip keeps its `hwp-skill` name and the skill keeps the name `hwp` (#510 leaves both
-  # alone), but the binary it carries is `bin/ahwp`, which is the path bootstrap.sh installs
-  # (`hwp` stays beside it as the 1.x alias SKILL.md's command list uses).
+  # alone), but the binary it carries is `bin/ahwp`, which is the path bootstrap.sh installs.
   skill-bundle:
-    needs: alias-assets
+    needs: upload-assets
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -447,8 +346,7 @@ jobs:
         run: |
           set -euo pipefail
           work=$(mktemp -d)
-          # The Linux archive just published (naming: $bin-$tag-$target.tar.gz), after
-          # alias-assets repacked it.
+          # The Linux archive just published (naming: $bin-$tag-$target.tar.gz).
           gh release download "$GITHUB_REF_NAME" \
             --pattern "ahwp-$GITHUB_REF_NAME-x86_64-unknown-linux-gnu.tar.gz" \
             --dir "$work" --clobber

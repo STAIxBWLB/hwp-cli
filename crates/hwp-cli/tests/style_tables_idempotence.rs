@@ -24,7 +24,7 @@ use zip::write::SimpleFileOptions;
 mod fixture_skip;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn test_dir(name: &str) -> PathBuf {

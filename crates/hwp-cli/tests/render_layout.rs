@@ -387,7 +387,7 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 /// Runs one render with `--layout-json` and returns the layout file's bytes.

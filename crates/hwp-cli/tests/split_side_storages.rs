@@ -96,7 +96,7 @@ impl Workspace {
     }
 
     fn split(&self, selection: Selection, strict: bool) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_hwp"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ahwp"));
         command
             .arg("split")
             .arg(&self.input)
@@ -308,7 +308,7 @@ fn ordinary_convert_edit_and_identity_keep_history() {
     assert_eq!(std::fs::read(&identity).unwrap(), workspace.source_bytes);
     for (command, output) in [("convert", "converted.hwp"), ("edit", "edited.hwp")] {
         let output = workspace.dir.join(output);
-        let mut process = Command::new(env!("CARGO_BIN_EXE_hwp"));
+        let mut process = Command::new(env!("CARGO_BIN_EXE_ahwp"));
         process
             .arg(command)
             .arg(&workspace.input)
@@ -346,7 +346,7 @@ fn hwpx_extra_parts_and_manifest_entries_remain_paired() {
     let source = dir.join("source.hwpx");
     hwpx::write_document(&document, &source).unwrap();
     let output = dir.join("out");
-    let result = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("split")
         .arg(&source)
         .arg("--out-dir")

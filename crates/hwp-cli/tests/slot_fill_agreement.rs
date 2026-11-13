@@ -15,7 +15,7 @@ use std::process::Command;
 mod short_root;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 /// A short per-process directory: `fill` nests two staging workspaces inside its output

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 mod temp_path;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn success(result: std::process::Output) {

@@ -31,7 +31,7 @@ HWP library. Background for revising these rules: [docs/agents-background.md](do
 ## Build · test
 
 ```bash
-cargo build                    # debug build (bin: hwp)
+cargo build                    # debug build (bin: ahwp)
 HWP_FONT_DIR=$PWD/fonts python3 tools/diagnostic_corpus.py   # diagnostic corpus + self-verification harness
 ```
 

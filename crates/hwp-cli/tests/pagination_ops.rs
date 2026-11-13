@@ -25,7 +25,7 @@ const BOLD_LEAD: &str = "  Bold label tail";
 const IDEOGRAPHIC: &str = "\u{3000}가. 항목";
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 fn success(output: Output, label: &str) {
     assert!(

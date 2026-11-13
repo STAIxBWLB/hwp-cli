@@ -41,7 +41,7 @@
                /    |    |    \        \
           hwp5   hwpx   hwp-convert   hwp-render
                \    |  ____/  |          /
-                hwp-cli  (bin: `hwp`, 위 5개 전부 의존)
+                hwp-cli  (bin: `ahwp`, 위 5개 전부 의존)
 ```
 
 | 크레이트 | 책임 |

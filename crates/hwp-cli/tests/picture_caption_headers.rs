@@ -197,7 +197,7 @@ fn restyle_picture_caption(label: &str, tail: &[u8]) {
     )
     .unwrap();
     let output = dir.join("updated.hwp");
-    let result = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("edit")
         .arg(&source)
         .arg("-o")

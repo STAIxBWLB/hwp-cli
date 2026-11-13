@@ -4,7 +4,7 @@
 # than a build-arg on it. The two differences that matter live in CMD - port 8000
 # and the absence of --files - and an exec-form CMD cannot take an ARG. Making it
 # configurable means shell-form CMD, which puts `sh` at PID 1 and reintroduces the
-# defect #199 and #203 fixed: `hwp serve` handles SIGTERM *because* it is PID 1, and
+# defect #199 and #203 fixed: `ahwp serve` handles SIGTERM *because* it is PID 1, and
 # `sh` would not forward it. That file is also pinned by wrangler.jsonc and built by
 # a live deploy, so it is the wrong place to experiment.
 #
@@ -21,10 +21,10 @@
 #     time docker stop t    # ~2s, not the 10s kill timeout - the #199 regression check
 #
 # To move to a new release, bump HWP_VERSION and HWP_SHA256 together. The sha256 is
-# published beside the tarball as hwp-<version>-<target>.sha256, and a mismatch fails
+# published beside the tarball as ahwp-<version>-<target>.sha256, and a mismatch fails
 # the build, which is the point.
 #
-# Since v0.20.1 `hwp serve` answers 411 to any Transfer-Encoding request body.
+# Since v0.20.1 `ahwp serve` answers 411 to any Transfer-Encoding request body.
 # AgentCore forwards /mcp length-framed on platforms V1 and V2, and de-chunks a
 # client's HTTP/1.1 chunked body, so the 411 never fires there (verified
 # 2026-09-26, issue #318). Deploy procedure: README.md in this directory.
@@ -50,12 +50,12 @@ ARG HWP_SHA256
 ADD https://github.com/STAIxBWLB/agent-hwp/releases/download/${HWP_VERSION}/ahwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz /tmp/hwp.tar.gz
 RUN set -eux; \
     echo "${HWP_SHA256}  /tmp/hwp.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin ahwp hwp; \
-    chmod +x /usr/local/bin/hwp; \
-    hwp --version; \
+    tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin ahwp; \
+    chmod +x /usr/local/bin/ahwp; \
+    ahwp --version; \
     # A release without `serve` would otherwise fail only at runtime, inside a
     # container nobody is watching.
-    hwp serve --help >/dev/null
+    ahwp serve --help >/dev/null
 
 ARG HWP_PLATFORM
 FROM --platform=${HWP_PLATFORM} debian:bookworm-slim
@@ -65,7 +65,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends fonts-nanum \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=fetch /usr/local/bin/hwp /usr/local/bin/hwp
+COPY --from=fetch /usr/local/bin/ahwp /usr/local/bin/ahwp
 
 RUN useradd --create-home --uid 10001 hwp \
  && mkdir -p /work \
@@ -73,7 +73,7 @@ RUN useradd --create-home --uid 10001 hwp \
 USER hwp
 WORKDIR /work
 
-# No init: `hwp serve` handles SIGTERM itself since 0.15.1, so it stops correctly
+# No init: `ahwp serve` handles SIGTERM itself since 0.15.1, so it stops correctly
 # even as PID 1, where the kernel delivers no signal that still has its default
 # disposition. If HWP_VERSION is ever moved back below 0.15.1, put tini back -
 # without one, an idle-stop signal is discarded and the container bills until it
@@ -81,7 +81,7 @@ WORKDIR /work
 
 EXPOSE 8000
 # No --files: AgentCore exposes only /mcp, so the sideband has nowhere to live.
-CMD ["hwp", "serve", \
+CMD ["ahwp", "serve", \
      "--addr", "0.0.0.0:8000", \
      "--root", "/work", \
      "--font-dir", "/usr/share/fonts/truetype/nanum"]

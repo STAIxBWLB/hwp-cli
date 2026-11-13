@@ -25,7 +25,7 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn command_output(command: &mut Command, label: &str) -> Output {

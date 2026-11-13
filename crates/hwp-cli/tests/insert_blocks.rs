@@ -12,7 +12,7 @@ const TAIL: &str = "Body tail.";
 const CELL: &str = "Cell anchor.";
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 fn success(output: Output, label: &str) {
     assert!(

@@ -10,7 +10,7 @@ if [ "${1:-}" = --dry-run ]; then
     echo 'macOS signing dry-run: require six Actions secrets; import Developer ID Application into a temporary keychain'
     echo 'macOS signing dry-run: require APPLE_TEAM_ID repository variable; pin Developer ID signer team, runtime and Timestamp'
     echo 'macOS signing dry-run: ZIP signed ahwp; notarytool submit --wait --output-format json; require Accepted'
-    echo 'macOS signing dry-run: compare ahwp/hwp bytes; verify both signatures and Gatekeeper install acceptance (3 attempts, 10 seconds apart); clean temporary keychain'
+    echo 'macOS signing dry-run: verify the ahwp signature and Gatekeeper install acceptance (3 attempts, 10 seconds apart); clean temporary keychain'
     echo 'macOS signing dry-run: no signing, notarization, upload, or Gatekeeper acceptance was performed'
     exit 0
 fi
@@ -109,8 +109,8 @@ try:
             if len(matches) != 1:
                 raise ValueError("missing or duplicate executable")
             member = matches[0]
-            if not member.isfile() and not (name == "hwp" and member.islnk() and member.linkname == "ahwp"):
-                raise ValueError("executable is not a regular file or the expected alias")
+            if not member.isfile():
+                raise ValueError("executable is not a regular file")
             with source.extractfile(member) as input_file, (destination / name).open("wb") as output_file:
                 shutil.copyfileobj(input_file, output_file)
             (destination / name).chmod(0o755)
@@ -218,12 +218,9 @@ PY
         require_macos
         work="$(mktemp -d "${RUNNER_TEMP:?}/ahwp-verify.XXXXXX")"
         trap 'rm -rf "$work"' EXIT
-        extract_binaries "${2:?archive is required}" "$work" ahwp,hwp
-        cmp "$work/ahwp" "$work/hwp" || fail 'The hwp alias differs from ahwp. Repack the archive with identical signed executable bytes.'
+        extract_binaries "${2:?archive is required}" "$work" ahwp
         verify_binary "$work/ahwp"
-        verify_binary "$work/hwp"
         verify_gatekeeper "$work/ahwp"
-        verify_gatekeeper "$work/hwp"
         ;;
     cleanup)
         work="${2:?signing directory is required}"

@@ -62,7 +62,7 @@ fn run(mode: &str) -> (std::process::ExitStatus, PathBuf, PathBuf) {
         serde_json::to_vec_pretty(&policy(mode)).unwrap(),
     )
     .unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let status = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("certify")
         .arg(&input)
         .arg("--policy")
@@ -113,7 +113,7 @@ fn existing_report_directory_is_never_replaced() {
     .unwrap();
     fs::create_dir(&report).unwrap();
     fs::write(report.join("sentinel"), b"keep").unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let status = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .args(["certify"])
         .arg(&input)
         .arg("--policy")
@@ -141,7 +141,7 @@ fn mcp_certify_executes_the_same_atomic_contract() {
         serde_json::to_vec_pretty(&policy("disabled")).unwrap(),
     )
     .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -197,7 +197,7 @@ fn evidence_checks_fold_into_the_overall_result() {
         let policy_path = root.join("policy.json");
         fs::write(&policy_path, serde_json::to_vec_pretty(policy).unwrap()).unwrap();
         let report = root.join(format!("report-{label}"));
-        let status = Command::new(env!("CARGO_BIN_EXE_hwp"))
+        let status = Command::new(env!("CARGO_BIN_EXE_ahwp"))
             .arg("certify")
             .arg(input)
             .arg("--policy")
@@ -304,7 +304,7 @@ fn repeated_native_certification_has_identical_artifacts_and_hashes() {
     .unwrap();
     let reports = [root.join("report-a"), root.join("report-b")];
     for report in &reports {
-        let output = Command::new(env!("CARGO_BIN_EXE_hwp"))
+        let output = Command::new(env!("CARGO_BIN_EXE_ahwp"))
             .arg("certify")
             .arg(&input)
             .arg("--policy")

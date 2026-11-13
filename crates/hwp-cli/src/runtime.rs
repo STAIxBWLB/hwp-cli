@@ -18,16 +18,6 @@ use hwp_cli::i18n;
 pub(crate) const WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
 
 pub(crate) fn run() -> anyhow::Result<()> {
-    use std::io::IsTerminal as _;
-    if let Some(program) = std::env::args_os().next()
-        && let Some(notice) = compatibility_notice(
-            &program,
-            std::io::stderr().is_terminal(),
-            i18n::Lang::detect(),
-        )
-    {
-        eprintln!("{notice}");
-    }
     // Clap's derived command construction/parsing exceeds Windows' default 1 MiB main
     // stack in debug builds (observed in CI). Run on a larger worker stack across
     // platforms and build profiles.
@@ -407,42 +397,5 @@ fn real_main() -> anyhow::Result<()> {
                 quick_profile,
             } => commands::skill::run(output, install, quick_profile),
         },
-    }
-}
-
-/// A compatibility invocation is quiet on pipes, including MCP transports.
-fn compatibility_notice(
-    program: &std::ffi::OsStr,
-    terminal: bool,
-    language: i18n::Lang,
-) -> Option<&'static str> {
-    let legacy = std::path::Path::new(program)
-        .file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|stem| stem.eq_ignore_ascii_case("hwp"));
-    if !terminal || !legacy {
-        return None;
-    }
-    Some(match language {
-        i18n::Lang::En => {
-            "hwp is deprecated; use ahwp. The compatibility name will be removed in 2.0."
-        }
-        i18n::Lang::Ko => "hwp 호환 명령은 2.0에서 제거됩니다. ahwp 명령을 사용하세요.",
-    })
-}
-
-#[cfg(test)]
-mod bridge_tests {
-    use super::*;
-    use std::ffi::OsStr;
-
-    #[test]
-    fn compatibility_notice_requires_the_legacy_name_and_a_terminal() {
-        for name in ["hwp", "hwp.exe", "HWP.EXE"] {
-            assert!(compatibility_notice(OsStr::new(name), true, i18n::Lang::En).is_some());
-            assert!(compatibility_notice(OsStr::new(name), false, i18n::Lang::En).is_none());
-        }
-        assert!(compatibility_notice(OsStr::new("ahwp"), true, i18n::Lang::En).is_none());
-        assert!(compatibility_notice(OsStr::new("ahwp.exe"), true, i18n::Lang::En).is_none());
     }
 }

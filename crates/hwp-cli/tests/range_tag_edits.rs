@@ -99,7 +99,7 @@ impl Workspace {
     }
 
     fn edit(&self, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_hwp"))
+        Command::new(env!("CARGO_BIN_EXE_ahwp"))
             .arg("edit")
             .arg(&self.source)
             .arg("-o")
@@ -239,7 +239,7 @@ fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
             if report.exists() {
                 std::fs::remove_file(&report).unwrap();
             }
-            let mut command = Command::new(env!("CARGO_BIN_EXE_hwp"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_ahwp"));
             command
                 .arg("convert")
                 .arg(&workspace.source)

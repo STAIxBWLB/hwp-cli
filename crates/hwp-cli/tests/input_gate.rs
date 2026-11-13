@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 /// 첫 배포용 문서(dist-01*)를 반환. 코퍼스 변수가 없으면 None — 각 테스트는 그 경우

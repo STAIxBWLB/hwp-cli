@@ -1,4 +1,4 @@
-//! `ahwp update`: self-update with the 1.x compatibility bridge.
+//! `ahwp update`: self-update from the canonical `ahwp-` release assets.
 //!
 //! Download platform-specific GitHub release archives (`release.yml` upload-assets output)
 //! and replace the resolved running executable. To avoid new runtime dependencies, delegate
@@ -21,7 +21,6 @@ use sha2::{Digest, Sha256};
 
 const REPO: &str = "STAIxBWLB/agent-hwp";
 const BIN: &str = "ahwp";
-const LEGACY_BIN: &str = "hwp";
 
 /// Release archive formats produced for each target by `release.yml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,11 +63,7 @@ pub fn target_triple(os: &str, arch: &str) -> Option<(&'static str, Archive)> {
 /// Canonical asset names matching the release workflow archive rule: $bin-$tag-$target.
 /// For example, `ahwp-v1.6.0-aarch64-apple-darwin.tar.gz` and the matching `.sha256`.
 pub fn asset_names(tag: &str, triple: &str, archive: Archive) -> (String, String) {
-    asset_names_for(BIN, tag, triple, archive)
-}
-
-fn asset_names_for(bin: &str, tag: &str, triple: &str, archive: Archive) -> (String, String) {
-    let stem = format!("{bin}-{tag}-{triple}");
+    let stem = format!("{BIN}-{tag}-{triple}");
     (
         format!("{stem}.{}", archive.ext()),
         format!("{stem}.sha256"),
@@ -291,8 +286,8 @@ fn verify_sha256(file: &Path, sha_line: &str) -> Result<()> {
 }
 
 /// Download and verify one release through an injectable transport. `false` means the asset
-/// is absent; transport failures remain errors. Only an absent canonical archive allows the
-/// legacy prefix. Missing/invalid checksums and all transport failures stop the update.
+/// is absent; transport failures remain errors. A missing archive, a missing or invalid
+/// checksum and every transport failure stop the update.
 fn download_release_with(
     tag: &str,
     triple: &str,
@@ -301,16 +296,12 @@ fn download_release_with(
     work: &Path,
     mut transport: impl FnMut(&str, &Path) -> Result<bool>,
 ) -> Result<PathBuf> {
-    let (mut archive_name, mut sha_name) = asset_names(tag, triple, archive);
-    let mut archive_path = work.join(&archive_name);
+    let (archive_name, sha_name) = asset_names(tag, triple, archive);
+    let archive_path = work.join(&archive_name);
     if !transport(&format!("{base}/{archive_name}"), &archive_path)? {
-        (archive_name, sha_name) = asset_names_for(LEGACY_BIN, tag, triple, archive);
-        archive_path = work.join(&archive_name);
-        if !transport(&format!("{base}/{archive_name}"), &archive_path)? {
-            bail!(
-                "ahwp와 hwp 릴리스 아카이브가 모두 없습니다. 해당 버전의 플랫폼 자산을 확인한 뒤 다시 실행하세요"
-            );
-        }
+        bail!(
+            "ahwp 릴리스 아카이브가 없습니다. 해당 버전의 플랫폼 자산을 확인한 뒤 다시 실행하세요"
+        );
     }
     let sha_path = work.join(&sha_name);
     if !transport(&format!("{base}/{sha_name}"), &sha_path)? {
@@ -323,7 +314,7 @@ fn download_release_with(
     Ok(archive_path)
 }
 
-/// Extract the canonical `ahwp` executable, falling back to `hwp` for older archives.
+/// Extract the `ahwp` executable.
 /// Use tar for both formats (bsdtar/Windows tar.exe support ZIP), expecting root-level binaries
 /// as produced by `taiki-e/upload-rust-binary-action`.
 fn extract(archive: &Path, dir: &Path) -> Result<PathBuf> {
@@ -341,18 +332,16 @@ fn extract(archive: &Path, dir: &Path) -> Result<PathBuf> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    for bin in [BIN, LEGACY_BIN] {
-        let exe = dir.join(if cfg!(windows) {
-            format!("{bin}.exe")
-        } else {
-            bin.to_string()
-        });
-        if exe.is_file() {
-            return Ok(exe);
-        }
+    let exe = dir.join(if cfg!(windows) {
+        format!("{BIN}.exe")
+    } else {
+        BIN.to_string()
+    });
+    if exe.is_file() {
+        return Ok(exe);
     }
     bail!(
-        "아카이브에 ahwp 또는 hwp 실행 파일이 없습니다: {}. 해당 플랫폼의 릴리스 아카이브를 확인한 뒤 다시 실행하세요",
+        "아카이브에 ahwp 실행 파일이 없습니다: {}. 해당 플랫폼의 릴리스 아카이브를 확인한 뒤 다시 실행하세요",
         archive.display()
     )
 }
@@ -370,7 +359,7 @@ fn verify_installed(exe: &Path, want: &str) -> Result<String> {
     Ok(ver)
 }
 
-/// `ahwp update` entry point, also reached through the legacy command name.
+/// `ahwp update` entry point.
 pub fn run(check: bool, tag: Option<&str>, force: bool, json: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe().context("실행 파일 경로를 찾지 못했습니다")?;
@@ -573,14 +562,14 @@ mod tests {
         assert_eq!(
             requests,
             bridge_names("ahwp"),
-            "canonical archive/checksum must win when both names are available"
+            "the ahwp archive and its checksum are fetched"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn bridge_download_falls_back_only_when_canonical_archive_is_absent() {
-        let dir = bridge_dir("bridge-fallback");
+    fn release_download_refuses_an_absent_archive() {
+        let dir = bridge_dir("release-absent");
         let mut requests = Vec::new();
         let result = download_release_with(
             BRIDGE_TAG,
@@ -588,26 +577,16 @@ mod tests {
             Archive::TarGz,
             BRIDGE_BASE,
             &dir,
-            |url, dest| {
-                let name = url.rsplit('/').next().unwrap().to_string();
-                let absent = name.starts_with("ahwp-");
-                requests.push(name);
-                if absent {
-                    return Ok(false);
-                }
-                bridge_response(dest, false);
-                Ok(true)
+            |url, _| {
+                requests.push(url.rsplit('/').next().unwrap().to_string());
+                Ok(false)
             },
         );
-        assert!(
-            result.is_ok(),
-            "legacy-only release must remain installable: {result:?}"
-        );
-        let mut expected = vec![bridge_names("ahwp")[0].clone()];
-        expected.extend(bridge_names("hwp"));
+        assert!(result.is_err(), "an absent ahwp archive stops the update");
         assert_eq!(
-            requests, expected,
-            "legacy is tried after the absent canonical archive"
+            requests,
+            vec![bridge_names("ahwp")[0].clone()],
+            "no other asset name is tried (2.0 drops the hwp- assets)"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -635,7 +614,7 @@ mod tests {
         );
         assert!(
             result.is_err(),
-            "transport failure must not install the available legacy asset"
+            "a transport failure stops the update"
         );
         assert_eq!(requests, vec![bridge_names("ahwp")[0].clone()]);
         std::fs::remove_dir_all(dir).unwrap();
@@ -664,7 +643,7 @@ mod tests {
         );
         assert!(
             result.is_err(),
-            "missing canonical checksum must not install the available legacy asset"
+            "a missing checksum stops the update"
         );
         assert_eq!(requests, bridge_names("ahwp"));
         std::fs::remove_dir_all(dir).unwrap();
@@ -690,26 +669,18 @@ mod tests {
         );
         assert!(
             result.is_err(),
-            "canonical checksum mismatch must not install the available legacy asset"
+            "a checksum mismatch stops the update"
         );
         assert_eq!(requests, bridge_names("ahwp"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    fn bridge_extract_fixture(label: &str, canonical: bool, legacy: bool) {
+    fn extract_fixture(label: &str, names: &[&str]) -> Result<PathBuf> {
         let dir = bridge_dir(label);
-        let canonical_name = if cfg!(windows) { "ahwp.exe" } else { "ahwp" };
-        let legacy_name = if cfg!(windows) { "hwp.exe" } else { "hwp" };
-        let mut names = Vec::new();
-        if canonical {
-            std::fs::write(dir.join(canonical_name), b"CANONICAL").unwrap();
-            names.push(canonical_name);
+        for name in names {
+            std::fs::write(dir.join(name), name.as_bytes()).unwrap();
         }
-        if legacy {
-            std::fs::write(dir.join(legacy_name), b"LEGACY").unwrap();
-            names.push(legacy_name);
-        }
-        let archive = dir.join("bridge.tar.gz");
+        let archive = dir.join("release.tar.gz");
         let status = Command::new("tar")
             .arg("-czf")
             .arg(&archive)
@@ -721,40 +692,23 @@ mod tests {
         assert!(status.success(), "synthetic archive setup must succeed");
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
-        let result = extract(&archive, &out);
+        extract(&archive, &out)
+    }
+
+    #[test]
+    fn extract_yields_the_ahwp_executable() {
+        let name = if cfg!(windows) { "ahwp.exe" } else { "ahwp" };
+        let extracted = extract_fixture("extract-ahwp", &[name]).expect("ahwp archive");
+        assert_eq!(extracted.file_name().unwrap(), name);
+    }
+
+    #[test]
+    fn extract_refuses_an_archive_with_only_the_removed_hwp_name() {
+        let name = if cfg!(windows) { "hwp.exe" } else { "hwp" };
         assert!(
-            result.is_ok(),
-            "bridge archive must yield an executable: {result:?}"
+            extract_fixture("extract-hwp-only", &[name]).is_err(),
+            "2.0 no longer installs a 1.x hwp-only archive"
         );
-        let extracted = result.unwrap();
-        let expected_name = if canonical {
-            canonical_name
-        } else {
-            legacy_name
-        };
-        assert_eq!(
-            extracted.file_name().unwrap(),
-            expected_name,
-            "new archives prefer ahwp; older hwp-only archives remain supported"
-        );
-        let expected: &[u8] = if canonical { b"CANONICAL" } else { b"LEGACY" };
-        assert_eq!(std::fs::read(extracted).unwrap(), expected);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn bridge_extract_accepts_canonical_only_archive() {
-        bridge_extract_fixture("bridge-extract-new", true, false);
-    }
-
-    #[test]
-    fn bridge_extract_prefers_canonical_when_both_names_exist() {
-        bridge_extract_fixture("bridge-extract-both", true, true);
-    }
-
-    #[test]
-    fn bridge_extract_keeps_legacy_only_archive_compatibility() {
-        bridge_extract_fixture("bridge-extract-old", false, true);
     }
 
     #[test]

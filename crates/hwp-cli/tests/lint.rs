@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn repo(relative: &str) -> PathBuf {

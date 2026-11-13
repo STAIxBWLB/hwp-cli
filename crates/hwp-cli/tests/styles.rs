@@ -16,7 +16,7 @@ use std::process::Command;
 use serde_json::Value;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn repo(relative: &str) -> PathBuf {

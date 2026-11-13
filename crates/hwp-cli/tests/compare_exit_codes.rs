@@ -16,7 +16,7 @@ use std::process::Command;
 use sha2::{Digest as _, Sha256};
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 /// A fresh, test-scoped temp directory — cleared at the start so PID reuse or

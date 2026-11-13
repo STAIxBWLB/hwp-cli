@@ -22,7 +22,7 @@
                  \    |         \|/
                   \   +----------+ (hwpx → hwp-convert 재사용)
                    \  |          |
-                    hwp-cli  (bin: `hwp`, 위 5개 전부 의존)
+                    hwp-cli  (bin: `ahwp`, 위 5개 전부 의존)
 ```
 
 핵심 불변식: **`hwp-model`은 다른 내부 크레이트에 절대 의존하지 않는다.** 모든 크레이트가 여기에 의존하므로 이 API 안정성이 곧 프로젝트 안정성이다(`lib.rs` 주석 명시). 순환은 없다 — 유일하게 비자명한 간선은 `hwpx → hwp-convert`인데, hwpx writer가 필드 이름/명령 인코딩(CTRL_DATA)·OWPML 타입 매핑을 hwp-convert에서 재사용하기 때문이며, `hwp-convert`는 `hwp-model`에만 의존하므로 순환이 생기지 않는다.
@@ -36,7 +36,7 @@
 | **hwpx** | lib | HWPX(OWPML/ZIP+XML) ↔ IR **reader/writer** + `patch`(충실도 보존 치환) | hwp-model, hwp-convert | `zip`, `quick-xml`, `thiserror` |
 | **hwp-convert** | lib | IR ↔ markdown/JSON/HTML/ODT/DOCX/CSV 변환, 편집 프리미티브(edit/field/bookmark/gso/image/structure), 공문서 계층(official/frames/style/lint) | hwp-model | `serde_json`, `pulldown-cmark`, `quick-xml`, `regex`, `zip`, `resvg`, `image` |
 | **hwp-render** | lib | IR → PNG/SVG/PDF 페이지 렌더러 + 픽셀 diff | hwp-model | `tiny-skia`, `rustybuzz`, `fontdb`, `image`, `pdf-writer`, `subsetter`, `flate2`, `encoding_rs`, `sha2` |
-| **hwp-cli** | bin `hwp` | 서브커맨드 디스패치와 MCP stdio 서버. 전체 표면은 자동 생성되는 [cli-reference](../manual/cli-reference.ko.md)가 정본이므로 여기에 옮겨 적지 않는다 | 위 5개 전부 | `anyhow`, `clap`, `serde_json`, `serde_yaml` |
+| **hwp-cli** | bin `ahwp` | 서브커맨드 디스패치와 MCP stdio 서버. 전체 표면은 자동 생성되는 [cli-reference](../manual/cli-reference.ko.md)가 정본이므로 여기에 옮겨 적지 않는다 | 위 5개 전부 | `anyhow`, `clap`, `serde_json`, `serde_yaml` |
 
 의존성 최소화가 설계 규범이다: `hwp-model`은 serde 하나만, 나머지 크레이트도 포맷/기능에 딱 필요한 크레이트만 끌어온다. `hwp5`↔`hwpx`는 서로 의존하지 않는다(양쪽 다 IR을 경유). 이 대칭성이 "N개 포맷 × M개 출력"을 N+M 어댑터로 처리하는 허브-스포크 구조의 핵심이다.
 

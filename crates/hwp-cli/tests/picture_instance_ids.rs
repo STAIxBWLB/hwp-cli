@@ -104,7 +104,7 @@ fn merged_raw_picture_and_inserted_image_keep_distinct_picture_instance_ids() {
         "first input must be picture-free"
     );
     let merged_path = fixture.path("merged.hwp");
-    let merge = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let merge = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("merge")
         .arg(&primary_path)
         .arg(&source_path)
@@ -164,7 +164,7 @@ fn merged_raw_picture_and_inserted_image_keep_distinct_picture_instance_ids() {
     )
     .unwrap();
     let output_path = fixture.path("inserted.hwp");
-    let output = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let output = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("edit")
         .arg(&merged_path)
         .arg("-o")

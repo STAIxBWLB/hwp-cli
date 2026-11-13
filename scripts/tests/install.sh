@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Isolated installer bridge regressions (#510). No real HOME, downloads or installed binaries.
+# Isolated installer regressions (#510; 2.0 installs ahwp only). No real HOME, downloads or installed binaries.
 # Every download is served by the curl stub from an owner-authored local archive.
-# Run with: bash scripts/tests/install-bridge.sh
+# Run with: bash scripts/tests/install.sh
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -32,8 +32,7 @@ run_case() {
         canonical-flags) ;;
         canonical-env) mode=env ;;
         latest-redirect) mode=latest ;;
-        legacy-only) scenario=legacy; tag=v1.5.0 ;;
-        legacy-bridge) scenario=legacy_bridge ;;
+        legacy-only) scenario=legacy; expected_failure=1 ;;
         canonical-transport) scenario=transport; expected_failure=1 ;;
         canonical-http-500) scenario=http500; expected_failure=1 ;;
         checksum-transport) scenario=checksum_transport; expected_failure=1 ;;
@@ -55,11 +54,6 @@ run_case() {
     local legacy_base="hwp-$tag-$target"
     tar -czf "$archive_dir/$canonical_base.tar.gz" -C "$canonical" ahwp hwp
     tar -czf "$archive_dir/$legacy_base.tar.gz" -C "$legacy" hwp
-    if [ "$scenario" = legacy_bridge ]; then
-        # Bridge releases publish the same ahwp + hwp symlink payload under both asset names.
-        # Keep only the legacy download name available, with its own matching checksum below.
-        "$real_cp" "$archive_dir/$canonical_base.tar.gz" "$archive_dir/$legacy_base.tar.gz"
-    fi
     local base digest
     for base in "$canonical_base" "$legacy_base"; do
         if command -v sha256sum >/dev/null 2>&1; then
@@ -126,7 +120,7 @@ case "$name" in
     latest) source_file=/dev/null ;;
     ahwp-*.tar.gz)
         case "$FIXTURE_SCENARIO" in
-            legacy|legacy_bridge) status=404 ;;
+            legacy) status=404 ;;
             transport) status=000; transport=28 ;;
             http500) status=500 ;;
         esac
@@ -139,9 +133,7 @@ case "$name" in
         esac
         ;;
     hwp-*.tar.gz|hwp-*.sha256)
-        # Valid legacy assets expose accidental fallback after a canonical failure.
-        # Only the canonical-success cases deliberately omit those legacy assets.
-        [ "$FIXTURE_SCENARIO" != canonical ] || status=404
+        # Valid hwp- assets stay served so an accidental fallback to them would show.
         ;;
     *) status=404 ;;
 esac
@@ -230,10 +222,10 @@ STUB
     set -e
 
     if [ "$expected_failure" -eq 1 ]; then
-        [ "$status" -ne 0 ] || fail "$case_name: canonical failure must stop the install"
+        [ "$status" -ne 0 ] || fail "$case_name: a missing or failed ahwp asset must stop the install"
         [ -s "$scratch/stderr" ] || fail "$case_name: blocked install needs a diagnostic"
         if grep -E '^hwp-' "$scratch/downloads.log" >/dev/null; then
-            fail "$case_name: a transport/HTTP/checksum failure must not fall back to legacy"
+            fail "$case_name: 2.0 must never fetch an hwp- asset"
         fi
         cmp -s "$scratch/old-ahwp" "$destination/ahwp" || fail "$case_name: ahwp changed on download failure"
         cmp -s "$scratch/old-hwp" "$destination/hwp" || fail "$case_name: hwp changed on download failure"
@@ -243,19 +235,14 @@ STUB
             cat "$scratch/stderr" >&2
             fail "$case_name: isolated installer should succeed"
         fi
-        local expected="$canonical/ahwp"
-        [ "$scenario" != legacy ] || expected="$legacy/hwp"
-        for name in ahwp hwp; do
-            [ -x "$destination/$name" ] || fail "$case_name: missing executable $name"
-            cmp -s "$expected" "$destination/$name" || fail "$case_name: wrong installed payload for $name"
-            [ "$(grep -c -F -x "$name" "$scratch/publish.log")" = 1 ] ||
-                fail "$case_name: $name was not published once through an atomic rename"
-        done
-        if [ "$scenario" = legacy ] || [ "$scenario" = legacy_bridge ]; then
-            grep -F -x "$legacy_base.tar.gz" "$scratch/downloads.log" >/dev/null ||
-                fail "$case_name: absent canonical asset must try the legacy archive"
-        elif grep -E '^hwp-' "$scratch/downloads.log" >/dev/null; then
-            fail "$case_name: canonical success must not fetch legacy assets"
+        [ -x "$destination/ahwp" ] || fail "$case_name: missing executable ahwp"
+        cmp -s "$canonical/ahwp" "$destination/ahwp" || fail "$case_name: wrong installed payload for ahwp"
+        [ "$(grep -c -F -x ahwp "$scratch/publish.log")" = 1 ] ||
+            fail "$case_name: ahwp was not published once through an atomic rename"
+        # 2.0 installs no hwp name: an hwp an earlier installer left is not touched.
+        cmp -s "$scratch/old-hwp" "$destination/hwp" || fail "$case_name: the installer touched hwp"
+        if grep -E '^hwp-' "$scratch/downloads.log" >/dev/null; then
+            fail "$case_name: 2.0 must never fetch an hwp- asset"
         fi
     fi
     local first
@@ -277,7 +264,7 @@ if [ "${1:-}" = --case ]; then
 fi
 
 failures=0
-for case_name in canonical-flags canonical-env latest-redirect legacy-only legacy-bridge \
+for case_name in canonical-flags canonical-env latest-redirect legacy-only \
     canonical-transport canonical-http-500 checksum-transport checksum-missing checksum-mismatch; do
     # A subprocess keeps errexit active inside each fixture and cleanup independent across cases.
     if env BASH_ENV=/dev/null ENV=/dev/null bash "$self" --case "$case_name"; then
@@ -288,4 +275,4 @@ for case_name in canonical-flags canonical-env latest-redirect legacy-only legac
     fi
 done
 [ "$failures" -eq 0 ] || exit 1
-printf '%s\n' '== installer bridge: OK (canonical/legacy/fail-closed/atomic-per-file, isolated) =='
+printf '%s\n' '== installer: OK (ahwp only/fail-closed/atomic, isolated) =='

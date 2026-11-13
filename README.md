@@ -112,7 +112,7 @@ Windows is not a roadmap item: ubuntu, macOS and Windows are all required CI gat
 
 ## Installation
 
-Use `ahwp` for new commands. The `hwp` compatibility name remains available throughout 1.x and will be removed in 2.0.
+The command is `ahwp`. 2.0 removed the 1.x `hwp` compatibility name: replace `hwp` with `ahwp` in scripts and MCP client configurations.
 
 ### One-line script (macOS / Linux)
 
@@ -142,8 +142,9 @@ brew install ahwp
 ahwp --version
 ```
 
-Upgrade with `brew update && brew upgrade ahwp`; an install made under the old `hwp` formula name
-migrates through `formula_renames.json`. Supported platforms are macOS (Apple Silicon and
+Upgrade with `brew update && brew upgrade ahwp`. A machine still on the old `hwp` formula moves
+to `ahwp` on its next `brew update` through `formula_renames.json`, or with
+`brew install ahwp`. Supported platforms are macOS (Apple Silicon and
 Intel) and Linux x86_64.
 
 ### Pre-built binaries

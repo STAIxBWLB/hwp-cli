@@ -17,7 +17,7 @@ mod fixture_skip;
 mod temp_path;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 /// One host TrueType font and the family name it declares.

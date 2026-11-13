@@ -27,7 +27,7 @@ dependency version in `[workspace.dependencies]`. Each crate only inherits, with
                  \    |         \|/
                   \   +----------+ (hwpx reuses hwp-convert)
                    \  |          |
-                    hwp-cli  (bin: `hwp`, depends on all five)
+                    hwp-cli  (bin: `ahwp`, depends on all five)
 ```
 
 The core invariant: **`hwp-model` never depends on another internal crate.** Every crate depends on
@@ -45,7 +45,7 @@ field name and command encoding (CTRL_DATA) and the OWPML type mapping from hwp-
 | **hwpx** | lib | HWPX (OWPML, ZIP + XML) ↔ IR **reader/writer** plus `patch` (fidelity-preserving replacement) | hwp-model, hwp-convert | `zip`, `quick-xml`, `thiserror` |
 | **hwp-convert** | lib | IR ↔ markdown/JSON/HTML/ODT/DOCX/CSV conversion, editing primitives (edit, field, bookmark, gso, image, structure) and the official-document layer (official, frames, style, lint) | hwp-model | `serde_json`, `pulldown-cmark`, `quick-xml`, `regex`, `zip`, `resvg`, `image` |
 | **hwp-render** | lib | IR → PNG/SVG/PDF page renderer plus pixel diff | hwp-model | `tiny-skia`, `rustybuzz`, `fontdb`, `image`, `pdf-writer`, `subsetter`, `flate2`, `encoding_rs`, `sha2` |
-| **hwp-cli** | bin `hwp` | Subcommand dispatch and the MCP stdio server. The full surface is the generated [cli-reference](../manual/cli-reference.md), so it is not duplicated here | all five above | `anyhow`, `clap`, `serde_json`, `serde_yaml` |
+| **hwp-cli** | bin `ahwp` | Subcommand dispatch and the MCP stdio server. The full surface is the generated [cli-reference](../manual/cli-reference.md), so it is not duplicated here | all five above | `anyhow`, `clap`, `serde_json`, `serde_yaml` |
 
 Minimizing dependencies is a design norm: `hwp-model` pulls in only serde, and the other crates only
 what their format or feature strictly needs. `hwp5` and `hwpx` never depend on each other (both go

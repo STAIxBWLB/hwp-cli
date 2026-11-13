@@ -80,7 +80,7 @@ pub fn run_password_corpus(
     let receipt_dir = require_empty_external_receipt_dir(&receipt_dir, &repository_root)?;
     let evidence = read_profile_evidence()?;
     let fixtures = select_fixtures(&manifest, &evidence, &repository_root)?;
-    let binary_sha256 = sha256_file(Path::new(env!("CARGO_BIN_EXE_hwp")))?;
+    let binary_sha256 = sha256_file(Path::new(env!("CARGO_BIN_EXE_ahwp")))?;
     let binary_version = env!("CARGO_PKG_VERSION").to_owned();
 
     for fixture in &fixtures {
@@ -139,7 +139,7 @@ pub fn validate_existing_complete_run_from_env() -> Result<(), String> {
         .iter()
         .map(|fixture| fixture.expected.clone())
         .collect::<Vec<_>>();
-    let binary_sha256 = sha256_file(Path::new(env!("CARGO_BIN_EXE_hwp")))?;
+    let binary_sha256 = sha256_file(Path::new(env!("CARGO_BIN_EXE_ahwp")))?;
     validate_complete_run_for_binary(
         &receipt_dir,
         &expected,
@@ -495,7 +495,7 @@ fn wrong_credential(credential: &Zeroizing<String>) -> Zeroizing<String> {
 }
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn unique_output_dir() -> Result<PathBuf, String> {
