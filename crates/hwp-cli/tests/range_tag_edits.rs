@@ -236,6 +236,9 @@ fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
             if output.exists() {
                 std::fs::remove_file(&output).unwrap();
             }
+            if report.exists() {
+                std::fs::remove_file(&report).unwrap();
+            }
             let mut command = Command::new(env!("CARGO_BIN_EXE_hwp"));
             command
                 .arg("convert")
@@ -248,6 +251,10 @@ fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
                 command.arg("--strict");
             }
             let result = command.output().unwrap();
+            assert!(
+                report.is_file(),
+                "convert must write a fresh loss report even on strict refusal"
+            );
             let ledger: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
             let event = ledger["events"]
@@ -271,6 +278,16 @@ fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
             );
             assert_eq!(output.exists(), !strict, "strict loss must not publish");
             assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+            if strict {
+                let message = String::from_utf8_lossy(&result.stderr);
+                assert!(
+                    message.contains("ahwp convert")
+                        && message.contains("hwp_convert")
+                        && message.contains("strict: false"),
+                    "convert recovery must name the CLI and MCP loss opt-ins: {message}"
+                );
+                assert!(message.contains("구간 표시"), "{message}");
+            }
         }
     }
 }
@@ -390,5 +407,68 @@ fn edit_hwpx_refuses_range_tag_loss() {
             message.contains("ahwp convert") && message.contains("--strict 없이"),
             "missing opt-in loss remedy: {message}"
         );
+        assert!(
+            message.contains("hwp_convert") && message.contains("strict: false"),
+            "edit recovery must name the MCP conversion loss opt-in: {message}"
+        );
+        assert!(message.contains("구간 표시"), "{message}");
+    }
+}
+
+#[test]
+fn merge_hwpx_reports_range_loss_and_names_its_own_loss_opt_in() {
+    let tagged = Workspace::new("merge-tagged", false, true);
+    let ordinary = Workspace::new("merge-ordinary", false, false);
+    let output = tagged.dir.join("merged.hwpx");
+    let report = tagged.dir.join("merge-loss.json");
+    for strict in [false, true] {
+        for artifact in [&output, &report] {
+            if artifact.exists() {
+                std::fs::remove_file(artifact).unwrap();
+            }
+        }
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ahwp"));
+        command
+            .arg("merge")
+            .arg(&tagged.source)
+            .arg(&ordinary.source)
+            .arg("-o")
+            .arg(&output)
+            .arg("--loss-report")
+            .arg(&report);
+        if strict {
+            command.arg("--strict");
+        }
+        let result = command.output().unwrap();
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.success(), !strict, "{message}");
+        assert_eq!(output.exists(), !strict);
+        assert!(report.is_file(), "merge must leave fresh loss evidence");
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        let event = ledger["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["code"] == "paragraph_range_tag_unrepresentable")
+            .expect("merge must report its dropped range-tag record");
+        assert_eq!(event["count"], 1);
+        if strict {
+            assert!(
+                message.contains("ahwp merge")
+                    && message.contains("hwp_merge")
+                    && message.contains("strict: false"),
+                "merge recovery must name merge-specific loss opt-ins: {message}"
+            );
+            assert!(!message.contains("ahwp convert"), "{message}");
+            assert!(message.contains("구간 표시"), "{message}");
+        } else {
+            assert!(
+                message.contains("paragraph_range_tag_unrepresentable"),
+                "non-strict merge must warn about its range-tag loss: {message}"
+            );
+        }
+        assert_eq!(std::fs::read(&tagged.source).unwrap(), tagged.bytes);
+        assert_eq!(std::fs::read(&ordinary.source).unwrap(), ordinary.bytes);
     }
 }
