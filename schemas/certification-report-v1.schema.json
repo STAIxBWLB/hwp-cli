@@ -309,7 +309,7 @@
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
-      "maxProperties": 20,
+      "maxProperties": 21,
       "properties": {
         "binary_asset_removed": { "$ref": "#/$defs/lossCount" },
         "binary_relationship_removed": { "$ref": "#/$defs/lossCount" },
@@ -329,6 +329,7 @@
         "metadata_value_removed": { "$ref": "#/$defs/lossCount" },
         "opaque_control_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "page_range_paragraph_rounded": { "$ref": "#/$defs/lossCount" },
+        "paragraph_range_tag_unrepresentable": { "$ref": "#/$defs/lossCount" },
         "picture_control_removed": { "$ref": "#/$defs/lossCount" },
         "section_border_fill_ref_unresolvable": { "$ref": "#/$defs/lossCount" }
       }
