@@ -4816,8 +4816,7 @@ fn projection_xml_tokens(xml: &str) -> Option<Vec<ProjectionXmlToken>> {
                         let attribute = attribute.ok()?;
                         Some((
                             attribute.key.as_ref().as_bytes().to_vec(),
-                            attribute
-                                .decode_and_unescape_value(reader.decoder())
+                            quick_xml::escape::unescape(attribute.value.as_ref())
                                 .ok()?
                                 .into_owned(),
                         ))
