@@ -5777,6 +5777,67 @@ pub(crate) fn verify_document_quiet(
 mod tests {
     use super::*;
 
+    #[test]
+    fn hwp_projection_accepts_public_hwpx_roundtrip() {
+        fn differences(
+            left: &serde_json::Value,
+            right: &serde_json::Value,
+            prefix: &str,
+            out: &mut Vec<String>,
+        ) {
+            if left == right {
+                return;
+            }
+            match (left, right) {
+                (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+                    let keys: std::collections::BTreeSet<_> = a.keys().chain(b.keys()).collect();
+                    for key in keys {
+                        differences(&a[key], &b[key], &format!("{prefix}/{key}"), out);
+                    }
+                }
+                (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+                    if a.len() != b.len() {
+                        out.push(format!("{prefix}/length"));
+                    }
+                    for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                        differences(a, b, &format!("{prefix}/{index}"), out);
+                    }
+                }
+                _ => out.push(prefix.to_string()),
+            }
+        }
+        for table in [false, true] {
+            let base = hwp_convert::from_markdown(if table {
+                "| Field | Value |\n| --- | --- |\n| alpha | 1 |\n"
+            } else {
+                "Baseline input.\n"
+            });
+            let stem = std::env::temp_dir()
+                .join(format!("hwp444-projection-{}-{table}", std::process::id()));
+            let input = stem.with_extension("hwpx");
+            let output = stem.with_extension("hwp");
+            hwpx::write_document(&base, &input).unwrap();
+            let expected = hwpx::read_document(&input).unwrap().document;
+            crate::commands::convert::write_hwp_structural(&expected, &output).unwrap();
+            let actual = hwp5::read_document(&output).unwrap().document;
+            let left =
+                serde_json::to_value(canonical_document(&expected, Some(SemanticTarget::Hwp)))
+                    .unwrap();
+            let right =
+                serde_json::to_value(canonical_document(&actual, Some(SemanticTarget::Hwp)))
+                    .unwrap();
+            let mut paths = Vec::new();
+            differences(&left, &right, "", &mut paths);
+            let verification = verify_document_quiet(&output, &expected);
+            std::fs::remove_file(input).unwrap();
+            std::fs::remove_file(output).unwrap();
+            assert!(
+                verification.is_ok(),
+                "faithful synthetic HWPX must verify in HWP5 (table={table}); differing fields={paths:?}; {verification:?}"
+            );
+        }
+    }
+
     /// Compile through HWPX to bypass the HWP authoring guard, then exercise the existing
     /// compose verification entry point against the actual substituted HWP output. This
     /// backstop must work even if a future caller accidentally omits the early guard.
