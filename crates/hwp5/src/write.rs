@@ -3083,7 +3083,8 @@ fn hwp_string(w: &mut ByteWriter, s: &str) {
 // ─────────────────────────── DocInfo ───────────────────────────
 
 /// Numbering references in paragraphs emitted from the model, excluding raw-only mirrors.
-fn referenced_numbering_levels(doc: &Document) -> BTreeSet<(usize, usize)> {
+/// Numbering definition/level pairs whose markers are emitted by the native writer.
+pub fn referenced_numbering_levels(doc: &Document) -> BTreeSet<(usize, usize)> {
     let mut used = BTreeSet::new();
     let mut pending: Vec<_> = doc.sections.iter().flat_map(|s| &s.paragraphs).collect();
     while let Some(paragraph) = pending.pop() {

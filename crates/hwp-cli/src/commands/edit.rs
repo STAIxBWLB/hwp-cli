@@ -4793,6 +4793,111 @@ enum SemanticTarget {
     Hwpx,
 }
 
+type ProjectionXmlToken = (bool, Vec<u8>, Vec<(Vec<u8>, String)>);
+
+/// Compare known package defaults without mistaking XML spacing or attribute order for data.
+/// Unknown elements, attributes and non-whitespace text still participate in equality.
+fn projection_xml_tokens(xml: &str) -> Option<Vec<ProjectionXmlToken>> {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut tokens = Vec::new();
+    loop {
+        match reader.read_event().ok()? {
+            event @ (Event::Start(_) | Event::Empty(_)) => {
+                let empty = matches!(&event, Event::Empty(_));
+                let element = match event {
+                    Event::Start(element) | Event::Empty(element) => element,
+                    _ => unreachable!(),
+                };
+                let name = element.name().as_ref().to_vec();
+                let mut attributes = element
+                    .attributes()
+                    .map(|attribute| {
+                        let attribute = attribute.ok()?;
+                        Some((
+                            attribute.key.as_ref().to_vec(),
+                            attribute
+                                .decode_and_unescape_value(reader.decoder())
+                                .ok()?
+                                .into_owned(),
+                        ))
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                attributes.sort();
+                tokens.push((true, name.clone(), attributes));
+                if empty {
+                    tokens.push((false, name, Vec::new()));
+                }
+            }
+            Event::End(element) => {
+                tokens.push((false, element.name().as_ref().to_vec(), Vec::new()))
+            }
+            Event::Decl(_) => {}
+            Event::Text(text) if text.as_ref().iter().all(u8::is_ascii_whitespace) => {}
+            Event::Eof => return Some(tokens),
+            _ => return None,
+        }
+    }
+}
+
+fn is_hwpx_version_provenance(xml: &str) -> bool {
+    let normalize = |text| {
+        let mut tokens = projection_xml_tokens(text)?;
+        for (_, _, attributes) in &mut tokens {
+            for (name, value) in attributes {
+                if matches!(
+                    name.as_slice(),
+                    b"application" | b"appVersion" | b"os" | b"buildNumber"
+                ) {
+                    value.clear();
+                }
+            }
+        }
+        Some(tokens)
+    };
+    normalize(xml).is_some_and(|tokens| Some(tokens) == normalize(hwpx::DEFAULT_VERSION_XML))
+}
+
+fn is_default_secpr_projection(children: &[String]) -> bool {
+    fn tokens(children: &[String]) -> Option<Vec<Vec<ProjectionXmlToken>>> {
+        children
+            .iter()
+            .map(|child| {
+                if child == hwp_model::SECPR_PAGEPR_SLOT {
+                    Some(vec![(true, b"modeled-pagePr".to_vec(), Vec::new())])
+                } else {
+                    projection_xml_tokens(child)
+                }
+            })
+            .collect()
+    }
+    // write_default_sec_pr owns these measured defaults. Materialize that constant template
+    // once, never the source document, rather than duplicating native/XML property values here.
+    static DEFAULT: std::sync::OnceLock<Option<Vec<Vec<ProjectionXmlToken>>>> =
+        std::sync::OnceLock::new();
+    let default = DEFAULT.get_or_init(|| {
+        let document = hwp_convert::from_markdown("Projection defaults.\n");
+        let xml = hwpx::write::section::write_section_with_report(
+            &document,
+            document.sections.first()?,
+            false,
+            &mut hwpx::write::section::BinCollector::default(),
+            &mut hwp_model::WriteReport::new(),
+        );
+        let (section, _) = hwpx::read::section::parse_section(&xml).ok()?;
+        let children = section
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| &paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::SectionDef(def) => Some(&def.secpr_raw_children),
+                _ => None,
+            })?;
+        tokens(children)
+    });
+    tokens(children).is_some_and(|actual| Some(actual) == *default)
+}
+
 fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
     if hwp_convert::field::is_field_ctrl_id(&generic.ctrl_id) {
         // HWP5 exposes CTRL_DATA both as raw and as an extracted extra.
@@ -4928,6 +5033,14 @@ fn canonical_document(
         for control in &mut paragraph.controls {
             match control {
                 hwp_model::Control::Table(table) => {
+                    if matches!(target, Some(SemanticTarget::Hwp))
+                        && table.common_data.is_empty()
+                        && table.placement.is_some()
+                    {
+                        // emit_table materializes this exact table-69 payload from modeled placement;
+                        // retain actual raw bytes (including unknown tails) and compare placement too.
+                        table.common_data = hwp5::write::synthesized_table_common_data(table);
+                    }
                     if matches!(target, Some(SemanticTarget::Hwpx))
                         && table.common_data.is_empty()
                         && table.placement.is_none()
@@ -5042,25 +5155,35 @@ fn canonical_document(
                         }
                     }
                 }
-                hwp_model::Control::SectionDef(def) => match target {
-                    Some(SemanticTarget::Hwpx)
-                        if hwpx::write::section::is_generated_default_secpr_children(
-                            &def.secpr_raw_children,
-                        ) =>
+                hwp_model::Control::SectionDef(def) => {
+                    if matches!(target, Some(SemanticTarget::Hwp))
+                        && (is_default_secpr_projection(&def.secpr_raw_children)
+                            || def.secpr_raw_children == [hwp_model::SECPR_PAGEPR_SLOT])
                     {
+                        // emit_section_def writes the modeled page/default native children, not
+                        // HWPX default XML scaffolding; custom section XML remains compared.
                         def.secpr_raw_children.clear();
                     }
-                    Some(SemanticTarget::Hwp)
-                        if hwp5::write::is_materialized_default_section_def(def) =>
-                    {
-                        def.data.clear();
-                        def.extras.clear();
-                        def.footnote_shape_raw = None;
-                        def.endnote_shape_raw = None;
-                        def.page_border_fills_raw.clear();
+                    match target {
+                        Some(SemanticTarget::Hwpx)
+                            if hwpx::write::section::is_generated_default_secpr_children(
+                                &def.secpr_raw_children,
+                            ) =>
+                        {
+                            def.secpr_raw_children.clear();
+                        }
+                        Some(SemanticTarget::Hwp)
+                            if hwp5::write::is_materialized_default_section_def(def) =>
+                        {
+                            def.data.clear();
+                            def.extras.clear();
+                            def.footnote_shape_raw = None;
+                            def.endnote_shape_raw = None;
+                            def.page_border_fills_raw.clear();
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 hwp_model::Control::Picture(picture) => {
                     if let Some(bytes) = source_doc.resolve_bin(&picture.bin_ref) {
                         let writer_generated = matches!(target, Some(SemanticTarget::Hwp))
@@ -5081,6 +5204,24 @@ fn canonical_document(
 
     let mut canonical = doc.clone();
     if matches!(target, Some(SemanticTarget::Hwp)) {
+        // emit_doc_info has no HWPX package slots: only the exact empty-caret default is
+        // scaffolding; custom settings that lack a modeled counterpart remain a refusal.
+        if canonical.hwpx_settings_xml.as_deref().is_some_and(|xml| {
+            projection_xml_tokens(xml).is_some_and(|tokens| {
+                Some(tokens) == projection_xml_tokens(hwpx::DEFAULT_SETTINGS_XML)
+            })
+        }) {
+            canonical.hwpx_settings_xml = None;
+        }
+        // write_document constructs native version/container metadata instead; recognized
+        // HCFVersion producer/platform fields are provenance, while extensions stay compared.
+        if canonical
+            .hwpx_version_xml
+            .as_deref()
+            .is_some_and(is_hwpx_version_provenance)
+        {
+            canonical.hwpx_version_xml = None;
+        }
         // The HWP5 writer re-encodes a non-HWP5 IR's numbered levels zero-based (#472), and
         // the reread HWP5 IR keeps those on-disk bits; project the expected side the same way
         // while its source format is still known.
@@ -5138,12 +5279,53 @@ fn canonical_document(
                 .cmp(&right.name)
                 .then_with(|| left.data.cmp(&right.data))
         });
-        if hwp5::write::is_materialized_default_tab_defs(
-            &canonical.header.tab_defs,
-            &canonical.header.tab_stops,
-        ) {
+        let default_hwpx_tab = canonical.header.tab_defs.is_empty()
+            && ((canonical.header.tab_stops.len() == 1
+                && canonical.header.tab_stops[0].attr == 0
+                && canonical.header.tab_stops[0].items.is_empty()
+                && canonical
+                    .header
+                    .para_shapes
+                    .iter()
+                    .all(|shape| shape.tab_def_id == 0))
+                || (canonical.header.tab_stops.len() == 3
+                    && canonical
+                        .header
+                        .tab_stops
+                        .iter()
+                        .enumerate()
+                        .all(|(index, tab)| tab.attr == index as u32 && tab.items.is_empty())));
+        // emit_doc_info expands the single unconfigured HWPX tab slot to three native defaults;
+        // references to custom/auto tabs and every item/leader/position remain significant.
+        if default_hwpx_tab
+            || hwp5::write::is_materialized_default_tab_defs(
+                &canonical.header.tab_defs,
+                &canonical.header.tab_stops,
+            )
+        {
             canonical.header.tab_defs.clear();
             canonical.header.tab_stops.clear();
+        }
+        // write_numberings emits this unused seven-digit palette as HWPX schema scaffolding;
+        // emit_doc_info replaces it with native defaults. Never ignore a used/custom definition.
+        if canonical.header.numberings.is_empty()
+            && canonical.header.numbering_levels.len() == 1
+            && canonical.header.numbering_levels[0].len() == 7
+            && canonical.header.numbering_levels[0]
+                .iter()
+                .enumerate()
+                .all(|(index, level)| {
+                    level.start == 1
+                        && level.fmt == hwp_model::NumFmt::Digit
+                        && level.template == format!("^{}.", index + 1)
+                })
+            && canonical
+                .header
+                .para_shapes
+                .iter()
+                .all(|shape| !matches!(shape.head_type(), 1 | 2))
+        {
+            canonical.header.numbering_levels.clear();
         }
         // An edit may graft definitions past an HWP5 source's raw records. The writer emits a
         // record for each (#377): the default NUMBERING, which re-reads as the default levels.
@@ -5161,11 +5343,42 @@ fn canonical_document(
                 &canonical.header.numbering_levels,
             );
         if !canonical.header.numberings.is_empty() || synthesized_numbering {
+            let used = hwp5::write::referenced_numbering_levels(&canonical);
+            let native_levels = hwp5::write::synthesized_numbering_levels();
             let raw = canonical.header.numberings.len();
+            // emit_doc_info compares the seven native markers by template/start/drawn format
+            // and excludes unreferenced extension levels; mirror exactly that visible policy.
+            // This does not claim byte preservation of unused HWPX numbering definitions.
+            for (definition, levels) in canonical
+                .header
+                .numbering_levels
+                .iter_mut()
+                .enumerate()
+                .skip(raw)
+            {
+                if levels.len() >= native_levels.len()
+                    && levels
+                        .iter()
+                        .take(native_levels.len())
+                        .enumerate()
+                        .all(|(index, level)| {
+                            level.start == native_levels[index].start
+                                && level.template == native_levels[index].template
+                                && level.fmt == hwp5::write::DEFAULT_NUMBERING_FORMATS[index]
+                        })
+                    && (native_levels.len()..levels.len())
+                        .all(|index| !used.contains(&(definition, index)))
+                {
+                    *levels = native_levels.clone();
+                }
+            }
             canonical.header.numberings = hwp5::write::numbering_records(&canonical.header);
             for levels in canonical.header.numbering_levels.iter_mut().skip(raw) {
                 if levels.iter().enumerate().all(|(index, level)| {
                     level.start <= 1
+                        && native_levels
+                            .get(index)
+                            .is_some_and(|native| level.template == native.template)
                         && (level.fmt == hwp_model::NumFmt::Digit
                             || hwp5::write::DEFAULT_NUMBERING_FORMATS.get(index)
                                 == Some(&level.fmt))
@@ -5209,7 +5422,11 @@ fn canonical_document(
                 shape.attr |= 1 << 18;
             }
             shape.strike = false;
-            if shape.underline_kind() == 0 {
+            // emit_char_shape serializes attr bits (§4.2.6), not the duplicate HWPX legacy
+            // field; a legacy-only active shape that would be lost must remain different.
+            if shape.underline_kind() == 0
+                || shape.underline_shape_code() == ((shape.attr >> 4) & 0xf) as u8
+            {
                 shape.underline_shape = 0;
             }
         }
@@ -5450,6 +5667,17 @@ fn canonical_document(
         }
     }
     for section in &mut canonical.sections {
+        if matches!(target, Some(SemanticTarget::Hwp))
+            && let Some(first) = section.paragraphs.first_mut()
+            && first
+                .controls
+                .iter()
+                .any(|control| matches!(control, hwp_model::Control::SectionDef(_)))
+        {
+            // write_document materializes section/column marker bits only on this paragraph
+            // (genuine-save compatibility rule A13); page/column breaks and unknown bits remain.
+            first.header.break_type |= 0x03;
+        }
         for paragraph in &mut section.paragraphs {
             canonicalize_paragraph(paragraph, target, doc);
         }
@@ -5630,8 +5858,8 @@ impl std::fmt::Display for SemanticVerificationMismatch {
 
 impl std::error::Error for SemanticVerificationMismatch {}
 
-/// Compare the numbering actually used by a composed document before generic projection can
-/// replace modeled definitions with the fallback record. Legacy edit/convert policy is unchanged.
+/// Compare used numbering before projection can replace duplicate modeled definitions with the
+/// native fallback record. HWPX edits and composed documents must retain the markers actually drawn.
 fn verify_composed_hwp_numbering(
     expected: &hwp_model::Document,
     actual: &hwp_model::Document,
@@ -5740,7 +5968,7 @@ fn verify_output_with_success_log(
         if matches!(target, Some(SemanticTarget::Hwp))
             && matches!(
                 expected.meta.source_format.as_str(),
-                "document-spec-v1" | "document-spec-v2"
+                "document-spec-v1" | "document-spec-v2" | "hwpx"
             )
         {
             verify_composed_hwp_numbering(expected, &doc)?;
@@ -5792,7 +6020,12 @@ mod tests {
                 (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
                     let keys: std::collections::BTreeSet<_> = a.keys().chain(b.keys()).collect();
                     for key in keys {
-                        differences(&a[key], &b[key], &format!("{prefix}/{key}"), out);
+                        differences(
+                            a.get(key).unwrap_or(&serde_json::Value::Null),
+                            b.get(key).unwrap_or(&serde_json::Value::Null),
+                            &format!("{prefix}/{key}"),
+                            out,
+                        );
                     }
                 }
                 (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
