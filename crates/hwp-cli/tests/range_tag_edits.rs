@@ -472,3 +472,105 @@ fn merge_hwpx_reports_range_loss_and_names_its_own_loss_opt_in() {
         assert_eq!(std::fs::read(&ordinary.source).unwrap(), ordinary.bytes);
     }
 }
+
+#[test]
+fn fill_hwpx_zero_match_refuses_range_tag_loss() {
+    for cell in [false, true] {
+        let workspace = Workspace::new(
+            if cell {
+                "fill-zero-cell"
+            } else {
+                "fill-zero-body"
+            },
+            cell,
+            true,
+        );
+        let output = workspace.dir.join("filled.hwpx");
+        let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
+            .arg("fill")
+            .arg(&workspace.source)
+            .arg("-o")
+            .arg(&output)
+            .args(["--set", "missing=value", "--allow-partial"])
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "zero-match cross-format fill must refuse range-tag loss"
+        );
+        assert!(!output.exists(), "refused zero-match fill must not publish");
+        assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            message.contains("paragraph_range_tag_unrepresentable"),
+            "{message}"
+        );
+        assert!(
+            message.contains("fill: 보존 불가"),
+            "fill refusal must name its own operation: {message}"
+        );
+        assert!(
+            message.contains("먼저 .hwpx로 변환한 뒤")
+                && message.contains("변환된 파일로 원래 작업을 다시 실행"),
+            "zero-match fill refusal must require convert-first and retry: {message}"
+        );
+    }
+}
+
+#[test]
+fn fill_parts_hwpx_refusal_names_convert_first_recovery() {
+    for cell in [false, true] {
+        let mut workspace = Workspace::new(
+            if cell {
+                "fill-parts-cell"
+            } else {
+                "fill-parts-body"
+            },
+            cell,
+            true,
+        );
+        let mut document = hwp5::read_document(&workspace.source).unwrap().document;
+        document.sections[0].paragraphs.push(hwp_model::Paragraph {
+            chars: "{{body}}".chars().map(hwp_model::HwpChar::Text).collect(),
+            ..hwp_model::Paragraph::default()
+        });
+        hwp5::write_document(&document, &workspace.source, &hwp5::WriteOptions::default()).unwrap();
+        workspace.bytes = std::fs::read(&workspace.source).unwrap();
+        let part = workspace.dir.join("part.md");
+        std::fs::write(&part, "Public replacement part.\n").unwrap();
+        let output = workspace.dir.join("filled.hwpx");
+        let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
+            .arg("fill")
+            .arg(&workspace.source)
+            .arg("-o")
+            .arg(&output)
+            .arg("--set")
+            .arg(format!("body=@{}", part.display()))
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "parts fill must refuse range-tag loss"
+        );
+        assert!(!output.exists(), "refused parts fill must not publish");
+        assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            message.contains("paragraph_range_tag_unrepresentable"),
+            "{message}"
+        );
+        assert!(
+            message.contains("먼저 .hwpx로 변환한 뒤")
+                && message.contains("변환된 파일로 원래 작업을 다시 실행"),
+            "fill-parts refusal must require convert-first and retry: {message}"
+        );
+        assert!(
+            message.contains("fill: 보존 불가"),
+            "fill-parts refusal must name its own operation: {message}"
+        );
+        assert!(
+            message.contains("hwp_convert") && message.contains("strict: false"),
+            "fill-parts recovery must include the MCP conversion opt-in: {message}"
+        );
+    }
+}
