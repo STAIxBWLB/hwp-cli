@@ -217,8 +217,17 @@ pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow:
     if report.is_lossless() {
         return Ok(());
     }
+    let remedy = if report
+        .events
+        .iter()
+        .any(|event| event.code == PreservationCode::ParagraphRangeTagUnrepresentable)
+    {
+        "\n해결: .hwp 출력 경로를 사용하거나 한글에서 범위 표시를 제거한 뒤 다시 실행하세요. 손실을 수용하려면 ahwp convert를 --strict 없이 실행한 후 .hwpx를 편집하세요."
+    } else {
+        ""
+    };
     anyhow::bail!(
-        "{context}: 보존 불가 데이터 {}건을 제거하거나 변경할 수 없어 출력을 게시하지 않습니다\n{}",
+        "{context}: 보존 불가 데이터 {}건을 제거하거나 변경할 수 없어 출력을 게시하지 않습니다\n{}{remedy}",
         report.events.iter().map(|event| event.count).sum::<usize>(),
         report
             .events

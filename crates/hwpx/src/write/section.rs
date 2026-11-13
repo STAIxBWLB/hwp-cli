@@ -16,6 +16,9 @@ use hwp_model::{
 
 use crate::write::templates::{color_attr, esc};
 
+// HWP5 paragraph range-tag record id; its payload stays opaque without a verified HWPX mapping.
+const PARA_RANGE_TAG: u16 = 0x10 + 54;
+
 /// 동봉할 바이너리(이미지) 수집기.
 #[derive(Default)]
 pub struct BinCollector {
@@ -179,6 +182,20 @@ fn write_paragraph(
     preserve_linesegs: bool,
     report: &mut WriteReport,
 ) {
+    // Count opaque records, not decoded ranges: no genuine HWPX mapping is established.
+    let range_tags = para
+        .extras
+        .iter()
+        .filter(|record| record.tag == PARA_RANGE_TAG)
+        .count();
+    if range_tags > 0 {
+        report.loss(
+            PreservationCode::ParagraphRangeTagUnrepresentable,
+            PreservationResourceKind::Metadata,
+            PreservationDisposition::Unrepresentable,
+            range_tags,
+        );
+    }
     let _ = write!(
         out,
         r##"<hp:p id="{}" paraPrIDRef="{}" styleIDRef="{}" pageBreak="{}" columnBreak="{}" merged="0">"##,

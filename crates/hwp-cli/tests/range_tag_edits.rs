@@ -221,3 +221,174 @@ fn named_field_tab_refuses_to_shift_a_tagged_range_before_publication() {
     // A serialized HWP tab occupies eight WCHARs, so this changes the value width.
     workspace.assert_refusal(workspace.edit(&["--set-field", "entry=	"]));
 }
+
+#[test]
+fn convert_hwpx_reports_range_tag_loss_and_strict_refuses() {
+    for cell in [false, true] {
+        let workspace = Workspace::new(
+            if cell { "convert-cell" } else { "convert-body" },
+            cell,
+            true,
+        );
+        let output = workspace.dir.join("converted.hwpx");
+        let report = workspace.dir.join("loss.json");
+        for strict in [false, true] {
+            if output.exists() {
+                std::fs::remove_file(&output).unwrap();
+            }
+            let mut command = Command::new(env!("CARGO_BIN_EXE_hwp"));
+            command
+                .arg("convert")
+                .arg(&workspace.source)
+                .arg("-o")
+                .arg(&output)
+                .arg("--loss-report")
+                .arg(&report);
+            if strict {
+                command.arg("--strict");
+            }
+            let result = command.output().unwrap();
+            let ledger: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+            let event = ledger["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|event| event["code"] == "paragraph_range_tag_unrepresentable");
+            assert!(
+                event.is_some(),
+                "PARA_RANGE_TAG loss must be reported: {ledger}"
+            );
+            let event = event.unwrap();
+            assert_eq!(event["count"], 1);
+            assert_eq!(event["resource"], "metadata");
+            assert_eq!(event["disposition"], "unrepresentable");
+            assert_eq!(
+                result.status.success(),
+                !strict,
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(output.exists(), !strict, "strict loss must not publish");
+            assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+        }
+    }
+}
+
+#[test]
+fn hwpx_writer_aggregates_range_tag_records_in_nested_paragraphs() {
+    use hwp_model::{
+        Caption, CaptionDirection, CaptionSide, GenericControl, Paragraph, ParagraphList,
+    };
+    let tagged = || Paragraph {
+        extras: vec![
+            OpaqueRecord {
+                tag: 0x46,
+                data: b"opaque sentinel".to_vec(),
+                children: Vec::new()
+            };
+            2
+        ],
+        ..Paragraph::default()
+    };
+    let caption = || Caption {
+        side: CaptionSide::Bottom,
+        direction: CaptionDirection::Horizontal,
+        gap: 0,
+        width: None,
+        last_width: 0,
+        paragraphs: vec![tagged()],
+    };
+    let mut document = hwp_convert::from_markdown("| value |\n| --- |\n| anchor |\n");
+    let table = document.sections[0]
+        .paragraphs
+        .iter_mut()
+        .flat_map(|p| &mut p.controls)
+        .find_map(|c| match c {
+            Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .unwrap();
+    table.cells[0].paragraphs = vec![tagged()];
+    table.caption = Some(caption());
+    for ctrl_id in [*b"head", *b"gso "] {
+        let control = Control::Generic(GenericControl {
+            ctrl_id,
+            data: vec![0; 40],
+            paragraph_lists: vec![ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![tagged()],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        });
+        let paragraph = &mut document.sections[0].paragraphs[0];
+        paragraph.chars.push(hwp_model::HwpChar::ExtCtrl {
+            code: 11,
+            ctrl_id,
+            payload: Vec::new(),
+            ctrl_index: Some(paragraph.controls.len() as u32),
+        });
+        paragraph.controls.push(control);
+    }
+    let mut report = hwp_model::WriteReport::new();
+    hwpx::write::section::write_section_with_report(
+        &document,
+        &document.sections[0],
+        false,
+        &mut hwpx::write::section::BinCollector::default(),
+        &mut report,
+    );
+    let event = report
+        .preservation
+        .events
+        .iter()
+        .find(|e| e.code.as_str() == "paragraph_range_tag_unrepresentable")
+        .expect("nested range-tag loss must be reported");
+    assert_eq!(
+        event.count, 8,
+        "two records each in cell, caption, header and text box"
+    );
+}
+
+#[test]
+fn edit_hwpx_refuses_range_tag_loss() {
+    for cell in [false, true] {
+        let mut workspace = Workspace::new(
+            if cell {
+                "edit-hwpx-cell"
+            } else {
+                "edit-hwpx-body"
+            },
+            cell,
+            true,
+        );
+        workspace.output = workspace.dir.join("edited.hwpx");
+        let result = workspace.edit(&["--set-meta", "title=reviewed"]);
+        assert!(
+            !result.status.success(),
+            "cross-format edit must refuse range-tag loss"
+        );
+        assert!(!workspace.output.exists(), "refused edit must not publish");
+        assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            message.contains("paragraph_range_tag_unrepresentable: 1 item(s)"),
+            "{message}"
+        );
+        assert!(
+            message.contains(".hwp 출력 경로"),
+            "missing safe output remedy: {message}"
+        );
+        assert!(
+            message.contains("ahwp convert") && message.contains("--strict 없이"),
+            "missing opt-in loss remedy: {message}"
+        );
+    }
+}
