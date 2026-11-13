@@ -4969,16 +4969,22 @@ fn canonicalize_hwp_numberings(document: &mut hwp_model::Document, hwpx_source: 
                 .enumerate()
                 .all(|(index, level)| {
                     !used.contains(&(definition, native_default.len() + index))
-                        && factory_extensions
+                        && (factory_extensions
                             .get(index)
                             .is_some_and(|(format, template)| {
                                 level.start == 1
                                     && level.fmt == *format
                                     && level.template == *template
                             })
+                            || (levels.len() == 8
+                                && index == 0
+                                && level.start == 1
+                                && level.fmt == hwp_model::NumFmt::Digit
+                                && level.template == "^8"))
                 });
         // write_numberings materializes the unused HWPX schema palette; emit_doc_info uses
-        // native defaults and excludes unused extension levels. Custom values remain compared.
+        // native defaults and excludes unused extension levels. authored_ordered_levels also
+        // supplies one unused Digit/^8 slot. All other custom values remain compared.
         if unused_factory_palette
             || (exact_native_prefix && unused_factory_extensions)
             || (!hwpx_source && *levels == reader_default)
@@ -6123,6 +6129,81 @@ mod tests {
             signature(&legacy),
             signature(&changed),
             "a legacy-only active underline that HWP5 cannot emit must remain a refusal"
+        );
+    }
+
+    #[test]
+    fn hwp_projection_compares_native_numbering_formats_and_unknown_records() {
+        let mut base = hwp_convert::from_markdown("Baseline input.\n");
+        base.meta.source_format = "hwpx".into();
+        let signature =
+            |doc: &hwp_model::Document| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
+        let mut factory = base.clone();
+        let mut levels = hwp5::write::synthesized_numbering_levels();
+        for (level, format) in levels
+            .iter_mut()
+            .zip(hwp5::write::DEFAULT_NUMBERING_FORMATS)
+        {
+            level.fmt = format;
+        }
+        for (fmt, template) in [
+            (hwp_model::NumFmt::CircledHangulSyllable, "^8"),
+            (hwp_model::NumFmt::HangulJamo, ""),
+            (hwp_model::NumFmt::RomanLower, ""),
+        ] {
+            levels.push(hwp_model::NumLevel {
+                start: 1,
+                fmt,
+                template: template.into(),
+            });
+        }
+        factory.header.numbering_levels = vec![levels];
+        assert_eq!(
+            signature(&base),
+            signature(&factory),
+            "only native-drawn defaults and unused factory extensions are equivalent"
+        );
+        let mut changed = factory.clone();
+        changed.header.numbering_levels[0][1].fmt = hwp_model::NumFmt::Digit;
+        assert_ne!(
+            signature(&factory),
+            signature(&changed),
+            "reader Digit approximations must not hide a custom HWPX format"
+        );
+        let mut changed = factory.clone();
+        changed.header.numbering_levels[0][9].start = 2;
+        assert_ne!(
+            signature(&factory),
+            signature(&changed),
+            "custom unused extension values remain significant"
+        );
+        let mut native = base.clone();
+        native.header.numberings = hwp5::write::numbering_records(&native.header);
+        native.header.numbering_levels = vec![hwp5::write::synthesized_numbering_levels()];
+        assert_eq!(
+            signature(&base),
+            signature(&native),
+            "the exact measured raw default is interpreted by its drawn selectors"
+        );
+        let mut changed = native.clone();
+        changed.header.numberings[0].data.push(0x5a);
+        assert_ne!(
+            signature(&native),
+            signature(&changed),
+            "unknown numbering suffix bytes remain significant"
+        );
+        let mut changed = native.clone();
+        changed.header.numberings[0]
+            .children
+            .push(hwp_model::OpaqueRecord {
+                tag: 0x3ff,
+                data: vec![0x5a],
+                children: Vec::new(),
+            });
+        assert_ne!(
+            signature(&native),
+            signature(&changed),
+            "unknown numbering children remain significant"
         );
     }
 

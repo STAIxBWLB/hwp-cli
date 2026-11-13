@@ -109,6 +109,19 @@ fn synthetic_hwpx_metadata_edit_verifies_in_hwp() {
         source.header.numbering_levels = vec![levels];
         let input = dir.join("source.hwpx");
         hwpx::write_document(&source, &input).unwrap();
+        let parsed = hwpx::read_document(&input).unwrap().document;
+        assert_eq!(
+            parsed.header.tab_stops.len(),
+            3,
+            "source retains all default tab slots"
+        );
+        assert_eq!(
+            parsed.header.numbering_levels[0].len(),
+            10,
+            "source retains unused numbering extension slots"
+        );
+        assert_eq!(parsed.header.char_shapes[0].underline_shape_code(), 2);
+        assert!(parsed.hwpx_settings_xml.is_some() && parsed.hwpx_version_xml.is_some());
         let bytes = std::fs::read(&input).unwrap();
         let output = dir.join("edited.hwp");
         let result = metadata_edit(&input, &output);
