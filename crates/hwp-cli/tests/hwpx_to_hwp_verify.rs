@@ -36,11 +36,15 @@ fn fixture(relative: &str) -> PathBuf {
         .join(relative)
 }
 
-fn set_public_hold_anchor(input: &Path) {
+fn rewrite_public_entry(
+    input: &Path,
+    destination: &Path,
+    entry_name: &str,
+    mut rewrite: impl FnMut(String) -> String,
+) {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(input).unwrap()).unwrap();
-    let temporary = input.with_extension("repacked.hwpx");
-    let mut output = zip::ZipWriter::new(std::fs::File::create(&temporary).unwrap());
-    let mut changed = false;
+    let mut output = zip::ZipWriter::new(std::fs::File::create(destination).unwrap());
+    let mut found = false;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
         let name = entry.name().unwrap().into_owned();
@@ -48,25 +52,52 @@ fn set_public_hold_anchor(input: &Path) {
             zip::write::SimpleFileOptions::default().compression_method(entry.compression());
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
-        if name == "Contents/section0.xml" {
-            let xml = String::from_utf8(bytes).unwrap();
-            assert!(xml.contains("holdAnchorAndSO=\"0\""));
-            bytes = xml
-                .replacen("holdAnchorAndSO=\"0\"", "holdAnchorAndSO=\"1\"", 1)
-                .into_bytes();
-            changed = true;
+        if name == entry_name {
+            bytes = rewrite(String::from_utf8(bytes).unwrap()).into_bytes();
+            found = true;
         }
         output.start_file(name, options).unwrap();
         output.write_all(&bytes).unwrap();
     }
     output.finish().unwrap();
-    drop(archive);
-    assert!(
-        changed,
-        "public fixture must contain its placement attribute"
-    );
+    assert!(found, "public fixture must contain the rewritten entry");
+}
+
+fn set_public_hold_anchor(input: &Path) {
+    let temporary = input.with_extension("repacked.hwpx");
+    rewrite_public_entry(input, &temporary, "Contents/section0.xml", |xml| {
+        assert!(xml.contains("holdAnchorAndSO=\"0\""));
+        xml.replacen("holdAnchorAndSO=\"0\"", "holdAnchorAndSO=\"1\"", 1)
+    });
     std::fs::remove_file(input).unwrap();
     std::fs::rename(temporary, input).unwrap();
+}
+
+fn without_public_font_type_info(xml: String) -> String {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(&xml);
+    let mut ranges = Vec::new();
+    loop {
+        let start = usize::try_from(reader.buffer_position()).unwrap();
+        match reader.read_event().unwrap() {
+            Event::Empty(element) if element.local_name().as_ref() == "typeInfo" => {
+                ranges.push((start, usize::try_from(reader.buffer_position()).unwrap()));
+            }
+            Event::Start(element) if element.local_name().as_ref() == "typeInfo" => {
+                panic!("public typeInfo isolation expects the fixture's self-closing elements");
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    let mut output = String::new();
+    let mut copied = 0;
+    for (start, end) in ranges {
+        output.push_str(&xml[copied..start]);
+        copied = end;
+    }
+    output.push_str(&xml[copied..]);
+    output
 }
 
 #[test]
@@ -229,14 +260,44 @@ fn genuine_minimal_unmapped_font_metadata_refuses_with_a_named_cause() {
 
 #[test]
 fn decorative_shape_loss_still_refuses_publication() {
-    let input = fixture("fixtures/samples/report-tables.hwpx");
+    let original_input = fixture("fixtures/samples/report-tables.hwpx");
     let dir = workspace("decorative-loss");
+    let original_bytes = std::fs::read(&original_input).unwrap();
     let output = dir.join("refused.hwp");
+    let original_result = metadata_edit(&original_input, &output);
+    assert!(
+        !original_result.status.success() && !output.exists(),
+        "the unmodified public sample must still refuse"
+    );
+    let input = dir.join("shape-only.hwpx");
+    // Isolate GE-1 from the independent GE-11 font loss. Only header typeInfo elements
+    // are removed from this public copy; every section and shape payload stays unchanged.
+    rewrite_public_entry(
+        &original_input,
+        &input,
+        "Contents/header.xml",
+        without_public_font_type_info,
+    );
+    let original = hwpx::read_document(&original_input).unwrap().document;
+    let isolated = hwpx::read_document(&input).unwrap().document;
+    assert!(
+        isolated
+            .header
+            .fonts
+            .iter()
+            .flatten()
+            .all(|font| font.type_info.is_none())
+    );
+    assert!(
+        original.sections == isolated.sections,
+        "shape-isolation setup must preserve every source section"
+    );
     let result = metadata_edit(&input, &output);
     assert!(
         !result.status.success(),
         "GE-1 decorative shape loss must refuse"
     );
+    assert_eq!(std::fs::read(&original_input).unwrap(), original_bytes);
     let message = String::from_utf8_lossy(&result.stderr);
     assert!(
         message.contains("generic_controls=10->9")
