@@ -194,19 +194,37 @@ fn composed_hwpx_text_edit_verifies_in_hwp() {
 }
 
 #[test]
-fn genuine_minimal_hwpx_metadata_edit_verifies_in_hwp() {
+fn genuine_minimal_unmapped_font_metadata_refuses_with_a_named_cause() {
     let input = fixture("fixtures/hwpx/minimal.hwpx");
     if fixture_skip::fixture_missing(&input) {
         return;
     }
     let dir = workspace("minimal");
+    let original = std::fs::read(&input).unwrap();
+    let source = hwpx::read_document(&input).unwrap().document;
+    assert!(
+        source
+            .header
+            .fonts
+            .iter()
+            .flatten()
+            .any(|font| font.type_info.is_some()),
+        "the private minimal fixture must retain the GE-11 premise"
+    );
     let output = dir.join("edited.hwp");
     let result = metadata_edit(&input, &output);
     assert!(
-        result.status.success(),
-        "minimal HWPX must pass HWP5 verification: {}",
+        !result.status.success(),
+        "unmapped font classification must refuse: {}",
         String::from_utf8_lossy(&result.stderr)
     );
+    let message = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        message.contains("font_type_info_unrepresentable") && message.contains(".hwpx"),
+        "font loss must name its cause and preservation target: {message}"
+    );
+    assert!(!output.exists());
+    assert_eq!(std::fs::read(&input).unwrap(), original);
 }
 
 #[test]
@@ -325,12 +343,88 @@ fn genuinely_unmapped_hwpx_properties_still_refuse_publication() {
         let output = dir.join("refused.hwp");
         let result = metadata_edit(&input, &output);
         assert!(!result.status.success(), "genuine {kind} loss must refuse");
+        let message = String::from_utf8_lossy(&result.stderr);
+        if kind == "font-info" {
+            assert!(
+                message.contains("font_type_info_unrepresentable") && message.contains(".hwpx"),
+                "font loss needs its code and remedy: {message}"
+            );
+        } else {
+            assert!(
+                message.contains("의미 불변식"),
+                "{kind} must reach semantic verification: {message}"
+            );
+        }
+        assert!(!output.exists(), "{kind} loss must not publish");
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+    }
+}
+
+#[test]
+fn font_classification_loss_is_counted_without_exposing_payload() {
+    let dir = workspace("font-ledger");
+    let mut source = hwp_convert::from_markdown("Baseline input.\n");
+    for slot in [0, 1] {
+        source.header.fonts[slot][0].type_info =
+            Some(" extension=\"TYPE_INFO_PAYLOAD_SENTINEL\"".into());
+    }
+    let input = dir.join("source.hwpx");
+    hwpx::write_document(&source, &input).unwrap();
+    let original = std::fs::read(&input).unwrap();
+    let output = dir.join("converted.hwp");
+    let report = dir.join("loss.json");
+    for strict in [false, true] {
+        if output.exists() {
+            std::fs::remove_file(&output).unwrap();
+        }
+        if report.exists() {
+            std::fs::remove_file(&report).unwrap();
+        }
+        let mut cmd = command();
+        cmd.arg("convert")
+            .arg(&input)
+            .arg("-o")
+            .arg(&output)
+            .arg("--loss-report")
+            .arg(&report);
+        if strict {
+            cmd.arg("--strict");
+        }
+        let result = cmd.output().unwrap();
         assert!(
-            String::from_utf8_lossy(&result.stderr).contains("의미 불변식"),
-            "{kind} must reach semantic verification: {}",
+            report.is_file(),
+            "font loss evidence must be fresh even on strict refusal"
+        );
+        let raw = std::fs::read_to_string(&report).unwrap();
+        assert!(!raw.contains("TYPE_INFO_PAYLOAD_SENTINEL"));
+        let ledger: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let event = ledger["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["code"] == "font_type_info_unrepresentable");
+        assert!(
+            event.is_some(),
+            "the writer must name font classification loss: {ledger}"
+        );
+        let event = event.unwrap();
+        assert_eq!(event["count"], 2);
+        assert_eq!(event["resource"], "metadata");
+        assert_eq!(event["disposition"], "unrepresentable");
+        assert_eq!(
+            result.status.success(),
+            !strict,
+            "{}",
             String::from_utf8_lossy(&result.stderr)
         );
-        assert!(!output.exists(), "{kind} loss must not publish");
+        assert_eq!(output.exists(), !strict);
+        if strict {
+            let message = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                message.contains("font_type_info_unrepresentable") && message.contains(".hwpx"),
+                "{message}"
+            );
+        }
         assert_eq!(std::fs::read(&input).unwrap(), original);
     }
 }

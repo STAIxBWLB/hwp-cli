@@ -217,7 +217,7 @@ pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow:
     if report.is_lossless() {
         return Ok(());
     }
-    let remedy = if report
+    let mut remedy = if report
         .events
         .iter()
         .any(|event| event.code == PreservationCode::ParagraphRangeTagUnrepresentable)
@@ -240,6 +240,13 @@ pub(crate) fn reject_loss(context: &str, report: &PreservationReport) -> anyhow:
     } else {
         String::new()
     };
+    if report
+        .events
+        .iter()
+        .any(|event| event.code == PreservationCode::FontTypeInfoUnrepresentable)
+    {
+        remedy.push_str("\n해결: 글꼴 분류 정보의 HWP5 변환 매핑이 확인되지 않았습니다. .hwpx 출력으로 원본 정보를 보존하세요.");
+    }
     anyhow::bail!(
         "{context}: 보존 불가 데이터 {}건을 제거하거나 변경할 수 없어 출력을 게시하지 않습니다\n{}{remedy}",
         report.events.iter().map(|event| event.count).sum::<usize>(),
