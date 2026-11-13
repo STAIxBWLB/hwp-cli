@@ -6054,6 +6054,13 @@ mod tests {
         let signature =
             |doc: &hwp_model::Document| semantic_signature_for(doc, Some(SemanticTarget::Hwp));
         let mut changed = base.clone();
+        changed.header.fonts[0][0].type_info = Some(" extension=\"retained\"".into());
+        assert_ne!(
+            signature(&base),
+            signature(&changed),
+            "unmapped font classification XML remains significant"
+        );
+        let mut changed = base.clone();
         changed.header.tab_stops = vec![hwp_model::TabDef {
             attr: 0,
             items: vec![hwp_model::TabItem {
