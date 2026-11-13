@@ -628,6 +628,60 @@ jobs:
             echo "GATE_ENTRY_EOF"
           } >>"$GITHUB_OUTPUT"
 
+      - name: Target macOS signing dry-run
+        id: target-macos-signing
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/gates/macos-signing-dry-run"
+          script=scripts/macos-release-signing.sh
+          if [ ! -f "$script" ]; then
+            echo "$script is absent from this checkout" | tee "$RUNNER_TEMP/gates/macos-signing-dry-run/log"
+            exit 0
+          fi
+          bash "$script" --dry-run 2>&1 | tee "$RUNNER_TEMP/gates/macos-signing-dry-run/log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Gate macOS signing dry-run
+        id: gate-macos-signing
+        if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.target-macos-signing.outcome }}
+          READINESS_REF: ${{ inputs.ref }}
+        run: |
+          set -uo pipefail
+          GATES_FILE="$(mktemp)"
+          script=scripts/macos-release-signing.sh
+          # A failed target cannot hide its runner-owned failure by deleting its script.
+          case "$OUTCOME" in
+          failure)
+            status=fail
+            evidence="bash $script --dry-run failed; the runner outcome remains authoritative even if the target removed its script"
+            ;;
+          success)
+            if [ -f "$script" ]; then
+              status=pass
+              evidence="bash $script --dry-run; credential-free plan only, no live signing, notarization or Gatekeeper proof"
+            else
+              status='n/a'
+              evidence="$script is absent from the checkout of $READINESS_REF; no macOS signing dry-run was performed"
+            fi
+            ;;
+          *)
+            status=pending
+            evidence="the runner has no settled outcome for bash $script --dry-run"
+            ;;
+          esac
+          printf '%s\t%s\t%s\n' macos-signing-dry-run "$status" "$evidence" >>"$GATES_FILE"
+          {
+            echo "entry<<GATE_ENTRY_EOF"
+            cat "$GATES_FILE"
+            echo "GATE_ENTRY_EOF"
+          } >>"$GITHUB_OUTPUT"
+
       # Checklist line 26-27, the release-copy claim lint. Guarded: a retroactive dispatch may
       # evaluate a ref from before this script existed, and a missing script is n/a, never a pass.
       - name: Target release-copy-claims
@@ -1044,6 +1098,7 @@ jobs:
           GATE_INDEPENDENT_ORACLE: ${{ steps.oracle.outputs.entry }}
           GATE_HANCOM_RECEIPT: ${{ steps.gate-hancom-receipt.outputs.entry }}
           GATE_FIXTURES_REQUIRED: ${{ steps.gate-fixtures-required.outputs.entry }}
+          GATE_MACOS_SIGNING: ${{ steps.gate-macos-signing.outputs.entry }}
           GATE_RELEASE_COPY_CLAIMS: ${{ steps.gate-release-copy-claims.outputs.entry }}
           GATE_DOC_SURFACE: ${{ steps.gate-doc-surface.outputs.entry }}
           GATE_README_PINNED_TAG: ${{ steps.gate-readme-pinned-tag.outputs.entry }}
@@ -1096,6 +1151,7 @@ jobs:
               "skill-coverage",
               "hwpx-skill-parity",
               "fixtures-required",
+              "macos-signing-dry-run",
           ]
 
           # docs/design/21-pdf-parity.md sections 4.5 and 4.6. These describe the private

@@ -44,6 +44,56 @@
       선택 세트는 집계만 된다). CI와 준비 점검 워크플로는 데이터 정책상 이 픽스처가 없으므로 이
       플래그를 설정하지 않고(항상 실패한다) `skipped-for-missing-fixtures=N (optional=M)`만
       출력한다. 녹색 CI가 검증한 범위는 그 N개 스킵을 뺀 나머지다(#275)
+- [ ] `bash scripts/macos-release-signing.sh --dry-run` 통과. helper 문법과 서명 계획만 확인하며,
+      Apple 자격증명이나 실제 서명·공증을 검증한 결과가 아님
 
 릴리스는 7종 스모크 픽스처가 모든 실제 문서 형태를 커버한다거나, 한컴 픽셀 동등성을 제공한다거나,
 플랫폼 간 래스터 바이트가 동일함을 증명한다고 주장해서는 안 된다.
+
+## macOS 서명과 공증
+
+macOS 릴리스 작업에는 저장소의 `Settings > Secrets and variables > Actions`에 등록한
+Actions secret이 필요합니다. 값이 없으면 업로드 action 실행 전에 해당 macOS 작업을 중단하며,
+ad-hoc 서명으로 대체하지 않습니다.
+
+- `APPLE_CERTIFICATE`: Developer ID Application `.p12`의 base64 인코딩 값
+- `APPLE_CERTIFICATE_PASSWORD`: 해당 `.p12`의 암호
+- `KEYCHAIN_PASSWORD`: 임시 서명 keychain의 암호
+- `APPLE_API_KEY`: App Store Connect `.p8` PEM 내용(base64 PEM도 허용)
+- `APPLE_API_KEY_ID`: App Store Connect API key ID
+- `APPLE_API_ISSUER_ID`: App Store Connect issuer ID
+
+workflow는 인증서를 접근이 제한된 임시 keychain에 가져온 뒤, 유효한 Developer ID Application
+identity 하나를 pinned upload action에 전달하고 `codesign-options: runtime`을 지정합니다.
+Developer ID 서명은 기본적으로 timestamp를 포함합니다. helper는 secure timestamp, hardened
+runtime, Developer ID Application authority를 확인한 뒤, 서명된 실행 파일을 ZIP으로 묶어
+`notarytool submit --wait`에 제출합니다. 하나라도 없으면 거부하며, 공증은 `Accepted`일 때만
+통과합니다. 임시 인증서,
+API key, keychain은 helper와 항상 실행되는 cleanup 단계에서 제거합니다.
+
+Linux의 alias 재포장 이후 macOS 작업이 각 아키텍처의 archive를 다운로드해 `ahwp`와 `hwp`의
+바이트가 같은지 비교하고 두 코드 서명을 모두 검증합니다. 이 작업이 통과해야 attestation과
+공개 릴리스가 진행됩니다. 단일 실행 파일에는 ticket을 staple할 수 없으므로 Gatekeeper가 공증
+ticket을 온라인으로 조회합니다.
+
+readiness는 자격증명을 사용하지 않는 `--dry-run` 경로만 실행합니다. shell mock은 Apple 서비스
+없이 실패 경로를 검사합니다. 어느 결과도 실제 자격증명, 공증 또는 Gatekeeper의 동작을 증명하지
+않습니다. 첫 실제 검증은 소유자가 승인한 `v1.6.3` 릴리스에서 수행합니다. 두 macOS
+`verify-macos-assets` 작업 결과를 기록하고, 다운로드한 두 명령을 Gatekeeper로 검사합니다.
+빈 임시 디렉터리에서 Apple Silicon용으로 실행하는 예시는 다음과 같습니다.
+
+```bash
+gh release download v1.6.3 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v1.6.3-aarch64-apple-darwin.tar.gz'
+tar -xzf ahwp-v1.6.3-aarch64-apple-darwin.tar.gz
+codesign --verify --strict --verbose=2 ./ahwp
+codesign -dv --verbose=4 ./ahwp
+codesign --verify --strict --verbose=2 ./hwp
+codesign -dv --verbose=4 ./hwp
+spctl --assess --type install --verbose=2 ./ahwp
+spctl --assess --type install --verbose=2 ./hwp
+```
+
+`x86_64-apple-darwin` archive에서도 서명과 Gatekeeper 검사를 반복합니다. authority는 Developer ID
+Application이어야 하며, 서명에는 hardened runtime과 secure timestamp가 있어야 합니다.
+Gatekeeper의 기대 출력은 `accepted`와 `source=Notarized Developer ID`입니다. readiness는
+태그를 만들거나 이 실제 검증을 수행하지 않습니다.

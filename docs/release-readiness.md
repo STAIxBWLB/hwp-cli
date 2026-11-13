@@ -43,6 +43,54 @@ package upload or release publication.
       sets in `fixtures/README.md` are only counted). CI and the readiness workflow have none by
       the data policy, so they do not set the flag (it would always fail); they print
       `skipped-for-missing-fixtures=N (optional=M)`: green CI covers what N skips leave (#275)
+- [ ] `bash scripts/macos-release-signing.sh --dry-run` passes; this checks helper syntax and
+      records the signing plan only, not Apple credentials or live signing/notarization
 
 The release must not claim that the seven smoke fixtures cover every real document form, provide
 Hancom pixel parity, or prove cross-platform-identical raster bytes.
+
+## macOS signing and notarization
+
+The macOS release legs require these repository Actions secrets under
+`Settings > Secrets and variables > Actions`. Missing values stop the macOS leg before the upload
+action; there is no ad-hoc fallback.
+
+- `APPLE_CERTIFICATE`: base64-encoded Developer ID Application `.p12`
+- `APPLE_CERTIFICATE_PASSWORD`: password for that `.p12`
+- `KEYCHAIN_PASSWORD`: password for the temporary signing keychain
+- `APPLE_API_KEY`: App Store Connect `.p8` PEM contents (base64 PEM is also accepted)
+- `APPLE_API_KEY_ID`: App Store Connect API key ID
+- `APPLE_API_ISSUER_ID`: App Store Connect issuer ID
+
+The workflow imports the certificate into a restricted temporary keychain and passes its one valid
+Developer ID Application identity to the pinned upload action, with `codesign-options: runtime`.
+Developer ID signing timestamps by default; the helper refuses a missing secure timestamp, hardened
+runtime, or Developer ID Application authority before submitting a ZIP of the signed executable to
+`notarytool submit --wait`. Only `Accepted` passes. The temporary certificate, API key and keychain
+are removed by the helper and the always-run cleanup step.
+
+After the Linux alias repack, a macOS job downloads each architecture's archive, compares `ahwp` and
+`hwp` byte-for-byte and verifies both code signatures. Attestation and public release wait for that
+job. A bare executable cannot be stapled, so Gatekeeper retrieves the notarization ticket online.
+
+Readiness runs only the credential-free `--dry-run` path. Shell mocks exercise failure paths without
+Apple services; neither result proves that real credentials, notarization, or Gatekeeper work.
+The first live acceptance check is the owner-authorized `v1.6.3` release. Record both macOS
+`verify-macos-assets` jobs and assess both downloaded commands with Gatekeeper. In an empty temporary
+directory, the Apple Silicon example is:
+
+```bash
+gh release download v1.6.3 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v1.6.3-aarch64-apple-darwin.tar.gz'
+tar -xzf ahwp-v1.6.3-aarch64-apple-darwin.tar.gz
+codesign --verify --strict --verbose=2 ./ahwp
+codesign -dv --verbose=4 ./ahwp
+codesign --verify --strict --verbose=2 ./hwp
+codesign -dv --verbose=4 ./hwp
+spctl --assess --type install --verbose=2 ./ahwp
+spctl --assess --type install --verbose=2 ./hwp
+```
+
+Repeat signature and Gatekeeper assessment with the `x86_64-apple-darwin` archive. The authority must
+be Developer ID Application, the signatures must carry hardened runtime and a secure timestamp, and
+The expected Gatekeeper output is `accepted` with `source=Notarized Developer ID`. Readiness does
+not create a tag or perform this live check.
