@@ -8,9 +8,9 @@ if [ "${1:-}" = --dry-run ]; then
     # This path neither reads credentials nor runs security, codesign, or notarytool.
     bash -n "$0"
     echo 'macOS signing dry-run: require six Actions secrets; import Developer ID Application into a temporary keychain'
-    echo 'macOS signing dry-run: action codesign identity, codesign-options runtime; require Authority, runtime and Timestamp'
+    echo 'macOS signing dry-run: require APPLE_TEAM_ID repository variable; pin Developer ID signer team, runtime and Timestamp'
     echo 'macOS signing dry-run: ZIP signed ahwp; notarytool submit --wait --output-format json; require Accepted'
-    echo 'macOS signing dry-run: download repacked archive; compare ahwp/hwp bytes; verify both signatures; clean temporary keychain'
+    echo 'macOS signing dry-run: compare ahwp/hwp bytes; verify both signatures and Gatekeeper install acceptance (3 attempts, 10 seconds apart); clean temporary keychain'
     echo 'macOS signing dry-run: no signing, notarization, upload, or Gatekeeper acceptance was performed'
     exit 0
 fi
@@ -22,6 +22,12 @@ require_secrets() {
             fail "$name is missing. Set $name in repository Settings > Secrets and variables > Actions, then rerun Release."
         fi
     done
+}
+
+require_team() {
+    local LC_ALL=C
+    [ -n "${APPLE_TEAM_ID:-}" ] || fail 'APPLE_TEAM_ID is missing. Set APPLE_TEAM_ID in repository Settings > Secrets and variables > Actions > Variables, then rerun Release.'
+    [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || fail 'APPLE_TEAM_ID must contain exactly 10 uppercase ASCII letters or digits. Correct it in repository Settings > Secrets and variables > Actions > Variables, then rerun Release.'
 }
 
 require_macos() {
@@ -56,7 +62,8 @@ write_notary_key() {
 
 verify_binary() {
     local binary="$1" details
-    codesign --verify --strict --verbose=2 "$binary" || fail 'Code signature verification failed. Rebuild and sign the macOS asset with the configured Developer ID Application certificate.'
+    require_team
+    codesign --verify --strict --verbose=2 -R "=anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" "$binary" || fail 'Code signature verification failed. Compare APPLE_TEAM_ID in repository Actions Variables with the Developer ID team of APPLE_CERTIFICATE in repository Actions Secrets, correct the variable or certificate, then rebuild and rerun Release.'
     if ! details="$(codesign -dv --verbose=4 "$binary" 2>&1)"; then
         fail 'Cannot inspect the code signature. Rebuild and sign the macOS asset before uploading it.'
     fi
@@ -69,6 +76,21 @@ verify_binary() {
         fail 'The asset lacks a secure timestamp. Check access to the Apple timestamp service and rebuild the Developer ID-signed asset.'
     fi
     echo 'Developer ID Application authority, hardened runtime, and secure timestamp verified.'
+}
+
+verify_gatekeeper() {
+    local binary="$1" assessment attempt
+    for attempt in 1 2 3; do
+        if assessment="$(spctl --assess --type install --verbose=2 "$binary" 2>&1)" &&
+            printf '%s\n' "$assessment" | grep -E '(^|: )accepted$' >/dev/null &&
+            printf '%s\n' "$assessment" | grep -Fx 'source=Notarized Developer ID' >/dev/null; then
+            echo 'Gatekeeper accepted the executable with source=Notarized Developer ID.'
+            return
+        fi
+        if [ "$attempt" -lt 3 ]; then sleep 10; fi
+    done
+    printf '%s\n' "$assessment" >&2
+    fail 'Gatekeeper install assessment did not accept a Notarized Developer ID asset after 3 attempts, 10 seconds apart (20 seconds of retry delay). Ticket propagation may be delayed; check notarization and network access, then rerun Release.'
 }
 
 extract_binaries() {
@@ -99,6 +121,7 @@ PY
 
 case "${1:-}" in
     prepare)
+        require_team
         require_secrets APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER_ID
         require_macos
         : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required on the release runner}"
@@ -109,14 +132,21 @@ case "${1:-}" in
         keychain="$work/signing.keychain-db"
         (umask 077; printf '%s' "$APPLE_CERTIFICATE" | base64 --decode >"$work/certificate.p12") ||
             fail 'APPLE_CERTIFICATE is not valid base64. Set it from the Developer ID Application .p12 in repository Actions secrets.'
-        security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-        security list-keychains -d user -s "$keychain"
-        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-        security set-keychain-settings -t 21600 -u "$keychain"
-        security import "$work/certificate.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
-        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain" >/dev/null
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain" ||
+            fail 'Cannot create the temporary signing keychain. Check KEYCHAIN_PASSWORD in repository Actions secrets and runner keychain access, then rerun Release.'
+        security list-keychains -d user -s "$keychain" ||
+            fail 'Cannot select the temporary signing keychain. Check the macOS runner user keychain settings, then rerun Release.'
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain" ||
+            fail 'Cannot unlock the temporary signing keychain. Correct KEYCHAIN_PASSWORD in repository Actions secrets, then rerun Release.'
+        security set-keychain-settings -t 21600 -u "$keychain" ||
+            fail 'Cannot configure the temporary signing keychain. Check the macOS runner user keychain settings, then rerun Release.'
+        security import "$work/certificate.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null ||
+            fail 'Cannot import the Developer ID certificate. Correct APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD in repository Actions secrets, then rerun Release.'
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain" >/dev/null ||
+            fail 'Cannot authorize codesign access to the signing key. Correct KEYCHAIN_PASSWORD in repository Actions secrets and check the imported APPLE_CERTIFICATE, then rerun Release.'
         rm -f "$work/certificate.p12"
-        identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2}')"
+        identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2}')" ||
+            fail 'Cannot inspect signing identities. Check APPLE_CERTIFICATE in repository Actions secrets and the macOS runner keychain settings, then rerun Release.'
         [[ "$identity" =~ ^[[:xdigit:]]{40}$ ]] ||
             fail 'APPLE_CERTIFICATE must contain exactly one valid Developer ID Application identity. Correct the repository Actions secret and rerun Release.'
         printf 'identity=%s\n' "$identity" >>"$GITHUB_OUTPUT"
@@ -184,6 +214,7 @@ PY
         echo 'Apple notarization status: Accepted. Bare executable ticket is available to Gatekeeper online.'
         ;;
     verify-archive)
+        require_team
         require_macos
         work="$(mktemp -d "${RUNNER_TEMP:?}/ahwp-verify.XXXXXX")"
         trap 'rm -rf "$work"' EXIT
@@ -191,6 +222,8 @@ PY
         cmp "$work/ahwp" "$work/hwp" || fail 'The hwp alias differs from ahwp. Repack the archive with identical signed executable bytes.'
         verify_binary "$work/ahwp"
         verify_binary "$work/hwp"
+        verify_gatekeeper "$work/ahwp"
+        verify_gatekeeper "$work/hwp"
         ;;
     cleanup)
         work="${2:?signing directory is required}"

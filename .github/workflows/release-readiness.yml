@@ -664,7 +664,7 @@ jobs:
           success)
             if [ -f "$script" ]; then
               status=pass
-              evidence="bash $script --dry-run; credential-free plan only, no live signing, notarization or Gatekeeper proof"
+              evidence="bash $script --dry-run; credential-free plan only, no live team-pinned signing, notarization or Gatekeeper proof"
             else
               status='n/a'
               evidence="$script is absent from the checkout of $READINESS_REF; no macOS signing dry-run was performed"

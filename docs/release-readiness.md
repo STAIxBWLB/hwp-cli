@@ -62,6 +62,11 @@ action; there is no ad-hoc fallback.
 - `APPLE_API_KEY_ID`: App Store Connect API key ID
 - `APPLE_API_ISSUER_ID`: App Store Connect issuer ID
 
+Also set the repository Actions **variable** `APPLE_TEAM_ID` under
+`Settings > Secrets and variables > Actions > Variables` to the 10-character Apple Developer team
+ID (uppercase ASCII letters or digits). It is public signer metadata, not a secret. A missing or
+invalid value stops preparation before the build, as well as later verification.
+
 The workflow imports the certificate into a restricted temporary keychain and passes its one valid
 Developer ID Application identity to the pinned upload action, with `codesign-options: runtime`.
 Developer ID signing timestamps by default; the helper refuses a missing secure timestamp, hardened
@@ -70,8 +75,14 @@ runtime, or Developer ID Application authority before submitting a ZIP of the si
 are removed by the helper and the always-run cleanup step.
 
 After the Linux alias repack, a macOS job downloads each architecture's archive, compares `ahwp` and
-`hwp` byte-for-byte and verifies both code signatures. Attestation and public release wait for that
-job. A bare executable cannot be stapled, so Gatekeeper retrieves the notarization ticket online.
+`hwp` byte-for-byte and verifies both code signatures against the Apple anchor and the certificate
+leaf team ID from `vars.APPLE_TEAM_ID`. It also runs `spctl --assess --type install --verbose=2` on
+both commands, requiring a successful result with `accepted` and `source=Notarized Developer ID`.
+Each assessment allows at most three attempts, with ten seconds between attempts (twenty seconds
+of retry delay per command), for ticket propagation. Exhaustion fails the job and names the retry
+bound, the last assessment and the next diagnostic step. Attestation and public release wait for
+that job. A bare executable cannot be stapled, so Gatekeeper retrieves the notarization ticket
+online.
 
 Readiness runs only the credential-free `--dry-run` path. Shell mocks exercise failure paths without
 Apple services; neither result proves that real credentials, notarization, or Gatekeeper work.
@@ -82,15 +93,17 @@ directory, the Apple Silicon example is:
 ```bash
 gh release download v1.6.3 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v1.6.3-aarch64-apple-darwin.tar.gz'
 tar -xzf ahwp-v1.6.3-aarch64-apple-darwin.tar.gz
-codesign --verify --strict --verbose=2 ./ahwp
+APPLE_TEAM_ID="$(gh variable get APPLE_TEAM_ID --repo STAIxBWLB/agent-hwp)"
+signer_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./ahwp
 codesign -dv --verbose=4 ./ahwp
-codesign --verify --strict --verbose=2 ./hwp
+codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./hwp
 codesign -dv --verbose=4 ./hwp
 spctl --assess --type install --verbose=2 ./ahwp
 spctl --assess --type install --verbose=2 ./hwp
 ```
 
 Repeat signature and Gatekeeper assessment with the `x86_64-apple-darwin` archive. The authority must
-be Developer ID Application, the signatures must carry hardened runtime and a secure timestamp, and
+be Developer ID Application, and the signatures must carry hardened runtime and a secure timestamp.
 The expected Gatekeeper output is `accepted` with `source=Notarized Developer ID`. Readiness does
 not create a tag or perform this live check.
