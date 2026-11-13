@@ -10,6 +10,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [1.6.3]
+
+**Compatibility**
+
+- `edit-report-v1` reports now carry `schema_version` `1.1`, refused runs included. Every 1.0
+  field is unchanged and `refusal` is optional; a consumer that accepts only `"1.0"` must also
+  accept `"1.1"` ([#531](https://github.com/STAIxBWLB/agent-hwp/issues/531)).
+- HWP5 to `.hwpx` writes that would drop `PARA_RANGE_TAG` records now refuse where they used to
+  publish silently: `edit`, `fill`, MCP `hwp_edit`, MCP `hwp_fill`, and MCP `hwp_convert` at its
+  default `strict: true`. A zero-match `fill` that changes format converts strictly, so it
+  refuses any preservation loss instead of publishing it. CLI `convert` and `merge` only warn
+  unless `--strict` is given ([#529](https://github.com/STAIxBWLB/agent-hwp/issues/529)).
+- macOS release archives are Developer ID signed and notarized from this release on. Install
+  paths are unchanged ([#412](https://github.com/STAIxBWLB/agent-hwp/issues/412)).
+
 **Added**
 
 - `edit` and MCP `hwp_edit`: a refused run writes the `edit-report-v1` report that `--report`
@@ -45,6 +60,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   byte-equality verification of the downloaded, repacked `ahwp` and `hwp`; missing signing or
   notarization secrets stop the macOS leg. Readiness records a credential-free dry-run separately
   from the first live `v1.6.3` check ([#412](https://github.com/STAIxBWLB/agent-hwp/issues/412)).
+  Verification pins the signer to the team in the `APPLE_TEAM_ID` repository variable and
+  requires a Gatekeeper install assessment of `accepted` with `source=Notarized Developer ID` for
+  both binaries ([#545](https://github.com/STAIxBWLB/agent-hwp/issues/545)).
 - `fill --parts` and MCP `hwp_fill` with `parts`: concurrent part fills in one process no longer
   share a temp file. The name took a clock reading, so two calls in the same nanosecond wrote,
   read and deleted one file, failing with an HWPX package integrity error; it now takes a
