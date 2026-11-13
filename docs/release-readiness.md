@@ -64,7 +64,8 @@ action; there is no ad-hoc fallback.
 
 Also set the repository Actions **variable** `APPLE_TEAM_ID` under
 `Settings > Secrets and variables > Actions > Variables` to the 10-character Apple Developer team
-ID. It is public signer metadata, not a secret. A missing or invalid value stops verification.
+ID (uppercase ASCII letters or digits). It is public signer metadata, not a secret. A missing or
+invalid value stops preparation before the build, as well as later verification.
 
 The workflow imports the certificate into a restricted temporary keychain and passes its one valid
 Developer ID Application identity to the pinned upload action, with `codesign-options: runtime`.
@@ -79,7 +80,9 @@ leaf team ID from `vars.APPLE_TEAM_ID`. It also runs `spctl --assess --type inst
 both commands, requiring a successful result with `accepted` and `source=Notarized Developer ID`.
 Each assessment allows at most three attempts, with ten seconds between attempts (twenty seconds
 of retry delay per command), for ticket propagation. Exhaustion fails the job and names the retry
-bound and the next diagnostic step. Attestation and public release wait for that job. A bare executable cannot be stapled, so Gatekeeper retrieves the notarization ticket online.
+bound, the last assessment and the next diagnostic step. Attestation and public release wait for
+that job. A bare executable cannot be stapled, so Gatekeeper retrieves the notarization ticket
+online.
 
 Readiness runs only the credential-free `--dry-run` path. Shell mocks exercise failure paths without
 Apple services; neither result proves that real credentials, notarization, or Gatekeeper work.
@@ -92,9 +95,9 @@ gh release download v1.6.3 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v1.6.3-aar
 tar -xzf ahwp-v1.6.3-aarch64-apple-darwin.tar.gz
 APPLE_TEAM_ID="$(gh variable get APPLE_TEAM_ID --repo STAIxBWLB/agent-hwp)"
 signer_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
-codesign --verify --strict --verbose=2 -R="$signer_requirement" ./ahwp
+codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./ahwp
 codesign -dv --verbose=4 ./ahwp
-codesign --verify --strict --verbose=2 -R="$signer_requirement" ./hwp
+codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./hwp
 codesign -dv --verbose=4 ./hwp
 spctl --assess --type install --verbose=2 ./ahwp
 spctl --assess --type install --verbose=2 ./hwp
