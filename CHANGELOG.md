@@ -12,6 +12,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Fixed**
 
+- HWPX writes report dropped HWP5 `PARA_RANGE_TAG` records and their count as
+  `paragraph_range_tag_unrepresentable` loss events. `edit` and MCP `hwp_edit` from HWP5 to
+  `.hwpx` refuse publication and suggest keeping `.hwp` output, removing marks in Hangul, or
+  explicitly accepting the loss through `ahwp convert` without `--strict` before editing.
+  `convert`, `merge` and `split` warn without `--strict` and refuse with it; `--loss-report`
+  retains the evidence ([#529](https://github.com/STAIxBWLB/agent-hwp/issues/529)).
 - `fill --parts` and MCP `hwp_fill` with `parts`: concurrent part fills in one process no longer
   share a temp file. The name took a clock reading, so two calls in the same nanosecond wrote,
   read and deleted one file, failing with an HWPX package integrity error; it now takes a

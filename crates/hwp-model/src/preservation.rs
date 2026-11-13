@@ -45,6 +45,8 @@ pub enum PreservationCode {
     /// the paragraph boundary (D-08) — an adjustment, not a loss: `hwp split`
     /// ledgers it for audit but excludes it from `--strict` refusal (#174).
     PageRangeParagraphRounded,
+    /// Opaque HWP5 PARA_RANGE_TAG records have no verified HWPX mapping.
+    ParagraphRangeTagUnrepresentable,
     PictureControlRemoved,
     /// An hwpx-origin `hwp merge` input's `<hp:pageBorderFill>` passthrough
     /// carried a `borderFillIDRef` that is present but not numeric, so the
@@ -75,6 +77,7 @@ impl PreservationCode {
             Self::MetadataValueRemoved => "metadata_value_removed",
             Self::OpaqueControlUnrepresentable => "opaque_control_unrepresentable",
             Self::PageRangeParagraphRounded => "page_range_paragraph_rounded",
+            Self::ParagraphRangeTagUnrepresentable => "paragraph_range_tag_unrepresentable",
             Self::PictureControlRemoved => "picture_control_removed",
             Self::SectionBorderFillRefUnresolvable => "section_border_fill_ref_unresolvable",
         }
@@ -269,6 +272,7 @@ mod tests {
             MetadataValueRemoved,
             OpaqueControlUnrepresentable,
             PageRangeParagraphRounded,
+            ParagraphRangeTagUnrepresentable,
             PictureControlRemoved,
             SectionBorderFillRefUnresolvable,
         ];
@@ -292,6 +296,7 @@ mod tests {
                 | MetadataValueRemoved
                 | OpaqueControlUnrepresentable
                 | PageRangeParagraphRounded
+                | ParagraphRangeTagUnrepresentable
                 | PictureControlRemoved
                 | SectionBorderFillRefUnresolvable => {}
             }
