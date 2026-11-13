@@ -21,7 +21,8 @@ These changes ship as 2.0.0.
   `scripts/install.sh`, the `hwp` alias that `scripts/install.sh` and the claude.ai bundle's
   `bootstrap.sh` installed, and the `hwp` name the Homebrew formula installed. The formula and
   `scripts/update_formula.sh` now read the `ahwp-` assets, and the container images run
-  `ahwp serve`. Migration: replace `hwp` with `ahwp` in scripts and MCP client configurations
+  `ahwp serve`. The release's macOS archive verification checks the signed `ahwp` alone.
+  Migration: replace `hwp` with `ahwp` in scripts and MCP client configurations
   (`command: ahwp`, `args: ["mcp", ...]`); on Homebrew run `brew update && brew upgrade ahwp`, or
   `brew install ahwp`. MCP tool names (`hwp_*`), the skill name `hwp`, the `HWP_*` environment
   variables and the schema ids are unchanged. `formula_renames.json` stays, so a machine still

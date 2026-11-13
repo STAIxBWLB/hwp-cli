@@ -74,20 +74,19 @@ runtime, or Developer ID Application authority before submitting a ZIP of the si
 `notarytool submit --wait`. Only `Accepted` passes. The temporary certificate, API key and keychain
 are removed by the helper and the always-run cleanup step.
 
-After the Linux alias repack, a macOS job downloads each architecture's archive, compares `ahwp` and
-`hwp` byte-for-byte and verifies both code signatures against the Apple anchor and the certificate
-leaf team ID from `vars.APPLE_TEAM_ID`. It also runs `spctl --assess --type install --verbose=2` on
-both commands, requiring a successful result with `accepted` and `source=Notarized Developer ID`.
-Each assessment allows at most three attempts, with ten seconds between attempts (twenty seconds
-of retry delay per command), for ticket propagation. Exhaustion fails the job and names the retry
-bound, the last assessment and the next diagnostic step. Attestation and public release wait for
-that job. A bare executable cannot be stapled, so Gatekeeper retrieves the notarization ticket
-online.
+After upload, a macOS job downloads each architecture's archive and verifies the `ahwp` code
+signature against the Apple anchor and the certificate leaf team ID from `vars.APPLE_TEAM_ID`. 2.0
+archives carry no `hwp` alias (#510). It also runs `spctl --assess --type install --verbose=2` on
+`ahwp`, requiring a successful result with `accepted` and `source=Notarized Developer ID`. The
+assessment allows at most three attempts, with ten seconds between attempts (twenty seconds of
+retry delay), for ticket propagation. Exhaustion fails the job and names the retry bound, the last
+assessment and the next diagnostic step. Attestation and public release wait for that job. A bare
+executable cannot be stapled, so Gatekeeper retrieves the notarization ticket online.
 
 Readiness runs only the credential-free `--dry-run` path. Shell mocks exercise failure paths without
 Apple services; neither result proves that real credentials, notarization, or Gatekeeper work.
 The first live acceptance check is the owner-authorized `v1.6.3` release. Record both macOS
-`verify-macos-assets` jobs and assess both downloaded commands with Gatekeeper. In an empty temporary
+`verify-macos-assets` jobs and assess the downloaded `ahwp` with Gatekeeper. In an empty temporary
 directory, the Apple Silicon example is:
 
 ```bash
@@ -97,10 +96,7 @@ APPLE_TEAM_ID="$(gh variable get APPLE_TEAM_ID --repo STAIxBWLB/agent-hwp)"
 signer_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
 codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./ahwp
 codesign -dv --verbose=4 ./ahwp
-codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./hwp
-codesign -dv --verbose=4 ./hwp
 spctl --assess --type install --verbose=2 ./ahwp
-spctl --assess --type install --verbose=2 ./hwp
 ```
 
 Repeat signature and Gatekeeper assessment with the `x86_64-apple-darwin` archive. The authority must
