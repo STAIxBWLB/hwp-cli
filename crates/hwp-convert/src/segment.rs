@@ -76,10 +76,10 @@
 //! nothing itself. `crates/hwp-render/src/segment_id.rs` carries a deliberate second copy of that
 //! rule, so changing what a kind hashes is a two-crate change.
 //!
-//! A run's range identifies its emitted source text and may include adjacent emphasis markers.
-//! Generated markers are not independently addressable source characters and need not remain on
-//! the run whose marks opened them. The walk records boundaries between emphasis transitions;
-//! byte edits and cleanup remap those boundaries before sibling intervals are reconciled.
+//! A run's range keeps visible non-whitespace source text with its owner. Whitespace and
+//! generated emphasis markers can cross run cuts and need not remain on the run whose marks
+//! opened them. Text-derived cuts retain that formatting affinity; control-derived cuts follow
+//! deleted markers before cleanup and sibling reconciliation.
 //!
 //! Run segments are numbered off [`crate::segment_id::canonical_char_shape_runs`], never off
 //! `Paragraph::char_shape_runs`: `run_id` indexes the canonical list, so walking the raw list

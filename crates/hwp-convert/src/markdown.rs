@@ -335,8 +335,8 @@ impl Body {
         self.close_run_at(self.s.len());
     }
 
-    /// Closes the open run at `at`, which the run boundary logic places between the previous
-    /// run's closing emphasis marker and the next one's opening marker.
+    /// Closes the open run at a recorded Markdown cut. A cut encountered at a control
+    /// can precede the next Text-driven emphasis transition and follows any deleted markers.
     ///
     /// The piece's source span ends at the character the walk is on, so a flush triggered BY a
     /// block control closes the piece before that control's own characters: the control is not
@@ -871,7 +871,7 @@ impl ByteMove {
         }
     }
 
-    /// Run cuts follow deletions, including cuts at old EOF. Insertion and rotation affect
+    /// Deferred control cuts follow deletions, including cuts at old EOF. Insertion and rotation affect
     /// only whitespace and generated delimiters, so retaining cuts inside those regions cannot
     /// transfer visible non-whitespace text. This affinity preserves existing valid ranges;
     /// surviving control characters constrain their pieces separately during reconciliation.
