@@ -76,10 +76,10 @@
 //! nothing itself. `crates/hwp-render/src/segment_id.rs` carries a deliberate second copy of that
 //! rule, so changing what a kind hashes is a two-crate change.
 //!
-//! A run's range includes its emitted emphasis markers. The walk records boundaries between
-//! closing the previous emphasis span and opening the next one. After cleanup, reconciliation
-//! expands a surviving control's owning range and bounds its siblings to keep the pieces disjoint;
-//! recorded boundaries can therefore change when emphasis relocates whitespace.
+//! A run's range identifies its emitted source text and may include adjacent emphasis markers.
+//! Generated markers are not independently addressable source characters and need not remain on
+//! the run whose marks opened them. The walk records boundaries between emphasis transitions;
+//! byte edits and cleanup remap those boundaries before sibling intervals are reconciled.
 //!
 //! Run segments are numbered off [`crate::segment_id::canonical_char_shape_runs`], never off
 //! `Paragraph::char_shape_runs`: `run_id` indexes the canonical list, so walking the raw list
@@ -2223,9 +2223,21 @@ mod run_control_tests {
             .map_or(leading, |at| at + 1);
         let mut owner = 0usize;
         let mut expected = Vec::new();
+        let mut expected_text = Vec::new();
         for source in 0..symbols.len() {
             if source > 0 && shapes[source - 1] != shapes[source] {
                 owner += 1;
+            }
+            // Every x is a visible non-whitespace Text character. Its source
+            // ordinal and shape-change owner are independent of published ranges.
+            // Typed spaces stay in projection/control checks, not this ownership contract.
+            if symbols[source] == 0 {
+                expected_text.push((
+                    positions[source - leading],
+                    source as u32,
+                    0usize,
+                    vec![0usize, owner],
+                ));
             }
             if source >= leading && source < trailing && symbols[source] >= 2 {
                 expected.push((
@@ -2242,6 +2254,7 @@ mod run_control_tests {
             }
         }
         let mut actual = Vec::new();
+        let mut actual_text = Vec::new();
         let mut runs: Vec<_> = segments
             .iter()
             .filter(|segment| segment.kind == SegmentKind::Run)
@@ -2251,6 +2264,15 @@ mod run_control_tests {
                 .source_chars
                 .expect("a published run has a source range");
             assert!(bounds.start < bounds.end && bounds.end <= symbols.len() as u32);
+            for &(at, source, _, _) in &expected_text {
+                if run.start <= at && at < run.end {
+                    assert!(
+                        bounds.start <= source && source < bounds.end,
+                        "visible Text ownership must contain its source index: {symbols:?} {shapes:?} source={source} at={at} {run:?} {md:?}"
+                    );
+                    actual_text.push((at, source, run.path.section, run.path.indices.clone()));
+                }
+            }
             for control in &run.controls {
                 assert!(
                     run.start <= control.at && control.at < run.end,
@@ -2279,6 +2301,12 @@ mod run_control_tests {
         assert_eq!(
             actual, expected,
             "every surviving control belongs to its source run exactly once: {symbols:?} {shapes:?} {md:?}"
+        );
+        expected_text.sort();
+        actual_text.sort();
+        assert_eq!(
+            actual_text, expected_text,
+            "every visible Text source index must be covered exactly once by its original run: {symbols:?} {shapes:?} {md:?}"
         );
         runs.sort_by_key(|run| {
             let source = run.source_chars.unwrap();
@@ -2445,5 +2473,160 @@ mod run_control_tests {
         assert_eq!(runs[0].source_chars, Some(SourceChars { start: 2, end: 3 }));
         assert_eq!(runs[0].path.indices, [0, 2]);
         assert_source_projection(&symbols, &shapes, &md, &segments);
+    }
+    #[test]
+    fn a_trimmed_control_does_not_transfer_visible_text_to_the_space_run() {
+        let symbols = [1, 2, 0];
+        let shapes = [1, 0, 0];
+        let (md, segments) = emit(&exhaustive_document(&symbols, &shapes));
+        assert_eq!(md, "x\n\n");
+        assert_source_projection(&symbols, &shapes, &md, &segments);
+        let runs: Vec<_> = segments
+            .iter()
+            .filter(|segment| segment.kind == SegmentKind::Run)
+            .collect();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].path.indices, [0, 1]);
+        assert_eq!(runs[0].source_chars, Some(SourceChars { start: 1, end: 3 }));
+        assert_eq!(runs[0].style.direct.char_shape_id, Some(0));
+    }
+
+    fn ownership_table(paragraph: Paragraph, html: bool) -> Table {
+        Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: if html { 2 } else { 1 },
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId::default(),
+            table_tail: Vec::new(),
+            cells: vec![Cell {
+                list_attr: 0,
+                col: 0,
+                row: 0,
+                col_span: if html { 2 } else { 1 },
+                row_span: 1,
+                width: HwpUnit(1000),
+                height: HwpUnit(1000),
+                margins: [0; 4],
+                border_fill: BorderFillId::default(),
+                header_tail: Vec::new(),
+                paragraphs: vec![paragraph],
+            }],
+            caption: None,
+            extras: Vec::new(),
+        }
+    }
+
+    fn assert_nested_visible_text_owner(md: &str, segments: &[Segment], parent: &[usize]) {
+        let at: Vec<_> = md
+            .chars()
+            .enumerate()
+            .filter_map(|(at, character)| (character == 'Z').then_some(at))
+            .collect();
+        assert_eq!(
+            at.len(),
+            1,
+            "the known source Text marker must survive exactly once: {md:?}"
+        );
+        let at = at[0];
+        let owners: Vec<_> = segments
+            .iter()
+            .filter(|run| {
+                run.kind == SegmentKind::Run
+                    && run.path.indices.len() == parent.len() + 1
+                    && run.path.indices.starts_with(parent)
+                    && run.start <= at
+                    && at < run.end
+            })
+            .map(|run| {
+                let source = run.source_chars.expect("nested source range");
+                assert!(
+                    source.start <= 2 && 2 < source.end,
+                    "nested visible Text ownership must contain source index 2: {run:?} {md:?}"
+                );
+                (
+                    run.path.indices.clone(),
+                    source.start,
+                    source.end,
+                    run.style.direct.char_shape_id,
+                )
+            })
+            .collect();
+        let mut expected = parent.to_vec();
+        expected.push(1);
+        assert_eq!(
+            owners,
+            [(expected, 1, 3, Some(0))],
+            "the nested visible Text must be covered exactly once by its plain source run: {md:?}"
+        );
+    }
+
+    fn nested_ownership_case(context: &str) {
+        for control in [2, 3] {
+            for bold in [1, 2] {
+                let mut document = exhaustive_document(&[1, control, 0], &[bold, 0, 0]);
+                let mut paragraph = document.sections[0].paragraphs.remove(0);
+                paragraph.chars[2] = HwpChar::Text('Z');
+                let owner = match context {
+                    "gfm" | "html" => Control::Table(ownership_table(paragraph, context == "html")),
+                    "text-box" => Control::Generic(GenericControl {
+                        ctrl_id: *b"gso ",
+                        data: Vec::new(),
+                        paragraph_lists: vec![hwp_model::ParagraphList {
+                            header_data: Vec::new(),
+                            paragraphs: vec![paragraph],
+                        }],
+                        extras: Vec::new(),
+                        raw_children: Vec::new(),
+                        gso_shapes: Vec::new(),
+                        equation: None,
+                        column_def: None,
+                        caption: None,
+                        hwpx_raw_xml: None,
+                        container_box: None,
+                    }),
+                    _ => unreachable!(),
+                };
+                let id = owner.ctrl_id();
+                document.sections[0].paragraphs.push(host(owner, id));
+                let (md, segments) = emit(&document);
+                if context == "html" {
+                    assert!(
+                        md.contains("<table") && md.contains("colspan=\"2\""),
+                        "merged cell must take the HTML path: {md:?}"
+                    );
+                } else if context == "gfm" {
+                    assert!(
+                        md.contains("| ") && !md.contains("<table"),
+                        "simple cell must take the GFM path: {md:?}"
+                    );
+                }
+                let parent: &[usize] = if context == "text-box" {
+                    &[0, 0, 0]
+                } else {
+                    &[0, 0, 0, 0]
+                };
+                assert_nested_visible_text_owner(&md, &segments, parent);
+            }
+        }
+    }
+
+    #[test]
+    fn visible_text_in_a_gfm_cell_keeps_its_source_run() {
+        nested_ownership_case("gfm");
+    }
+
+    #[test]
+    fn visible_text_in_a_text_box_keeps_its_source_run() {
+        nested_ownership_case("text-box");
+    }
+
+    #[test]
+    fn visible_text_in_a_merged_html_cell_keeps_its_source_run() {
+        nested_ownership_case("html");
     }
 }
