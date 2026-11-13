@@ -25,6 +25,7 @@ require_secrets() {
 }
 
 require_team() {
+    local LC_ALL=C
     [ -n "${APPLE_TEAM_ID:-}" ] || fail 'APPLE_TEAM_ID is missing. Set APPLE_TEAM_ID in repository Settings > Secrets and variables > Actions > Variables, then rerun Release.'
     [[ "$APPLE_TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]] || fail 'APPLE_TEAM_ID must contain exactly 10 ASCII letters or digits. Correct it in repository Settings > Secrets and variables > Actions > Variables, then rerun Release.'
 }

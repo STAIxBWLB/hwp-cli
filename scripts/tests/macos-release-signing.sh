@@ -293,13 +293,26 @@ bash "$helper" --dry-run >"$tmp/dry-run.log"
 grep -F 'no signing, notarization, upload, or Gatekeeper acceptance was performed' "$tmp/dry-run.log" >/dev/null
 [ ! -s "$MOCK_LOG" ]
 [ ! -s "$MOCK_CALLS" ]
-python3 - "$root/.github/workflows/release.yml" <<'PYTEST'
+python3 - "${MACOS_SIGNING_WORKFLOW:-$root/.github/workflows/release.yml}" <<'PYTEST'
+import os
 import pathlib
 import re
 import sys
 workflow = pathlib.Path(sys.argv[1]).read_text()
 jobs = dict(re.findall(r"(?ms)^  ([a-z][a-z0-9-]*):\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)", workflow.split("\njobs:\n", 1)[1]))
 upload = jobs["upload-assets"]
+steps = dict(re.findall(r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - |\Z)", upload))
+team_blocks = {
+    "prepare": steps["Prepare macOS Developer ID signing"],
+    "notarize": steps["Notarize the signed macOS executable"],
+    "verify": jobs["verify-macos-assets"],
+}
+selected = os.environ.get("MACOS_SIGNING_WORKFLOW_CASE")
+for name, block in team_blocks.items():
+    if selected and selected != name:
+        continue
+    assert "APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}" in block, f"{name}: signer team must use the repository APPLE_TEAM_ID variable"
+    assert "secrets.APPLE_TEAM_ID" not in block, f"{name}: signer team must not use a secret"
 assert "taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6" in upload
 assert "codesign: ${{ steps.macos-signing.outputs.identity }}" in upload
 assert "codesign-options: runtime" in upload
