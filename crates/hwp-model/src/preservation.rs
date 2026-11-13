@@ -23,6 +23,8 @@ pub enum PreservationCode {
     /// (`hwpx_settings_xml`, `hwp5_xml_template`, ...) was dropped — only the
     /// primary input's fields are carried (D-14).
     DocumentPackagePassthroughDropped,
+    /// HWPX font typeInfo has no verified mapping to native FACE_NAME/PANOSE fields.
+    FontTypeInfoUnrepresentable,
     GsoHeaderUnrepresentable,
     /// One or more GSO (table/picture) object identities were renumbered to
     /// avoid a collision across `hwp merge` inputs — a non-target change, not
@@ -65,6 +67,7 @@ impl PreservationCode {
             Self::ControlRemoved => "control_removed",
             Self::DocumentMetadataSuperseded => "document_metadata_superseded",
             Self::DocumentPackagePassthroughDropped => "document_package_passthrough_dropped",
+            Self::FontTypeInfoUnrepresentable => "font_type_info_unrepresentable",
             Self::GsoHeaderUnrepresentable => "gso_header_unrepresentable",
             Self::GsoObjectIdRenumbered => "gso_object_id_renumbered",
             Self::GsoShapeUnrepresentable => "gso_shape_unrepresentable",
@@ -260,6 +263,7 @@ mod tests {
             ControlRemoved,
             DocumentMetadataSuperseded,
             DocumentPackagePassthroughDropped,
+            FontTypeInfoUnrepresentable,
             GsoHeaderUnrepresentable,
             GsoObjectIdRenumbered,
             GsoShapeUnrepresentable,
@@ -284,6 +288,7 @@ mod tests {
                 | ControlRemoved
                 | DocumentMetadataSuperseded
                 | DocumentPackagePassthroughDropped
+                | FontTypeInfoUnrepresentable
                 | GsoHeaderUnrepresentable
                 | GsoObjectIdRenumbered
                 | GsoShapeUnrepresentable
@@ -302,6 +307,29 @@ mod tests {
             }
         }
         all.to_vec()
+    }
+
+    #[test]
+    fn font_type_info_event_serializes_only_the_closed_public_fields() {
+        let mut report = PreservationReport::new();
+        report.record(PreservationEvent::new(
+            PreservationCode::FontTypeInfoUnrepresentable,
+            PreservationResourceKind::Metadata,
+            PreservationDisposition::Unrepresentable,
+            2,
+        ));
+        assert_eq!(
+            serde_json::to_value(report).unwrap(),
+            serde_json::json!({
+                "contract": "hwp-preservation-report-v1",
+                "events": [{
+                    "code": "font_type_info_unrepresentable",
+                    "resource": "metadata",
+                    "disposition": "unrepresentable",
+                    "count": 2
+                }]
+            })
+        );
     }
 
     /// #179: the published schema's `code` enum must list exactly the wire

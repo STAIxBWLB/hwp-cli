@@ -3271,6 +3271,16 @@ fn emit_doc_info(doc: &Document, warnings: &mut WriteReport) -> Vec<RecordNode> 
     }
     for slot in 0..LANG_COUNT {
         for f in &h.fonts[slot] {
+            if f.type_info.is_some() {
+                // FACE_NAME writes only modeled native fields; no verified typeInfo/PANOSE
+                // mapping exists (§4.2.4 tables 20-22), so record each omitted font site.
+                warnings.loss(
+                    PreservationCode::FontTypeInfoUnrepresentable,
+                    PreservationResourceKind::Metadata,
+                    PreservationDisposition::Unrepresentable,
+                    1,
+                );
+            }
             children.push(emit_face_name(f));
         }
     }
@@ -6958,6 +6968,38 @@ mod tests {
             "no picture stream should be synthesized for an unresolvable reference"
         );
         std::fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn font_type_info_loss_counts_sites_without_exposing_font_metadata() {
+        let mut document = hwp_convert::from_markdown("Font metadata preservation.\n");
+        for (slot, marker) in [(0, "private-font-one"), (1, "private-font-two")] {
+            let font = &mut document.header.fonts[slot][0];
+            font.name = marker.into();
+            font.type_info = Some(format!(" unknown=\"{marker}-classification\""));
+        }
+        let mut report = WriteReport::new();
+        emit_doc_info(&document, &mut report);
+        assert_eq!(report.preservation.events.len(), 1);
+        let event = &report.preservation.events[0];
+        assert_eq!(event.code, PreservationCode::FontTypeInfoUnrepresentable);
+        assert_eq!(event.code.as_str(), "font_type_info_unrepresentable");
+        assert_eq!(event.resource, PreservationResourceKind::Metadata);
+        assert_eq!(event.disposition, PreservationDisposition::Unrepresentable);
+        assert_eq!(event.count, 2);
+        let diagnostic = format!("{:?}", report.preservation);
+        assert!(!diagnostic.contains("private-font"));
+        assert!(!diagnostic.contains("classification"));
+        assert!(!diagnostic.contains("unknown"));
+
+        for language in &mut document.header.fonts {
+            for font in language {
+                font.type_info = None;
+            }
+        }
+        let mut native_report = WriteReport::new();
+        emit_doc_info(&document, &mut native_report);
+        assert!(native_report.preservation.events.is_empty());
     }
 
     fn synth_table(placement: Option<hwp_model::GsoPlacement>) -> Table {
