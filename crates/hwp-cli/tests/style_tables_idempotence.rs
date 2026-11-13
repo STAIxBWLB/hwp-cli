@@ -10,8 +10,9 @@
 //! detector, not a redundant check.
 //!
 //! Deliberately does NOT assert on page counts or glyph metrics (CI render fonts differ from
-//! local ones) and deliberately does NOT skip when a fixture is missing — every input here is
-//! built from committed markdown, so there is no fixture to be missing.
+//! local ones). The byte-stability inputs are committed markdown and a fully synthetic HWPX,
+//! so those checks never skip. A separate guarded private case checks the image-fill refusal;
+//! it is not evidence of byte stability when that fixture is absent.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -87,6 +88,22 @@ fn style_tables(input: &Path, output: &Path) {
 fn validate_ok(path: &Path) {
     let status = hwp().arg("validate").arg(path).status().unwrap();
     assert!(status.success(), "hwp validate {path:?} failed");
+}
+
+fn opaque_container_raw(document: &hwp_model::Document) -> &str {
+    document
+        .sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .flat_map(|paragraph| &paragraph.controls)
+        .find_map(|control| match control {
+            hwp_model::Control::Generic(generic) if generic.container_box.is_some() => generic
+                .hwpx_raw_xml
+                .as_deref()
+                .filter(|raw| raw.contains("<hp:container")),
+            _ => None,
+        })
+        .expect("the synthetic case must exercise a raw-backed opaque container")
 }
 
 const GFM_TABLE_MD: &str = "\
@@ -438,9 +455,9 @@ fn table_record(control: &serde_json::Value) -> Option<TableRecord> {
     Some(TableRecord { cols, cells })
 }
 
-/// Regression for the two defects Codex found on #133.
+/// D-08 coverage for the raw-backed generic case from #133, using only committed synthetic data.
 ///
-/// A real HWPX carrying an `hp:container` (an opaque run-level object whose captured XML is the
+/// An HWPX carrying an `hp:container` (an opaque run-level object whose captured XML is the
 /// ONLY lossless serialization source) is the case the earlier tests missed: they covered
 /// generated documents and a table nested in a table cell, never a raw-backed generic. Two bugs
 /// compounded there. `style_table` returned `true` for every table with at least one column
@@ -450,27 +467,65 @@ fn table_record(control: &serde_json::Value) -> Option<TableRecord> {
 /// already-styled document produced zero edits, which the publish gate could not tell apart from
 /// "no table matched", so the second of two identical runs failed outright.
 ///
-/// This test runs with `--verify` (the semantic-hash self-check). It was --verify-free while the
-/// fixture tripped an unrelated HWPX writer round-trip defect (#135 — explicit no-fill border
-/// fills and empty numbering templates were not written back faithfully); with that fixed, the
-/// full edit/re-read comparison is asserted here too.
+/// The synthetic package has an eligible table and a raw container, without the unsupported
+/// image fills that made the private fixture refuse after #452. It is not a Hancom export or
+/// native compatibility evidence. Every pass still runs the semantic `--verify` self-check.
 #[test]
 fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
-    let source = Path::new(
-        "../../fixtures/pdf-parity/private/complex-proposal-body-v2/source/complex-proposal-body-v2.hwpx",
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/samples/style-tables-opaque.hwpx");
+    let document = hwpx::read_document(&source)
+        .expect("the committed synthetic fixture must always be available")
+        .document;
+    assert!(
+        document.sections.iter().any(|section| {
+            section.paragraphs.iter().any(|paragraph| {
+                paragraph.controls.iter().any(
+                    |control| matches!(control, hwp_model::Control::Table(table) if table.cols > 1),
+                )
+            })
+        }),
+        "the synthetic fixture must contain an eligible table"
     );
-    if fixture_skip::fixture_missing(source) {
-        return;
-    }
+    assert!(
+        document
+            .header
+            .border_fills
+            .iter()
+            .all(|fill| !fill.image_fill_dropped),
+        "the synthetic fixture must not depend on unsupported header image fills"
+    );
+    let raw = opaque_container_raw(&document);
+    assert!(
+        raw.contains("STYLE-TABLES-OPAQUE-SYNTHETIC-MARKER"),
+        "the fixture must retain its opaque payload, not merely a container shell"
+    );
+    assert!(
+        raw.contains("<hp:subList"),
+        "the raw container must carry its opaque content"
+    );
+    assert!(
+        !raw.contains("imgBrush"),
+        "the synthetic raw container must have no image fill"
+    );
     let dir = test_dir("opaque-container");
     let first = dir.join("s1.hwpx");
     let second = dir.join("s2.hwpx");
     let third = dir.join("s3.hwpx");
 
     // Each pass must PUBLISH. Before the fix the second one failed the publish gate outright.
-    style_tables(source, &first);
+    style_tables(&source, &first);
     style_tables(&first, &second);
     style_tables(&second, &third);
+
+    for output in [&first, &second, &third] {
+        let rewritten = hwpx::read_document(output).unwrap().document;
+        assert_eq!(
+            opaque_container_raw(&rewritten),
+            raw,
+            "styling must preserve the captured opaque container"
+        );
+    }
 
     assert_bytes_eq(
         &first,
@@ -480,4 +535,38 @@ fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
     assert_bytes_eq(&second, &third, "opaque container: and stay a fixed point");
     validate_ok(&second);
     validate_ok(&third);
+}
+
+/// #452 deliberately refuses this private image-fill case; it is not a byte-stability input.
+#[test]
+fn style_tables_refuses_private_image_fills_without_publication() {
+    let source = Path::new(
+        "../../fixtures/pdf-parity/private/complex-proposal-body-v2/source/complex-proposal-body-v2.hwpx",
+    );
+    if fixture_skip::fixture_missing(source) {
+        return;
+    }
+    let dir = test_dir("private-image-fill-refusal");
+    let output = dir.join("refused.hwpx");
+    let attempt = hwp()
+        .arg("edit")
+        .arg(source)
+        .arg("-o")
+        .arg(&output)
+        .args(["--style-tables", "official", "--verify"])
+        .output()
+        .unwrap();
+    assert!(
+        !attempt.status.success(),
+        "unmodeled private image fills must refuse"
+    );
+    let stderr = String::from_utf8_lossy(&attempt.stderr);
+    assert!(
+        stderr.contains("image_fill_unrepresentable"),
+        "the refusal must name the image-fill loss: {stderr}"
+    );
+    assert!(
+        !output.exists(),
+        "a refused edit must not publish its output"
+    );
 }

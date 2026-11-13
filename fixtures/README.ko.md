@@ -10,8 +10,8 @@
 > (`skipped-for-missing-fixtures=N (optional=M)`, 목록은 `target/fixture-skips.log`).
 > `HWP_REQUIRE_FIXTURES=1`이면 아래 선택 세트를 뺀 skip이 모두 실패가 된다(#275).
 >
-> **예외: `samples/`는 커밋한다** — 저장소 소유자 자신의 문서를 익명화한 테스트 샘플로,
-> 테스트가 하드 의존한다(skip 없음).
+> **예외: `samples/`는 커밋한다** — 저장소 소유자 문서를 익명화한 샘플과 완전 합성 공개 회귀
+> 패키지를 포함하며, 테스트가 skip 없이 사용한다.
 
 ## samples/ (커밋)
 
@@ -27,6 +27,24 @@
     작성자와 동일한 공개 정보라 유지.
   - 갱신 절차: 소유자가 한글에서 수편집·저장 → 실명 키워드 잔존 검사(0건) →
     `hwp validate` 통과 확인 → 파일 교체 커밋.
+- `style-tables-opaque.hwpx`: raw-backed `hp:container`가 있는 `edit --style-tables`의 바이트
+  안정성 검사용 완전 합성 픽스처. 실제 한컴 저장 파일이 아니며 private 바이트에서 파생하지 않음.
+  - 출처: 릴리스 `ahwp 1.6.2`로 새 공개 GFM 표 `| Field | Value |`, `| --- | --- |`,
+    `| alpha | 1 |`에서 신규 문서 생성. 메타데이터의 작성자는 `agent-hwp synthetic fixture`이며
+    실제 인물·기관 정보는 없음.
+  - 구성: writer가 생성한 header, `Contents/content.hpf` 등 원래 패키지 항목 유지.
+    `crates/hwpx/tests/roundtrip_preserve.rs`의 공개 container 패턴으로 형제 문단을 만들어
+    `</hs:sec>` 앞에 추가. container id는 `77`, 크기는 `1000` x `500`이며 `hp:subList` 문단
+    하나에 `STYLE-TABLES-OPAQUE-SYNTHETIC-MARKER` 포함. 문단 id는 바깥 `9000`, container 안
+    `9001`. `imgBrush`와 이미지 payload 없음.
+  - 재생성: 위 표로 `ahwp new --from source.md --strict -o generated.hwpx` 실행. `--set-meta`로
+    `title=Public synthetic opaque-container table`, `author=agent-hwp synthetic fixture`,
+    `subject=Fully synthetic parser/writer regression fixture; not a Hancom export`를 각각 지정.
+    그다음 공개 XML 패턴을 `Contents/section0.xml`에 추가하고 원래 항목 순서로 재포장. `mimetype`을 첫 번째
+    stored 항목으로 유지. 2행 2열 표 하나와 별도의 raw-backed Generic container가 있으며,
+    표는 container 안에 중첩되지 않음.
+  - 범위: parser/writer 보존과 반복 스타일링의 바이트 안정성만 검증. 한컴 조판·실제 열기·렌더링의
+    정답지로 사용하지 않음.
 
 ## hwp5/
 
