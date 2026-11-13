@@ -2586,7 +2586,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "hwp_styles",
-            "description": "이름 있는 스타일 목록을 hwp-styles-v1 JSON으로. 스타일마다 id·이름·종류·해석된 글자/문단 속성과, 그 스타일을 쓰는 문단의 세그먼트 id(used_by, `hwp cat --with-segments --segments v2`가 내는 id와 동일)를 담는다.",
+            "description": "이름 있는 스타일 목록을 hwp-styles-v1 JSON으로. 스타일마다 id·이름·종류·해석된 글자/문단 속성과, 그 스타일을 쓰는 문단의 세그먼트 id(used_by, `ahwp cat --with-segments --segments v2`가 내는 id와 동일)를 담는다.",
             "inputSchema": {"type": "object", "properties": {
                 "path": {"type": "string"}
             }, "required": ["path"]}
@@ -2622,7 +2622,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자(선택) — 지정 시 치환 범위를 해당 문단으로 좁힌다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2669,7 +2669,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 run/범위만 서식한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2682,7 +2682,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 문단만 정렬한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2695,7 +2695,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자(선택) — 지정 시 anchor 텍스트 대신 해당 문단 앞/뒤에 삽입한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2707,7 +2707,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자(선택) — 지정 시 matching 대신 해당 문단을 삭제한다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2762,7 +2762,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자(선택) — 지정 시 pattern 대신 해당 문단만 모양을 바꾼다. id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2788,7 +2788,7 @@ fn tool_defs() -> Vec<Value> {
                         "address": {"type": "object", "additionalProperties": false,
                             "description": "삽입 기준 문단 — id(체크섬 segment id, 드리프트 검사)와 at({section,paragraph}) 중 정확히 하나. 본문 또는 표 셀 문단이어야 한다",
                             "properties": {
-                                "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                                "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                                 "at": {"type": "object", "additionalProperties": false,
                                     "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
                                     "required": ["section", "paragraph"]}
@@ -2806,7 +2806,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2816,7 +2816,7 @@ fn tool_defs() -> Vec<Value> {
                         "address": {"type": "object", "additionalProperties": false,
                             "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                             "properties": {
-                                "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                                "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                                 "at": {"type": "object", "additionalProperties": false,
                                     "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                     "required": ["section", "paragraph"]},
@@ -2830,7 +2830,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2842,7 +2842,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph[,run]}) 중 정확히 하나; chars [start,end]로 문자 범위를 좁힐 수 있다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}, "run": {"type": "integer"}},
                                 "required": ["section", "paragraph"]},
@@ -2854,7 +2854,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
                                 "required": ["section", "paragraph"]}
@@ -2866,7 +2866,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
                                 "required": ["section", "paragraph"]}
@@ -2880,7 +2880,7 @@ fn tool_defs() -> Vec<Value> {
                     "address": {"type": "object", "additionalProperties": false,
                         "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
                         "properties": {
-                            "id": {"type": "string", "description": "체크섬 segment id(hwp cat --with-segments)"},
+                            "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
                                 "properties": {"section": {"type": "integer"}, "paragraph": {"type": "integer"}},
                                 "required": ["section", "paragraph"]}
@@ -2956,7 +2956,7 @@ fn tool_defs() -> Vec<Value> {
                 "press_head": {"type": "array", "items": {"type": "object", "properties": {
                     "key": {"type": "string"}, "value": {"type": "string"}},
                     "required": ["key", "value"]}, "description": "보도자료 머리(기관명|보도시점|배포일|담당부서|담당자|연락처); markdown·template과 함께 사용 가능"},
-                "template": {"type": "string", "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능"},
+                "template": {"type": "string", "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(ahwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능"},
                 "table_placement": {"type": "string", "enum": ["inline", "floating"], "description": "표 배치(#296): inline=글자처럼 취급(기본), floating=문단 고정으로 긴 표가 페이지를 넘어 나뉨. 입력이 만드는 모든 표에 적용, 그림은 영향 없음"}
             }, "required": ["output"]}
         }),
@@ -3131,7 +3131,7 @@ fn tool_defs() -> Vec<Value> {
                     "input": {"type": "string"},
                     "out_dir": {"type": "string", "description": "조각 출력 디렉터리 (파일명은 \"<입력스템>-NNN.<소문자 확장자>\")"},
                     "pages": {"type": "array", "items": {"type": "string"}, "description": "구역 대신 사용할 쪽 범위 \"N\" 또는 \"N-M\" 목록(1-based, 양끝 포함, 선택)"},
-                    "from": {"type": "string", "description": "분할 대신 형식 있는 범위를 추출할 시작 지점: \"heading:<제목>\"(`hwp cat`이 출력하는 문단 자신의 텍스트, 탭·줄바꿈·고정 공백 포함), \"bookmark:<이름>\", \"at:<구역>.<문단>\"(0-based). pages와 함께 쓸 수 없다. 범위는 한 구역의 최상위 본문 문단 연속 구간이며 표는 통째로 포함된다"},
+                    "from": {"type": "string", "description": "분할 대신 형식 있는 범위를 추출할 시작 지점: \"heading:<제목>\"(`ahwp cat`이 출력하는 문단 자신의 텍스트, 탭·줄바꿈·고정 공백 포함), \"bookmark:<이름>\", \"at:<구역>.<문단>\"(0-based). pages와 함께 쓸 수 없다. 범위는 한 구역의 최상위 본문 문단 연속 구간이며 표는 통째로 포함된다"},
                     "to": {"type": "string", "description": "범위 끝 지점(from과 같은 문법, 기본은 시작 구역의 끝). from과 함께만 사용"},
                     "end_exclusive": {"type": "boolean", "description": "to 문단을 범위에서 제외; 기본 false"},
                     "source_sha256": {"type": "string", "description": "선택을 만든 원본 파일의 SHA-256(16진수); 다르면 아무것도 쓰지 않고 거부"},

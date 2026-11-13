@@ -515,7 +515,7 @@ jobs:
           elif ! grep -q 'archive: $bin-$tag-$target' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml no longer names its archive $bin-$tag-$target, so the published asset name is not the command name plus the target'
-          elif grep -nE 'alias-assets|hwp-"?\$tag|"\$dir/hwp' .github/workflows/release.yml; then
+          elif grep -nE 'alias-assets|(^|[^a])hwp-"?\$tag|"\$dir/hwp' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml publishes an hwp alias or a legacy hwp-<tag>-<target> asset again; 2.0 removed both (#510 Phase 4)'
           elif ! grep -q 'checksum: sha256' .github/workflows/release.yml; then
@@ -816,8 +816,8 @@ jobs:
             status=fail
             evidence="refs/tags/${tag} points at ${tag_sha}, but this run evaluated ${EVALUATED_SHA}; the checkout and the tag disagree about which commit is being released"
           else
-            # Only the install.sh snippets, which all pipe into `sh -s --`. `hwp update --tag
-            # v0.9.0` is a rollback example and is deliberately not compared. Each README must
+            # Only the install.sh snippets, which all pipe into `sh -s --`. `ahwp update --tag
+            # v1.6.2` is a rollback example and is deliberately not compared. Each README must
             # carry the complete pin on its own.
             status=pass
             evidence="the install.sh --tag snippets in README.md and README.ko.md pin ${tag}"

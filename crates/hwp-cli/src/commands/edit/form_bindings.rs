@@ -132,7 +132,7 @@ pub(super) fn execute(
             Vec::new()
         } else {
             vec![format!(
-                "native_preview_or_writer_warning: {}건. 원문은 공개 로그에서 생략했습니다. preview 경로를 지정해 native_warnings를 확인하고 hwp render/certify로 렌더·폰트를 별도 검증하세요",
+                "native_preview_or_writer_warning: {}건. 원문은 공개 로그에서 생략했습니다. preview 경로를 지정해 native_warnings를 확인하고 ahwp render/certify로 렌더·폰트를 별도 검증하세요",
                 preview.native_warnings.len()
             )]
         },

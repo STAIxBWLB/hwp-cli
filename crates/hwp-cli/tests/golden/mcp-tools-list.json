@@ -124,7 +124,7 @@
     "name": "hwp_list_bookmarks"
   },
   {
-    "description": "이름 있는 스타일 목록을 hwp-styles-v1 JSON으로. 스타일마다 id·이름·종류·해석된 글자/문단 속성과, 그 스타일을 쓰는 문단의 세그먼트 id(used_by, `hwp cat --with-segments --segments v2`가 내는 id와 동일)를 담는다.",
+    "description": "이름 있는 스타일 목록을 hwp-styles-v1 JSON으로. 스타일마다 id·이름·종류·해석된 글자/문단 속성과, 그 스타일을 쓰는 문단의 세그먼트 id(used_by, `ahwp cat --with-segments --segments v2`가 내는 id와 동일)를 담는다.",
     "inputSchema": {
       "properties": {
         "path": {
@@ -886,7 +886,7 @@
                         "type": "object"
                       },
                       "chars": {
-                        "description": "A [start, end) WCHAR sub-range, in UTF-16 code units absolute within the source paragraph (A1) — the same coordinate space `restyle_range` already takes, matching render-layout-v1's source_chars and document_split.rs's ParagraphAddress.wchar_offset. This is a DIFFERENT coordinate space from segment-envelope-v2's char_range (Unicode scalars into the rendered markdown); nothing converts between them, so a caller holding a char_range from `hwp cat --segments v2` must convert before composing this field.",
+                        "description": "A [start, end) WCHAR sub-range, in UTF-16 code units absolute within the source paragraph (A1) — the same coordinate space `restyle_range` already takes, matching render-layout-v1's source_chars and document_split.rs's ParagraphAddress.wchar_offset. This is a DIFFERENT coordinate space from segment-envelope-v2's char_range (Unicode scalars into the rendered markdown); nothing converts between them, so a caller holding a char_range from `ahwp cat --segments v2` must convert before composing this field.",
                         "items": {
                           "maximum": 1048575,
                           "minimum": 0,
@@ -1322,7 +1322,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -1413,7 +1413,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -1456,7 +1456,7 @@
                     "type": "object"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -1577,7 +1577,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -1627,7 +1627,7 @@
                     "type": "object"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -1717,7 +1717,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -1758,7 +1758,7 @@
                         "type": "array"
                       },
                       "id": {
-                        "description": "체크섬 segment id(hwp cat --with-segments)",
+                        "description": "체크섬 segment id(ahwp cat --with-segments)",
                         "type": "string"
                       }
                     },
@@ -1824,7 +1824,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -1877,7 +1877,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -1972,7 +1972,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -2026,7 +2026,7 @@
                     "type": "object"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -2228,7 +2228,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -2288,7 +2288,7 @@
                     "type": "object"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -2418,7 +2418,7 @@
                     "type": "array"
                   },
                   "id": {
-                    "description": "체크섬 segment id(hwp cat --with-segments)",
+                    "description": "체크섬 segment id(ahwp cat --with-segments)",
                     "type": "string"
                   }
                 },
@@ -2863,7 +2863,7 @@
           "type": "string"
         },
         "template": {
-          "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(hwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능",
+          "description": "내장 문서 템플릿 영문 slug 또는 한국어 별칭(ahwp new --list-templates 참고); markdown/json과 상호 배타적이며 프레임 인자와는 함께 사용 가능",
           "type": "string"
         }
       },
@@ -3306,7 +3306,7 @@
           "type": "boolean"
         },
         "from": {
-          "description": "분할 대신 형식 있는 범위를 추출할 시작 지점: \"heading:<제목>\"(`hwp cat`이 출력하는 문단 자신의 텍스트, 탭·줄바꿈·고정 공백 포함), \"bookmark:<이름>\", \"at:<구역>.<문단>\"(0-based). pages와 함께 쓸 수 없다. 범위는 한 구역의 최상위 본문 문단 연속 구간이며 표는 통째로 포함된다",
+          "description": "분할 대신 형식 있는 범위를 추출할 시작 지점: \"heading:<제목>\"(`ahwp cat`이 출력하는 문단 자신의 텍스트, 탭·줄바꿈·고정 공백 포함), \"bookmark:<이름>\", \"at:<구역>.<문단>\"(0-based). pages와 함께 쓸 수 없다. 범위는 한 구역의 최상위 본문 문단 연속 구간이며 표는 통째로 포함된다",
           "type": "string"
         },
         "input": {

@@ -7,7 +7,7 @@
 목록 필드 기본값이 리포트에 모두 드러나게 한다.
 
 ```sh
-hwp template examples/template-spec-v1/report-template.yaml \
+ahwp template examples/template-spec-v1/report-template.yaml \
   --data examples/template-spec-v1/report-data.json \
   -o report.hwpx --report
 ```

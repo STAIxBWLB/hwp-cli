@@ -191,7 +191,7 @@ Rust edition 2024, `rust-version = 1.93` 이상이 필요하다.
 ```sh
 ahwp update            # 최신 릴리스로 자체 교체 (체크섬 대조 후 원자적 교체)
 ahwp update --check    # 교체 없이 현재/최신 버전만 확인
-ahwp update --tag v0.9.0   # 특정 버전으로 되돌리기
+ahwp update --tag v1.6.2   # 특정 버전으로 되돌리기(v1.6.0 이상)
 ```
 
 설치 방식을 스스로 판별한다. 한 줄 스크립트·릴리스 아카이브·`cargo install`로 설치했으면 실행 중인

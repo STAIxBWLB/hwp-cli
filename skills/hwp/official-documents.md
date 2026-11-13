@@ -211,7 +211,7 @@ coalesced into its first run before replacement, so the value takes that run's c
 
 ## 6. MCP
 
-Every recipe above maps one-to-one onto the MCP tools when `hwp` runs as an MCP stdio
+Every recipe above maps one-to-one onto the MCP tools when `ahwp` runs as an MCP stdio
 server: `ahwp new` → `hwp_new`, `ahwp fill` → `hwp_fill`, `ahwp render` → `hwp_render`,
 `ahwp validate` → `hwp_validate`, and `ahwp lint` → `hwp_lint`. Always start the server
 with at least one `--root` so the tools can only touch the sandboxed workspace; tool

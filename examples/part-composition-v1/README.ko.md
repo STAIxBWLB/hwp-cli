@@ -17,17 +17,17 @@
 
 ```bash
 # 1) 템플릿을 hwpx로 만든다
-hwp new --from template.md -o template.hwpx
+ahwp new --from template.md -o template.hwpx
 
 # 2) 부분을 앵커에 이식한다 (필드 치환과 부분 교체를 한 번에)
-hwp fill template.hwpx -o result.hwpx \
+ahwp fill template.hwpx -o result.hwpx \
   --set 작성일=2026-08-01 \
   --set 개요=@part-overview.md \
   --set 실적표=@part-table.md \
   --set 구성도=@part-diagram.md
 
 # 3) 검증
-hwp validate result.hwpx
+ahwp validate result.hwpx
 ```
 
 ## 규칙
@@ -35,6 +35,6 @@ hwp validate result.hwpx
 - 앵커 문단은 `{{이름}}`만 담겨 있어야 한다. 문장 중간의 `{{이름}}`은 블록 교체가
   성립하지 않으므로 필드 치환(평문 값)으로만 처리된다.
 - 템플릿과 부분이 함께 쓰는 문자/문단 모양 팔레트는 hwp-cli 기본 계열이어야 한다
-  (`hwp new`·`compose` 산출물). 부분은 템플릿의 타이포그래피를 상속한다.
+  (`ahwp new`·`compose` 산출물). 부분은 템플릿의 타이포그래피를 상속한다.
 - 부분 안 이미지의 상대 경로는 부분 파일 위치가 기준이다. SVG는 검증+결정론적 PNG
   래스터화로 임베드된다(스크립트·외부 참조가 있는 SVG는 거부).

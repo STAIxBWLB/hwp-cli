@@ -5,7 +5,7 @@
 Run the native, deterministic certification profile into a new directory:
 
 ```sh
-hwp certify input.hwpx \
+ahwp certify input.hwpx \
   --policy examples/certification-v1/native-policy.json \
   --report certification-report
 ```
@@ -21,7 +21,7 @@ bounded hwp-cli parser and renderer contract only; it does not claim Hancom rend
 The policy also demonstrates the two optional, content-free evidence sections:
 
 - `document.preservation` loads a `preservation-report-v1` artifact (see
-  `preservation-report.json`, produced for example by `hwp convert --loss-report`) and fails
+  `preservation-report.json`, produced for example by `ahwp convert --loss-report`) and fails
   when the aggregated loss total exceeds `max_loss_codes`.
 - `document.hancom_open` loads a `hancom-verification-receipt-v1` artifact (see
   `hancom-receipt.json`) attesting that Hancom Office opened the document without repair or

@@ -87,13 +87,13 @@ Gatekeeper가 공증 ticket을 온라인으로 조회합니다.
 
 readiness는 자격증명을 사용하지 않는 `--dry-run` 경로만 실행합니다. shell mock은 Apple 서비스
 없이 실패 경로를 검사합니다. 어느 결과도 실제 자격증명, 공증 또는 Gatekeeper의 동작을 증명하지
-않습니다. 첫 실제 검증은 소유자가 승인한 `v1.6.3` 릴리스에서 수행합니다. 두 macOS
+않습니다. 첫 실제 검증은 소유자가 승인한 `v2.0.0` 릴리스에서 수행합니다. 두 macOS
 `verify-macos-assets` 작업 결과를 기록하고, 다운로드한 `ahwp`를 Gatekeeper로 검사합니다.
 빈 임시 디렉터리에서 Apple Silicon용으로 실행하는 예시는 다음과 같습니다.
 
 ```bash
-gh release download v1.6.3 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v1.6.3-aarch64-apple-darwin.tar.gz'
-tar -xzf ahwp-v1.6.3-aarch64-apple-darwin.tar.gz
+gh release download v2.0.0 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v2.0.0-aarch64-apple-darwin.tar.gz'
+tar -xzf ahwp-v2.0.0-aarch64-apple-darwin.tar.gz
 APPLE_TEAM_ID="$(gh variable get APPLE_TEAM_ID --repo STAIxBWLB/agent-hwp)"
 signer_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
 codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./ahwp

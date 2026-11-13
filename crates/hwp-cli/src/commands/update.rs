@@ -300,7 +300,7 @@ fn download_release_with(
     let archive_path = work.join(&archive_name);
     if !transport(&format!("{base}/{archive_name}"), &archive_path)? {
         bail!(
-            "ahwp 릴리스 아카이브가 없습니다. 해당 버전의 플랫폼 자산을 확인한 뒤 다시 실행하세요"
+            "ahwp 릴리스 아카이브가 없습니다. ahwp- 자산은 v1.6.0부터 게시되므로 --tag는 v1.6.0 이상이어야 합니다. 태그와 지원 플랫폼을 확인한 뒤 다시 실행하세요"
         );
     }
     let sha_path = work.join(&sha_name);
@@ -743,7 +743,7 @@ mod tests {
         assert_eq!(target_triple("freebsd", "x86_64"), None);
     }
 
-    /// Canonical names use ahwp for any tag; older hwp assets use the explicit fallback.
+    /// Asset names always use ahwp; there is no hwp- fallback since 2.0 (#510).
     #[test]
     fn 자산_이름() {
         let (a, s) = asset_names("v0.3.0", "aarch64-apple-darwin", Archive::TarGz);

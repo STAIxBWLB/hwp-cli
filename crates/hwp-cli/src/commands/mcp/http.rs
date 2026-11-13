@@ -114,7 +114,7 @@ pub fn serve(
         .map_err(|error| anyhow::anyhow!("수신 주소를 확인할 수 없습니다: {error}"))?;
     // Announce the actually bound address (needed with --addr port 0).
     // stdout is reserved for tool output, so operational logs go to stderr.
-    eprintln!("hwp serve: listening on http://{bound}");
+    eprintln!("ahwp serve: listening on http://{bound}");
 
     install_signal_handlers();
 
@@ -142,7 +142,7 @@ pub fn serve(
     // would otherwise take it once `serve` returns and start a tool call or an
     // upload that exit then cuts off mid-write.
     std::mem::forget(guard);
-    eprintln!("hwp serve: shutting down");
+    eprintln!("ahwp serve: shutting down");
     Ok(())
 }
 
@@ -180,14 +180,14 @@ fn accept_loop(
                 // On failure the closure drops: the connection closes and the
                 // slot returns. The accept thread must not panic here.
                 if let Err(error) = spawned {
-                    eprintln!("hwp serve: 연결 스레드를 만들 수 없습니다: {error}");
+                    eprintln!("ahwp serve: 연결 스레드를 만들 수 없습니다: {error}");
                 }
             }
             Err(error) => {
                 if SHUTDOWN.load(Ordering::SeqCst) {
                     break;
                 }
-                eprintln!("hwp serve: 연결 수신 실패: {error}");
+                eprintln!("ahwp serve: 연결 수신 실패: {error}");
                 // A persistent error (EMFILE) would otherwise spin this loop.
                 thread::sleep(SHUTDOWN_POLL);
             }
@@ -260,7 +260,7 @@ fn route_request(
         _ => write_plain(writer, 404, "not found"),
     };
     if let Err(error) = result {
-        eprintln!("hwp serve: 응답 전송 실패: {error}");
+        eprintln!("ahwp serve: 응답 전송 실패: {error}");
         return;
     }
     // Discard whatever the handler left unread, bounded (D6).
@@ -295,7 +295,7 @@ fn answer_reject(writer: &mut TcpStream, reject: Reject) {
         _ => "bad request",
     };
     if let Err(error) = write_plain(writer, status, message) {
-        eprintln!("hwp serve: 거부 응답 전송 실패: {error}");
+        eprintln!("ahwp serve: 거부 응답 전송 실패: {error}");
         return;
     }
     // A Reject path never read the body, so close gracefully (D6). Body bytes

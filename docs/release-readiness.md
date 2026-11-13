@@ -85,13 +85,13 @@ executable cannot be stapled, so Gatekeeper retrieves the notarization ticket on
 
 Readiness runs only the credential-free `--dry-run` path. Shell mocks exercise failure paths without
 Apple services; neither result proves that real credentials, notarization, or Gatekeeper work.
-The first live acceptance check is the owner-authorized `v1.6.3` release. Record both macOS
+The first live acceptance check is the owner-authorized `v2.0.0` release. Record both macOS
 `verify-macos-assets` jobs and assess the downloaded `ahwp` with Gatekeeper. In an empty temporary
 directory, the Apple Silicon example is:
 
 ```bash
-gh release download v1.6.3 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v1.6.3-aarch64-apple-darwin.tar.gz'
-tar -xzf ahwp-v1.6.3-aarch64-apple-darwin.tar.gz
+gh release download v2.0.0 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v2.0.0-aarch64-apple-darwin.tar.gz'
+tar -xzf ahwp-v2.0.0-aarch64-apple-darwin.tar.gz
 APPLE_TEAM_ID="$(gh variable get APPLE_TEAM_ID --repo STAIxBWLB/agent-hwp)"
 signer_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
 codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./ahwp

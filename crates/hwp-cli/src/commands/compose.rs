@@ -301,10 +301,10 @@ fn output_kind(output: &Path) -> anyhow::Result<bool> {
         Some("hwp") => Ok(true),
         Some("hwpx") => Ok(false),
         Some(other) => anyhow::bail!(
-            "지원하지 않는 출력 확장자입니다: .{other} (`hwp compose`는 .hwp 또는 .hwpx만 지원합니다)"
+            "지원하지 않는 출력 확장자입니다: .{other} (`ahwp compose`는 .hwp 또는 .hwpx만 지원합니다)"
         ),
         None => anyhow::bail!(
-            "출력 파일에 확장자가 없습니다: {} (`hwp compose`는 .hwp 또는 .hwpx만 지원합니다)",
+            "출력 파일에 확장자가 없습니다: {} (`ahwp compose`는 .hwp 또는 .hwpx만 지원합니다)",
             output.display()
         ),
     }

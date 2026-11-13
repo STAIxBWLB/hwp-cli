@@ -238,10 +238,10 @@ pub fn execute(
         Some("hwp") => true,
         Some("hwpx") => false,
         Some(other) => anyhow::bail!(
-            "지원하지 않는 출력 확장자입니다: .{other} (`hwp new`는 .hwp 또는 .hwpx만 지원합니다)"
+            "지원하지 않는 출력 확장자입니다: .{other} (`ahwp new`는 .hwp 또는 .hwpx만 지원합니다)"
         ),
         None => anyhow::bail!(
-            "출력 파일에 확장자가 없습니다: {} (`hwp new`는 .hwp 또는 .hwpx만 지원합니다)",
+            "출력 파일에 확장자가 없습니다: {} (`ahwp new`는 .hwp 또는 .hwpx만 지원합니다)",
             output.display()
         ),
     };

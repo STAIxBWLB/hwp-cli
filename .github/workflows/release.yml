@@ -169,6 +169,17 @@ jobs:
             echo "::error::tag v$tag does not match Cargo.toml [workspace.package] version=$ver. Bump the version with scripts/release.sh before tagging."
             exit 1
           fi
+      # 2.0 dropped alias-assets, the `hwp` alias and the legacy `hwp-<tag>-<target>` assets
+      # (#510 Phase 4). A 1.x release from this tree would ship without the bridge that 1.x
+      # users' `hwp update` fetches, so a major below 2 is refused here.
+      - name: Tag is a 2.x or later release
+        run: |
+          major="${GITHUB_REF_NAME#v}"
+          major="${major%%.*}"
+          if ! [ "$major" -ge 2 ] 2>/dev/null; then
+            echo "::error::tag $GITHUB_REF_NAME is a 1.x (or malformed) release, but this tree no longer publishes the hwp bridge (alias-assets, legacy hwp- assets) that 1.x releases must ship (#510). Cut 1.x from a branch that still has alias-assets."
+            exit 1
+          fi
 
   # Dependency policy (cargo-deny: advisories, bans, licenses, sources) is a release
   # prerequisite only; deny.yml is not a pull request check.
@@ -179,7 +190,7 @@ jobs:
 
   # Create the release shell once (notes come from the CHANGELOG section). Skipped if it
   # already exists (rerun-safe). Created as a draft: `releases/latest` ignores drafts, so
-  # install.sh and `hwp update` cannot pick the release up until publish-release flips it,
+  # install.sh and `ahwp update` cannot pick the release up until publish-release flips it,
   # which happens only after every asset gate has passed.
   create-release:
     needs: [verify-ci, verify-version, deny]
@@ -374,7 +385,7 @@ jobs:
 
   # Everything is uploaded and gated — make the release public. Any earlier job failing
   # leaves the release a draft, so a broken or serverless-incompatible asset is never the
-  # release install.sh and `hwp update` resolve to.
+  # release install.sh and `ahwp update` resolve to.
   # Build provenance for every archive and checksum file on the draft release (the platform
   # archives and the skill bundle), so `gh attestation verify <asset> -R STAIxBWLB/agent-hwp`
   # ties a download to this workflow run. Runs before publish, so a release is never public

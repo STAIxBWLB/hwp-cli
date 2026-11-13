@@ -408,7 +408,7 @@ fn native_field_para() -> Paragraph {
 fn assert_native_inventory(doc: &Document, inherited_cause: &str) {
     let item = occurrence(doc, "native_field", "owner-native-field");
     assert_unsupported(&item, inherited_cause);
-    assert_eq!(item.next_step.as_deref(), Some("hwp fields"));
+    assert_eq!(item.next_step.as_deref(), Some("ahwp fields"));
 }
 #[test]
 fn native_field_is_individually_listed_and_not_bindable() {

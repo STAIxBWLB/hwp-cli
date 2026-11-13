@@ -21,10 +21,16 @@ These changes ship as 2.0.0.
   `scripts/install.sh`, the `hwp` alias that `scripts/install.sh` and the claude.ai bundle's
   `bootstrap.sh` installed, and the `hwp` name the Homebrew formula installed. The formula and
   `scripts/update_formula.sh` now read the `ahwp-` assets, and the container images run
-  `ahwp serve`. The release's macOS archive verification checks the signed `ahwp` alone.
+  `ahwp serve`. The release's macOS archive verification checks the signed `ahwp` alone, and
+  the release workflow refuses a tag below 2.0.0, since a 1.x release must ship the `hwp` bridge.
+  `ahwp update --tag` and `install.sh --tag` accept only v1.6.0 or later, the first releases
+  that publish `ahwp-` assets.
   Migration: replace `hwp` with `ahwp` in scripts and MCP client configurations
   (`command: ahwp`, `args: ["mcp", ...]`); on Homebrew run `brew update && brew upgrade ahwp`, or
-  `brew install ahwp`. MCP tool names (`hwp_*`), the skill name `hwp`, the `HWP_*` environment
+  `brew install ahwp`. A 1.5 or older install cannot `hwp update` to 2.0 (it fetches only the
+  `hwp-` assets 2.0 no longer publishes): rerun `scripts/install.sh` or `brew install ahwp`, or
+  first run `hwp update --tag v1.6.2` and then `ahwp update`. MCP tool names (`hwp_*`), the skill
+  name `hwp`, the `HWP_*` environment
   variables and the schema ids are unchanged. `formula_renames.json` stays, so a machine still
   on formula `hwp` migrates on its next `brew update`
   ([#510](https://github.com/STAIxBWLB/agent-hwp/issues/510)).

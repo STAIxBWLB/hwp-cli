@@ -5,8 +5,8 @@
 `basic.json` and `comprehensive.yaml` are self-contained:
 
 ```bash
-hwp compose examples/document-spec-v1/basic.json -o /tmp/basic.hwpx
-hwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/comprehensive.hwpx
+ahwp compose examples/document-spec-v1/basic.json -o /tmp/basic.hwpx
+ahwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/comprehensive.hwpx
 ```
 
 `image-block.yaml` demonstrates asset-relative image authoring. Put a valid PNG at

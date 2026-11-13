@@ -211,7 +211,7 @@ URL and verifies each against its SHA-256.
 ```sh
 ahwp update            # replace itself with the latest release (checksum-verified, atomic)
 ahwp update --check    # report current and latest versions without replacing
-ahwp update --tag v0.9.0   # roll back to a specific version
+ahwp update --tag v1.6.2   # roll back to a specific version (v1.6.0 or later)
 ```
 
 It detects how it was installed. For the one-line script, a release archive or `cargo install`, it
