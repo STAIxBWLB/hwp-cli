@@ -104,7 +104,7 @@ fn build_opaque_container_hwpx(dir: &Path) -> PathBuf {
     let mut appended = false;
     for index in 0..input.len() {
         let mut entry = input.by_index(index).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry.name().unwrap().into_owned();
         let options = SimpleFileOptions::default().compression_method(entry.compression());
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
