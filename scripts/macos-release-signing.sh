@@ -137,23 +137,47 @@ import zipfile
 with zipfile.ZipFile(sys.argv[2], "w", compression=zipfile.ZIP_DEFLATED) as archive:
     archive.write(sys.argv[1], "ahwp")
 PYZIP
+        notary_submit_failed=false
         if ! xcrun notarytool submit "$work/notary.zip" --key "$key_file" \
             --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" \
             --wait --output-format json >"$work/notary-result.json" 2>"$work/notary-error.log"; then
-            fail 'Notarization submission failed. Check the three APPLE_API_* repository Actions secrets and Apple Notary service access, then rerun Release.'
+            cat "$work/notary-error.log" >&2
+            notary_submit_failed=true
         fi
-        if ! python3 - "$work/notary-result.json" <<'PY'
+        notary_result_accepted=false
+        if python3 - "$work/notary-result.json" <<'PY'
 import json
+import re
 import sys
+
 try:
     with open(sys.argv[1], encoding="utf-8") as handle:
         result = json.load(handle)
-    accepted = isinstance(result, dict) and result.get("status") == "Accepted"
 except (OSError, ValueError):
-    accepted = False
-sys.exit(0 if accepted else 1)
+    result = None
+
+if isinstance(result, dict) and result.get("status") == "Accepted":
+    sys.exit(0)
+
+def bounded(value, pattern):
+    return value if isinstance(value, str) and re.fullmatch(pattern, value) else "unavailable"
+
+submission_id = bounded(result.get("id"), r"[A-Za-z0-9-]{1,128}") if isinstance(result, dict) else "unavailable"
+status = bounded(result.get("status"), r"[A-Za-z][A-Za-z ]{0,63}") if isinstance(result, dict) else "invalid JSON"
+print(f"Notarization result: id={submission_id}; status={status}", file=sys.stderr)
+if submission_id != "unavailable":
+    print(f"Inspect with xcrun notarytool log {submission_id} using the configured API credentials.", file=sys.stderr)
+else:
+    print("No usable submission id; inspect xcrun notarytool history using the configured API credentials.", file=sys.stderr)
+sys.exit(1)
 PY
         then
+            notary_result_accepted=true
+        fi
+        if [ "$notary_submit_failed" = true ]; then
+            fail 'Notarization submission failed. Check the three APPLE_API_* repository Actions secrets and Apple Notary service access, then rerun Release.'
+        fi
+        if [ "$notary_result_accepted" != true ]; then
             fail 'Notarization was not Accepted. Inspect the submission with xcrun notarytool history and xcrun notarytool log using the configured API credentials, correct signing or credentials, and rerun Release.'
         fi
         # A bare Mach-O executable cannot be stapled. Gatekeeper retrieves its ticket online.

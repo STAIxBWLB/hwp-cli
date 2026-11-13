@@ -62,7 +62,15 @@ PYZIPCHECK
 if [ "${MOCK_NOTARY:-Accepted}" = malformed ]; then
     echo not-json
 else
-    printf '{"status":"%s"}\n' "${MOCK_NOTARY:-Accepted}"
+    python3 - <<'PYRESULT'
+import json
+import os
+print(json.dumps({"id": os.environ.get("MOCK_NOTARY_ID", "01234567-89ab-cdef-0123-456789abcdef"), "status": os.environ.get("MOCK_NOTARY", "Accepted"), "extra": "fixture-result-detail-not-requested"}))
+PYRESULT
+fi
+if [ "${MOCK_SUBMIT_FAIL:-0}" = 1 ]; then
+    echo 'HTTP 401: fixture notarization authentication failed' >&2
+    exit 1
 fi
 SH
 chmod +x "$tmp/bin/"*
@@ -113,11 +121,34 @@ for altered in (False, True):
                 archive.addfile(entry, io.BytesIO(data))
 PY
 
-for status in Invalid malformed InProgress; do
+submission_id=01234567-89ab-cdef-0123-456789abcdef
+for status in Invalid InProgress; do
     expect_failure 'Notarization was not Accepted' env MOCK_NOTARY="$status" bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
-    grep -F 'xcrun notarytool history' "$tmp/log" >/dev/null
-    grep -F 'xcrun notarytool log' "$tmp/log" >/dev/null
+    grep -F "id=$submission_id; status=$status" "$tmp/log" >/dev/null
+    grep -F "xcrun notarytool log $submission_id" "$tmp/log" >/dev/null
+    if grep -F 'fixture-result-detail-not-requested' "$tmp/log" >/dev/null; then
+        echo 'FAIL: diagnostic printed fields outside the public id/status receipt' >&2
+        exit 1
+    fi
 done
+expect_failure 'Notarization was not Accepted' env MOCK_NOTARY=malformed bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
+grep -F 'id=unavailable; status=invalid JSON' "$tmp/log" >/dev/null
+grep -F 'No usable submission id; inspect xcrun notarytool history' "$tmp/log" >/dev/null
+expect_failure 'Notarization submission failed' env MOCK_SUBMIT_FAIL=1 MOCK_NOTARY=Invalid bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
+grep -F 'HTTP 401: fixture notarization authentication failed' "$tmp/log" >/dev/null
+grep -F "id=$submission_id; status=Invalid" "$tmp/log" >/dev/null
+expect_failure 'Notarization was not Accepted' env MOCK_NOTARY=Invalid MOCK_NOTARY_ID=$'bad\n::error::injected' bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
+grep -F 'id=unavailable; status=Invalid' "$tmp/log" >/dev/null
+if grep -F 'injected' "$tmp/log" >/dev/null; then
+    echo 'FAIL: unbounded submission id reached the diagnostic' >&2
+    exit 1
+fi
+expect_failure 'Notarization was not Accepted' env MOCK_NOTARY=$'Invalid\n::error::injected' bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
+grep -F "id=$submission_id; status=unavailable" "$tmp/log" >/dev/null
+if grep -F 'injected' "$tmp/log" >/dev/null; then
+    echo 'FAIL: unbounded notarization status reached the diagnostic' >&2
+    exit 1
+fi
 expect_failure 'Code signature verification failed' env MOCK_VERIFY=invalid bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
 expect_failure 'not signed by Developer ID Application' env MOCK_AUTHORITY=absent bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
 expect_failure 'lacks hardened runtime' env MOCK_RUNTIME=absent bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
