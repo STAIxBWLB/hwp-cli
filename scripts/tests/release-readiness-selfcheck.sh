@@ -27,6 +27,9 @@ cd "$(dirname "$0")/../.." || exit 1
 WORKFLOW=.github/workflows/release-readiness.yml
 ROOT="$PWD"
 
+# Signing protocol and workflow wiring are checked with fake tools, never native services.
+bash scripts/tests/macos-release-signing.sh || exit 1
+
 if ! python3 -c "import yaml" 2>/dev/null; then
     echo "== release-readiness self-check: SKIP (PyYAML is not installed)"
     exit 0
@@ -579,6 +582,24 @@ for test_exit in 0 101; do
         cleanup_status=0
     fi
     check "test font directory is removed before corpus (exit $test_exit)" "$cleanup_status"
+done
+
+# A target's failure must survive deletion of its script in the evaluated checkout.
+echo "-- macOS signing dry-run controller"
+mkdir -p "$tmp/macos-controller/scripts"
+for outcome in failure success cancelled; do
+    output="$tmp/macos-controller-$outcome.output"
+    : >"$output"
+    (cd "$tmp/macos-controller" && OUTCOME="$outcome" READINESS_REF=historical \
+        GITHUB_OUTPUT="$output" bash "$steps/gate-macos-signing-dry-run.sh")
+    entry="$(out_value "$output" entry)"
+    case "$outcome" in
+    failure) expected=fail ;;
+    success) expected='n/a' ;;
+    cancelled) expected=pending ;;
+    esac
+    same "missing script with runner outcome $outcome records $expected" \
+        "$(printf '%s' "$entry" | cut -f1-2)" "$(printf 'macos-signing-dry-run\t%s' "$expected")"
 done
 
 if [ "$fail" -ne 0 ]; then
