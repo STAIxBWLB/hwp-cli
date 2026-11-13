@@ -1,6 +1,7 @@
 //! HWP5-target verification must compare represented semantics without accepting real loss.
 //! Public inputs are generated at test time; no private document or binary fixture is copied.
 
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -33,6 +34,39 @@ fn fixture(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(relative)
+}
+
+fn set_public_hold_anchor(input: &Path) {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(input).unwrap()).unwrap();
+    let temporary = input.with_extension("repacked.hwpx");
+    let mut output = zip::ZipWriter::new(std::fs::File::create(&temporary).unwrap());
+    let mut changed = false;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().unwrap().into_owned();
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(entry.compression());
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        if name == "Contents/section0.xml" {
+            let xml = String::from_utf8(bytes).unwrap();
+            assert!(xml.contains("holdAnchorAndSO=\"0\""));
+            bytes = xml
+                .replacen("holdAnchorAndSO=\"0\"", "holdAnchorAndSO=\"1\"", 1)
+                .into_bytes();
+            changed = true;
+        }
+        output.start_file(name, options).unwrap();
+        output.write_all(&bytes).unwrap();
+    }
+    output.finish().unwrap();
+    drop(archive);
+    assert!(
+        changed,
+        "public fixture must contain its placement attribute"
+    );
+    std::fs::remove_file(input).unwrap();
+    std::fs::rename(temporary, input).unwrap();
 }
 
 #[test]
@@ -197,6 +231,9 @@ fn genuinely_unmapped_hwpx_properties_still_refuse_publication() {
         let mut source = hwp_convert::from_markdown(
             "Baseline input.\n\n| Field | Value |\n| --- | --- |\n| alpha | 1 |\n",
         );
+        let baseline = dir.join("baseline.hwpx");
+        hwpx::write_document(&source, &baseline).unwrap();
+        source = hwpx::read_document(&baseline).unwrap().document;
         match kind {
             "tab" => {
                 source.header.tab_stops = vec![hwp_model::TabDef {
@@ -227,7 +264,13 @@ fn genuinely_unmapped_hwpx_properties_still_refuse_publication() {
                         _ => None,
                     })
                     .unwrap();
-                def.secpr_raw_children = vec!["<hp:grid lineGrid=\"123\"/>".into()];
+                let grid = def
+                    .secpr_raw_children
+                    .iter_mut()
+                    .find(|child| child.contains("<hp:grid"))
+                    .unwrap();
+                assert!(grid.contains("lineGrid=\"0\""));
+                *grid = grid.replace("lineGrid=\"0\"", "lineGrid=\"123\"");
             }
             "hold-anchor" => {
                 let table = source
@@ -251,6 +294,16 @@ fn genuinely_unmapped_hwpx_properties_still_refuse_publication() {
         }
         let input = dir.join("source.hwpx");
         hwpx::write_document(&source, &input).unwrap();
+        if kind == "hold-anchor" {
+            // write_table currently hardcodes the flag to zero. Patch only this generated
+            // public input and verify its read-back premise before exercising the HWP5 loss.
+            set_public_hold_anchor(&input);
+            let read = hwpx::read_document(&input).unwrap().document;
+            assert!(read.sections.iter().flat_map(|section| &section.paragraphs)
+                .flat_map(|paragraph| &paragraph.controls).any(|control| {
+                    matches!(control, hwp_model::Control::Table(table) if table.placement.as_ref().is_some_and(|placement| placement.hold_anchor))
+                }), "source must retain hold-anchor before the edit");
+        }
         let original = std::fs::read(&input).unwrap();
         let output = dir.join("refused.hwp");
         let result = metadata_edit(&input, &output);
@@ -277,4 +330,50 @@ fn opaque_equation_loss_still_refuses_publication() {
     assert!(!result.status.success(), "opaque equation loss must refuse");
     assert!(String::from_utf8_lossy(&result.stderr).contains("opaque_control_unrepresentable"));
     assert!(!output.exists(), "lossy equation output must not publish");
+}
+
+#[test]
+fn synthetic_opaque_equation_loss_still_refuses_publication() {
+    let dir = workspace("public-equation-loss");
+    let spec = dir.join("equation.json");
+    std::fs::write(
+        &spec,
+        serde_json::to_vec(&serde_json::json!({
+            "version":"1.0",
+            "sections":[{"blocks":[{"type":"paragraph","runs":[
+                {"type":"equation","script":"\"&\"","width_mm":20,"height_mm":8}
+            ]}]}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let input = dir.join("source.hwpx");
+    let composed = command()
+        .arg("compose")
+        .arg(&spec)
+        .arg("-o")
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(
+        composed.status.success(),
+        "equation setup: {}",
+        String::from_utf8_lossy(&composed.stderr)
+    );
+    let document = hwpx::read_document(&input).unwrap().document;
+    assert!(document.sections.iter().flat_map(|section| &section.paragraphs)
+        .flat_map(|paragraph| &paragraph.controls).any(|control| {
+            matches!(control, hwp_model::Control::Generic(generic) if generic.equation.as_ref().is_some_and(|equation| equation.script == "\"&\""))
+        }), "public source must retain its opaque equation before the edit");
+    let original = std::fs::read(&input).unwrap();
+    let output = dir.join("refused.hwp");
+    let result = metadata_edit(&input, &output);
+    assert!(!result.status.success(), "opaque equation must refuse");
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("opaque_control_unrepresentable"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!output.exists());
+    assert_eq!(std::fs::read(&input).unwrap(), original);
 }
