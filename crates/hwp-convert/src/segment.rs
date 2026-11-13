@@ -276,6 +276,44 @@ pub struct SourceChars {
     pub end: u32,
 }
 
+/// A character control a `run` piece projected as ordinary text (#543). The projected
+/// character alone cannot tell a typed space from a non-breaking one, so the envelope names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunControlKind {
+    /// `TAB` (code 9, an 8-unit inline control), projected as a space in markdown.
+    Tab,
+    /// `HYPHEN` (code 24), projected as `-`.
+    Hyphen,
+    /// `NB_SPACE` (code 30), projected as a space.
+    NbSpace,
+    /// `FW_SPACE` (code 31), projected as a space.
+    FwSpace,
+}
+
+impl RunControlKind {
+    /// The wire name the envelope publishes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunControlKind::Tab => "tab",
+            RunControlKind::Hyphen => "hyphen",
+            RunControlKind::NbSpace => "nb_space",
+            RunControlKind::FwSpace => "fw_space",
+        }
+    }
+}
+
+/// One projected control inside a `run` piece, in both coordinate spaces the piece carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunControl {
+    pub kind: RunControlKind,
+    /// Unicode scalar offset of the projected character in the markdown, the space
+    /// [`Segment::start`]/[`Segment::end`] index. Always inside the piece's own range.
+    pub at: usize,
+    /// The control's WCHAR offset in the source paragraph, the space
+    /// [`Segment::source_chars`] and `edit-ops-v1` `address.chars` use.
+    pub source: u32,
+}
+
 /// One emitted range, its IR coordinates, its id and its style.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
@@ -304,6 +342,9 @@ pub struct Segment {
     /// published as a segment at all, so a `run` here always carries a non-empty range. See the
     /// module doc, "Source offsets".
     pub source_chars: Option<SourceChars>,
+    /// The tab, hyphen, non-breaking and fixed-width space controls this `run` piece projected
+    /// as text, in document order (#543). Empty on every other kind and on a run with none.
+    pub controls: Vec<RunControl>,
 }
 
 /// A span recorded during emission, in the byte coordinates of the buffer being written.
@@ -324,6 +365,10 @@ pub(crate) struct RawSeg {
     /// The source-paragraph WCHAR span this piece emitted, for a `run` piece that emitted text.
     /// Recorded in the same coordinates `address.chars` takes, so no conversion happens anywhere.
     pub source: Option<(u32, u32)>,
+    /// `run` only: each projected control as (kind, byte offset of its projected character in
+    /// this buffer, source WCHAR offset). The byte offset follows the same rebasing as
+    /// `start`/`end`, and an entry whose character did not reach the output is dropped.
+    pub controls: Vec<(RunControlKind, usize, u32)>,
 }
 
 /// The markdown of [`crate::markdown::to_markdown_with`], plus the v2 segment vector.
@@ -342,12 +387,29 @@ pub fn to_markdown_with_segments_v2(
 ///
 /// `remap` carries each raw byte offset through the cleanup deletion map and on to a Unicode
 /// scalar offset — the same two steps the v1 `build_segments` performs.
-pub(crate) fn finalize(raw: Vec<RawSeg>, mut remap: impl FnMut(usize) -> usize) -> Vec<Segment> {
+pub(crate) fn finalize(
+    raw: Vec<RawSeg>,
+    mut remap: impl FnMut(usize) -> usize,
+    mut survives: impl FnMut(usize) -> bool,
+) -> Vec<Segment> {
     let mut out: Vec<Segment> = raw
         .into_iter()
         .filter_map(|seg| {
             let start = remap(seg.start);
             let end = remap(seg.end).max(start);
+            // A control whose projected character the cleanup deleted, or that fell outside
+            // the piece, is not published: `at` must index a character the piece emitted.
+            let controls = seg
+                .controls
+                .iter()
+                .filter(|&&(_, byte, _)| survives(byte))
+                .map(|&(kind, byte, source)| RunControl {
+                    kind,
+                    at: remap(byte),
+                    source,
+                })
+                .filter(|c| c.at >= start && c.at < end)
+                .collect();
             (end > start || seg.kind.may_be_empty() || seg.point).then_some(Segment {
                 kind: seg.kind,
                 id: seg.id,
@@ -364,6 +426,7 @@ pub(crate) fn finalize(raw: Vec<RawSeg>, mut remap: impl FnMut(usize) -> usize) 
                     .source
                     .filter(|&(s, e)| e > s)
                     .map(|(s, e)| SourceChars { start: s, end: e }),
+                controls,
             })
         })
         .collect();
@@ -1658,5 +1721,258 @@ mod tests {
             "blue is the high byte"
         );
         assert_eq!(colorref_to_hex(0x00EE_2211), "#1122EE");
+    }
+}
+
+#[cfg(test)]
+mod run_control_tests {
+    //! #543: the tab, hyphen, non-breaking and fixed-width space controls a run projects as
+    //! text are published with their offset in both coordinate spaces.
+    use super::*;
+    use crate::markdown::MarkdownOptions;
+    use hwp_model::ids::{BorderFillId, CharShapeId, ParaShapeId};
+    use hwp_model::units::HwpUnit;
+    use hwp_model::{
+        Cell, CharShape, Control, Document, GenericControl, HwpChar, ParaShape, Paragraph, Section,
+        Style, Table, ctrl_char,
+    };
+
+    /// `a<TAB>b<HYPHEN>c<NB_SPACE>d<FW_SPACE>e`: every control sits between ordinary text.
+    fn controls_para(shape: u16) -> Paragraph {
+        let mut chars = vec![HwpChar::Text('a')];
+        chars.push(HwpChar::InlineCtrl {
+            code: ctrl_char::TAB,
+            payload: vec![0; 12],
+        });
+        chars.push(HwpChar::Text('b'));
+        chars.push(HwpChar::CharCtrl(ctrl_char::HYPHEN));
+        chars.push(HwpChar::Text('c'));
+        chars.push(HwpChar::CharCtrl(ctrl_char::NB_SPACE));
+        chars.push(HwpChar::Text('d'));
+        chars.push(HwpChar::CharCtrl(ctrl_char::FW_SPACE));
+        chars.push(HwpChar::Text('e'));
+        Paragraph {
+            chars,
+            char_shape_runs: vec![(0, CharShapeId(shape))],
+            ..Default::default()
+        }
+    }
+
+    fn doc_of(paragraphs: Vec<Paragraph>) -> Document {
+        let mut doc = Document {
+            sections: vec![Section {
+                paragraphs,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        doc.header.char_shapes = vec![
+            CharShape::default(),
+            // Bold, so the emphasis close relocates whitespace around the projected spaces.
+            CharShape {
+                attr: 0b10,
+                ..Default::default()
+            },
+        ];
+        doc.header.para_shapes = vec![ParaShape::default()];
+        doc.header.styles = vec![Style {
+            name: "바탕글".into(),
+            char_shape: CharShapeId(0),
+            para_shape: ParaShapeId(0),
+            ..Default::default()
+        }];
+        doc
+    }
+
+    fn emit(doc: &Document) -> (String, Vec<Segment>) {
+        to_markdown_with_segments_v2(doc, &MarkdownOptions::default()).expect("no media_dir")
+    }
+
+    /// Asserts the four controls of [`controls_para`] on `run`, each `at` resolving to its
+    /// projected character in `md` and each `source` to the control's WCHAR offset.
+    fn assert_four(md: &str, run: &Segment) {
+        let chars: Vec<char> = md.chars().collect();
+        let got: Vec<(&str, char, u32)> = run
+            .controls
+            .iter()
+            .map(|c| (c.kind.as_str(), chars[c.at], c.source))
+            .collect();
+        // Source offsets: a=0, TAB=1..9 (8 units), b=9, HYPHEN=10, c=11, NB=12, d=13, FW=14.
+        assert_eq!(
+            got,
+            vec![
+                ("tab", ' ', 1),
+                ("hyphen", '-', 10),
+                ("nb_space", ' ', 12),
+                ("fw_space", ' ', 14)
+            ],
+            "{run:#?}\n{md:?}"
+        );
+        for c in &run.controls {
+            assert!(
+                run.start <= c.at && c.at < run.end,
+                "at inside the piece: {c:?}"
+            );
+            let span = run.source_chars.expect("run source span");
+            assert!(span.start <= c.source && c.source < span.end, "{c:?}");
+        }
+    }
+
+    fn the_run(segs: &[Segment], indices: &[usize]) -> Segment {
+        let runs: Vec<&Segment> = segs
+            .iter()
+            .filter(|s| s.kind == SegmentKind::Run && s.path.indices == indices)
+            .collect();
+        assert_eq!(runs.len(), 1, "{segs:#?}");
+        runs[0].clone()
+    }
+
+    #[test]
+    fn a_top_level_run_publishes_each_projected_control() {
+        let (md, segs) = emit(&doc_of(vec![controls_para(0)]));
+        assert_four(&md, &the_run(&segs, &[0, 0]));
+    }
+
+    /// Bold closes by moving whitespace outside its markers; the controls follow it.
+    #[test]
+    fn a_bold_run_keeps_each_control_on_its_projected_character() {
+        let (md, segs) = emit(&doc_of(vec![controls_para(1)]));
+        assert!(md.contains("**"), "{md}");
+        assert_four(&md, &the_run(&segs, &[0, 0]));
+    }
+
+    /// A bold run that starts and ends with a projected space: the emphasis close moves both
+    /// spaces outside its markers, and each control follows its own character.
+    #[test]
+    fn a_control_relocated_outside_bold_markers_keeps_its_offset() {
+        let p = Paragraph {
+            chars: vec![
+                HwpChar::Text('x'),
+                HwpChar::CharCtrl(ctrl_char::FW_SPACE),
+                HwpChar::Text('a'),
+                HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                HwpChar::Text('y'),
+            ],
+            // x plain, FW_SPACE..NB_SPACE bold, y plain.
+            char_shape_runs: vec![
+                (0, CharShapeId(0)),
+                (1, CharShapeId(1)),
+                (4, CharShapeId(0)),
+            ],
+            ..Default::default()
+        };
+        let (md, segs) = emit(&doc_of(vec![p]));
+        assert!(
+            md.contains(" **a** "),
+            "whitespace moved outside the markers: {md:?}"
+        );
+        let chars: Vec<char> = md.chars().collect();
+        let bold = the_run(&segs, &[0, 1]);
+        let got: Vec<(&str, char, u32)> = bold
+            .controls
+            .iter()
+            .map(|c| (c.kind.as_str(), chars[c.at], c.source))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("fw_space", ' ', 1), ("nb_space", ' ', 3)],
+            "{bold:#?} {md:?}"
+        );
+        for c in &bold.controls {
+            assert!(bold.start <= c.at && c.at < bold.end, "{c:?} {bold:?}");
+        }
+    }
+
+    #[test]
+    fn a_run_without_controls_publishes_none() {
+        let p = Paragraph {
+            chars: "a b-c".chars().map(HwpChar::Text).collect(),
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        let (_, segs) = emit(&doc_of(vec![p]));
+        assert!(segs.iter().all(|s| s.controls.is_empty()), "{segs:#?}");
+    }
+
+    fn host(control: Control, ctrl_id: [u8; 4]) -> Paragraph {
+        let mut host = Paragraph {
+            chars: vec![HwpChar::Text('x')],
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        host.controls.push(control);
+        host.chars.push(HwpChar::ExtCtrl {
+            code: ctrl_char::OBJECT,
+            ctrl_id,
+            payload: Vec::new(),
+            ctrl_index: Some(0),
+        });
+        host
+    }
+
+    #[test]
+    fn a_run_inside_a_table_cell_publishes_its_controls() {
+        let cell = Cell {
+            list_attr: 0,
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: HwpUnit(1000),
+            height: HwpUnit(1000),
+            margins: [0; 4],
+            border_fill: BorderFillId::default(),
+            header_tail: Vec::new(),
+            paragraphs: vec![controls_para(0)],
+        };
+        let table = Table {
+            common_data: Vec::new(),
+            placement: None,
+            attr: 0,
+            rows: 1,
+            cols: 1,
+            cell_spacing: 0,
+            inner_margins: [0; 4],
+            row_cell_counts: vec![1],
+            border_fill: BorderFillId::default(),
+            table_tail: Vec::new(),
+            cells: vec![cell],
+            caption: None,
+            extras: Vec::new(),
+        };
+        let (md, segs) = emit(&doc_of(vec![host(Control::Table(table), *b"tbl ")]));
+        let run = segs
+            .iter()
+            .find(|s| s.kind == SegmentKind::Run && !s.controls.is_empty())
+            .unwrap_or_else(|| panic!("cell run with controls: {segs:#?}"));
+        assert!(run.path.indices.len() > 2, "{run:?}");
+        assert_four(&md, run);
+    }
+
+    #[test]
+    fn a_run_inside_a_text_box_publishes_its_controls() {
+        let g = GenericControl {
+            ctrl_id: *b"gso ",
+            data: Vec::new(),
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![controls_para(0)],
+            }],
+            extras: Vec::new(),
+            raw_children: Vec::new(),
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        };
+        let (md, segs) = emit(&doc_of(vec![host(Control::Generic(g), *b"gso ")]));
+        let run = segs
+            .iter()
+            .find(|s| s.kind == SegmentKind::Run && !s.controls.is_empty())
+            .unwrap_or_else(|| panic!("text-box run with controls: {segs:#?}"));
+        assert!(run.path.indices.len() > 2, "{run:?}");
+        assert_four(&md, run);
     }
 }

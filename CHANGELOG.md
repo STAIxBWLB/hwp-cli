@@ -23,6 +23,17 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   format and form bindings require matching native formats; this does not add cross-format
   output to either command.
 
+**Added**
+
+- `cat --segments v2`: a `run` segment that projects a tab, hyphen, non-breaking space or
+  fixed-width space control as text now lists it in a new `controls` array, each entry
+  `{kind, at, source}`. `at` is the projected character's offset in the envelope's `markdown`
+  (the `char_range` space) and `source` the control's offset in `source_chars` space, the
+  coordinates `edit-ops-v1` `address.chars` takes. A consumer can now tell a typed space or `-`
+  from the stored control before turning a selection into a text replace. The key is absent
+  on a run with none, and the projected text is unchanged. The envelope is now
+  `schema_version` `1.2` ([#543](https://github.com/STAIxBWLB/agent-hwp/issues/543)).
+
 **Fixed**
 
 - `edit --verify` projects known HWP5 writer materialization when editing HWPX into `.hwp`,
@@ -33,6 +44,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   `.hwpx` remedy; CLI conversion and merge report the loss and refuse under `--strict`
   (MCP `hwp_convert` remains strict by default).
   The font mapping remains tracked under [#540](https://github.com/STAIxBWLB/agent-hwp/issues/540).
+
 
 ## [1.6.3]
 

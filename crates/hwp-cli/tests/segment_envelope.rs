@@ -37,7 +37,9 @@ fn sample() -> PathBuf {
 /// content hash, matching the pins edit-ops-v1 and edit-report-v1 already carry in edit_ops.rs.
 /// Any schema edit — even a description tweak — must consciously update this constant, because
 /// hwp-editor parses this contract from a separate repository and silent drift is an API break.
-/// Re-pinned deliberately for the #518 nit: only the `$defs/segment` `$comment` and the
+/// Re-pinned deliberately for #543: schema_version 1.2 adds the optional `controls` array on
+/// `run` segments, its `$defs/run_control`, and the matching `dependentSchemas` entry. Before
+/// that, re-pinned deliberately for the #518 nit: only the `$defs/segment` `$comment` and the
 /// `source_chars` description changed, so that neither claims the converse rule (`kind = run`
 /// implies the field) that `dependentSchemas` does not enforce. No field, kind, required entry or
 /// `schema_version` moved, so the content hash changes while the contract a consumer parses does
@@ -55,7 +57,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "87bccd13de89efddc986b695712ada51630e82d04c6365b8bc3a23595f6c0991",
+        actual, "f96db56a5b0caf22717d9424752d03541a05ccb8da0890718abf621e477eaf8f",
         "segment-envelope-v2.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -301,7 +303,7 @@ fn representative_envelope() -> serde_json::Value {
 
     serde_json::json!({
         "contract": "hwp-segment-envelope-v2",
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "markdown": "본문",
         "segments": segments,
     })
@@ -316,7 +318,7 @@ fn the_v2_schema_accepts_the_published_shape() {
         panic!("the v2 schema rejected the published shape: {e}");
     }
     assert_eq!(value["contract"], "hwp-segment-envelope-v2");
-    assert_eq!(value["schema_version"], "1.1");
+    assert_eq!(value["schema_version"], "1.2");
 }
 
 /// The tripwire for the reflex this contract is most likely to lose to. Segment ids are NOT
@@ -472,7 +474,7 @@ fn the_v2_markdown_envelope_validates_against_the_published_schema() {
         panic!("the schema rejected a real v2 markdown envelope: {e}");
     }
     assert_eq!(value["contract"], "hwp-segment-envelope-v2");
-    assert_eq!(value["schema_version"], "1.1");
+    assert_eq!(value["schema_version"], "1.2");
     assert!(
         value["markdown"].is_string(),
         "the markdown carrier must be present for --format markdown"

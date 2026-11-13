@@ -77,8 +77,8 @@ pub use official::{
     profile, profiles,
 };
 pub use segment::{
-    CharAttrs, ParaAttrs, Segment, SegmentKind, SegmentStyle, StyleLevel,
-    to_markdown_with_segments_v2,
+    CharAttrs, ParaAttrs, RunControl, RunControlKind, Segment, SegmentKind, SegmentStyle,
+    StyleLevel, to_markdown_with_segments_v2,
 };
 pub use segment_id::{
     SegmentPath, canonical_char_shape_runs, cell_id, control_id, paragraph_id, picture_id, run_id,

@@ -28,8 +28,8 @@ use hwp_model::{
 };
 
 use crate::segment::{
-    RawSeg, Segment, SegmentKind, SegmentStyle, always_has_para_segment, char_shape_id_at,
-    summarize,
+    RawSeg, RunControlKind, Segment, SegmentKind, SegmentStyle, always_has_para_segment,
+    char_shape_id_at, summarize,
 };
 use crate::segment_id::{
     SegmentPath, canonical_char_shape_runs, cell_id, control_id, paragraph_id, picture_id, run_id,
@@ -265,6 +265,13 @@ impl Body {
         for mut seg in segs {
             seg.start = map(seg.start);
             seg.end = map(seg.end).max(seg.start);
+            // A control whose projected character was trimmed away did not reach this buffer.
+            seg.controls = seg
+                .controls
+                .into_iter()
+                .filter(|&(_, off, _)| off >= lo && off < hi)
+                .map(|(kind, off, source)| (kind, map(off), source))
+                .collect();
             self.segs.push(seg);
         }
     }
@@ -274,6 +281,30 @@ impl Body {
         let base = self.s.len();
         self.s.push_str(text);
         self.absorb(segs, lo, lo + text.len(), &[(lo, base)]);
+    }
+
+    /// Records a control the walk just projected as the one character ending at the cursor
+    /// (#543), on the run piece that is open. Outside v2 there is no open run, so this is free.
+    fn note_control(&mut self, kind: RunControlKind, source: u32) {
+        let at = self.s.len();
+        if let Some(run) = self.open_run.as_mut() {
+            // The projection is one ASCII byte, so the character starts one byte back.
+            run.controls.push((kind, at - 1, source));
+        }
+    }
+
+    /// Applies a byte move [`close_span_moves`] made inside this buffer to the control offsets the
+    /// open run recorded, so each still points at its own projected character.
+    fn shift_controls(&mut self, moves: &[ByteMove]) {
+        // A span can outlive a run whose marks matched the next one, so runs already closed
+        // into `segs` follow the move too.
+        for run in self.open_run.iter_mut().chain(self.segs.iter_mut()) {
+            for (_, off, _) in run.controls.iter_mut() {
+                for m in moves {
+                    *off = m.apply(*off);
+                }
+            }
+        }
     }
 
     /// Closes the open run at the cursor.
@@ -330,16 +361,29 @@ fn finalize_v2(cleaned: &str, deletions: &[(usize, usize)], raw: Vec<RawSeg>) ->
     let map = DeletionMap::new(deletions);
     let clen = cleaned.len();
     let at = |off: usize| floor_char_boundary(cleaned, map.remap(off).min(clen));
-    let mut bounds: Vec<usize> = raw.iter().flat_map(|s| [at(s.start), at(s.end)]).collect();
+    let mut bounds: Vec<usize> = raw
+        .iter()
+        .flat_map(|s| {
+            [at(s.start), at(s.end)]
+                .into_iter()
+                .chain(s.controls.iter().map(|&(_, off, _)| at(off)))
+        })
+        .collect();
     bounds.sort_unstable();
     bounds.dedup();
     let char_bounds = bytes_to_chars(cleaned, &bounds);
-    crate::segment::finalize(raw, |off| {
-        let byte = at(off);
-        char_bounds[bounds
-            .binary_search(&byte)
-            .expect("경계는 bounds에 반드시 존재")]
-    })
+    // A control's projected character survives only if the cleanup did not delete its byte.
+    let survives = |off: usize| map.remap(off) != map.remap(off + 1);
+    crate::segment::finalize(
+        raw,
+        |off| {
+            let byte = at(off);
+            char_bounds[bounds
+                .binary_search(&byte)
+                .expect("경계는 bounds에 반드시 존재")]
+        },
+        survives,
+    )
 }
 
 /// Emits one footnote/endnote definition at the document end in GFM footnote syntax.
@@ -769,6 +813,45 @@ struct Span {
     content_at: usize,
 }
 
+/// One byte relocation [`close_span_moves`] performs: `len` bytes that started at `from` now start at
+/// `to`, and everything between shifts by `len` the other way.
+#[derive(Clone, Copy)]
+struct ByteMove {
+    from: usize,
+    to: usize,
+    len: usize,
+}
+
+impl ByteMove {
+    /// Where a byte that was at `off` sits after the move.
+    fn apply(self, off: usize) -> usize {
+        let ByteMove { from, to, len } = self;
+        if off >= from && off < from + len {
+            to + (off - from)
+        } else if to < from && off >= to && off < from {
+            off + len
+        } else if to > from && off >= from + len && off < to + len {
+            off - len
+        } else {
+            off
+        }
+    }
+}
+
+/// Closes an emphasis span on a [`Body`]: the open run's recorded controls follow the whitespace the
+/// close relocates, so `at` keeps pointing at the projected character (#543).
+fn close_body_span(body: &mut Body, marks: Marks, span: Span, html: bool) {
+    let moves = close_span_moves(&mut body.s, marks, span, html);
+    body.shift_controls(&moves);
+}
+
+/// Closes every open mark and resets them (a link boundary, a line break), keeping the
+/// recorded controls in step. A later text character reopens what it needs.
+fn close_body_marks(body: &mut Body, marks: &mut Marks, span: Span, html: bool) {
+    close_body_span(body, *marks, span, html);
+    *marks = Marks::default();
+}
+
 /// 강조 스팬을 닫되 GFM 파싱 규칙을 지킨다.
 ///
 /// GFM에서 `**`/`*`/`~~`는 닫는 구분자 **앞**이나 여는 구분자 **뒤**에 공백이 있으면
@@ -777,15 +860,18 @@ struct Span {
 /// 내용이 공백뿐이면 마커를 아예 내지 않는다(`** **` 방지).
 /// HTML 모드(`<strong>` 등)나 밑줄/첨자처럼 HTML 태그로 방출하는 효과만의 스팬은 공백에
 /// 무관하므로 그대로 닫는다. `marks`가 비었으면(리셋 후) 아무것도 하지 않는다.
-fn close_span(body: &mut String, marks: Marks, span: Span, html: bool) {
+///
+/// Returns the byte moves it made inside `body`, in order, so recorded offsets can follow them.
+fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> Vec<ByteMove> {
+    let mut moves = Vec::new();
     if marks == Marks::default() {
-        return;
+        return moves;
     }
     // GFM 구분자가 없으면(HTML 모드이거나 밑줄/첨자뿐) 공백 재배치가 필요 없다.
     let needs_fix = !html && (marks.bold || marks.italic || marks.strike);
     if !needs_fix {
         body.push_str(&marks.close(html));
-        return;
+        return moves;
     }
     // 공백 판정은 char 단위 trim(멀티바이트 공백 U+3000 등 char 경계 안전).
     let content = &body[span.content_at..];
@@ -793,27 +879,41 @@ fn close_span(body: &mut String, marks: Marks, span: Span, html: bool) {
     let kept_len = content.trim_end().len();
     if kept_len == 0 {
         // 내용이 공백뿐 — 여는 마커를 제거하고 공백만 남긴다.
+        // The content moves back over the removed marker; no control sits inside a marker.
+        let content_len = body.len() - span.content_at;
+        moves.push(ByteMove {
+            from: span.content_at,
+            to: span.open_at,
+            len: content_len,
+        });
         body.replace_range(span.open_at..span.content_at, "");
-        return;
+        return moves;
     }
     // 후행 공백을 떼어 두고, 다듬은 내용 뒤에 닫는 마커를 붙인 다음 공백을 복원한다.
     let trail = body[span.content_at + kept_len..].to_string();
     body.truncate(span.content_at + kept_len);
-    body.push_str(&marks.close(html));
+    let close = marks.close(html);
+    body.push_str(&close);
     body.push_str(&trail);
+    if !trail.is_empty() {
+        moves.push(ByteMove {
+            from: span.content_at + kept_len,
+            to: span.content_at + kept_len + close.len(),
+            len: trail.len(),
+        });
+    }
     // 선두 공백은 여는 마커 앞으로 옮긴다.
     if lead_len > 0 {
         let lead = body[span.content_at..span.content_at + lead_len].to_string();
         body.replace_range(span.content_at..span.content_at + lead_len, "");
         body.insert_str(span.open_at, &lead);
+        moves.push(ByteMove {
+            from: span.content_at,
+            to: span.open_at,
+            len: lead_len,
+        });
     }
-}
-
-/// 열린 마크를 전부 닫고 상태를 리셋한다(링크 경계·줄바꿈 등 강제 경계).
-/// 이후 Text 문자가 오면 모양 전환 로직이 다시 연다.
-fn close_marks(body: &mut String, marks: &mut Marks, span: Span, html: bool) {
-    close_span(body, *marks, span, html);
-    *marks = Marks::default();
+    moves
 }
 
 /// Returns whether the paragraph emitted content of its own, as opposed to nothing or only a
@@ -1119,7 +1219,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
                 want.underline = false;
             }
             if want != marks {
-                close_span(&mut body, marks, span, ctx.html_mode);
+                close_body_span(&mut body, marks, span, ctx.html_mode);
                 span.open_at = body.len();
                 // 런 경계는 여기 — close_span이 직전 스팬의 공백을 마커 밖으로 재배치한
                 // **뒤**이자 새 여는 마커를 밀어 넣기 **전**이다. 그래서 두 런은 각자
@@ -1159,18 +1259,28 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
             }
             HwpChar::CharCtrl(code) => match *code {
                 ctrl_char::LINE_BREAK => {
-                    close_marks(&mut body, &mut marks, span, ctx.html_mode);
+                    close_body_marks(&mut body, &mut marks, span, ctx.html_mode);
                     body.push_str(if ctx.html_mode { "<br/>" } else { "  \n" });
                 }
-                ctrl_char::HYPHEN => body.push('-'),
-                ctrl_char::NB_SPACE | ctrl_char::FW_SPACE => body.push(' '),
+                ctrl_char::HYPHEN => {
+                    body.push('-');
+                    body.note_control(RunControlKind::Hyphen, wchar_pos);
+                }
+                ctrl_char::NB_SPACE => {
+                    body.push(' ');
+                    body.note_control(RunControlKind::NbSpace, wchar_pos);
+                }
+                ctrl_char::FW_SPACE => {
+                    body.push(' ');
+                    body.note_control(RunControlKind::FwSpace, wchar_pos);
+                }
                 _ => {}
             },
             HwpChar::InlineCtrl { code, .. } => {
                 if *code == ctrl_char::FIELD_END {
                     // 하이퍼링크 표시 텍스트 종료 → `](URL)`/`</a>`로 닫는다.
                     if let Some(url) = link_url.take() {
-                        close_marks(&mut body, &mut marks, span, ctx.html_mode);
+                        close_body_marks(&mut body, &mut marks, span, ctx.html_mode);
                         if ctx.html_mode {
                             body.push_str("</a>");
                         } else {
@@ -1182,6 +1292,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
                     body.close_field();
                 } else if *code == ctrl_char::TAB {
                     body.push(' ');
+                    body.note_control(RunControlKind::Tab, wchar_pos);
                 }
             }
             HwpChar::ExtCtrl {
@@ -1199,7 +1310,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
                         && let Some(url) = crate::field::hyperlink_url(control)
                     {
                         // 하이퍼링크 필드 시작 → `[`/`<a href>` 방출, 이후 표시 텍스트를 링크로 묶는다.
-                        close_marks(&mut body, &mut marks, span, ctx.html_mode);
+                        close_body_marks(&mut body, &mut marks, span, ctx.html_mode);
                         if ctx.html_mode {
                             body.push_str("<a href=\"");
                             for c in url.chars() {
@@ -1232,7 +1343,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
         }
         wchar_pos += ch.wchar_width();
     }
-    close_span(&mut body, marks, span, ctx.html_mode);
+    close_body_span(&mut body, marks, span, ctx.html_mode);
     // The walk has consumed the whole paragraph, so the last piece's source span ends at the
     // paragraph's end — the same bound `run_wchar_bounds` gives the last canonical run.
     body.source_pos = wchar_pos;
@@ -1269,6 +1380,7 @@ fn para_segment(
         end,
         point,
         source: None,
+        controls: Vec::new(),
     })
 }
 
@@ -1301,6 +1413,7 @@ fn open_run_segment(
         point: false,
         // Filled in by `close_run_at`: the end is only known when the piece ends.
         source: Some((source_at, source_at)),
+        controls: Vec::new(),
     });
 }
 
@@ -1330,6 +1443,7 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             end: at,
             point: false,
             source: None,
+            controls: Vec::new(),
         });
     } else if code == ctrl_char::FIELD_START && crate::field::is_field_ctrl_id(&g.ctrl_id) {
         body.open_fields.push(RawSeg {
@@ -1343,6 +1457,7 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             end: 0,
             point: false,
             source: None,
+            controls: Vec::new(),
         });
     }
 }
@@ -1369,7 +1484,7 @@ fn push_block(
     block: Body,
     span: Span,
 ) {
-    close_marks(body, marks, span, html);
+    close_body_marks(body, marks, span, html);
     flush_inline(body, fragments);
     fragments.push(Fragment::Block(block));
 }
@@ -1429,6 +1544,7 @@ fn render_control(
                     end,
                     point: false,
                     source: None,
+                    controls: Vec::new(),
                 });
             }
         }
@@ -1459,6 +1575,7 @@ fn render_control(
                     end,
                     point: false,
                     source: None,
+                    controls: Vec::new(),
                 });
             }
             push_block(body, marks, ctx.html_mode, fragments, block, span);
@@ -1708,6 +1825,7 @@ fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body
                 end,
                 point: false,
                 source: None,
+                controls: Vec::new(),
             });
         }
         if let Some(slot) = grid[row].get_mut(cell.col as usize) {
@@ -1832,6 +1950,7 @@ fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Bod
                     end,
                     point: false,
                     source: None,
+                    controls: Vec::new(),
                 });
             }
         }
