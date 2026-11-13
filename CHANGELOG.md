@@ -22,6 +22,11 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   share a temp file. The name took a clock reading, so two calls in the same nanosecond wrote,
   read and deleted one file, failing with an HWPX package integrity error; it now takes a
   process-wide counter ([#533](https://github.com/STAIxBWLB/agent-hwp/issues/533)).
+- `edit`: progress echoes on stderr quote user values. `--set-meta` printed its value as is, so a
+  value with a newline could forge an `Error: ` line ahead of a later real refusal; it now quotes
+  and escapes the value like every other echo, as do the `--set-para` and `--set-cell-para`
+  property lists and the typed `image` and `seal` paths
+  ([#530](https://github.com/STAIxBWLB/agent-hwp/issues/530)).
 
 ## [1.6.2]
 

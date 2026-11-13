@@ -1391,7 +1391,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 for spec in specs {
                     let before = doc.clone();
                     hwp_convert::apply_meta(&mut doc, spec).map_err(|e| anyhow::anyhow!(e))?;
-                    eprintln!("메타데이터 설정: {spec}");
+                    eprintln!("메타데이터 설정: {spec:?}");
                     record_effect(
                         &before,
                         &doc,
@@ -1629,7 +1629,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         eprintln!("경고: 문단모양 대상 {pattern:?}를 찾지 못했습니다");
                         unapplied.push(format!("--set-para {spec:?}"));
                     } else {
-                        eprintln!("문단 모양: {pattern:?} {kv} ({n}건)");
+                        eprintln!("문단 모양: {pattern:?} {kv:?} ({n}건)");
                         record_effect(
                             &before,
                             &doc,
@@ -1654,7 +1654,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                         eprintln!("경고: 셀 문단모양 대상 {loc:?}에 적용할 속성이 없습니다");
                         unapplied.push(format!("--set-cell-para {spec:?}"));
                     } else {
-                        eprintln!("셀 문단 모양: 표{ti} ({r},{c}) {kv} ({n}건)");
+                        eprintln!("셀 문단 모양: 표{ti} ({r},{c}) {kv:?} ({n}건)");
                         record_effect(
                             &before,
                             &doc,
@@ -3603,7 +3603,7 @@ fn apply_typed_operation(
                 .unwrap_or(ImageSize::Natural);
             hwp_convert::insert_image(doc, anchor, path, size)
                 .map_err(|error| anyhow::anyhow!(error))?;
-            eprintln!("이미지 삽입: {anchor:?} 뒤에 {}", path.display());
+            eprintln!("이미지 삽입: {anchor:?} 뒤에 {path:?}");
             *edits += 1;
         }
         TypedEditOperation::Seal {
@@ -3614,7 +3614,7 @@ fn apply_typed_operation(
             let measure = seal_measurer(doc);
             hwp_convert::insert_seal(doc, anchor, path, *size_mm, measure)
                 .map_err(|error| anyhow::anyhow!(error))?;
-            eprintln!("도장 날인: {anchor:?} 위에 {}", path.display());
+            eprintln!("도장 날인: {anchor:?} 위에 {path:?}");
             *edits += 1;
         }
         TypedEditOperation::SetField { name, value } => {
