@@ -1,20 +1,20 @@
 //! IR → GFM markdown.
 //!
-//! 매핑 규칙:
-//! - "개요 N" 스타일 문단 → `#` × N 헤딩
-//! - 문자 모양 굵게/기울임 → `**`/`*` 스팬, 취소선 → `~~`, 밑줄·위/아래첨자 →
-//!   `<u>`·`<sup>`·`<sub>` (char_shape_runs 기반)
-//! - 하이퍼링크(%hlk 필드) → `[표시텍스트](URL)`
-//! - 이미지(Picture) → `![image]()` (또는 media_dir 지정 시 추출·상대참조)
-//! - 표 → GFM 표 (첫 행을 헤더로). 병합 셀(col_span/row_span>1)이나 셀 안 중첩 표가
-//!   있으면 HTML `<table>`(colspan/rowspan + 인라인 HTML 태그)로 폴백 — 내용 보존 우선
-//! - 글머리표/번호 문단 → `- `/`N. ` 목록. Numbered heads always export the
+//! Mapping rules:
+//! - Outline-style paragraphs ("개요 N") become `#` repeated N times.
+//! - Bold/italic character shapes become `**`/`*` spans; strikeout becomes `~~`;
+//!   underline/superscript/subscript become `<u>`/`<sup>`/`<sub>` from char_shape_runs.
+//! - Hyperlinks (%hlk fields) become `[label](URL)`.
+//! - Pictures become `![image]()` or extracted relative references when media_dir is set.
+//! - Tables become GFM tables with the first row as the header. Merged cells or nested tables
+//!   require HTML `<table>` with colspan/rowspan and inline tags to preserve content.
+//! - Bullet/number paragraphs become `- ` / `N. ` lists. Numbered heads always export the
 //!   item's ordinal in digit form ("3."), since GFM ordered markers are digits
 //!   only — non-digit engine marks ("가.", "㉮") must not harden into literal
 //!   text on the md round trip (#134).
-//! - 각주/미주 → 본문 `[^N]`/`[^eN]` 마커 + 문서 끝 정의 (GFM 풋노트)
-//! - 수식(eqed) → 인라인 `$스크립트$`, 블록 `$$스크립트$$` (HWP 수식 스크립트 원문)
-//! - 줄나눔(10) → 강제 줄바꿈, 탭 → 공백
+//! - Footnotes/endnotes become inline `[^N]`/`[^eN]` markers and trailing GFM definitions.
+//! - Equations (eqed) become inline `$script$` or block `$$script$$`, preserving HWP script.
+//! - Line breaks (10) become hard breaks; tabs become spaces.
 
 use std::fs::OpenOptions;
 use std::io::{Error, ErrorKind, Write};
@@ -36,60 +36,60 @@ use crate::segment_id::{
     table_id,
 };
 
-/// markdown 출력 옵션.
+/// Markdown output options.
 #[derive(Default)]
 pub struct MarkdownOptions<'a> {
-    /// 이미지 바이너리를 추출할 디렉터리. `Some`이면 이미지를 `image1.png` 식으로
-    /// 그 디렉터리에 뽑고 `![image](접두사/image1.png)`로 참조한다(디렉터리는
-    /// 첫 이미지에서 지연 생성 — 이미지가 없으면 만들지 않는다). `None`이면 기존처럼
-    /// 빈 참조 `![image]()`를 유지한다(동작 불변).
+    /// Directory for extracted image binaries. With `Some`, images are written there as
+    /// `image1.png`, etc., and referenced as `![image](prefix/image1.png)`. The directory is
+    /// created lazily for the first image, so an image-free document creates no directory.
+    /// With `None`, the existing empty `![image]()` references are retained.
     pub media_dir: Option<&'a Path>,
-    /// 이미지 참조 경로 접두사. `None`이면 `media_dir`의 디렉터리명을 쓴다(기존 동작).
-    /// CLI `--media-dir figs`처럼 사용자가 준 상대경로를 링크에 그대로 쓸 때 지정한다.
+    /// Image reference prefix. `None` uses the media_dir directory name, preserving existing behavior.
+    /// Set this to keep a user-provided relative path such as CLI `--media-dir figs` in links.
     pub media_prefix: Option<&'a str>,
-    /// 텍스트 추출 옵션(머리말/꼬리말·숨은 설명 포함 여부). 기본은 제외.
+    /// Text extraction options: headers/footers and hidden comments are excluded by default.
     pub text: TextOptions,
 }
 
-/// markdown 출력의 문자 범위 `[start, end)`가 유래한 원본 IR 좌표.
+/// Source IR coordinates for the character range `[start, end)` in Markdown output.
 ///
-/// 오프셋은 바이트가 아니라 **유니코드 스칼라(문자)** 단위다 — Python `str` 인덱싱과
-/// 동일하므로 소비자가 `md[start:end]`로 그대로 슬라이스할 수 있다. 좌표는 IR
-/// (`--format json`)의 `sections[]`/`paragraphs[]` 인덱스라 재디코드에도 안정적이다.
+/// Offsets count **Unicode scalars (characters)**, not bytes, matching Python `str` indexing.
+/// Consumers can slice `md[start:end]` directly. The section/paragraph indices refer to the
+/// IR (`--format json`) and remain stable across decoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkdownSegment {
-    /// `doc.sections[]` 인덱스.
+    /// Index into `doc.sections[]`.
     pub section: usize,
-    /// `sections[section].paragraphs[]` 인덱스 (최상위 문단).
+    /// Index into `sections[section].paragraphs[]` (top-level paragraphs).
     pub para: usize,
-    /// 문자 오프셋(포함).
+    /// Inclusive character offset.
     pub start: usize,
-    /// 문자 오프셋(제외).
+    /// Exclusive character offset.
     pub end: usize,
 }
 
-/// IR 전체를 GFM markdown으로 직렬화한다(기존 시그니처 유지 — 이미지 미추출).
+/// Serializes the complete IR to GFM Markdown; retains the existing signature without image extraction.
 pub fn to_markdown(doc: &Document) -> String {
-    // media_dir 미지정 → IO가 없어 실패할 수 없다.
+    // Without media_dir there is no I/O, so this cannot fail.
     to_markdown_with(doc, &MarkdownOptions::default())
         .expect("media_dir 미지정 시 IO가 없어 실패할 수 없다")
 }
 
-/// 옵션을 받는 변형. `media_dir` 지정 시 이미지를 추출하며, 추출 IO 실패는 `Err`.
+/// Option-taking variant. Setting media_dir extracts images; extraction I/O failures return `Err`.
 ///
-/// 세그먼트 맵을 버리는 래퍼다 — 방출 코어([`emit_markdown`])를
-/// [`to_markdown_with_segments`]와 공유하므로 markdown 문자열은 세그먼트 유무와
-/// 무관하게 바이트 단위로 동일함이 구조적으로 보장된다.
+/// Wrapper that discards the segment map. It shares the emission core ([`emit_markdown`])
+/// with [`to_markdown_with_segments`], so Markdown is structurally byte-identical whether
+/// or not segments are requested.
 pub fn to_markdown_with(doc: &Document, opts: &MarkdownOptions) -> std::io::Result<String> {
     Ok(emit_markdown(doc, opts, false)?.0)
 }
 
-/// [`to_markdown_with`]와 같은 markdown을 내면서, 각 출력 문자 범위가 어느 원본 문단에서
-/// 왔는지를 [`MarkdownSegment`] 목록으로 함께 돌려준다.
+/// Emits the same Markdown as [`to_markdown_with`] and returns [`MarkdownSegment`] entries
+/// that attribute each output character range to its source paragraph.
 ///
-/// 세그먼트는 `start` 오름차순·비중첩이며, 미귀속 출력(빈 줄·구역 구분 등)에 해당하는
-/// 간극은 허용한다. 표가 만든 줄은 표를 담은 문단 인덱스를 상속하고, 각주/미주 정의는
-/// 참조 문단에 귀속된다. 머리말/꼬리말은 기본 제외(`opts.text`로 포함).
+/// Segments are ordered by start and do not overlap; unattributed output (blank lines or
+/// section separators) may leave gaps. Table lines inherit their containing paragraph index;
+/// footnote/endnote definitions inherit their referring paragraph. Headers/footers need opts.text.
 pub fn to_markdown_with_segments(
     doc: &Document,
     opts: &MarkdownOptions,
@@ -98,12 +98,12 @@ pub fn to_markdown_with_segments(
     Ok((markdown, segments))
 }
 
-/// markdown 방출 코어 — 문자열과 세그먼트 맵을 함께 만든다.
+/// Markdown emission core, producing both the string and segment map.
 ///
-/// 계측(원시 세그먼트 `Vec` push 몇 번)은 오버헤드가 무시할 수준이라 항상 켠다.
-/// 방출 순서: 섹션/문단 이중 루프에서 문단마다 방출 전후의 `out.len()`을 기록하고,
-/// 문서 끝 각주/미주 정의는 수집 시점의 문단 좌표에 귀속시킨다. 이후 [`cleanup_with_map`]으로
-/// 정리하며 삭제된 바이트만큼 오프셋을 재매핑하고, 마지막에 바이트→문자로 변환한다.
+/// Instrumentation is always enabled: a few raw-segment Vec pushes have negligible overhead.
+/// Emission records out.len() before and after each paragraph in section/paragraph order.
+/// Trailing footnote/endnote definitions retain the paragraph coordinates recorded on collection.
+/// [`cleanup_with_map`] remaps deleted bytes, then byte offsets are converted to character offsets.
 pub(crate) fn emit_markdown(
     doc: &Document,
     opts: &MarkdownOptions,
@@ -140,17 +140,17 @@ pub(crate) fn emit_markdown(
     };
 
     let mut out = Body::default();
-    // 원시 세그먼트: (섹션, 문단, byte_start, byte_end) — 방출 순서(= start 오름차순).
+    // Raw segments: (section, paragraph, byte_start, byte_end), in emission/start order.
     let mut raw: Vec<(usize, usize, usize, usize)> = Vec::new();
 
     for (section_index, section) in doc.sections.iter().enumerate() {
         if section_index > 0 {
             break_section_list(&mut ctx, &mut out);
         }
-        // 목록 번호 카운터는 구역 단위로 리셋한다(렌더러와 같은 규칙).
+        // Reset list numbering per section, matching the renderer.
         let mut list_state = ListState::default();
         for (para_index, para) in section.paragraphs.iter().enumerate() {
-            // 각주/미주가 수집될 때 귀속시킬 현재 문단 좌표를 갱신한다.
+            // Update the paragraph coordinates assigned to collected footnotes/endnotes.
             ctx.cur_section = section_index;
             ctx.cur_para = para_index;
             let path = SegmentPath {
@@ -176,8 +176,8 @@ pub(crate) fn emit_markdown(
             }
         }
     }
-    // 각주/미주 정의는 문서 끝에 모은다. 수집 순서(문서 순서)대로 방출되므로 각 정의의
-    // byte 범위는 자연히 본문 세그먼트 뒤에 오름차순으로 쌓인다.
+    // Collect footnote/endnote definitions at the document end. Collection follows document order,
+    // so their byte ranges naturally follow the body segments in increasing order.
     if !ctx.notes.is_empty() {
         if !out.is_empty() && !out.ends_with("\n\n") {
             out.push('\n');
@@ -192,7 +192,7 @@ pub(crate) fn emit_markdown(
     }
     ctx.persist_media()?;
 
-    // cleanup으로 정리하며 삭제된 바이트만큼 세그먼트 오프셋을 재매핑하고 문자 단위로 변환.
+    // Remap deleted bytes through cleanup, then convert segment offsets to character units.
     let (cleaned, deletions) = cleanup_with_map(&out.s);
     let segments = build_segments(&cleaned, &deletions, &raw);
     let v2_segments = if v2 {
@@ -412,33 +412,33 @@ struct PendingMedia {
 struct Note {
     label: String,
     text: String,
-    /// 이 각주/미주를 참조한 최상위 문단 좌표 (섹션 인덱스, 문단 인덱스).
+    /// Top-level paragraph referring to this footnote/endnote: (section index, paragraph index).
     src: (usize, usize),
 }
 
-/// 렌더 중 상태(이미지 추출 진행·텍스트 포함 정책·목록/각주·HTML 표 모드).
+/// Rendering state: image extraction, text policy, lists/notes, and HTML-table mode.
 struct Ctx<'a> {
     media_dir: Option<&'a Path>,
-    /// 참조 경로 접두사(media_prefix 또는 디렉터리명).
+    /// Reference prefix (media_prefix or directory name).
     dir_name: String,
-    /// 다음 이미지 번호(1-기반 카운터).
+    /// Next image number (one-based).
     img_no: usize,
-    /// 렌더 완료 뒤 충돌 검사를 거쳐 기록할 이미지.
+    /// Images to write after rendering and collision checks.
     pending_media: Vec<PendingMedia>,
     include_header_footer: bool,
     include_hidden: bool,
-    /// HTML 표 안 — 블록 HTML에선 md가 렌더되지 않으므로 마크·링크·이미지를 HTML 태그로 방출.
+    /// Inside an HTML table, emit marks/links/images as HTML tags because block HTML disables Markdown.
     html_mode: bool,
-    /// 직전 출력이 목록 항목 — 목록 블록 종료 시 빈 줄 확보용.
+    /// Whether the preceding output was a list item, for a blank line when the list ends.
     last_was_list: bool,
-    /// 현재 활성 목록 수준별 콘텐츠 열 너비와 (머리 종류, 정의 ID).
+    /// Content-column width and (head kind, definition ID) for each active list level.
     list_widths: Vec<usize>,
     list_keys: Vec<(u8, u16)>,
-    /// 각주/미주 — 문서 끝 정의용.
+    /// Footnotes/endnotes for trailing definitions.
     notes: Vec<Note>,
     foot_n: u32,
     end_n: u32,
-    /// 세그먼트 귀속용 — 현재 방출 중인 최상위 문단 좌표(메인 루프에서 문단마다 갱신).
+    /// Current top-level paragraph for segment attribution, updated by the main loop.
     cur_section: usize,
     cur_para: usize,
     /// v2 span recording. Off for the default path, which therefore keeps paying nothing beyond
@@ -454,7 +454,7 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    /// Picture 바이트를 기록 대기열에 넣고 markdown 이미지 참조를 만든다.
+    /// Queues Picture bytes for writing and builds the Markdown image reference.
     fn image_ref(&mut self, data: &[u8]) -> String {
         let html = self.html_mode;
         let fallback = || {
@@ -489,8 +489,8 @@ impl Ctx<'_> {
         }
     }
 
-    /// 기존 파일은 동일 바이트일 때만 재사용한다. 충돌을 모두 선확인한 뒤 새 파일을
-    /// create_new로 기록하고, 도중 실패하면 이번 호출에서 만든 파일만 제거한다.
+    /// Reuse an existing file only when its bytes match. Check all collisions before writing new
+    /// files with create_new; on failure remove only files created by this call.
     fn persist_media(&self) -> std::io::Result<()> {
         if self.pending_media.is_empty() {
             return Ok(());
@@ -554,13 +554,13 @@ fn rollback_media(paths: &[PathBuf]) {
     }
 }
 
-/// 과도한 빈 줄을 정리하고(연속 빈 줄을 1줄로), 정리된 문자열과 **삭제 구간 목록**(원본
-/// `out` 바이트 기준 `(start, len)`, start 오름차순·비중첩)을 함께 낸다.
+/// Collapses excessive blank lines to one and returns the cleaned string with **deleted ranges**:
+/// (start, len) in original out bytes, ordered by start and disjoint.
 ///
-/// cleanup은 연속 빈 줄을 **통째 줄 단위로만** 삭제하므로 각 삭제는 원본의 연속 바이트
-/// 구간이다. 마지막 줄에 개행이 없으면 cleanup이 끝에 `\n`을 붙이는데(순수 삽입) 앞쪽
-/// 오프셋에는 영향이 없어 매핑에서 무시한다. 생성 markdown에는 `\r`이 없으므로
-/// `str::lines()`와 동일하게 `\n` 기준으로만 분할한다.
+/// Cleanup deletes only **whole blank lines**, so each deletion is a contiguous original byte range.
+/// If the last line lacks a newline, cleanup appends one; this insertion cannot shift earlier
+/// offsets and needs no mapping entry. Generated Markdown contains no carriage returns, so splitting
+/// uses only newlines, matching str::lines().
 fn cleanup_with_map(out: &str) -> (String, Vec<(usize, usize)>) {
     let mut cleaned = String::with_capacity(out.len());
     let mut deletions: Vec<(usize, usize)> = Vec::new();
@@ -568,10 +568,10 @@ fn cleanup_with_map(out: &str) -> (String, Vec<(usize, usize)>) {
     let bytes = out.as_bytes();
     let mut i = 0usize;
     while i < out.len() {
-        // 현재 줄의 내용 범위 [i, line_end)와 개행 포함 다음 줄 시작 next.
+        // Current line content [i, line_end), and the next line start including the newline.
         let (line_end, next) = match bytes[i..].iter().position(|&b| b == b'\n') {
-            Some(p) => (i + p, i + p + 1),  // '\n' 포함해 다음 줄로
-            None => (out.len(), out.len()), // 마지막 줄(개행 없음)
+            Some(p) => (i + p, i + p + 1),  // Advance past the newline.
+            None => (out.len(), out.len()), // Final line without a newline.
         };
         let line = &out[i..line_end];
         let keep = if line.trim().is_empty() {
@@ -585,7 +585,7 @@ fn cleanup_with_map(out: &str) -> (String, Vec<(usize, usize)>) {
             cleaned.push_str(line);
             cleaned.push('\n');
         } else {
-            // 이 줄 전체(내용 + 개행)를 삭제 — 원본 [i, next) 구간.
+            // Delete the whole line, including its newline: original range [i, next).
             deletions.push((i, next - i));
         }
         i = next;
@@ -593,9 +593,9 @@ fn cleanup_with_map(out: &str) -> (String, Vec<(usize, usize)>) {
     (cleaned, deletions)
 }
 
-/// 삭제 구간 목록을 원본→정리본 오프셋 재매핑 함수로 감싼다(이진 탐색, O(log D)).
+/// Wraps deleted ranges in an original-to-cleaned offset map using binary search, O(log D).
 struct DeletionMap {
-    /// (삭제 시작, 삭제 끝(제외), 이 구간 이전까지의 누적 삭제 바이트).
+    /// (Deletion start, exclusive end, cumulative bytes deleted before this range).
     entries: Vec<(usize, usize, usize)>,
 }
 
@@ -610,30 +610,30 @@ impl DeletionMap {
         Self { entries }
     }
 
-    /// 원본 바이트 오프셋 `old`의 정리본 바이트 오프셋. 삭제 구간 내부의 오프셋은 그 구간
-    /// 시작으로 붕괴한다(삭제된 줄 내부는 자연히 붕괴 지점으로 수렴).
+    /// Maps original byte offset old to cleaned bytes. Offsets inside a deletion collapse to its
+    /// start, so a deleted line naturally converges on the collapse point.
     fn remap(&self, old: usize) -> usize {
-        // start < old 인 마지막 구간만이 old에 영향을 줄 수 있다(정렬·비중첩).
+        // Only the last range starting before old can affect it; ranges are ordered and disjoint.
         let idx = self.entries.partition_point(|&(start, _, _)| start < old);
         if idx == 0 {
             return old;
         }
         let (start, end, before) = self.entries[idx - 1];
         let removed = if end <= old {
-            before + (end - start) // 이 구간 전체가 old 이전
+            before + (end - start) // This entire deletion precedes old.
         } else {
-            before + (old - start) // old가 이 구간 내부 → 시작으로 붕괴
+            before + (old - start) // old lies inside this deletion and collapses to its start.
         };
         old - removed
     }
 }
 
-/// 원시 세그먼트(원본 byte 범위)를 정리본 기준 문자 세그먼트로 확정한다.
+/// Converts raw original byte spans to final character spans in the cleaned string.
 ///
-/// ① cleanup 삭제맵으로 byte 범위 재매핑 후 정리본 길이로 clamp, ② 후행 공백·개행 트림
-/// (byte 단위, char 경계 안전)으로 빈 것 제거, ③ 남은 경계를 char_indices 단일 패스로
-/// 문자 오프셋으로 변환. 경계는 항상 줄 경계라 char 경계 위반이 없어야 하지만 방어적으로
-/// 앞쪽 char 경계로 내림한다. 결과는 start 오름차순·비중첩·범위 내임을 debug_assert로 확인.
+/// First remap/clamp bytes through cleanup; then trim trailing whitespace at character boundaries
+/// and discard empty ranges. Convert the remaining boundaries to character offsets in one pass.
+/// Line boundaries should already be character boundaries; defensively round down if needed.
+/// Debug assertions check ordered, disjoint, in-bounds output ranges.
 fn build_segments(
     cleaned: &str,
     deletions: &[(usize, usize)],
@@ -642,7 +642,7 @@ fn build_segments(
     let map = DeletionMap::new(deletions);
     let clen = cleaned.len();
 
-    // 1) 재매핑 + clamp + char 경계 내림 + 후행 트림 → 정리본 byte 세그먼트.
+    // 1) Remap, clamp, round down to a character boundary, and trim trailing whitespace.
     let mut byte_segs: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(raw.len());
     for &(section, para, s, e) in raw {
         let ns = floor_char_boundary(cleaned, map.remap(s).min(clen));
@@ -650,7 +650,7 @@ fn build_segments(
         if ne0 <= ns {
             continue;
         }
-        // 후행 공백·개행만큼 end를 줄인다(인용이 깔끔하도록). 공백뿐이면 버린다.
+        // Trim trailing whitespace/newlines for clean quotations; discard whitespace-only spans.
         let trimmed = cleaned[ns..ne0].trim_end();
         let ne = ns + trimmed.len();
         if ne <= ns {
@@ -659,7 +659,7 @@ fn build_segments(
         byte_segs.push((section, para, ns, ne));
     }
 
-    // 2) 모든 경계 byte 오프셋을 모아 정렬·유일화 후 char 오프셋으로 일괄 변환.
+    // 2) Sort and deduplicate byte boundaries, then convert them to character offsets together.
     let mut bounds: Vec<usize> = Vec::with_capacity(byte_segs.len() * 2);
     for &(_, _, s, e) in &byte_segs {
         bounds.push(s);
@@ -675,7 +675,7 @@ fn build_segments(
         char_bounds[idx]
     };
 
-    // 3) 문자 세그먼트 조립.
+    // 3) Assemble character segments.
     let segments: Vec<MarkdownSegment> = byte_segs
         .iter()
         .map(|&(section, para, s, e)| MarkdownSegment {
@@ -703,7 +703,7 @@ fn build_segments(
     segments
 }
 
-/// `i` 이하에서 가장 가까운 char 경계(std의 `floor_char_boundary` 대체 — 아직 unstable).
+/// Nearest character boundary at or before i (replacement for the then-unstable std method).
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
     if i >= s.len() {
         return s.len();
@@ -714,8 +714,8 @@ fn floor_char_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// 정렬·유일한 byte 경계 목록(모두 char 경계)을 char_indices 단일 패스로 char 오프셋으로
-/// 변환한다. 입력과 같은 순서의 char 오프셋 벡터를 낸다.
+/// Converts sorted unique byte boundaries to character offsets in one char_indices pass.
+/// Returns character offsets in the input order.
 fn bytes_to_chars(s: &str, bounds: &[usize]) -> Vec<usize> {
     let mut result = vec![0usize; bounds.len()];
     let mut bi = 0usize;
@@ -727,7 +727,7 @@ fn bytes_to_chars(s: &str, bounds: &[usize]) -> Vec<usize> {
         }
         char_idx += 1;
     }
-    // 남은 경계(= s.len(), 문자열 끝)는 전체 문자 수로 맺는다.
+    // Remaining boundaries at s.len() map to the total character count.
     while bi < bounds.len() {
         result[bi] = char_idx;
         bi += 1;
@@ -735,7 +735,7 @@ fn bytes_to_chars(s: &str, bounds: &[usize]) -> Vec<usize> {
     result
 }
 
-/// 인라인 문자 효과 상태. 열기 순서 bold→italic→strike→underline→sup/sub, 닫기는 역순.
+/// Inline marks open bold/italic/strike/underline/sup/sub and close in reverse order.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct Marks {
     bold: bool,
@@ -805,8 +805,8 @@ impl Marks {
     }
 }
 
-/// 열린 강조 스팬의 body 인덱스. `open_at`은 여는 마커의 시작, `content_at`은 여는
-/// 마커 직후(= 내용 시작). 두 값은 스팬을 열 때만 갱신하며 닫을 때 공백 재배치에 쓴다.
+/// Body indices for an open emphasis span: open_at starts its opening marker; content_at follows
+/// the marker. They change only when opening the span and drive whitespace relocation on close.
 #[derive(Default, Clone, Copy)]
 struct Span {
     open_at: usize,
@@ -852,14 +852,14 @@ fn close_body_marks(body: &mut Body, marks: &mut Marks, span: Span, html: bool) 
     *marks = Marks::default();
 }
 
-/// 강조 스팬을 닫되 GFM 파싱 규칙을 지킨다.
+/// Closes an emphasis span while respecting GFM delimiter rules.
 ///
-/// GFM에서 `**`/`*`/`~~`는 닫는 구분자 **앞**이나 여는 구분자 **뒤**에 공백이 있으면
-/// 강조로 파싱되지 않아 마커가 문자 그대로 노출된다(`**(목적) **` → 리터럴 `**`).
-/// 그래서 굵게/기울임/취소선 스팬은 내용의 선두·후행 공백을 마커 **밖**으로 옮기고,
-/// 내용이 공백뿐이면 마커를 아예 내지 않는다(`** **` 방지).
-/// HTML 모드(`<strong>` 등)나 밑줄/첨자처럼 HTML 태그로 방출하는 효과만의 스팬은 공백에
-/// 무관하므로 그대로 닫는다. `marks`가 비었으면(리셋 후) 아무것도 하지 않는다.
+/// GFM does not parse `**`/`*`/`~~` as emphasis if whitespace precedes the closing delimiter or
+/// follows the opening delimiter; the marker would appear literally.
+/// Move leading/trailing whitespace outside bold/italic/strike markers to preserve parsing.
+/// A whitespace-only span emits no markers, avoiding `** **`.
+/// HTML mode and HTML-only effects such as underline/scripts do not depend on whitespace and
+/// close normally. Empty marks after a reset require no action.
 ///
 /// Returns the byte moves it made inside `body`, in order, so recorded offsets can follow them.
 fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> Vec<ByteMove> {
@@ -867,18 +867,18 @@ fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> 
     if marks == Marks::default() {
         return moves;
     }
-    // GFM 구분자가 없으면(HTML 모드이거나 밑줄/첨자뿐) 공백 재배치가 필요 없다.
+    // Without GFM delimiters (HTML mode or underline/scripts only), no whitespace relocation is needed.
     let needs_fix = !html && (marks.bold || marks.italic || marks.strike);
     if !needs_fix {
         body.push_str(&marks.close(html));
         return moves;
     }
-    // 공백 판정은 char 단위 trim(멀티바이트 공백 U+3000 등 char 경계 안전).
+    // Trim by character, preserving boundaries for multibyte whitespace such as U+3000.
     let content = &body[span.content_at..];
     let lead_len = content.len() - content.trim_start().len();
     let kept_len = content.trim_end().len();
     if kept_len == 0 {
-        // 내용이 공백뿐 — 여는 마커를 제거하고 공백만 남긴다.
+        // Whitespace-only content: remove opening markers and retain just the whitespace.
         // The content moves back over the removed marker; no control sits inside a marker.
         let content_len = body.len() - span.content_at;
         moves.push(ByteMove {
@@ -889,7 +889,7 @@ fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> 
         body.replace_range(span.open_at..span.content_at, "");
         return moves;
     }
-    // 후행 공백을 떼어 두고, 다듬은 내용 뒤에 닫는 마커를 붙인 다음 공백을 복원한다.
+    // Detach trailing whitespace, close the trimmed content, then restore the whitespace.
     let trail = body[span.content_at + kept_len..].to_string();
     body.truncate(span.content_at + kept_len);
     let close = marks.close(html);
@@ -902,7 +902,7 @@ fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> 
             len: trail.len(),
         });
     }
-    // 선두 공백은 여는 마커 앞으로 옮긴다.
+    // Move leading whitespace before the opening markers.
     if lead_len > 0 {
         let lead = body[span.content_at..span.content_at + lead_len].to_string();
         body.replace_range(span.content_at..span.content_at + lead_len, "");
@@ -925,9 +925,9 @@ fn render_paragraph(
     ctx: &mut Ctx,
     out: &mut Body,
 ) -> bool {
-    // 목록 번호는 문서 순서대로 모든 문단에 대해 갱신한다(빈 문단도 카운트 — 렌더와 동일).
+    // Update list counters for every paragraph in document order, including empty ones, as rendering does.
     let marker = list_state.marker(doc, para);
-    // 개요 스타일 → 헤딩
+    // Outline style becomes a heading.
     let heading = doc
         .header
         .styles
@@ -957,8 +957,8 @@ fn render_paragraph(
     own
 }
 
-/// 인라인과 블록을 문서 등장 순서대로 유지하는 중간 표현. 각 조각은 자기 문자열 좌표로
-/// 기록된 v2 스팬을 함께 들고 다니다가, 출력에 복사될 때 그 자리에서 재매핑된다.
+/// Intermediate inline/block fragments in document order. Each carries v2 spans in its local
+/// string coordinates, remapped when copied into the output.
 enum Fragment {
     Inline(Body),
     Block(Body),
@@ -984,7 +984,7 @@ fn emit_paragraph_fragments(fragments: Vec<Fragment>, out: &mut Body, prefix: Op
                 let lo = s.len() - s.trim_start().len();
                 let text = s.trim();
                 if text.is_empty() {
-                    // 옮길 텍스트는 없어도 지점 세그먼트는 현재 커서에 살려 둔다.
+                    // Even without text to move, retain point segments at the current cursor.
                     out.absorb_append("", segs, lo);
                     continue;
                 }
@@ -1088,7 +1088,7 @@ fn emit_list_fragments(
     ctx.last_was_list = emitted;
 }
 
-/// 줄마다 접두사를 붙여 옮기며, 각 줄 시작의 `(원본, 대상)` 오프셋 쌍을 `anchors`에 쌓는다.
+/// Copies lines with prefixes, recording (source, destination) offsets at each line start in anchors.
 fn push_indented_lines(
     out: &mut Body,
     first: &str,
@@ -1149,7 +1149,7 @@ fn prepare_list_level(
     indent
 }
 
-/// 목록 블록 종료 — 항목 뒤 일반 문단/헤딩 앞에 빈 줄을 확보한다.
+/// Ends a list block with a blank line before an ordinary paragraph or heading.
 fn close_list_block(ctx: &mut Ctx, out: &mut String) {
     if ctx.last_was_list && !out.ends_with("\n\n") {
         out.push('\n');
@@ -1171,35 +1171,35 @@ fn break_section_list(ctx: &mut Ctx, out: &mut String) {
     ctx.list_keys.clear();
 }
 
-/// (머리 종류, 수준) — 2=번호, 3=글머리표. 목록이 아니면 None.
+/// (Head kind, level): 2 = numbering, 3 = bullet; None for a non-list paragraph.
 fn list_head(doc: &Document, para: &Paragraph) -> Option<(u8, u8, u16)> {
     let ps = doc.header.para_shapes.get(para.para_shape.0 as usize)?;
     let ty = ps.head_type();
     (ty == 2 || ty == 3).then(|| (ty, ps.head_level(), ps.numbering_id))
 }
 
-/// 문단 내용을 인라인/블록 fragment로 등장 순서대로 렌더링한다.
+/// Renders paragraph content as inline/block fragments in document order.
 fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Fragment> {
     let mut fragments = Vec::new();
     let mut body = Body::default();
     let mut wchar_pos = 0u32;
     let mut marks = Marks::default();
-    // 현재 열린 강조 스팬의 body 인덱스. 스팬을 열 때만 갱신한다.
+    // Body indices for the current emphasis span, updated only on opening.
     let mut span = Span::default();
-    // 하이퍼링크 필드 열림 상태(대상 URL). FIELD_START에서 채우고 FIELD_END에서 닫는다.
+    // Open hyperlink target URL, set by FIELD_START and closed by FIELD_END.
     let mut link_url: Option<String> = None;
-    // v2: 런 세그먼트는 **정규화된** 런 목록에서 번호를 매긴다 — `run_id`가 그 목록을
-    // 인덱싱하므로, 원시 `char_shape_runs`를 걸으면 조각의 본문과 id가 서로 다른 런을
-    // 가리키게 된다(hwp5 입력의 중복 런에서만 갈라져 눈에 띄지 않는다).
+    // v2 run segments use the **canonical** run list because run_id indexes that list.
+    // Walking raw char_shape_runs could give a piece text and ID from different runs;
+    // the lists diverge only for redundant hwp5 runs, making the mismatch easy to overlook.
     let runs = if ctx.v2 {
         canonical_char_shape_runs(para)
     } else {
         Vec::new()
     };
     let mut next_run = 0usize;
-    // 현재 효력 중인 런 — 블록이 방출을 끊으면 같은 런의 다음 조각을 다시 연다.
+    // Active run; if a block interrupts emission, reopen its next piece.
     let mut current_run: Option<usize> = None;
-    // 강조 스팬 전환이 알려 준 런 경계 후보(없으면 현재 커서).
+    // Candidate run boundary from an emphasis transition, or the current cursor if absent.
     let mut boundary: Option<usize> = None;
 
     for ch in &para.chars {
@@ -1209,21 +1209,21 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
         // ends at THIS character rather than the previous one - and a control's own characters
         // belong to no piece.
         body.source_pos = wchar_pos;
-        // 현재 위치의 문자 모양으로 효과 전환
-        // (중첩 정합성을 위해 변경 시 전부 닫고 다시 연다)
+        // Transition marks using the character shape at the current position.
+        // Close and reopen all marks on change to keep nesting consistent.
         if let HwpChar::Text(_) = ch {
             let mut want = Marks::from_shape(shape_at(doc, para, wchar_pos));
-            // 하이퍼링크 표시 텍스트의 밑줄은 링크 표기 자체가 함의한다 —
-            // `[<u>텍스트</u>](URL)` 같은 군더더기를 막는다.
+            // Hyperlink syntax already implies underline on the label;
+            // avoid redundant `[<u>label</u>](URL)` markup.
             if link_url.is_some() {
                 want.underline = false;
             }
             if want != marks {
                 close_body_span(&mut body, marks, span, ctx.html_mode);
                 span.open_at = body.len();
-                // 런 경계는 여기 — close_span이 직전 스팬의 공백을 마커 밖으로 재배치한
-                // **뒤**이자 새 여는 마커를 밀어 넣기 **전**이다. 그래서 두 런은 각자
-                // 자기 마커를 품고, 이전에 기록한 오프셋은 흔들리지 않는다.
+                // The candidate boundary follows close_span whitespace relocation and precedes the next
+                // opening marker. The emitted markers belong to their runs; publication later reconciles
+                // boundaries when a shared span relocates characters across several runs.
                 boundary = Some(span.open_at);
                 body.push_str(&want.open(ctx.html_mode));
                 span.content_at = body.len();
@@ -1241,9 +1241,9 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
         } else if let Some(index) = current_run
             && body.open_run.is_none()
         {
-            // 블록(표·블록 수식)이 방출을 플러시하며 이 런을 닫았다. 같은 런은 계속
-            // 효력이 있으므로 새 좌표계에서 다음 조각을 연다 — 조각들은 같은 id를
-            // 나눠 가진다(모듈 문서의 "조각난 런" 참조).
+            // A block (table/block equation) flushed emission and closed this run. The same run remains
+            // active, so reopen its next piece in the new coordinate system; pieces share one ID
+            // (see the fragmented-run module documentation).
             let shape = runs[index].1.0;
             let at = body.s.len();
             open_run_segment(doc, para, ctx, &mut body, index, shape, at, wchar_pos);
@@ -1278,7 +1278,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
             },
             HwpChar::InlineCtrl { code, .. } => {
                 if *code == ctrl_char::FIELD_END {
-                    // 하이퍼링크 표시 텍스트 종료 → `](URL)`/`</a>`로 닫는다.
+                    // End the hyperlink label with `](URL)` or `</a>`.
                     if let Some(url) = link_url.take() {
                         close_body_marks(&mut body, &mut marks, span, ctx.html_mode);
                         if ctx.html_mode {
@@ -1309,7 +1309,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
                     if *code == ctrl_char::FIELD_START
                         && let Some(url) = crate::field::hyperlink_url(control)
                     {
-                        // 하이퍼링크 필드 시작 → `[`/`<a href>` 방출, 이후 표시 텍스트를 링크로 묶는다.
+                        // Start a hyperlink field with `[` or `<a href>` and link the following label text.
                         close_body_marks(&mut body, &mut marks, span, ctx.html_mode);
                         if ctx.html_mode {
                             body.push_str("<a href=\"");
@@ -1352,8 +1352,8 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
     fragments
 }
 
-/// 한 문단의 `para` 세그먼트(v2 전용). 최상위 문단뿐 아니라 표 셀·`Generic` 문단 리스트
-/// 안의 문단에도 붙는다 — 셀 안 문단을 지목할 수 없으면 "일곱 종류"가 최상위에서만 참이 된다.
+/// v2 para segments cover both top-level paragraphs and paragraphs inside table cells or Generic
+/// paragraph lists, so all seven segment kinds remain addressable in nested contexts.
 ///
 /// `[start, end)` is what the paragraph emitted. Nothing emitted means no segment, unless the
 /// paragraph always has one (see [`always_has_para_segment`]): then it is a point at `start`,
@@ -1384,8 +1384,8 @@ fn para_segment(
     })
 }
 
-/// 열려 있던 런을 닫고 새 런을 연다(v2 전용). id는 이 크레이트의 `segment_id` 진입점에서만
-/// 나오며 이 모듈은 아무것도 해시하지 않는다.
+/// Closes the current run and opens a new one (v2 only). IDs come exclusively from this crate's
+/// segment_id entry points; this module hashes nothing.
 ///
 /// `at` is the emitted-markdown offset the piece starts at and `source_at` the source-paragraph
 /// offset it starts at: the two coordinate spaces the walk carries side by side (#517).
@@ -1417,12 +1417,12 @@ fn open_run_segment(
     });
 }
 
-/// 필드/책갈피 세그먼트를 연다(v2 전용).
+/// Opens a field/bookmark segment (v2 only).
 ///
-/// 둘은 `Control` 열거형에 자기 변형이 없고 **주인이 다르다**: 필드는 `field.rs`의
-/// ctrl-id 판별기가, 책갈피는 `bookmark.rs`가 가진다. 책갈피는 `%bmk` 필드가 아니라 `bokm`
-/// 컨트롤이므로 `is_field_ctrl_id`를 넓히지 않는다 — 넓히면 필드 판별기가 필드가 아닌 것에
-/// 참을 답하게 되고 Phase 6의 타입 연산이 그 거짓말을 물려받는다.
+/// These have no dedicated Control variant and **different owners**: field.rs classifies field
+/// ctrl IDs, while bookmark.rs owns bookmarks. A bookmark uses bokm, not a %bmk field.
+/// Widening is_field_ctrl_id would misclassify a non-field and propagate that error into
+/// the Phase 6 typed operations.
 fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control) {
     let Control::Generic(g) = control else {
         return;
@@ -1430,7 +1430,7 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
     let path = child(&ctx.path, ctx.ctrl_index);
     let ctrl_id = Some(String::from_utf8_lossy(&g.ctrl_id).into_owned());
     if code == ctrl_char::BOOKMARK && g.ctrl_id == *b"bokm" {
-        // 책갈피는 아무것도 방출하지 않는 지점 표식이다(GG-25) — start == end.
+        // Bookmarks are non-emitting point markers (GG-25): start == end.
         let at = body.s.len();
         body.segs.push(RawSeg {
             kind: SegmentKind::Bookmark,
@@ -1463,10 +1463,10 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
 }
 
 fn flush_inline(body: &mut Body, fragments: &mut Vec<Fragment>) {
-    // 플러시하면 좌표계가 초기화되므로 아직 열린 스팬을 여기서 닫는다.
+    // Close the open span before flushing resets the coordinate system.
     body.close_open();
-    // 텍스트가 없어도 세그먼트가 있으면 내보낸다 — 책갈피만 든 문단이 통째 사라지던
-    // 자리다(지점 표식은 방출이 없는 것이 정상이다).
+    // Flush segments even without text; otherwise bookmark-only paragraphs disappear, although
+    // point markers correctly emit no text.
     if !body.s.is_empty() || !body.segs.is_empty() {
         fragments.push(Fragment::Inline(Body {
             s: std::mem::take(&mut body.s),
@@ -1489,7 +1489,7 @@ fn push_block(
     fragments.push(Fragment::Block(block));
 }
 
-/// markdown 링크 대상 포맷: 공백·괄호가 있으면 `<...>`로 감싼다.
+/// Formats Markdown link targets, wrapping spaces or parentheses in `<...>`.
 fn md_link_dest(url: &str) -> String {
     if url
         .chars()
@@ -1533,8 +1533,8 @@ fn render_control(
                 let end = body.s.len();
                 body.segs.push(RawSeg {
                     kind: SegmentKind::Image,
-                    // 해석된 페이로드가 id에 들어간다 — 같은 자리에 같은 크기로 바꿔 끼운
-                    // 그림이 id를 유지하지 않도록.
+                    // The interpreted payload participates in the ID so replacing a same-position, same-size
+                    // picture changes its ID.
                     id: picture_id(&path, pic, data),
                     path,
                     style: ctx.ctrl_style.clone(),
@@ -1551,11 +1551,11 @@ fn render_control(
         Control::Table(table) => {
             let mut block = Body::default();
             let path = child(&ctx.path, ctx.ctrl_index);
-            // 이 컨트롤 지점의 스타일을 **재귀 전에** 붙든다 — 셀 안의 그림 같은 중첩
-            // 컨트롤이 `ctx.ctrl_style`을 덮어쓰기 때문이다.
+            // Capture this control's style **before recursion**: nested controls such as pictures inside
+            // cells overwrite ctx.ctrl_style.
             let style = ctx.ctrl_style.clone();
             let saved = std::mem::replace(&mut ctx.path, path.clone());
-            // 병합 셀·셀 안 블록은 GFM 파이프 표로 표현 불가 → HTML 표 폴백.
+            // Merged cells and cell blocks cannot be represented by GFM pipe tables; use HTML.
             if ctx.html_mode || has_span(table) || has_block_content(table, ctx) {
                 render_html_table(doc, table, ctx, &mut block);
             } else {
@@ -1581,12 +1581,12 @@ fn render_control(
             push_block(body, marks, ctx.html_mode, fragments, block, span);
         }
         Control::Generic(g) => {
-            // 수식 → $스크립트$ (원문 보존).
+            // Equations preserve their original script between dollar delimiters.
             if let Some(eq) = &g.equation {
                 render_equation(eq, ctx, body, marks, fragments, span);
                 return;
             }
-            // 각주/미주 → 본문 `[^N]` 마커 + 문서 끝 정의 (본문 인라인 흡수 대체).
+            // Footnotes/endnotes use inline markers and trailing definitions instead of inline note bodies.
             if code == ctrl_char::FOOTNOTE_ENDNOTE && matches!(&g.ctrl_id, b"fn  " | b"en  ") {
                 let label = if g.ctrl_id == *b"fn  " {
                     ctx.foot_n += 1;
@@ -1617,7 +1617,7 @@ fn render_control(
                 }
                 return;
             }
-            // 머리말/꼬리말·숨은설명은 옵션에 따라 제외 (텍스트 추출 정책과 동일).
+            // Exclude headers/footers and hidden comments according to the text extraction policy.
             if (code == ctrl_char::HEADER_FOOTER && !ctx.include_header_footer)
                 || (code == ctrl_char::HIDDEN_COMMENT && !ctx.include_hidden)
             {
@@ -1685,7 +1685,7 @@ fn render_control(
     }
 }
 
-/// 수식 — 인라인은 `$..$`, 블록은 `$$..$$` (HWP 수식 스크립트 원문, LaTeX 아님).
+/// Equations: inline `$..$`, block `$$..$$`; original HWP script, not LaTeX.
 fn render_equation(
     eq: &Equation,
     ctx: &mut Ctx,
@@ -1723,14 +1723,14 @@ fn render_equation(
     }
 }
 
-/// 각주/미주 본문 — 문단 fragment를 등장 순서대로 합친다.
+/// Joins footnote/endnote paragraph fragments in document order.
 fn note_text(doc: &Document, g: &GenericControl, ctx: &mut Ctx) -> String {
     let mut parts: Vec<String> = Vec::new();
     for list in &g.paragraph_lists {
         for p in &list.paragraphs {
             for fragment in render_fragments(doc, p, ctx) {
-                // 각주/미주 정의는 문서 끝에 모이므로 v2 스팬은 버린다(v1과 같이 참조
-                // 문단에 귀속된다).
+                // Definitions collect at the document end, so discard their v2 spans; like v1, definitions
+                // are attributed to their referring paragraph.
                 let text = match fragment {
                     Fragment::Inline(body) | Fragment::Block(body) => body.s,
                 };
@@ -1744,12 +1744,12 @@ fn note_text(doc: &Document, g: &GenericControl, ctx: &mut Ctx) -> String {
     parts.join("\n")
 }
 
-/// 병합 셀(가로/세로)이 하나라도 있으면 GFM 파이프 표로 표현 불가.
+/// Any horizontally or vertically merged cell rules out a GFM pipe table.
 fn has_span(table: &Table) -> bool {
     table.cells.iter().any(|c| c.col_span > 1 || c.row_span > 1)
 }
 
-/// 셀 안에 표·블록 수식 등 블록 fragment가 있으면 GFM 파이프 표로 표현 불가.
+/// Any cell containing a block fragment (table/block equation) rules out a GFM pipe table.
 fn has_block_content(table: &Table, ctx: &Ctx) -> bool {
     table
         .cells
@@ -1776,7 +1776,7 @@ fn paragraph_has_block(para: &Paragraph, ctx: &Ctx) -> bool {
     })
 }
 
-/// GFM 파이프 표 (첫 행 헤더, 병합 없음).
+/// GFM pipe table: first row as header, no merged cells.
 fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body) {
     let cols = table.cols.max(1) as usize;
     let mut grid: Vec<Vec<Body>> = Vec::new();
@@ -1850,8 +1850,8 @@ fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body
     out.s.push('\n');
 }
 
-/// 셀 내용을 파이프 표에 안전하게 넣는다(`|` 이스케이프, 개행 → 공백). 길이가 바뀌는 것은
-/// `|` 이스케이프뿐이라, 스팬이 있을 때만 문자별 앵커를 쌓아 재매핑한다.
+/// Escapes cell content for pipe tables: escape pipes and turn newlines into spaces. Only pipe
+/// escaping changes length, so build per-character anchors only when spans need remapping.
 fn escape_gfm_cell(cell: Body) -> Body {
     if cell.segs.is_empty() {
         return cell.s.replace('|', "\\|").replace('\n', " ").into();
@@ -1868,13 +1868,13 @@ fn escape_gfm_cell(cell: Body) -> Body {
         }
     }
     let len = s.len();
-    // 끝 경계도 앵커로 박는다 — 마지막 글자가 `|`면 길이가 늘어 한 바이트 어긋난다.
+    // Anchor the end boundary too: a final escaped pipe adds a byte.
     anchors.push((len, out.s.len()));
     out.absorb(segs, 0, len, &anchors);
     out
 }
 
-/// 셀의 두 스타일 층 — 첫 문단의 문단 스타일과 그 문단이 직접 지명하는 모양.
+/// The cell's two style layers: first paragraph style and directly referenced shapes.
 fn cell_style(doc: &Document, cell: &Cell) -> SegmentStyle {
     cell.paragraphs
         .first()
@@ -1882,19 +1882,19 @@ fn cell_style(doc: &Document, cell: &Cell) -> SegmentStyle {
         .unwrap_or_default()
 }
 
-/// HTML 표 — 병합 셀(colspan/rowspan)·셀 내 블록(중첩 표 포함)을 보존한다.
-/// 블록 HTML 안에선 md가 렌더되지 않으므로 셀 내용은 html_mode로 방출한다.
+/// HTML table preserving merged cells (colspan/rowspan) and blocks, including nested tables.
+/// Cell content uses html_mode because block HTML does not render Markdown.
 ///
-/// **표 행 한 줄 불변식**: 각 `<tr>…</tr>`는 항상 한 줄에 담긴다(행 안에 개행 없음). 최상위
-/// 표는 행마다 한 줄(가독성 + 소비자의 행 단위 인용). 셀 안에 든 **중첩 표**(html_mode)는
-/// 개행 없이 통째로 한 줄로 직렬화해 바깥 행의 한 줄을 깨지 않게 한다 — 중첩 표의 모든 행이
-/// 바깥 행과 같은 한 줄에 얹히며, 그래도 `<tr` 수 == `</tr>` 수가 줄마다 성립한다.
+/// **One line per table row**: each `<tr>...</tr>` occupies one line. Top-level tables separate
+/// rows for readability and line-based quotation. Nested tables in cells (html_mode) serialize
+/// without newlines so they cannot split the outer row; all nested rows share that line,
+/// while each line still has equal counts of `<tr` and `</tr>`.
 fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body) {
     let rows = table.rows.max(1) as usize;
     let cols = table.cols.max(1) as usize;
-    // 셀 안 중첩 표는 html_mode에서 진입한다 — 이때만 개행 없는 한 줄 형태로 낸다.
+    // Nested cell tables enter in html_mode and emit only the single-line form.
     let nested = ctx.html_mode;
-    // 병합 셀이 덮는 칸 표시 격자.
+    // Grid of positions covered by merged cells.
     let mut covered = vec![vec![false; cols]; rows];
     out.s
         .push_str(if nested { "<table>" } else { "\n<table>\n" });
@@ -1902,7 +1902,7 @@ fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Bod
         out.s.push_str("<tr>");
         for c in 0..cols {
             if covered[r][c] {
-                continue; // 앞선 병합 셀이 덮은 칸
+                continue; // Position covered by a preceding merged cell.
             }
             let Some((cell_index, cell)) = table
                 .cells
@@ -1954,14 +1954,14 @@ fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Bod
                 });
             }
         }
-        // 최상위 표만 행 뒤에 개행 — 중첩 표는 한 줄을 유지한다.
+        // Only top-level tables add newlines after rows; nested tables stay on one line.
         out.s.push_str(if nested { "</tr>" } else { "</tr>\n" });
     }
     out.s
         .push_str(if nested { "</table>" } else { "</table>\n\n" });
 }
 
-/// 셀 내용을 html_mode fragment로 렌더해 원래 순서를 보존한다.
+/// Renders cell content as html_mode fragments, preserving original order.
 fn render_cell_html(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> Body {
     let saved = ctx.html_mode;
     ctx.html_mode = true;
@@ -1998,7 +1998,7 @@ fn render_cell_html(doc: &Document, cell: &Cell, ctx: &mut Ctx) -> Body {
     content
 }
 
-/// HTML 텍스트 노드 이스케이프 (& < >).
+/// Escapes HTML text nodes (& < >).
 fn push_html_escaped(out: &mut String, c: char) {
     match c {
         '&' => out.push_str("&amp;"),
@@ -2022,7 +2022,7 @@ fn escape_html_attr(value: &str) -> String {
     out
 }
 
-/// 주어진 WCHAR 위치의 문자 모양.
+/// Character shape at the given WCHAR position.
 fn shape_at<'d>(doc: &'d Document, para: &Paragraph, pos: u32) -> Option<&'d CharShape> {
     let id = para
         .char_shape_runs
@@ -2039,8 +2039,8 @@ mod tests {
     use crate::from_markdown::from_markdown;
     use hwp_model::{CharShapeId, HwpChar, ParagraphList};
 
-    /// 하이퍼링크가 md→IR→md 왕복에서 `[표시](URL)`로 보존된다.
-    /// (링크 표시 텍스트의 밑줄 서식은 링크 표기가 함의하므로 `<u>`를 내지 않는다.)
+    /// Hyperlinks survive md -> IR -> md as `[label](URL)`.
+    /// Link syntax already implies underline, so label formatting emits no redundant `<u>`.
     #[test]
     fn 하이퍼링크_왕복_보존() {
         let doc = from_markdown("자세히는 [여기](https://example.com/path)를 본다\n");
@@ -2051,7 +2051,7 @@ mod tests {
         );
     }
 
-    /// media_dir 미지정이면 이미지 참조는 빈 참조를 유지한다(동작 불변).
+    /// Without media_dir, images retain empty references, preserving existing behavior.
     #[test]
     fn 이미지_기본은_빈참조() {
         let mut doc = from_markdown("사진: 여기");
@@ -2061,7 +2061,7 @@ mod tests {
         assert!(md.contains("![image]()"), "빈 참조 유지: {md}");
     }
 
-    /// media_dir 지정 시 이미지가 디렉터리에 추출되고 상대경로로 참조된다.
+    /// With media_dir, images are extracted and referenced by relative paths.
     #[test]
     fn 이미지_media_dir_추출() {
         let mut doc = from_markdown("사진: 여기");
@@ -2069,7 +2069,7 @@ mod tests {
         insert_temp_image(&mut doc, "사진:", "md_img_extract.png", &png);
 
         let dir = unique_dir("md_media_extract");
-        // 추출 전에는 디렉터리가 없어야 한다(지연 생성 확인).
+        // The directory must not exist before extraction, confirming lazy creation.
         assert!(!dir.exists());
         let md = to_markdown_with(
             &doc,
@@ -2090,7 +2090,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 이미지가 없으면 media_dir 지정이어도 디렉터리를 만들지 않는다.
+    /// An image-free document creates no directory even when media_dir is set.
     #[test]
     fn 이미지_없으면_디렉터리_미생성() {
         let doc = from_markdown("본문만 있는 문단\n");
@@ -2106,10 +2106,10 @@ mod tests {
         assert!(!dir.exists(), "이미지 없으면 디렉터리 미생성");
     }
 
-    /// 이미지 여러 개가 등장 순서대로 image1/image2로 번호 매겨진다.
+    /// Multiple images are numbered image1/image2 in document order.
     #[test]
     fn 이미지_카운터_증가() {
-        // 두 이미지가 순서대로 image1/image2로 번호 매겨진다.
+        // The two images receive image1/image2 references in order.
         let mut doc = from_markdown("첫 사진: 여기\n\n둘 사진: 저기");
         let png = png_bytes();
         insert_temp_image(&mut doc, "첫 사진:", "md_cnt1.png", &png);
@@ -2130,7 +2130,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// media_prefix 지정 시 이미지 참조가 디렉터리명 대신 접두사 경로를 쓴다.
+    /// media_prefix replaces the directory name in image references.
     #[test]
     fn 이미지_media_prefix() {
         let mut doc = from_markdown("사진: 여기");
@@ -2232,7 +2232,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 각주/미주가 본문 `[^N]`/`[^eN]` 마커 + 문서 끝 정의로 방출된다 (GH-3).
+    /// Footnotes/endnotes emit inline markers and trailing definitions (GH-3).
     #[test]
     fn 각주_미주_마커와_정의() {
         let mut doc = from_markdown("본문 문단\n");
@@ -2264,7 +2264,7 @@ mod tests {
             ctrl_index: Some(idx),
         };
         let para = &mut doc.sections[0].paragraphs[0];
-        // 첫 문단에는 구역 정의 컨트롤이 선주입돼 있으므로 현재 개수가 곧 인덱스다.
+        // The first paragraph has an injected section definition, so its control count is the index.
         let i0 = para.controls.len() as u32;
         para.controls.push(note(b"fn  ", "각주 내용"));
         let i1 = para.controls.len() as u32;
@@ -2276,7 +2276,7 @@ mod tests {
         assert!(md.contains("본문 문단[^1][^e1]"), "본문 마커: {md}");
         assert!(md.contains("[^1]: 각주 내용"), "각주 정의: {md}");
         assert!(md.contains("[^e1]: 미주 내용"), "미주 정의: {md}");
-        // 정의는 문서 끝에 모인다.
+        // Definitions collect at the document end.
         assert!(
             md.trim_end().ends_with("[^e1]: 미주 내용"),
             "정의는 문서 끝: {md}"
@@ -2335,7 +2335,7 @@ mod tests {
         assert!(!md.contains("hwp-footnote"), "HTML 정의 블록 금지: {md}");
     }
 
-    /// 수식이 인라인은 `$..$`, 블록은 `$$..$$`로 방출된다.
+    /// Equations emit inline `$..$` or block `$$..$$`.
     #[test]
     fn 수식_인라인_블록() {
         let mk = |script: &str, inline: bool| {
@@ -2369,11 +2369,11 @@ mod tests {
         };
         let mut doc = from_markdown("인라인 수식: \n");
         let p0 = &mut doc.sections[0].paragraphs[0];
-        // 첫 문단의 선주입 구역 정의 컨트롤 뒤 인덱스를 쓴다.
+        // Use the index after the first paragraph's injected section-definition control.
         let i0 = p0.controls.len() as u32;
         p0.chars.push(anchor(i0));
         p0.controls.push(mk("a+b", true));
-        // 블록 수식만 있는 문단 추가.
+        // Add a paragraph containing only a block equation.
         doc.sections[0].paragraphs.push(Paragraph {
             chars: vec![anchor(0)],
             controls: vec![mk("x^2", false)],
@@ -2457,7 +2457,7 @@ mod tests {
         assert!(before < equation && equation < after, "셀 순서 보존: {md}");
     }
 
-    /// 글머리표/번호 문단이 GFM 목록으로 방출된다 (GH-6).
+    /// Bullet/number paragraphs emit GFM lists (GH-6).
     #[test]
     fn 목록_불릿과_번호() {
         use hwp_model::{NumFmt, NumLevel, ParaShape, ParaShapeId};
@@ -2466,12 +2466,12 @@ mod tests {
             numbering_id: nid,
             ..ParaShape::default()
         };
-        // 숫자 번호 목록. 카운터는 번호 정의(numbering id)별 독립이며,
-        // 형식이 다른 목록은 문서를 나눠 따로 검증한다.
+        // Number-list counters are independent per numbering ID;
+        // validate lists with different formats in separate documents.
         let mut doc = from_markdown("불릿 하나\n\n번호 하나\n\n번호 둘\n");
         let base = doc.header.para_shapes.len() as u16;
-        doc.header.para_shapes.push(ps(3, 1, 0)); // 불릿
-        doc.header.para_shapes.push(ps(2, 1, 0)); // 번호(숫자)
+        doc.header.para_shapes.push(ps(3, 1, 0)); // Bullet.
+        doc.header.para_shapes.push(ps(2, 1, 0)); // Numbering (decimal).
         doc.header.bullet_chars = vec!['•'];
         doc.header.numbering_levels = vec![vec![NumLevel::default(); 7]];
         for (i, p) in doc.sections[0].paragraphs.iter_mut().enumerate() {
@@ -2482,7 +2482,7 @@ mod tests {
         assert!(md.contains("1. 번호 하나\n"), "숫자 번호 1: {md}");
         assert!(md.contains("2. 번호 둘\n"), "숫자 번호 2: {md}");
 
-        // 가나다 형식 번호는 GFM 마커가 숫자뿐이라 서수의 숫자 형태("1.")로 내린다 (#134).
+        // GFM accepts only numeric ordered markers, so Korean numbering exports its numeric ordinal (#134).
         let mut doc2 = from_markdown("한글 번호\n");
         let base2 = doc2.header.para_shapes.len() as u16;
         doc2.header.para_shapes.push(ps(2, 1, 1));
@@ -2503,7 +2503,7 @@ mod tests {
         assert!(!md2.contains("가."), "마커가 본문으로 굳으면 안 됨: {md2}");
     }
 
-    /// 비숫자 엔진 마커("가.", "1)") 사다리도 md→IR→md 왕복이 안정적이어야 한다 (#134).
+    /// Non-numeric engine-marker ladders also remain stable through md -> IR -> md (#134).
     #[test]
     fn 비숫자_번호마커_왕복_안정() {
         use hwp_model::{NumFmt, NumLevel, ParaShape, ParaShapeId};
@@ -2629,7 +2629,7 @@ mod tests {
         assert_eq!(starts, 2, "서로 다른 최상위 목록이어야 함: {md}");
     }
 
-    /// 병합 셀이 있으면 HTML 표(colspan/rowspan)로 폴백한다 (GH-4).
+    /// Merged cells fall back to HTML tables with colspan/rowspan (GH-4).
     #[test]
     fn 병합셀_html_표() {
         use hwp_model::{BorderFillId, Cell, HwpUnit, Table};
@@ -2670,7 +2670,7 @@ mod tests {
         };
         let mut doc = from_markdown("표 문단\n");
         let p = &mut doc.sections[0].paragraphs[0];
-        // 첫 문단의 선주입 구역 정의 컨트롤 뒤 인덱스를 쓴다.
+        // Use the index after the first paragraph's injected section-definition control.
         let i0 = p.controls.len() as u32;
         p.chars.push(HwpChar::ExtCtrl {
             code: ctrl_char::OBJECT,
@@ -2686,11 +2686,11 @@ mod tests {
         assert!(md.contains("<td>가</td><td>나</td>"), "나머지 행: {md}");
     }
 
-    /// GH-46: exporter의 HTML 표 출력이 importer 계약을 지켜야
-    /// `cat --format markdown` → `new --from` 왕복에서 표가 살아남는다.
+    /// GH-46: exported HTML tables must satisfy the importer contract so tables survive
+    /// the cat --format markdown -> new --from round trip.
     #[test]
     fn markdown_왕복_html_표_보존() {
-        // 병합 셀(HTML 표 경로) + 셀 내 복수 문단(<br/> 경로) + 볼드(<strong> 경로)를 모두 포함.
+        // Cover merged cells (HTML table), multiple cell paragraphs (<br/>), and bold (<strong>).
         let bold_para = Paragraph {
             chars: "굵은 글씨".chars().map(HwpChar::Text).collect(),
             char_shape_runs: vec![(0, CharShapeId(0)), (2, CharShapeId(1))],
@@ -2703,7 +2703,7 @@ mod tests {
         insert_table(&mut doc.sections[0].paragraphs[0], table);
 
         let md = to_markdown(&doc);
-        // 계약 불변식: bare <br>/<b>/<i>가 없어야 한다 (html.rs의 <br/> 불변식과 동일).
+        // Contract invariant: no bare <br>/<b>/<i>, matching html.rs's <br/> invariant.
         assert!(!md.contains("<br>"), "self-closing <br/>만 방출: {md}");
         assert!(!md.contains("<b>"), "<strong>만 방출: {md}");
         assert!(!md.contains("<i>"), "<em>만 방출: {md}");
@@ -2870,13 +2870,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 밑줄/취소선/위·아래첨자가 스팬으로 방출된다.
+    /// Underline/strikeout/superscript/subscript emit spans.
     #[test]
     fn 글자효과_스팬() {
         let mut doc = from_markdown("효과\n");
         let shapes = [
             CharShape {
-                attr: 1 << 2, // 밑줄(글자 아래)
+                attr: 1 << 2, // Underline below text.
                 ..CharShape::default()
             },
             CharShape {
@@ -2884,11 +2884,11 @@ mod tests {
                 ..CharShape::default()
             },
             CharShape {
-                attr: 1 << 15, // 위첨자
+                attr: 1 << 15, // Superscript.
                 ..CharShape::default()
             },
             CharShape {
-                attr: 1 << 16, // 아래첨자
+                attr: 1 << 16, // Subscript.
                 ..CharShape::default()
             },
         ];
@@ -2907,7 +2907,7 @@ mod tests {
         );
     }
 
-    /// 문단 하나짜리 문서에 텍스트와 문자모양 run을 심는다. run은 (WCHAR 시작, 셰이프 인덱스).
+    /// Builds a one-paragraph document with text and (WCHAR start, shape index) runs.
     fn doc_with_runs(text: &str, shapes: &[CharShape], runs: &[(u32, usize)]) -> Document {
         let mut doc = from_markdown("x\n");
         let base = doc.header.char_shapes.len() as u16;
@@ -2928,10 +2928,10 @@ mod tests {
         }
     }
 
-    /// 볼드 run의 후행 공백은 닫는 `**` 뒤로 옮긴다(닫는 구분자 앞 공백 → 강조 파싱 실패 해소).
+    /// Move a bold run's trailing whitespace after the closing marker so GFM parses emphasis.
     #[test]
     fn 강조_후행공백_마커밖으로() {
-        // "(목적) "가 볼드, "예시"가 보통.
+        // The first part is bold, followed by ordinary text.
         let doc = doc_with_runs(
             "(목적) 예시",
             &[bold_shape(), CharShape::default()],
@@ -2942,10 +2942,10 @@ mod tests {
         assert!(!md.contains("(목적) **"), "닫는 마커 앞 공백 없어야: {md}");
     }
 
-    /// 볼드 run의 선두 공백은 여는 `**` 앞으로 옮긴다(여는 구분자 뒤 공백 → 강조 파싱 실패 해소).
+    /// Move a bold run's leading whitespace before its opening marker so GFM parses emphasis.
     #[test]
     fn 강조_선두공백_마커밖으로() {
-        // "앞"이 보통, " 강조"가 볼드(선두 공백 포함).
+        // Ordinary text precedes a bold span with leading whitespace.
         let doc = doc_with_runs(
             "앞 강조",
             &[CharShape::default(), bold_shape()],
@@ -2956,10 +2956,10 @@ mod tests {
         assert!(!md.contains("** 강조"), "여는 마커 뒤 공백 없어야: {md}");
     }
 
-    /// 내용이 공백뿐인 볼드 run은 마커를 아예 내지 않는다(`** **` 방지).
+    /// A whitespace-only bold run emits no markers, avoiding `** **`.
     #[test]
     fn 강조_공백뿐이면_마커미방출() {
-        // "앞"·"뒤"는 보통, 가운데 " "만 볼드.
+        // Ordinary text surrounds one bold space.
         let doc = doc_with_runs(
             "앞 뒤",
             &[CharShape::default(), bold_shape()],
@@ -2970,14 +2970,14 @@ mod tests {
         assert!(!md.contains("**"), "마커 미방출: {md}");
     }
 
-    /// 취소선도 동일하게 후행 공백을 닫는 `~~` 뒤로 옮긴다.
+    /// Strikeout also moves trailing whitespace after its closing marker.
     #[test]
     fn 취소선_후행공백_마커밖으로() {
         let strike = CharShape {
             strike: true,
             ..CharShape::default()
         };
-        // "지운 "이 취소선, "글"이 보통.
+        // The struck-out span ends in a space and is followed by ordinary text.
         let doc = doc_with_runs(
             "지운 글",
             &[strike, CharShape::default()],
@@ -2988,10 +2988,10 @@ mod tests {
         assert!(!md.contains("지운 ~~"), "닫는 마커 앞 공백 없어야: {md}");
     }
 
-    /// HTML 모드(`<strong>`)는 태그가 공백에 무관하므로 후행 공백을 그대로 둔다.
+    /// HTML-mode tags such as <strong> are whitespace-independent and keep trailing spaces.
     #[test]
     fn html_모드_볼드는_공백유지() {
-        // 병합 셀 표 → HTML 폴백 → 셀 내용 html_mode. 셀에 "가 "(볼드) + "나"(보통).
+        // A merged-cell table forces HTML mode; the cell contains a bold span ending in a space.
         let cell_para = Paragraph {
             chars: "가 나".chars().map(HwpChar::Text).collect(),
             char_shape_runs: vec![(0, CharShapeId(0)), (2, CharShapeId(1))],
@@ -3010,9 +3010,9 @@ mod tests {
         );
     }
 
-    // ── 세그먼트 맵 (기능 A) ──────────────────────────────────────────────
+    // Segment map (feature A).
 
-    /// 세그먼트 [start,end)의 문자 슬라이스(문자 단위 — Python str 인덱싱과 동일).
+    /// Character slice for [start, end), matching Python str indexing.
     fn char_slice(md: &str, seg: &MarkdownSegment) -> String {
         md.chars()
             .skip(seg.start)
@@ -3020,7 +3020,7 @@ mod tests {
             .collect()
     }
 
-    /// 텍스트만 있는 최상위 문단.
+    /// Text-only top-level paragraph.
     fn text_para(text: &str) -> Paragraph {
         Paragraph {
             chars: text.chars().map(HwpChar::Text).collect(),
@@ -3028,7 +3028,7 @@ mod tests {
         }
     }
 
-    /// 병합 셀(colspan)을 가진 2행 표 — HTML 경로로 폴백된다.
+    /// Two-row table with a colspan cell, forcing the HTML path.
     fn merged_table() -> Table {
         use hwp_model::{BorderFillId, HwpUnit};
         let cell = |row: u16, col: u16, cs: u16, rs: u16, txt: &str| Cell {
@@ -3065,7 +3065,7 @@ mod tests {
         }
     }
 
-    /// 각주/미주 컨트롤(본문 참조 앵커 없이 컨트롤만).
+    /// Footnote/endnote control without an inline source anchor.
     fn note_control(id: &[u8; 4], txt: &str) -> Control {
         Control::Generic(GenericControl {
             ctrl_id: *id,
@@ -3085,7 +3085,7 @@ mod tests {
         })
     }
 
-    /// 첫 문단을 "개요 1" 헤딩으로 만들고 인덱스를 돌려준다.
+    /// Makes the first paragraph an outline heading and returns its index.
     fn make_heading(doc: &mut Document, para_index: usize) {
         use hwp_model::StyleId;
         let style_idx = doc.header.styles.len() as u16;
@@ -3096,22 +3096,22 @@ mod tests {
         doc.sections[0].paragraphs[para_index].style = StyleId(style_idx);
     }
 
-    /// (1) 한국어 여러 문단(제목 포함)에서 세그먼트가 **문자 오프셋**으로 정확한 원본
-    /// 문단 텍스트를 가리키는지 — 바이트 오프셋이었다면 반드시 어긋나는 한국어 배치.
+    /// (1) Korean paragraphs, including a heading, map character offsets to exact source text;
+    /// the multibyte layout would expose accidental byte offsets.
     #[test]
     fn 세그먼트_한국어_문자오프셋_정합() {
         let mut doc = from_markdown("가나다\n\n라마바\n\n사아자\n");
-        make_heading(&mut doc, 0); // "가나다" → "# 가나다"
+        make_heading(&mut doc, 0); // The text becomes a level-one heading.
         let (md, segs) = to_markdown_with_segments(&doc, &MarkdownOptions::default()).unwrap();
 
-        // (a) 논-ASCII → 바이트 수 != 문자 수.
+        // (a) Non-ASCII byte counts differ from character counts.
         assert_ne!(
             md.len(),
             md.chars().count(),
             "한국어 포함이면 byte != char: {md:?}"
         );
 
-        // (b)(c) 각 세그먼트 슬라이스와 (section, para) 인덱스가 기대와 정확히 일치.
+        // (b)(c) Each slice and (section, paragraph) coordinate matches the expected value.
         let expected = [
             (0usize, 0usize, "# 가나다"),
             (0, 1, "라마바"),
@@ -3128,12 +3128,12 @@ mod tests {
         }
     }
 
-    /// (2) 불변식(정렬·비중첩·범위·인덱스 유효) + to_markdown_with와 문자열 완전 동일.
+    /// (2) Ordered/disjoint/in-bounds/index invariants and exact equality with to_markdown_with.
     #[test]
     fn 세그먼트_불변식과_문자열_동일() {
         let mut doc = from_markdown("서론 문단\n\n본론 문단\n\n결론 문단\n");
         make_heading(&mut doc, 0);
-        // 표 문단도 하나 끼운다(블록 포함 경로).
+        // Include a paragraph containing a table to cover the block path.
         insert_table(&mut doc.sections[0].paragraphs[1], merged_table());
 
         let opts = MarkdownOptions::default();
@@ -3156,7 +3156,7 @@ mod tests {
         }
     }
 
-    /// (3) 표가 만든 `<tr>` 줄들이 표를 담은 문단의 세그먼트 범위 안에 있다.
+    /// (3) Table-generated <tr> lines lie inside the containing paragraph's segment range.
     #[test]
     fn 세그먼트_표_문단_상속() {
         let mut doc = from_markdown("표 앞 문단\n\n표 문단\n\n표 뒤 문단\n");
@@ -3168,7 +3168,7 @@ mod tests {
             .iter()
             .find(|s| s.section == 0 && s.para == 1)
             .expect("표 문단 세그먼트");
-        // md 안 모든 "<tr" 시작 문자 오프셋이 표 문단 세그먼트 범위 안에 있어야 한다.
+        // Every <tr start offset in Markdown must lie inside the containing paragraph's range.
         let tr_offsets: Vec<usize> = md
             .char_indices()
             .enumerate()
@@ -3184,12 +3184,12 @@ mod tests {
         }
     }
 
-    /// (4) 연속 빈 줄이 삭제(cleanup)된 뒤에도 각 세그먼트 슬라이스가 올바른 문단을 가리킨다.
-    /// 문단 안 강제 줄바꿈 3회가 빈 줄 2개를 만들어 cleanup이 한 줄을 삭제하게 한다.
+    /// (4) Segments still identify their paragraphs after cleanup deletes consecutive blank lines.
+    /// Three hard line breaks create two blank lines; cleanup deletes one.
     #[test]
     fn 세그먼트_cleanup_재매핑() {
         let mut doc = from_markdown("머리 문단\n\n채움 문단\n\n꼬리 문단\n");
-        // 가운데 문단을 "앞[줄바꿈×3]뒤"로 바꿔 연속 빈 줄을 유발.
+        // Create consecutive blank lines with three hard breaks in the middle paragraph.
         let p1 = &mut doc.sections[0].paragraphs[1];
         p1.char_shape_runs = vec![];
         p1.chars = vec![
@@ -3212,7 +3212,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("세그먼트 ({sec},{par}) 없음: {segs:?}"));
             char_slice(&md, seg)
         };
-        // 삭제 앞 문단과 삭제 뒤 문단이 정확한 텍스트를 가리켜야 한다(재매핑 검증).
+        // The segments before and after the deletion still point at the correct text.
         assert_eq!(slice_of(0, 0), "머리 문단", "삭제 앞 문단: {md:?}");
         assert_eq!(slice_of(0, 2), "꼬리 문단", "삭제 뒤 문단(재매핑): {md:?}");
         let mid = slice_of(0, 1);
@@ -3222,27 +3222,27 @@ mod tests {
         );
     }
 
-    /// cleanup_with_map/DeletionMap의 오프셋 재매핑 단위 검증.
+    /// Unit coverage for cleanup_with_map/DeletionMap offset remapping.
     #[test]
     fn cleanup_삭제맵_오프셋_재매핑() {
-        // 빈 줄 3개 → 2개 삭제. 정리본은 빈 줄 1개.
+        // Three blank lines collapse to one, deleting two.
         let (cleaned, dels) = cleanup_with_map("a\n\n\n\nb\n");
         assert_eq!(cleaned, "a\n\nb\n");
         let map = DeletionMap::new(&dels);
         assert_eq!(map.remap(0), 0);
         assert_eq!(map.remap(1), 1);
         assert_eq!(map.remap(5), 3, "'b'는 원본 byte 5 → 정리본 byte 3");
-        // 삭제 없는 문자열은 항등.
+        // A string without deletions maps identically.
         let (c2, d2) = cleanup_with_map("한\n글\n");
         assert_eq!(c2, "한\n글\n");
         assert!(d2.is_empty());
     }
 
-    /// (5) 각주 정의 줄의 세그먼트가 참조 문단 좌표를 갖는다.
+    /// (5) Footnote-definition segments retain the referring paragraph coordinates.
     #[test]
     fn 세그먼트_각주_정의_귀속() {
         let mut doc = from_markdown("첫째 문단\n\n둘째 문단\n");
-        // 둘째 문단(인덱스 1)에 각주를 단다.
+        // Attach a footnote to the second paragraph (index 1).
         let para = &mut doc.sections[0].paragraphs[1];
         let idx = para.controls.len() as u32;
         para.controls.push(note_control(b"fn  ", "각주 정의 내용"));
@@ -3255,7 +3255,7 @@ mod tests {
         let (md, segs) = to_markdown_with_segments(&doc, &MarkdownOptions::default()).unwrap();
         assert!(md.contains("[^1]: 각주 정의 내용"), "각주 정의 방출: {md}");
 
-        // "[^1]:" 로 시작하는 슬라이스를 가진 세그먼트가 참조 문단 (0,1)에 귀속돼야 한다.
+        // The slice beginning [^1]: must belong to its referring paragraph (0, 1).
         let def_seg = segs
             .iter()
             .find(|s| char_slice(&md, s).starts_with("[^1]:"))
@@ -3267,7 +3267,7 @@ mod tests {
         );
     }
 
-    /// (6) 구역 2개 문서에서 section 인덱스가 정확하다.
+    /// (6) Section indices are correct in a two-section document.
     #[test]
     fn 세그먼트_다중_구역() {
         let mut doc = from_markdown("첫 구역 내용\n");
@@ -3289,11 +3289,11 @@ mod tests {
         assert_eq!(sec2.section, 1, "둘째 구역 section: {sec2:?}");
     }
 
-    /// (7) 표 행 한 줄 불변식(단위): HTML 표는 줄마다 `<tr` 수 == `</tr>` 수(중첩 표가 한
-    /// 줄에 여럿 있어도 성립), GFM 표는 trim 후 '|' 시작 줄이 '|'로 끝난다.
+    /// (7) One-line table-row invariant: HTML lines have equal opening/closing tr counts, including
+    /// nested tables on one line. Trimmed GFM rows start and end with a pipe.
     #[test]
     fn 표_행_한줄_불변식_단위() {
-        // 중첩 표: 바깥 셀 안에 1×1 표 → 바깥 행과 같은 한 줄에 인라인 직렬화.
+        // A nested 1x1 table shares the outer row's line when serialized inline.
         let inner = one_cell_table(text_para("속"), 1, 1);
         let mut cell_para = Paragraph::default();
         insert_table(&mut cell_para, inner);
@@ -3313,7 +3313,7 @@ mod tests {
             );
         }
 
-        // GFM 표: 병합 없는 표는 파이프 표로 렌더 — '|' 시작 줄은 '|'로 끝난다.
+        // GFM table: no merged cells, so rows use pipe syntax.
         let gfm = from_markdown("| 가 | 나 |\n|----|----|\n| 1 | 2 |\n");
         let md2 = to_markdown(&gfm);
         let mut pipe_rows = 0;
