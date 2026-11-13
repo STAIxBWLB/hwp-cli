@@ -75,11 +75,7 @@ fn new_from(md: &Path, out: &Path, extra_args: &[&str]) {
 /// Build a complete package with the tested CLI, then append only the public raw-container
 /// pattern from hwpx/tests/roundtrip_preserve.rs. No installed release or private bytes are used.
 fn build_opaque_container_hwpx(dir: &Path) -> PathBuf {
-    let markdown = write_md(
-        dir,
-        "synthetic.md",
-        "| Field | Value |\n| --- | --- |\n| alpha | 1 |\n",
-    );
+    let markdown = write_md(dir, "synthetic.md", HTML_BODY_TABLE_MD);
     let generated = dir.join("generated.hwpx");
     new_from(
         &markdown,
@@ -513,21 +509,17 @@ fn table_record(control: &serde_json::Value) -> Option<TableRecord> {
     Some(TableRecord { cols, cells })
 }
 
-/// D-08 coverage for the raw-backed generic case from #133, using a test-generated public package.
+/// D-08 coverage for an actual body-table styling change beside a raw-backed text container.
+/// The sibling table starts unstyled, so the first pass must change its header shapes before
+/// subsequent passes reach a byte-identical fixed point while retaining the captured XML.
 ///
-/// An HWPX carrying an `hp:container` (an opaque run-level object whose captured XML is the
-/// ONLY lossless serialization source) is the case the earlier tests missed: they covered
-/// generated documents and a table nested in a table cell, never a raw-backed generic. Two bugs
-/// compounded there. `style_table` returned `true` for every table with at least one column
-/// rather than only for tables it changed, so the walker's `Control::Generic` arm cleared
-/// `hwpx_raw_xml` on a pure no-op re-application; and once cleared, the HWPX writer cannot
-/// reconstruct the container and reports `OpaqueControlUnrepresentable`. Separately, an
-/// already-styled document produced zero edits, which the publish gate could not tell apart from
-/// "no table matched", so the second of two identical runs failed outright.
+/// The container's subList contains only text, not a nested table. This case therefore does not
+/// exercise the Generic arm's raw-XML invalidation when a nested table changes. The unit test
+/// `style_table_reports_change_not_mere_processing` in hwp-convert/src/style.rs guards the
+/// changed-versus-processed return value that the invalidation decision relies on.
 ///
-/// The synthetic package has an eligible table and a raw container, without the unsupported
-/// image fills that made the private fixture refuse after #452. It is not a Hancom export or
-/// native compatibility evidence. Every pass still runs the semantic `--verify` self-check.
+/// The synthetic package has no unsupported image fills. It is not a Hancom export or native
+/// compatibility evidence. Every styling pass runs the semantic `--verify` self-check.
 #[test]
 fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
     let dir = test_dir("opaque-container");
@@ -570,8 +562,17 @@ fn style_tables_byte_stable_on_a_document_with_an_opaque_container() {
     let second = dir.join("s2.hwpx");
     let third = dir.join("s3.hwpx");
 
-    // Each pass must PUBLISH. Before the fix the second one failed the publish gate outright.
+    let source_tables = tables_with_shapes(&source);
+    assert_eq!(source_tables.len(), 1, "one public body table is styled");
+    // Each pass must PUBLISH, and pass one must exercise a real styling change.
     style_tables(&source, &first);
+    let first_tables = tables_with_shapes(&first);
+    assert_eq!(first_tables.len(), 1, "styling must retain the body table");
+    assert_ne!(
+        source_tables[0].header_shapes(),
+        first_tables[0].header_shapes(),
+        "opaque container: first styling pass must change header shapes"
+    );
     style_tables(&first, &second);
     style_tables(&second, &third);
 
