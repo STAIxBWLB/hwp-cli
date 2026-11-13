@@ -179,6 +179,20 @@ fn write_paragraph(
     preserve_linesegs: bool,
     report: &mut WriteReport,
 ) {
+    // Count opaque records, not decoded ranges: no genuine HWPX mapping is established.
+    let range_tags = para
+        .extras
+        .iter()
+        .filter(|record| record.tag == 0x46)
+        .count();
+    if range_tags > 0 {
+        report.loss(
+            PreservationCode::ParagraphRangeTagUnrepresentable,
+            PreservationResourceKind::Metadata,
+            PreservationDisposition::Unrepresentable,
+            range_tags,
+        );
+    }
     let _ = write!(
         out,
         r##"<hp:p id="{}" paraPrIDRef="{}" styleIDRef="{}" pageBreak="{}" columnBreak="{}" merged="0">"##,
