@@ -121,7 +121,7 @@ expect_failure() {
         echo "FAIL: $message unexpectedly passed" >&2
         exit 1
     fi
-    grep -F "$message" "$tmp/log" >/dev/null || { cat "$tmp/log"; exit 1; }
+    grep -F "$message" "$tmp/log" >/dev/null || { cat "$tmp/log"; echo "FAIL: missing expected diagnostic: $message" >&2; exit 1; }
 }
 
 for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD APPLE_API_KEY APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
@@ -178,7 +178,9 @@ followup_case() {
             expect_failure 'Code signature verification failed' env MOCK_TEAM=wrong bash "$helper" verify-archive "$tmp/signed.tar.gz"
             ;;
         designated-team)
-            env MOCK_REQUIRE_TEAM=1 bash "$helper" verify-archive "$tmp/signed.tar.gz" >"$tmp/log" 2>&1
+            env MOCK_REQUIRE_TEAM=1 bash "$helper" verify-archive "$tmp/signed.tar.gz" >"$tmp/log" 2>&1 || {
+                echo 'FAIL: verification must pass the designated team requirement to codesign' >&2; exit 1;
+            }
             ;;
         gatekeeper-rejected|gatekeeper-source|gatekeeper-exit)
             case "$selected" in
@@ -194,7 +196,9 @@ followup_case() {
             ;;
         gatekeeper-retry)
             env MOCK_SPCTL=retry bash "$helper" verify-archive "$tmp/signed.tar.gz" >"$tmp/log" 2>&1
-            [ "$(cat "$RUNNER_TEMP/assessment-count")" = 4 ]
+            [ -f "$RUNNER_TEMP/assessment-count" ] && [ "$(cat "$RUNNER_TEMP/assessment-count")" = 4 ] || {
+                echo 'FAIL: Gatekeeper retry must assess ahwp three times and hwp once' >&2; exit 1;
+            }
             [ "$(grep -c '^sleep$' "$MOCK_CALLS")" = 2 ]
             [ "$(grep -c 'Gatekeeper accepted' "$tmp/log")" = 2 ]
             ;;
