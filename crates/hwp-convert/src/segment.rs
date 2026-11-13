@@ -1883,6 +1883,60 @@ mod run_control_tests {
         }
     }
 
+    /// 555-P2-1: one emphasis span covers two runs with different shape ids but the same marks,
+    /// so it outlives run A. Closing it before the plain `b` moves A's trailing projected spaces
+    /// past the closing `**`; they must stay listed on A, inside A's own range.
+    #[test]
+    fn a_closed_runs_relocated_controls_stay_on_that_run() {
+        let p = Paragraph {
+            chars: vec![
+                HwpChar::Text('a'),
+                HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                HwpChar::CharCtrl(ctrl_char::FW_SPACE),
+                HwpChar::Text('b'),
+            ],
+            // Bold A at 0, bold B at 2 (same marks, different id), plain at 3.
+            char_shape_runs: vec![
+                (0, CharShapeId(1)),
+                (2, CharShapeId(2)),
+                (3, CharShapeId(0)),
+            ],
+            ..Default::default()
+        };
+        let mut doc = doc_of(vec![p]);
+        doc.header.char_shapes.push(CharShape {
+            attr: 0b10,
+            base_size: 1100,
+            ..Default::default()
+        });
+        let (md, segs) = emit(&doc);
+        let chars: Vec<char> = md.chars().collect();
+        let listed: Vec<(&str, u32)> = segs
+            .iter()
+            .filter(|s| s.kind == SegmentKind::Run)
+            .flat_map(|run| {
+                for c in &run.controls {
+                    assert!(
+                        run.start <= c.at && c.at < run.end,
+                        "{c:?} outside {run:?} in {md:?}"
+                    );
+                    assert_eq!(chars[c.at], ' ', "{c:?} {md:?}");
+                }
+                run.controls.iter().map(|c| (c.kind.as_str(), c.source))
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            vec![("nb_space", 1), ("fw_space", 2)],
+            "{segs:#?} {md:?}"
+        );
+        // Pieces of one paragraph stay disjoint and in order.
+        let runs: Vec<&Segment> = segs.iter().filter(|s| s.kind == SegmentKind::Run).collect();
+        for w in runs.windows(2) {
+            assert!(w[0].end <= w[1].start, "{:?} overlaps {:?}", w[0], w[1]);
+        }
+    }
+
     #[test]
     fn a_run_without_controls_publishes_none() {
         let p = Paragraph {

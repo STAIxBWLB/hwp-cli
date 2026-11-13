@@ -305,6 +305,32 @@ impl Body {
                 }
             }
         }
+        // A closed run whose trailing projected whitespace the close moved past the closing
+        // marker no longer contains it. Its range grows to the character, and the run piece
+        // that started where it ended starts there instead, so the two stay adjacent and every
+        // listed control stays inside its own piece (#543). A run with no control is untouched,
+        // so ranges without controls are exactly what they were.
+        let mut grown: Vec<(usize, usize)> = Vec::new(); // (old end, new end)
+        for run in self.segs.iter_mut().filter(|s| s.kind == SegmentKind::Run) {
+            if let Some(&(_, new)) = grown.iter().find(|&&(old, _)| old == run.start)
+                && run.start < new
+            {
+                run.start = new.min(run.end);
+            }
+            let last = run.controls.iter().map(|&(_, off, _)| off + 1).max();
+            if let Some(need) = last
+                && need > run.end
+            {
+                grown.push((run.end, need));
+                run.end = need;
+            }
+        }
+        if let Some(run) = self.open_run.as_mut()
+            && let Some(&(_, new)) = grown.iter().find(|&&(old, _)| old == run.start)
+            && run.start < new
+        {
+            run.start = new;
+        }
     }
 
     /// Closes the open run at the cursor.
