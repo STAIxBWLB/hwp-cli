@@ -6087,6 +6087,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn composed_numbering_fillers_do_not_weaken_hwpx_definition_comparison() {
+        let source = r#"{"version":"1.0","lists":{"o":{"kind":"ordered","levels":[{"marker":"{n}.","start":1},{"marker":"{n}.","start":1},{"marker":"{n})","start":1}]}},"sections":[{"blocks":[{"type":"paragraph","list":{"name":"o","level":0},"runs":[{"type":"text","text":"top"}]},{"type":"paragraph","list":{"name":"o","level":2},"runs":[{"type":"text","text":"deep"}]}]}]}"#;
+        let spec = hwp_cli::document_spec::parse_spec(
+            source,
+            hwp_cli::document_spec::SpecInputFormat::Json,
+        )
+        .unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("hwp444-compose-fillers-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = directory.join("list.hwp");
+        let expected =
+            hwp_cli::document_spec::compile_spec(&spec, &directory, &output, false, false, &[])
+                .unwrap()
+                .document;
+        crate::commands::convert::write_hwp_structural(&expected, &output).unwrap();
+        let actual = hwp5::read_document(&output).unwrap().document;
+        let verification = verify_document_quiet(&output, &expected);
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert!(
+            verification.is_ok(),
+            "validated compose renderer defaults must verify: {verification:?}"
+        );
+        let mut hwpx_source = expected.clone();
+        hwpx_source.meta.source_format = "hwpx".into();
+        assert_ne!(
+            semantic_signature_for(&hwpx_source, Some(SemanticTarget::Hwp)),
+            semantic_signature_for(&actual, Some(SemanticTarget::Hwp)),
+            "the same explicit HWPX definitions have no compiler-default provenance and must remain compared"
+        );
+    }
+
+    #[test]
     fn hwp_caption_table_projection_visits_every_caption_owner() {
         fn inner_table(document: &mut hwp_model::Document) -> &mut hwp_model::Table {
             let owner = document.sections[0].paragraphs[0]
