@@ -356,3 +356,39 @@ fn hwpx_writer_aggregates_range_tag_records_in_nested_paragraphs() {
         "two records each in cell, caption, header and text box"
     );
 }
+
+#[test]
+fn edit_hwpx_refuses_range_tag_loss() {
+    for cell in [false, true] {
+        let mut workspace = Workspace::new(
+            if cell {
+                "edit-hwpx-cell"
+            } else {
+                "edit-hwpx-body"
+            },
+            cell,
+            true,
+        );
+        workspace.output = workspace.dir.join("edited.hwpx");
+        let result = workspace.edit(&["--set-meta", "title=reviewed"]);
+        assert!(
+            !result.status.success(),
+            "cross-format edit must refuse range-tag loss"
+        );
+        assert!(!workspace.output.exists(), "refused edit must not publish");
+        assert_eq!(std::fs::read(&workspace.source).unwrap(), workspace.bytes);
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            message.contains("paragraph_range_tag_unrepresentable: 1 item(s)"),
+            "{message}"
+        );
+        assert!(
+            message.contains(".hwp 출력 경로"),
+            "missing safe output remedy: {message}"
+        );
+        assert!(
+            message.contains("ahwp convert") && message.contains("--strict 없이"),
+            "missing opt-in loss remedy: {message}"
+        );
+    }
+}
