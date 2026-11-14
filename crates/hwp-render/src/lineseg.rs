@@ -450,7 +450,7 @@ fn synthesize_linesegs_inner(
         let native_mode = native.is_some() && !use_fragment_flow;
         let mut keep_body_suffix = native_mode;
         for pi in 0..doc.sections[si].paragraphs.len() {
-            // #540 G1 / #584: body ParaShape spacing stores twice HWPUNIT on every
+            // #540 G1 / #584: serialized body spacing is twice its HWPUNIT value on every
             // source path. Nested cache/list rules are independent and stay unchanged.
             let (sp_top, sp_bottom) = snap
                 .header

@@ -44,7 +44,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Hangul 12.30.0 saved G1 positions (#540, #570). Floating-section anchor synthesis retains the same
   section-start space-before. Section-first paragraphs anchoring floating tables omit
   space-before, confirmed by Hangul 12.30.0 saves (#570). Pictures, GSO and unknown placements
-  remain conservative exclusions; table-relative host-line placement is out of scope. Nested lists and per-line wrapping rules are unchanged.
+  remain conservative exclusions; table-relative host-line placement is out of scope. Nested lists
+  and per-line wrapping rules are unchanged.
 
 - Native-cache cell margins resolve only `0xffff` per side to the table's inner margins in
   cell widths and table heights, preventing a one-unit width or a 65535-unit margin term.
@@ -55,8 +56,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Native HWP5 edit body synthesis and saved-predecessor seeds now use half the serialized
   paragraph spacing, matching Hangul's G3 position 6312 and post-break top 1200. Plain section
   starts keep top/2; floating-host section starts still omit it. Retained source caches are not
-  rewritten, and nested list geometry is unchanged. The height-neutral suffix guard stays active for explicit
-  spacing changes that would overlap a source neighbour (#584, part of #540 G1).
+  rewritten, and nested list geometry is unchanged. The height-neutral suffix guard stays active
+  for explicit spacing changes that would overlap a source neighbour (#584, part of #540 G1).
 
 **Changed**
 
