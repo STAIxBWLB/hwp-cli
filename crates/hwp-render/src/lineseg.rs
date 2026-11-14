@@ -177,9 +177,9 @@ fn native_floating_host(source: NativeBodyCache<'_>) -> bool {
         && source.original.is_some_and(|p| {
             !p.line_segs.is_empty()
                 && p.line_segs.iter().all(|line| line.seg_width == 0)
-                && p.controls.iter().any(|c| {
-                    matches!(c, Control::Table(t)
-                if t.placement.as_ref().is_some_and(|p| !p.treat_as_char))
+                && p.controls.iter().any(|c| match c {
+                    Control::Table(t) => t.placement.as_ref().is_some_and(|p| !p.treat_as_char),
+                    _ => false,
                 })
         })
 }
@@ -595,7 +595,7 @@ fn synthesize_linesegs_inner(
             if floating_source.is_some() {
                 table_total = 0;
             }
-            // Move an inline table to the next page when it does not fit in the current remainder.
+            // Other table blocks retain the existing whole-table page-fit fallback.
             if section_anchors.is_none()
                 && table_total > 0
                 && v_pos > 0
@@ -627,10 +627,10 @@ fn synthesize_linesegs_inner(
                     store, &snap, src, body_width, content_h, &mut v_pos, warnings,
                 )
             };
-            // The exact position compute_linesegs advanced to. It is captured before anything
-            // rewrites the cursor, because the committed segs cannot reproduce it: the serialized
-            // line_spacing caps the reading at the base line, so FIXED spacing below it (or 0)
-            // would otherwise move the following paragraph (#509).
+            // Capture the line cursor before applying table/source-offset flow. Ordinary
+            // compute_linesegs may advance less than its serialized cache can express: FIXED
+            // spacing below the base (or 0) must not gain the cache's base-height floor (#509).
+            // A translated floating host instead uses the stored line advance above (#590).
             let line_cursor = v_pos;
             if anchor.is_some_and(|anchor| anchor.starts_page)
                 && let Some(first) = segs.first_mut()
