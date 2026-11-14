@@ -15,8 +15,9 @@ use crate::issues::RenderIssueAccumulator;
 use crate::layout::TAB_INTERVAL_PT;
 use crate::shape::{InlineItem, glyph_source_sequences, shape_range, source_has_no_break_space};
 
-/// Section-start spacing has no measured rule for a paragraph hosting a floating object.
-/// Unknown placement retains that unresolved context rather than treating it as plain text.
+/// Contexts excluded from the plain-body section-start spacing rule.
+/// Hangul 12.30.0 saved a paragraph-anchored floating table host with no added space-before
+/// (#570). Pictures, GSOs and unknown placement remain conservative exclusions, not measured claims.
 pub(crate) fn hosts_floating_body_object(para: &Paragraph) -> bool {
     para.controls.iter().any(|control| match control {
         Control::Table(table) => table.placement.as_ref().is_none_or(|p| !p.treat_as_char),

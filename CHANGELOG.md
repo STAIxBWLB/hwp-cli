@@ -24,8 +24,9 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 - Authored-document body line-cache synthesis reads paragraph spacing at half the serialized
   value and retains space-before at plain-body section starts and explicit breaks, matching six Hangul
   12.30.0 saved G1 positions (#540, #570). Floating-section anchor synthesis retains the same
-  section-start space-before. First paragraphs hosting floating objects retain their previous
-  zero top, unresolved pending Hangul evidence. Native HWP5 edit/seed arithmetic, nested lists and per-line
+  section-start space-before. Section-first paragraphs anchoring floating tables omit
+  space-before, confirmed by Hangul 12.30.0 saves (#570). Pictures, GSO and unknown placements
+  remain conservative exclusions; table-relative host-line placement is out of scope. Native HWP5 edit/seed arithmetic, nested lists and per-line
   wrapping rules are unchanged.
 
 **Documentation**

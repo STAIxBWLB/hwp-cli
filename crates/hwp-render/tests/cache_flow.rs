@@ -609,8 +609,9 @@ fn explicit_break_uses_half_unit_space_before_in_both_section_paths() {
     }
 }
 
+// #570 confirms omission for paragraph-anchored floating tables, not absolute host placement.
 #[test]
-fn floating_section_first_paragraph_preserves_its_unmeasured_host_rule() {
+fn floating_table_host_section_start_omits_space_before() {
     let mut source = hwp_convert::from_markdown("First\n\nFollowing\n");
     let mut first_shape =
         source.header.para_shapes[source.sections[0].paragraphs[0].para_shape.0 as usize].clone();
@@ -630,7 +631,7 @@ fn floating_section_first_paragraph_preserves_its_unmeasured_host_rule() {
         for section in &cached.sections {
             assert_eq!(
                 section.paragraphs[0].line_segs[0].v_pos, 0,
-                "floating-host section starts remain at zero pending saved-file evidence"
+                "this fixture keeps its host anchor without adding section-start space-before"
             );
         }
     }
