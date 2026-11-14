@@ -217,7 +217,9 @@ struct NativeBodyWalk<'a, 'b> {
 
 /// Native edit synthesis with source-aware body preservation. Source metadata is in
 /// section/paragraph order. Return the body indices whose complete source records the writer
-/// should retain. Nested lists keep the existing seam policy, and authored synthesis is unchanged.
+/// should retain. A moved unchanged zero-width floating host instead translates source successor
+/// caches until the next edit (#590); these are not returned as verbatim records. Nested lists
+/// keep the existing seam policy, and authored synthesis is unchanged.
 pub fn synthesize_native_linesegs_seeded(
     doc: &mut Document,
     store: &mut FontStore,
