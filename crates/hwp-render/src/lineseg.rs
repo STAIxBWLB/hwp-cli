@@ -1295,12 +1295,12 @@ mod tests {
             line_segs: vec![seg(3000, 1000)],
             ..Default::default()
         };
-        let entry = |p| {
+        fn entry(p: &Paragraph) -> Option<NativeBodyCache<'_>> {
             Some(NativeBodyCache {
                 original: Some(p),
                 unchanged: true,
             })
-        };
+        }
         assert!(native_body_suffix_fits(&original, entry(&following), 3000));
         assert!(!native_body_suffix_fits(&original, entry(&following), 3001));
         following.header.break_type = 4;
