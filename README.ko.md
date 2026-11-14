@@ -48,7 +48,7 @@ ahwp update            # 최신 릴리스로 자체 갱신 (brew 설치본은 br
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh \
-  | sh -s -- --dir /usr/local/bin --tag v1.6.0
+  | sh -s -- --dir /usr/local/bin --tag v2.1.0
 ```
 
 **폰트는 동봉하지 않는다.** 텍스트 추출과 변환은 폰트 없이 동작하고, 렌더와 PDF 출력에는

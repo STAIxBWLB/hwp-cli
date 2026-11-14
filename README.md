@@ -51,7 +51,7 @@ Pin a version or install directory for a build step:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh \
-  | sh -s -- --dir /usr/local/bin --tag v1.6.0
+  | sh -s -- --dir /usr/local/bin --tag v2.1.0
 ```
 
 **No fonts are bundled.** Text extraction and conversion need none; rendering and PDF output need CJK
