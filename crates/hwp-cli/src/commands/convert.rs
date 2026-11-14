@@ -1222,7 +1222,8 @@ fn write_hwp_impl(
     let doc = if source_has_edits {
         // Native HWP edits retain source body records through height-neutral runs. After the
         // first height-changing/new/moved body paragraph or unsafe forward boundary, the rest
-        // of that section reflows.
+        // of that section reflows, with source-offset translation after an unchanged
+        // zero-width floating-table host (#590).
         // Nested lists retain their own seam and local-context validity rules. The writer
         // restores complete source records only for the body indices the walk reports kept;
         // that includes cache-less source paragraphs in retained regions.
@@ -1246,8 +1247,8 @@ fn write_hwp_impl(
         // edit, unchanged body records remain saved; the first height-changing edit makes the
         // rest of that section reflow; a source suffix that would overlap also forces reflow.
         // A bare section-top cursor gave the first changed paragraph a v_pos *above* its kept
-        // predecessor, which the renderer reads
-        // as a page start and draws the change mid-page (#462).
+        // predecessor, which the renderer reads as a page start and draws the change mid-page
+        // (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
         // Stage valid saved nested records and clear their moved suffixes before measuring.
         // A kept table must be measured from its saved cells rather than ephemeral synthesis
@@ -2719,7 +2720,16 @@ mod tests {
         .unwrap();
         let original = hwp5::read_document(&source).unwrap().document;
         let identity = dir.join("identity.hwp");
-        hwp5::write_document(&original, &identity, &Default::default()).unwrap();
+        write_hwp_impl(
+            &original,
+            &identity,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(&source).unwrap(),
             std::fs::read(&identity).unwrap(),
