@@ -41,6 +41,16 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   margin policy are preserved. Horizontal inheritance is evidenced; vertical inheritance is
   inferred, with only absence of a 65535 term observed (#576, part of #540 G2).
 
+**Changed**
+
+- Native HWP5 body edits preserve unchanged suffix paragraph records after height-neutral runs
+  (same cached extent, line count, page/column flags and hosted-object/nested-cache geometry).
+  The first height-changing, new or moved paragraph makes the remaining section reflow, even
+  after later neutral edits; the next section starts fresh. Nested cell, caption and text-box
+  lists retain their existing reflow rules. Changed body runs continue from the saved predecessor
+  actually retained. This is source representation preservation, not a new Hancom-acceptance
+  claim; height-changing native output remains a separate Hancom evidence item (#540 G3).
+
 **Documentation**
 
 - The original-form capability record gains `hancom_open_export_receipts` with one agent-performed

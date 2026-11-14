@@ -1166,6 +1166,118 @@ mod tests {
     }
 
     #[test]
+    fn native_body_neutrality_uses_extent_count_and_every_boundary_flag() {
+        let mut original = Paragraph {
+            line_segs: vec![seg(0, 1000)],
+            ..Default::default()
+        };
+        original.line_segs[0].line_spacing = 600;
+        let mut shifted = original.clone();
+        shifted.line_segs[0].v_pos = 700;
+        shifted.line_segs[0].baseline_gap += 5;
+        assert!(
+            native_body_height_neutral(&original, &shifted),
+            "position/baseline changes do not change extent"
+        );
+        for bit in [1, 2] {
+            let mut boundary = shifted.clone();
+            boundary.line_segs[0].flags ^= bit;
+            assert!(
+                !native_body_height_neutral(&original, &boundary),
+                "page/column boundary changes disqualify"
+            );
+        }
+        let mut taller = shifted.clone();
+        taller.line_segs[0].line_height += 1;
+        assert!(!native_body_height_neutral(&original, &taller));
+        let mut count = shifted.clone();
+        count.line_segs.push(count.line_segs[0].clone());
+        assert!(
+            !native_body_height_neutral(&original, &count),
+            "same overall extent cannot hide changed line count"
+        );
+        let mut host = original.clone();
+        host.controls
+            .push(Control::Table(table_with(cell_with(&[0]))));
+        let mut changed = host.clone();
+        let Control::Table(table) = &mut changed.controls[0] else {
+            unreachable!()
+        };
+        table.cells[0].paragraphs[0].line_segs[0].baseline_gap += 1;
+        assert!(
+            !native_body_height_neutral(&host, &changed),
+            "changed nested cache disqualifies even equal table height"
+        );
+    }
+
+    #[test]
+    fn native_body_preservation_resets_at_the_next_section() {
+        let mut original = hwp_convert::from_markdown("One\n\nTwo\n");
+        original.meta.source_format = "hwp5".to_owned();
+        for shape in &mut original.header.char_shapes {
+            shape.base_size = 1000;
+        }
+        for shape in &mut original.header.para_shapes {
+            shape.spacing_top = 0;
+            shape.spacing_bottom = 0;
+            shape.line_spacing_type = 0;
+            shape.line_spacing = 160;
+        }
+        for (i, p) in original.sections[0].paragraphs.iter_mut().enumerate() {
+            p.line_segs = vec![seg(i as i32 * 1600, 1000)];
+            p.line_segs[0].line_spacing = 600;
+        }
+        original.sections.push(original.sections[0].clone());
+        original.sections[1].paragraphs[0].line_segs[0].v_pos = 777;
+        original.sections[1].paragraphs[1].line_segs[0].v_pos = 2377;
+        let mut current = original.clone();
+        let mut large = current.header.char_shapes[0].clone();
+        large.base_size = 2000;
+        current.header.char_shapes.push(large);
+        current.sections[0].paragraphs[0].char_shape_runs = vec![(
+            0,
+            hwp_model::CharShapeId((current.header.char_shapes.len() - 1) as u16),
+        )];
+        current.sections[0].paragraphs[0].line_segs.clear();
+        let source = original
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(si, section)| {
+                section
+                    .paragraphs
+                    .iter()
+                    .enumerate()
+                    .map(|(pi, p)| NativeBodyCache {
+                        original: Some(p),
+                        unchanged: !(si == 0 && pi == 0),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let mut fonts = FontStore::new_isolated();
+        let mut warnings = RenderIssueAccumulator::new();
+        let kept = synthesize_native_linesegs_seeded(
+            &mut current,
+            &mut fonts,
+            &mut warnings,
+            &BodyFlow::default(),
+            &source,
+        );
+        assert!(
+            !kept.contains(&(0, 1)),
+            "first section stays in reflow after height change"
+        );
+        for pi in 0..2 {
+            assert!(kept.contains(&(1, pi)), "next section starts fresh");
+            assert_eq!(
+                current.sections[1].paragraphs[pi].line_segs,
+                original.sections[1].paragraphs[pi].line_segs
+            );
+        }
+    }
+
+    #[test]
     fn table_height_multi_paragraph_cell_is_not_double_counted() {
         // Four paragraphs at v_pos 0/1600/3200/4800 give cell line block 4800 + 1000.
         let h = table_height(&table_with(cell_with(&[0, 1600, 3200, 4800])));
