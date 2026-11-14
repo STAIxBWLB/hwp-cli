@@ -1261,11 +1261,16 @@ fn layout_document_pages(
                 page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
             }
             let tabs = crate::tab::tab_stops(doc, para);
+            // #540 G1 establishes plain-body section-start spacing. #570 separately confirms
+            // omitted space-before for a paragraph-anchored floating table host.
+            // `para_geometry` already halves serialized spacing to HWPUNIT for body anchors.
             let mut geom = para_geometry(doc, para);
-            if anchors.is_some() && para_index == 0 {
-                // B5: the section's first paragraph starts at zero. Apply this
-                // to the anchor prepass flow; later explicit breaks and page
-                // overflow retain their existing space-before placement.
+            if anchors.is_some()
+                && para_index == 0
+                && crate::lineseg::hosts_floating_body_object(para)
+            {
+                // Keep that omission; other floating/unknown hosts are conservative exclusions.
+                // Table-relative host-line placement and wrap mode are outside #570.
                 geom.spacing_top = 0.0;
             }
             let links = crate::shape::hyperlink_ranges(para);

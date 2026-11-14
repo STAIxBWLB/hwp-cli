@@ -571,9 +571,8 @@ fn first_line_pushed_after_floating_table_uses_resolved_page_anchor() {
 }
 
 #[test]
-fn explicit_break_keeps_prior_space_before_in_both_section_paths() {
-    // Keep the prior positive space-before on each path. Their pre-existing
-    // raw-vs-half-unit discrepancy remains tracked by #415.
+fn explicit_break_uses_half_unit_space_before_in_both_section_paths() {
+    // #540 G1: both paths retain half the serialized space-before.
     for floating in [false, true] {
         let mut source = hwp_convert::from_markdown("Anchor\n\nHeading\n");
         let mut heading_shape = source.header.para_shapes
@@ -604,15 +603,15 @@ fn explicit_break_keeps_prior_space_before_in_both_section_paths() {
         );
         synthesize(&mut source);
         assert_eq!(
-            source.sections[0].paragraphs[1].line_segs[0].v_pos,
-            if floating { 1200 } else { 2400 },
-            "explicit break resets the cursor but keeps the path's prior space-before (floating={floating})"
+            source.sections[0].paragraphs[1].line_segs[0].v_pos, 1200,
+            "explicit break resets the cursor and retains half-unit space-before (floating={floating})"
         );
     }
 }
 
+// #570 confirms omission for paragraph-anchored floating tables, not absolute host placement.
 #[test]
-fn floating_section_first_paragraph_omits_only_its_space_before() {
+fn floating_table_host_section_start_omits_space_before() {
     let mut source = hwp_convert::from_markdown("First\n\nFollowing\n");
     let mut first_shape =
         source.header.para_shapes[source.sections[0].paragraphs[0].para_shape.0 as usize].clone();
@@ -632,7 +631,7 @@ fn floating_section_first_paragraph_omits_only_its_space_before() {
         for section in &cached.sections {
             assert_eq!(
                 section.paragraphs[0].line_segs[0].v_pos, 0,
-                "B5: every section's first body paragraph starts at zero despite space-before"
+                "this fixture keeps its host anchor without adding section-start space-before"
             );
         }
     }
@@ -1003,4 +1002,119 @@ fn unseeded_synthesis_recomputes_a_cell_of_a_table_nested_in_a_caption() {
         cell.paragraphs[0].line_segs[0].line_height, 1000,
         "a nested table's cell is recomputed, not measured from the cache it arrived with"
     );
+}
+
+/// #570 / #540 G1: one-line body measurements saved by Hangul 12.30.0 build 6544.
+/// No external fixture or host font is needed: shape height is 1000 HU and line advance 1600 HU.
+fn g1_spacing_document(floating: bool) -> Document {
+    let mut doc = hwp_convert::from_markdown("S1\n\nS2\n\nS3\n\nS4\n\nS5\n\nS6\n");
+    for shape in &mut doc.header.char_shapes {
+        shape.base_size = 1000;
+    }
+    for (i, (top, bottom)) in [
+        (2000, 1000),
+        (0, 0),
+        (4000, 2000),
+        (4000, 2000),
+        (2400, 0),
+        (0, 600),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut shape =
+            doc.header.para_shapes[doc.sections[0].paragraphs[i].para_shape.0 as usize].clone();
+        shape.spacing_top = top;
+        shape.spacing_bottom = bottom;
+        shape.line_spacing_type = 0;
+        shape.line_spacing = 160;
+        shape.line_spacing_old = 160;
+        doc.sections[0].paragraphs[i].para_shape =
+            hwp_model::ParaShapeId(doc.header.para_shapes.len() as u16);
+        doc.header.para_shapes.push(shape);
+        doc.sections[0].paragraphs[i].line_segs.clear();
+    }
+    doc.sections[0].paragraphs[4].header.break_type |= 0x04;
+    if floating {
+        // A later floating table activates the section prepass without changing the six
+        // measured paragraphs or their line metrics.
+        let fill = add_fill(&mut doc, 0x0005_6789);
+        let mut anchor = paragraph(&doc);
+        anchor
+            .controls
+            .push(Control::Table(table(Vec::new(), fill, 1200)));
+        doc.sections[0].paragraphs.push(anchor);
+    }
+    doc
+}
+
+#[test]
+fn g1_inline_body_spacing_matches_all_six_hangul_saved_positions() {
+    let mut doc = g1_spacing_document(false);
+    synthesize(&mut doc);
+    let actual: Vec<_> = doc.sections[0]
+        .paragraphs
+        .iter()
+        .take(6)
+        .map(|p| {
+            assert_eq!(p.line_segs.len(), 1);
+            assert_eq!(p.line_segs[0].line_height, 1000);
+            assert_eq!(p.line_segs[0].line_spacing, 600);
+            p.line_segs[0].v_pos
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        [1000, 3100, 6700, 11300, 1200, 2800],
+        "G1 saved body v_pos, raw ParaShape spacing is twice HU"
+    );
+}
+
+#[test]
+fn g1_floating_anchor_prepass_matches_the_same_body_spacing_rule() {
+    let mut doc = g1_spacing_document(true);
+    synthesize(&mut doc);
+    let actual: Vec<_> = doc.sections[0]
+        .paragraphs
+        .iter()
+        .take(6)
+        .map(|p| p.line_segs[0].v_pos)
+        .collect();
+    assert_eq!(
+        actual,
+        [1000, 3100, 6700, 11300, 1200, 2800],
+        "G1 body anchors must agree with inline synthesis"
+    );
+}
+
+#[test]
+fn g1_native_edit_synthesis_keeps_its_existing_spacing_arithmetic() {
+    let mut doc = g1_spacing_document(false);
+    doc.meta.source_format = "hwp5".into();
+    synthesize(&mut doc);
+    let actual: Vec<_> = doc.sections[0]
+        .paragraphs
+        .iter()
+        .take(6)
+        .map(|p| p.line_segs[0].v_pos)
+        .collect();
+    assert_eq!(
+        actual,
+        [0, 2600, 8200, 15800, 2400, 4000],
+        "#570 changes authored-document synthesis; the native edit/seed path stays unchanged"
+    );
+}
+
+#[test]
+fn g1_zero_space_before_still_starts_at_zero_in_both_paths() {
+    for floating in [false, true] {
+        let mut doc = g1_spacing_document(floating);
+        let first_shape = doc.sections[0].paragraphs[0].para_shape.0 as usize;
+        doc.header.para_shapes[first_shape].spacing_top = 0;
+        synthesize(&mut doc);
+        assert_eq!(
+            doc.sections[0].paragraphs[0].line_segs[0].v_pos, 0,
+            "B5 zero-top control"
+        );
+    }
 }

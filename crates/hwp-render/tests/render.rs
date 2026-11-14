@@ -1,8 +1,8 @@
-//! 렌더링 스모크 테스트.
+//! Rendering smoke tests.
 //!
-//! 픽셀 골든 비교는 폰트 가용성에 좌우되므로(CI 폰트 고정은 M7),
-//! 여기서는 구조적 불변식만 검증한다: 페이지 수/크기, 텍스트 영역에
-//! 어두운 픽셀 존재, 본문 영역 밖은 흰색.
+//! Pixel golden comparisons depend on font availability (CI font pinning is M7).
+//! These tests check structural invariants: page count and dimensions, dark pixels
+//! in the text region, and white pixels outside the body.
 
 use std::path::PathBuf;
 
@@ -33,7 +33,7 @@ fn optional_fixture_or_skip(rel: &str) -> Option<PathBuf> {
     (!fixture_skip::optional_fixture_missing(&p)).then_some(p)
 }
 
-/// 어두운 픽셀(텍스트) 수를 센다.
+/// Count dark pixels representing text.
 fn dark_pixels(pixmap: &tiny_skia::Pixmap) -> usize {
     pixmap
         .pixels()
@@ -81,11 +81,11 @@ fn hello_world_렌더() {
     assert_eq!(page.width(), 794);
     assert_eq!(page.height(), 1123);
 
-    // "Hello World!" 텍스트가 그려졌는지 (시스템에 폰트가 하나라도 있으면)
+    // Verify that "Hello World!" was drawn when any system font is available.
     let dark = dark_pixels(page);
     assert!(dark > 100, "텍스트 픽셀이 너무 적음: {dark}");
 
-    // 본문 영역 밖(여백)은 흰색이어야 한다 — 좌상단 모서리
+    // The margin outside the body must stay white: check the top-left corner.
     let corner = page.pixel(5, 5).unwrap();
     assert_eq!(
         (corner.red(), corner.green(), corner.blue()),
@@ -95,7 +95,7 @@ fn hello_world_렌더() {
 
 #[test]
 fn hwpx_폴백_렌더() {
-    // minimal.hwpx의 문단 대부분은 lineseg가 없다 — 폴백 경로 검증
+    // Most minimal.hwpx paragraphs have no line segments; exercise fallback layout.
     let Some(path) = fixture_or_skip("hwpx/minimal.hwpx") else {
         return;
     };
@@ -110,8 +110,8 @@ fn hwpx_폴백_렌더() {
 
 #[test]
 fn 다단_2단_렌더() {
-    // multicol.hwp/.hwpx = 한글 2단 본문(정답지). 단 넘김을 페이지 넘김으로 오인하던 버그를
-    // 고쳐 5쪽이 아니라 3쪽(2단×2쪽 + 잔여 1쪽)이 되고, 1쪽에 좌·우 단이 나란히 그려져야 한다.
+    // The genuine multicol.hwp/.hwpx fixtures contain two-column Korean body text.
+    // Column transitions must yield three pages rather than five, with both columns side by side.
     for rel in ["hwp5/multicol.hwp", "hwpx/multicol.hwpx"] {
         let Some(path) = optional_fixture_or_skip(rel) else {
             continue;
@@ -134,7 +134,7 @@ fn 다단_2단_렌더() {
             3,
             "{rel}: 2단이면 3쪽(단 넘김≠페이지 넘김)"
         );
-        // 1쪽 좌·우 절반 모두에 내용(어두운 픽셀)이 있어야 한다 = 두 단 나란히.
+        // Both halves of page 1 must contain dark pixels, showing adjacent columns.
         let p = &out.pages[0];
         let (w, hh) = (p.width(), p.height());
         let dark_in = |x0: u32, x1: u32| {
@@ -163,14 +163,14 @@ fn 표_렌더() {
     assert_eq!(out.pages.len(), 1);
     let page = &out.pages[0];
 
-    // 표 테두리 + 셀 텍스트로 어두운 픽셀이 충분해야 한다
+    // Table borders and cell text must provide enough dark pixels.
     assert!(
         dark_pixels(page) > 5_000,
         "표 선·텍스트: {}",
         dark_pixels(page)
     );
 
-    // 표·머리말·꼬리말은 더 이상 미지원으로 집계되지 않는다 (글상자 1개만 남음)
+    // Tables and headers/footers are supported; only one text box remains unsupported.
     let skipped: Vec<_> = out
         .report
         .issues
@@ -183,10 +183,10 @@ fn 표_렌더() {
     );
 }
 
-/// 멀티페이지 문서의 합성 줄 배치는 페이지마다 v_pos 가 0 으로 리셋(페이지 상대)
-/// 되어야 한다. 리셋 없이 섹션 단조 누적하면 v_pos 가 페이지 본문 높이를 한참
-/// 초과해(정품은 페이지 상대) 한글이 '손상'으로 판정한다(커밋 29014b0).
-/// 폰트 없이도(문단당 1줄) 페이지 분할 로직만 검증한다.
+/// Synthesized multipage body caches must reset v_pos on each page (page-relative).
+/// Accumulating across a section can exceed the page body height, unlike genuine caches,
+/// and make Hangul report corruption (commit 29014b0).
+/// Exercise pagination without fonts, using one line per paragraph.
 #[test]
 fn 멀티페이지_lineseg_페이지_상대_v_pos() {
     let md: String = (1..=120)
@@ -341,8 +341,8 @@ fn authoritative_column_flags_preserve_an_empty_first_column() {
     )));
 }
 
-/// HWPX 컨테이너(hp:container)는 container_box 원점에 자식 도형(상대좌표)을
-/// 전개해 Item::Path로 렌더하고, unsupported_control_omitted를 기록하지 않는다.
+/// Expand HWPX container children relative to container_box into Item::Path.
+/// Do not report supported container geometry as unsupported_control_omitted.
 #[test]
 fn hwpx_container_children_render_at_container_origin() {
     use hwp_model::{ContainerBox, Control, GenericControl, ShapeGeom, ShapeKind};
@@ -399,8 +399,8 @@ fn hwpx_container_children_render_at_container_origin() {
     hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
 
-    // 자식 도형 2개가 컨테이너 원점(10000, 20000)만큼 이동해 Path로 나와야 한다.
-    // rect 절대좌표 (11000, 22000) HWPUNIT → MoveTo(110.0, 220.0) pt.
+    // Both child shapes must become Paths translated by the container origin (10000, 20000).
+    // The rectangle at (11000, 22000) HWPUNIT begins with MoveTo(110.0, 220.0) pt.
     let page = &list.pages[0];
     let rect_path = page.items.iter().find_map(|item| match item {
         hwp_render::display::Item::Path { commands, .. } => commands.first(),
@@ -431,8 +431,8 @@ fn hwpx_container_children_render_at_container_origin() {
     );
 }
 
-/// 컨테이너에 파싱되지 않은 가시 자식(skipped_objects > 0)이 있으면 typed
-/// UnsupportedControlOmitted 손실을 기록한다.
+/// An unparsed visible container child (skipped_objects > 0) must produce a typed
+/// UnsupportedControlOmitted loss.
 #[test]
 fn hwpx_container_skipped_objects_raise_typed_loss() {
     use hwp_model::{ContainerBox, Control, GenericControl};
@@ -477,8 +477,8 @@ fn hwpx_container_skipped_objects_raise_typed_loss() {
     );
 }
 
-/// 자식 도형 소유 subList는 컨테이너 상자가 아니라 각 도형 상자(text_boxes)에
-/// 조판된다 — 두 도형의 텍스트 y 위치가 달라야 한다.
+/// Lay out each child-owned subList in its shape text box, not the outer container.
+/// The two shapes must therefore produce different text y positions.
 #[test]
 fn hwpx_container_child_text_layout_in_owning_boxes() {
     use hwp_model::{ContainerBox, Control, GenericControl, ParagraphList};
@@ -515,7 +515,7 @@ fn hwpx_container_child_text_layout_in_owning_boxes() {
                 h: 6000,
                 anchored: false,
                 skipped_objects: 0,
-                // 첫째 리스트는 (0, 0) 상자, 둘째는 (0, 4000) 상자 소유.
+                // The first list belongs to box (0, 0), the second to box (0, 4000).
                 text_boxes: vec![Some([0, 0, 4000, 2000]), Some([0, 4000, 4000, 2000])],
             }),
         }));
@@ -537,7 +537,7 @@ fn hwpx_container_child_text_layout_in_owning_boxes() {
         eprintln!("스킵: 사용 가능한 폰트 없음 - 글리프 미생성");
         return;
     };
-    // 컨테이너 원점 y=100pt 기준 첫째 상자 0pt / 둘째 상자 40pt 오프셋.
+    // The boxes are offset 0pt and 40pt from the container origin at y=100pt.
     assert!(
         (y1 - 100.0).abs() < 1.0,
         "첫째 텍스트는 첫째 상자(y=100pt)에: {y1}"
@@ -548,9 +548,9 @@ fn hwpx_container_child_text_layout_in_owning_boxes() {
     );
 }
 
-/// 문단 위/아래 간격(spacing_top/bottom)이 합성 줄 배치 v_pos 에 반영되어야 한다.
-/// 빠지면 한글이 문단 사이 여백 없이 압축해 그린다(제목 위 여백 사라짐 등).
-/// from_markdown 은 제목에 spacing_top=600, spacing_bottom=300 을 준다.
+/// Serialized paragraph spacing must contribute half its value to synthesized v_pos.
+/// G1 (#540/#570) establishes this for plain single-line body paragraphs.
+/// from_markdown assigns headings raw spacing_top=600 and spacing_bottom=300.
 #[test]
 fn 문단_간격이_v_pos에_반영() {
     let mut doc = hwp_convert::from_markdown("# 제목\n\n본문 문단.\n");
@@ -559,14 +559,19 @@ fn 문단_간격이_v_pos에_반영() {
     hwp_render::lineseg::synthesize_linesegs(&mut doc, &mut store, &mut warns);
 
     let paras = &doc.sections[0].paragraphs;
-    let h = &paras[0].line_segs[0]; // 제목 (한 줄)
-    let b = &paras[1].line_segs[0]; // 본문 (한 줄)
-    // 본문 첫 줄 v_pos = 제목 줄 v_pos + 제목 line_advance + 제목 아래간격(300).
+    let h = &paras[0].line_segs[0]; // Heading, one line.
+    let b = &paras[1].line_segs[0]; // Body, one line.
+    // The gap is heading advance plus half the serialized bottom spacing (300 / 2).
     let heading_advance = h.line_height + h.line_spacing;
     assert_eq!(
+        h.v_pos,
+        600 / 2,
+        "plain section start retains half-unit top spacing"
+    );
+    assert_eq!(
         b.v_pos - h.v_pos,
-        heading_advance + 300,
-        "본문 v_pos 는 제목 advance + 제목 아래간격(300) 만큼 떨어져야"
+        heading_advance + 300 / 2,
+        "body gap must include half the serialized heading bottom spacing"
     );
 }
 
@@ -641,9 +646,9 @@ fn 수식_조판_렌더() {
     );
 }
 
-/// 정답지 수식 문서(equation.hwp/.hwpx): 실제 한글 수식 스크립트(다행 `#`·분수·첨자·근호·
-/// 그리스)를 두 포맷 모두 조판해 그려야 한다. hwp5는 eqed 파싱, hwpx는 hp:equation 캡처.
-/// 스크립트가 같으므로 두 렌더의 잉크량이 비슷해야 한다(조판 일관성).
+/// Lay out genuine equation.hwp/.hwpx scripts (multiple lines, fractions, scripts, roots,
+/// and Greek) in both formats: native eqed parsing and HWPX hp:equation capture.
+/// Equivalent scripts should yield comparable ink coverage in both renderings.
 #[test]
 fn 수식_정답지_렌더() {
     let (Some(hp), Some(hx)) = (
@@ -665,7 +670,7 @@ fn 수식_정답지_렌더() {
     let (p5, px) = (dark_pixels(&o5.pages[0]), dark_pixels(&ox.pages[0]));
     assert!(p5 > 300, "hwp5 수식이 조판돼야(eqed 파싱): {p5}");
     assert!(px > 300, "hwpx 수식이 조판돼야: {px}");
-    // 같은 스크립트 → 두 포맷 잉크량이 2배 이내로 비슷해야 한다.
+    // The same script should produce ink counts within a factor of two.
     let ratio = p5.max(px) as f32 / p5.min(px).max(1) as f32;
     assert!(
         ratio < 2.0,
@@ -673,10 +678,10 @@ fn 수식_정답지_렌더() {
     );
 }
 
-/// 연결 다단 글상자: annual_report "At a Glance"(5쪽)는 월 텍스트가 왼쪽→오른쪽 단으로
-/// 흐른다. (1) 글자 베이스라인이 페이지 하단을 넘지 않아야 하고(흐름 드리프트/잘림 회귀
-/// 방지), (2) 오른쪽 단(x≈300pt)에 본문이 배치돼야 한다(다단 흐름). 폰트 무관 — 배치는
-/// 캐시 v_pos·글상자 위치가 좌우한다.
+/// Linked multicolumn text boxes in annual_report page 5 ("At a Glance") flow left to right.
+/// Baselines must stay above the page bottom to catch drift and clipping regressions.
+/// Body text must also reach the right column near x=300pt. Font-independent geometry
+/// comes from cached v_pos and text-box positions.
 #[test]
 fn 글상자_연결_다단_배치() {
     let Some(path) = fixture_or_skip("hwp5/annual_report.hwp") else {
@@ -692,7 +697,7 @@ fn 글상자_연결_다단_배치() {
         list.pages.len()
     );
 
-    let page = &list.pages[4]; // 5쪽 (0-기반)
+    let page = &list.pages[4]; // Page 5, indexed from zero.
     let glyphs: Vec<(f32, f32)> = page
         .items
         .iter()
@@ -703,7 +708,7 @@ fn 글상자_연결_다단_배치() {
         .collect();
     assert!(!glyphs.is_empty(), "5쪽에 글자가 있어야 한다");
 
-    // (1) 세로 넘침 없음
+    // (1) No vertical overflow.
     let max_y = glyphs.iter().map(|(_, y)| *y).fold(0.0_f32, f32::max);
     assert!(
         max_y <= page.height_pt,
@@ -711,7 +716,7 @@ fn 글상자_연결_다단_배치() {
         page.height_pt
     );
 
-    // (2) 오른쪽 단 배치 (연결 다단 글상자가 둘째 단을 우측으로 흘림)
+    // (2) Linked text boxes place body text in the right column.
     let right_col = glyphs
         .iter()
         .any(|(x, y)| (280.0..330.0).contains(x) && (200.0..800.0).contains(y));
@@ -721,9 +726,9 @@ fn 글상자_연결_다단_배치() {
     );
 }
 
-/// 그리기 개체(도형) 렌더: annual_report의 선/사각형/타원/호/다각형이 Item::Path로
-/// 생성되고, 미지원 컨트롤로 생략되지 않아야 한다. 파이(링) 페이지엔 곡선(CubicTo)
-/// 경로(타원/호)가 있어야 한다. 폰트 무관 — 배치는 도형 기하·행렬이 좌우.
+/// The annual_report lines, rectangles, ellipses, arcs and polygons must produce Item::Path,
+/// rather than unsupported-control omissions. The ring-chart page must include CubicTo
+/// curves from ellipses/arcs. Geometry and matrices make these assertions font-independent.
 #[test]
 fn 도형_렌더_경로_생성() {
     use hwp_render::display::{Item, PathCmd};
@@ -741,20 +746,20 @@ fn 도형_렌더_경로_생성() {
         .flat_map(|p| &p.items)
         .filter(|i| matches!(i, Item::Path { .. }))
         .count();
-    // 보이지 않는 글상자 프레임은 제외되므로 가시 도형(선 43·타원·호·다각형 등)만 ~80개.
+    // Invisible text-box frames are excluded; roughly 80 visible shapes remain.
     assert!(
         paths > 50,
         "도형 경로가 너무 적음: {paths} (선·사각형·타원 등 미렌더)"
     );
 
-    // 파이(링) 페이지: 타원/호 유래 곡선(CubicTo) 경로 존재.
+    // The ring-chart page must contain CubicTo curves from ellipses/arcs.
     let has_curve = list.pages.iter().flat_map(|p| &p.items).any(|i| {
         matches!(i, Item::Path { commands, .. }
             if commands.iter().any(|c| matches!(c, PathCmd::CubicTo(..))))
     });
     assert!(has_curve, "타원/호 유래 곡선 경로가 없음 (파이/원 미렌더)");
 
-    // 도형이 더 이상 "미지원 컨트롤"로 집계되지 않아야 한다.
+    // Shapes must no longer be counted as unsupported controls.
     let warn_report = warns.finish();
     let skipped = warn_report
         .issues
@@ -767,8 +772,8 @@ fn 도형_렌더_경로_생성() {
     );
 }
 
-/// 그러데이션 채움이 백엔드에서 실제 그러데이션으로 렌더되는지(단색 근사가 아니라).
-/// 도형 fixture가 없어 합성 DisplayList로 검증한다.
+/// Backends must render a real gradient rather than a flat-color approximation.
+/// Use a synthetic DisplayList because no shape fixture is held.
 #[test]
 fn 그러데이션_채움_백엔드() {
     use hwp_render::display::{DisplayList, Fill, Gradient, Item, PageList, PathCmd};
@@ -785,8 +790,8 @@ fn 그러데이션_채움_백엔드() {
             ],
             fill: Some(Fill::Gradient(Gradient {
                 radial: false,
-                angle_deg: 0.0,                                      // 가로
-                stops: vec![(0.0, 0x0000_00FF), (1.0, 0x00FF_0000)], // 빨강→파랑
+                angle_deg: 0.0,                                      // Horizontal.
+                stops: vec![(0.0, 0x0000_00FF), (1.0, 0x00FF_0000)], // Red to blue.
             })),
             stroke: None,
             rule: hwp_render::display::FillRule::NonZero,
@@ -794,12 +799,12 @@ fn 그러데이션_채움_백엔드() {
     };
     let list = DisplayList { pages: vec![page] };
 
-    // SVG: <linearGradient> 정의 + url 참조
+    // SVG must define a linearGradient and refer to its URL.
     let svg = hwp_render::svg::render_svg(&list).remove(0);
     assert!(svg.contains("<linearGradient"), "SVG 그러데이션 정의 없음");
     assert!(svg.contains("url(#grad0)"), "SVG fill url 참조 없음");
 
-    // PNG: 좌(빨강)와 우(파랑)가 달라야 한다(실제 그러데이션).
+    // PNG left (red) and right (blue) must differ for a real gradient.
     let pngs = hwp_render::png::render_png(&list, 96.0).unwrap();
     let px = &pngs[0];
     let mid = px.height() / 2;
@@ -1015,24 +1020,24 @@ fn 이미지_변환_보정_백엔드() {
     assert!(pdf.len() > 300, "PDF 생성: {}B", pdf.len());
 }
 
-/// GC-8 내어쓰기(음수 first-line indent): 첫 줄이 나머지 줄보다 왼쪽에 놓여야 한다.
-/// 폴백(캐시 없는) 문단 경로를 탄다 — 합성 문서(line_segs 없음)라 layout이 그리디
-/// 줄바꿈한다. 픽셀 골든이 아니라 DisplayList의 글리프 x를 줄별로 비교한다.
+/// GC-8 hanging indent: the first line starts to the left of later lines.
+/// Use fallback layout: this synthetic paragraph has no caches and wraps greedily.
+/// Compare glyph x positions by line in DisplayList rather than using a pixel golden.
 #[test]
 fn 내어쓰기_첫줄이_왼쪽() {
     use hwp_render::display::Item;
-    // 여러 줄로 넘치도록 충분히 긴 한 문단.
+    // One paragraph long enough to wrap across several lines.
     let mut doc = hwp_convert::from_markdown(&"가".repeat(400));
-    // 이 문단의 문단모양에 좌여백(60pt) + 내어쓰기(-40pt) 설정. IR 여백류는 2×HWPUNIT.
+    // Set 60pt left margin and -40pt hanging indent; IR margins store twice HWPUNIT.
     let psid = doc.sections[0].paragraphs[0].para_shape.0 as usize;
     doc.header.para_shapes[psid].margin_left = 12000; // /200 = 60pt
-    doc.header.para_shapes[psid].indent = -8000; // /200 = -40pt (내어쓰기)
+    doc.header.para_shapes[psid].indent = -8000; // /200 = -40pt hanging indent.
 
     let mut store = hwp_render::FontStore::new();
     let mut warns = hwp_render::RenderIssueAccumulator::new();
     let list = hwp_render::layout::layout_document(&doc, &mut store, &mut warns);
 
-    // (y=베이스라인, x) 글리프 목록.
+    // Collect glyphs as (baseline y, x).
     let glyphs: Vec<(f32, f32)> = list.pages[0]
         .items
         .iter()
@@ -1044,13 +1049,13 @@ fn 내어쓰기_첫줄이_왼쪽() {
     assert!(glyphs.len() >= 2, "여러 줄로 줄바꿈돼야: {}", glyphs.len());
 
     let min_y = glyphs.iter().map(|(y, _)| *y).fold(f32::INFINITY, f32::min);
-    // 첫 줄(min_y)의 최소 x.
+    // Minimum x on the first line, identified by min_y.
     let first_x = glyphs
         .iter()
         .filter(|(y, _)| (*y - min_y).abs() < 0.5)
         .map(|(_, x)| *x)
         .fold(f32::INFINITY, f32::min);
-    // 더 아래 줄(둘째 줄 이후)의 최소 x.
+    // Minimum x on later lines.
     let rest_x = glyphs
         .iter()
         .filter(|(y, _)| *y > min_y + 0.5)
@@ -1063,18 +1068,18 @@ fn 내어쓰기_첫줄이_왼쪽() {
     );
 }
 
-/// GC-9 페이지 걸친 문단 배경: 배경 border_fill을 가진 긴 문단이 페이지를 넘기면
-/// 각 페이지에 배경 조각(Rect)이 그려져야 한다(통째 생략 금지). 합성 line_segs로
-/// 멀티페이지를 만들고, 두 페이지 모두에 그 채움색 Rect가 있는지 DisplayList로 확인한다.
+/// GC-9: a paragraph background spanning pages must emit a Rect fragment on each page.
+/// Build multipage synthetic line segments instead of omitting the whole background.
+/// Verify the fill-color Rect on both pages through DisplayList.
 #[test]
 fn 페이지_걸친_문단배경_조각() {
     use hwp_model::BorderFill;
     use hwp_render::display::{Item, PageList};
 
-    // 여러 페이지를 넘길 만큼 아주 긴 한 문단.
+    // A paragraph long enough to span multiple pages.
     let mut doc = hwp_convert::from_markdown(&"가".repeat(4000));
 
-    // 가시 배경 border_fill 추가 → 첫 문단 문단모양이 참조(id는 1-based).
+    // Add a visible border fill and reference its one-based ID from the first paragraph shape.
     let fill_color = 0x00FF_EEDDu32;
     doc.header.border_fills.push(BorderFill {
         bg_color: Some(fill_color),
@@ -1110,16 +1115,16 @@ fn 페이지_걸친_문단배경_조각() {
     );
 }
 
-/// 쪽 테두리(PAGE_BORDER_FILL BOTH) 렌더: 정답지 BF#7(4변 실선 0.4mm 검정)을 종이
-/// 기준 gap 1417(≈5mm)로 주입하면 용지 가장자리에서 gap만큼 안쪽에 4변 Line이 그려지고
-/// (색·굵기·위치 반영), 텍스트 뒤(맨 앞 삽입)에 놓여야 한다. id=1(무테두리)·PAGE_BORDER
-/// 미존재는 무출력(기본 문서 불변).
+/// Inject genuine BF#7 (four solid black 0.4mm borders) into PAGE_BORDER_FILL BOTH.
+/// Paper-relative gaps of 1417 (about 5mm) must inset four Lines from the paper edges.
+/// Colors, widths and positions must match, behind text at the beginning of the item list.
+/// Border ID 1 (no border) and an absent PAGE_BORDER record must emit nothing.
 #[test]
 fn 쪽_테두리_렌더() {
     use hwp_model::{BorderFill, BorderLine, Control, Document};
     use hwp_render::display::{Item, PageList, PathCmd};
 
-    // PAGE_BORDER_FILL 14바이트 합성: attr u32 + gap u16×4(왼/오/위/아래) + 테두리ID u16.
+    // Synthesize 14 bytes: attr u32, four gap u16 values (left/right/top/bottom), border ID u16.
     fn raw(attr: u32, gap: [u16; 4], id: u16) -> Vec<u8> {
         let mut v = Vec::with_capacity(14);
         v.extend_from_slice(&attr.to_le_bytes());
@@ -1130,7 +1135,7 @@ fn 쪽_테두리_렌더() {
         v
     }
 
-    // 첫 SectionDef의 page_border_fills_raw에 BOTH 레코드를 주입한다(순서=BOTH/EVEN/ODD).
+    // Inject BOTH into the first SectionDef page_border_fills_raw (BOTH/EVEN/ODD order).
     fn inject(doc: &mut Document, data: Vec<u8>) {
         for para in &mut doc.sections[0].paragraphs {
             for c in &mut para.controls {
@@ -1180,14 +1185,14 @@ fn 쪽_테두리_렌더() {
         hwp_render::layout::layout_document(doc, &mut store, &mut warns)
     }
 
-    // A4 종이(from_markdown 기본): 595.28 × 841.86 pt.
+    // Default from_markdown A4 paper: 595.28 x 841.86 pt.
     const PAPER_W: f32 = 595.28;
     const PAPER_H: f32 = 841.86;
     const GAP_PT: f32 = 14.17; // 1417 HWPUNIT ≈ 5mm
-    // 0.4mm(굵기 인덱스 6) → pt.
+    // Convert 0.4mm (width index 6) to points.
     let expect_w = 0.4 * 72.0 / 25.4;
 
-    // border_fills: id 7(index 6) = 4변 실선 0.4mm 검정. index 0(id 1)=무테두리(기본).
+    // Border fill ID 7 (index 6) is solid black 0.4mm on all sides; ID 1 has no border.
     let real_border = BorderFill {
         sides: [BorderLine {
             line_type: 1,
@@ -1197,14 +1202,14 @@ fn 쪽_테두리_렌더() {
         ..BorderFill::default()
     };
 
-    // (A) BOTH=id7 실테두리 → 4변 Line, 종이 가장자리에서 gap만큼 안쪽.
+    // (A) BOTH with ID 7 emits four Lines inset by the specified paper-relative gap.
     {
         let mut doc = hwp_convert::from_markdown("본문 한 줄.\n");
         while doc.header.border_fills.len() < 6 {
             doc.header.border_fills.push(BorderFill::default());
         }
         doc.header.border_fills.push(real_border.clone());
-        inject(&mut doc, raw(1, [1417; 4], 7)); // attr bit0=1(종이 기준)
+        inject(&mut doc, raw(1, [1417; 4], 7)); // Attribute bit 0 = 1 means paper-relative.
 
         let list = layout(&doc);
         let page = &list.pages[0];
@@ -1214,13 +1219,13 @@ fn 쪽_테두리_렌더() {
         // The joined rectangle is prepended so it paints behind text.
         assert!(matches!(page.items.first(), Some(Item::Path { .. })));
 
-        // 색·굵기.
+        // Colors and widths.
         for &(_, _, _, _, color, width) in &ls {
             assert_eq!(color, 0, "테두리 색은 검정(0)");
             assert!((width - expect_w).abs() < 0.01, "굵기 {width} ≠ {expect_w}");
         }
 
-        // 위치: 사각형 경계가 종이 가장자리에서 gap만큼 안쪽(gap 반영).
+        // The rectangle is inset from each paper edge by the gap.
         let minx = ls.iter().map(|l| l.0.min(l.2)).fold(f32::MAX, f32::min);
         let maxx = ls.iter().map(|l| l.0.max(l.2)).fold(f32::MIN, f32::max);
         let miny = ls.iter().map(|l| l.1.min(l.3)).fold(f32::MAX, f32::min);
@@ -1237,14 +1242,14 @@ fn 쪽_테두리_렌더() {
             "하변 안쪽 gap: {}",
             PAPER_H - maxy
         );
-        // 4변 각각 축 정렬(수직/수평).
+        // Each side must be horizontal or vertical.
         for &(x1, y1, x2, y2, ..) in &ls {
             let axis = (x1 - x2).abs() < 0.01 || (y1 - y2).abs() < 0.01;
             assert!(axis, "변은 축 정렬이어야: ({x1},{y1})-({x2},{y2})");
         }
     }
 
-    // (B) id=1(전 변 무테두리) 주입 → 무출력.
+    // (B) Border ID 1 has no borders and must emit nothing.
     {
         let mut doc = hwp_convert::from_markdown("본문.\n");
         inject(&mut doc, raw(1, [1417; 4], 1));
@@ -1255,7 +1260,7 @@ fn 쪽_테두리_렌더() {
         );
     }
 
-    // (C) PAGE_BORDER_FILL 미존재(기본 문서) → 무출력(기존 렌더 불변).
+    // (C) No PAGE_BORDER_FILL keeps the original rendering unchanged.
     {
         let doc = hwp_convert::from_markdown("본문.\n");
         let list = layout(&doc);
@@ -1333,8 +1338,8 @@ fn 내어쓰기_문단의_줄은_우변을_넘지_않는다() {
     let body: String = "내어쓰기 문단의 오른쪽 끝을 확인하기 위한 긴 본문입니다. ".repeat(6);
     let mut doc = hwp_convert::from_markdown(&format!("{body}\n"));
     doc.header.para_shapes.push(ParaShape {
-        attr1: 2 << 2, // 오른쪽 정렬
-        indent: -2000, // 10pt 내어쓰기
+        attr1: 2 << 2, // Right alignment.
+        indent: -2000, // 10pt hanging indent.
         ..ParaShape::default()
     });
     let shape = ParaShapeId((doc.header.para_shapes.len() - 1) as u16);
@@ -1748,11 +1753,11 @@ fn 표_분할_문서(
     doc.header.border_fills.push(hwp_model::BorderFill {
         bg_color: Some(0x00C8_C8C8),
         ..Default::default()
-    }); // fill_base + 1 — 데이터 셀
+    }); // fill_base + 1: data cells.
     doc.header.border_fills.push(hwp_model::BorderFill {
         bg_color: Some(0x0055_5555),
         ..Default::default()
-    }); // fill_base + 2 — 제목 셀
+    }); // fill_base + 2: header cells.
     let cell = |row: u16, header: bool| hwp_model::Cell {
         list_attr: if header { 1 << 18 } else { 0 },
         col: 0,
@@ -1785,7 +1790,7 @@ fn 표_분할_문서(
         extras: Vec::new(),
     };
     let anchor = &mut doc.sections[0].paragraphs[0];
-    anchor.chars.clear(); // 빈 문단 — 표는 본문 상단 + 16pt에 앵커된다
+    anchor.chars.clear(); // Empty paragraph: anchor the table at body top plus 16pt.
     anchor.controls.push(hwp_model::Control::Table(table));
     for _ in 0..filler {
         let mut p = doc.sections[0].paragraphs[0].clone();
@@ -3456,7 +3461,7 @@ fn 표_쪽분할_행경계_클립없음() {
     let probe = 표_분할_문서(0, 1, 100, 0, false, 0);
     let (_body_top, body_bottom) = 본문_기하(&probe);
     let page_h = body_bottom - _body_top;
-    let rows = (page_h / 100.0) as u16 + 3; // 2쪽 보장
+    let rows = (page_h / 100.0) as u16 + 3; // Ensure at least two pages.
     let doc = 표_분할_문서(1, rows, 100, 0, false, 0);
     let (list, report) = 표_레이아웃(&doc);
     assert!(
@@ -3817,7 +3822,7 @@ fn 표_쪽분할_병합셀은_절단하지_않음() {
     let (body_top, body_bottom) = 본문_기하(&probe);
     let page_h = body_bottom - body_top;
     let rows = (page_h / 100.0) as u16 + 3;
-    let fit1 = ((page_h - 16.0) / 100.0).floor() as u16; // 첫 쪽에 들어가는 행 수
+    let fit1 = ((page_h - 16.0) / 100.0).floor() as u16; // Number of rows that fit on the first page.
     let mut doc = 표_분할_문서(1, rows, 100, 0, false, 0);
     let table = doc.sections[0].paragraphs[0]
         .controls
@@ -3991,7 +3996,7 @@ fn 표_연속쪽_뒤_명시적_쪽나눔을_보존() {
 /// A table attached to a page-spanning paragraph uses the new page's flow y.
 #[test]
 fn 페이지_걸친_문단의_표는_새쪽_흐름위치에_앵커() {
-    let mut doc = 표_분할_문서(1, 1, 50, 0, false, 0); // 1행 50pt 표
+    let mut doc = 표_분할_문서(1, 1, 50, 0, false, 0); // One row with a 50pt height.
     let (body_top, _bb) = 본문_기하(&doc);
     let src = hwp_convert::from_markdown("가나다라");
     let chars = src.sections[0].paragraphs[0].chars.clone();
