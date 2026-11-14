@@ -2552,6 +2552,126 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // G1/G3 positions copied from the issue's measured body values, not a host font.
+    fn assert_native_half_unit_spacing(after_break: bool) {
+        use hwp_model::{Control, GsoPlacement};
+        let dir = std::env::temp_dir().join(format!(
+            "ahwp-native-half-{}-{after_break}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.hwp");
+        let output = dir.join("output.hwp");
+        let mut seed = hwp_convert::from_markdown(
+            "F1\n\n| A | B |\n|---|---|\n| C | D |\n\nHost\n\nEdit\n\nTail\n",
+        );
+        assert_eq!(seed.sections[0].paragraphs.len(), 5);
+        for shape in &mut seed.header.char_shapes {
+            shape.base_size = 1000;
+        }
+        for shape in &mut seed.header.para_shapes {
+            shape.spacing_top = 0;
+            shape.spacing_bottom = 600;
+            shape.line_spacing_type = 0;
+            shape.line_spacing = 160;
+            shape.line_spacing_old = 160;
+        }
+        for (index, (para, y)) in seed.sections[0]
+            .paragraphs
+            .iter_mut()
+            .zip([0, 3800, 4412, 6312, 8212])
+            .enumerate()
+        {
+            para.header.instance_id = index as u32 + 1;
+            para.line_segs = vec![cached_segment(y)];
+        }
+        let table = seed.sections[0].paragraphs[1]
+            .controls
+            .iter_mut()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        table.placement = Some(GsoPlacement {
+            treat_as_char: false,
+            vert_rel_to: 2,
+            horz_rel_to: 3,
+            ..Default::default()
+        });
+        for cell in &mut table.cells {
+            for para in &mut cell.paragraphs {
+                para.line_segs = vec![cached_segment(0)];
+            }
+        }
+        if after_break {
+            let mut shape = seed.header.para_shapes
+                [seed.sections[0].paragraphs[3].para_shape.0 as usize]
+                .clone();
+            shape.spacing_top = 2400;
+            shape.spacing_bottom = 0;
+            seed.sections[0].paragraphs[3].para_shape =
+                hwp_model::ParaShapeId(seed.header.para_shapes.len() as u16);
+            seed.header.para_shapes.push(shape);
+            seed.sections[0].paragraphs[3].header.break_type |= 4;
+            seed.sections[0].paragraphs[3].line_segs[0].v_pos = 1200;
+            seed.sections[0].paragraphs[4].line_segs[0].v_pos = 2800;
+        }
+        seed.meta.source_format = "hwp5".to_owned();
+        hwp5::write_document(
+            &seed,
+            &source,
+            &hwp5::WriteOptions {
+                preserve_linesegs: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = hwp5::read_document(&source).unwrap().document;
+        let expected = if after_break { 1200 } else { 6312 };
+        assert_eq!(
+            original.sections[0].paragraphs[3].line_segs[0].v_pos, expected,
+            "stored position premise"
+        );
+        let mut edited = original.clone();
+        edited.sections[0].paragraphs[3]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[3].line_segs.clear();
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        assert_eq!(current.sections[0].paragraphs[3].plain_text(), "XEdit");
+        assert_eq!(
+            current.sections[0].paragraphs[3].line_segs[0].v_pos, expected,
+            "native half-unit body position after_break={after_break}"
+        );
+        assert_eq!(
+            current.sections[0].paragraphs[4].line_segs,
+            original.sections[0].paragraphs[4].line_segs,
+            "height-neutral suffix remains stored"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn native_half_unit_spacing_g3_edit_starts_at_6312() {
+        assert_native_half_unit_spacing(false);
+    }
+
+    #[test]
+    fn native_half_unit_spacing_after_explicit_break_starts_at_1200() {
+        assert_native_half_unit_spacing(true);
+    }
+
     fn assert_native_body_run_order(neutral_first: bool) {
         let dir = std::env::temp_dir().join(format!(
             "ahwp-g3-order-{}-{neutral_first}",
