@@ -54,8 +54,8 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 - Native HWP5 edit body synthesis and saved-predecessor seeds now use half the serialized
   paragraph spacing, matching Hangul's G3 position 6312 and post-break top 1200. Plain section
-  starts keep top/2; floating-host section starts still omit it. Stored source caches and nested
-  list geometry remain unchanged. The height-neutral suffix guard stays active for explicit
+  starts keep top/2; floating-host section starts still omit it. Retained source caches are not
+  rewritten, and nested list geometry is unchanged. The height-neutral suffix guard stays active for explicit
   spacing changes that would overlap a source neighbour (#584, part of #540 G1).
 
 **Changed**

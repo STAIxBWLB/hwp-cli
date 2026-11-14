@@ -1592,6 +1592,7 @@ fn body_flow_seeds(
             continue;
         };
         let previous = &section.paragraphs[previous_index];
+        // ParaShape stores twice HWPUNIT; saved_body_cursor accepts HWPUNIT.
         let space_after = original
             .header
             .para_shapes
@@ -2810,7 +2811,7 @@ mod tests {
         );
         assert!(
             following.v_pos >= changed.v_pos + changed.line_height,
-            "G1 native top mismatch must not overlap retained suffix: changed top={}, bottom={}, following={}",
+            "corrected native post-break spacing must not overlap retained suffix: changed top={}, bottom={}, following={}",
             changed.v_pos,
             changed.v_pos + changed.line_height,
             following.v_pos

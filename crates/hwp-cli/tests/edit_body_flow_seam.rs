@@ -90,6 +90,7 @@ fn table_mut(paragraph: &mut Paragraph, index: usize) -> &mut hwp_model::Table {
         .expect("table control")
 }
 
+/// Paragraph gaps for native body-cache flow, converted from serialized values to HWPUNIT.
 fn space_bottom(document: &Document, paragraph: &Paragraph) -> i32 {
     document
         .header
