@@ -218,6 +218,103 @@ fn hwp5_to_hwp_verify_path_is_unchanged() {
     assert!(event_codes(&read_report(&report)).is_empty());
 }
 
+/// An HWP5 document with one control the HWPX writer cannot represent (an unknown `xxxx`
+/// control), so the writer itself reports `opaque_control_unrepresentable` (#583 review F1).
+fn hwp5_with_an_unrepresentable_control(dir: &Path) -> PathBuf {
+    let base = hwp5_with_subsecond_times(dir);
+    let json_path = dir.join("opaque.json");
+    let out = run(&[
+        "convert".as_ref(),
+        base.as_os_str(),
+        "-o".as_ref(),
+        json_path.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let mut doc: Value = serde_json::from_slice(&std::fs::read(&json_path).unwrap()).unwrap();
+    let paragraph = &mut doc["sections"][0]["paragraphs"][3];
+    let index = paragraph["controls"].as_array().unwrap().len();
+    paragraph["controls"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"Generic": {
+            "ctrl_id": [120, 120, 120, 120], "data": "0a0b0c0d", "paragraph_lists": [],
+            "extras": [], "raw_children": [], "gso_shapes": [], "equation": null,
+            "column_def": null, "caption": null, "hwpx_raw_xml": null, "container_box": null
+        }}));
+    paragraph["chars"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"ExtCtrl": {
+            "code": 11, "ctrl_id": [120, 120, 120, 120],
+            "payload": "787878780000000000000000", "ctrl_index": index
+        }}));
+    std::fs::write(&json_path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let hwp5 = dir.join("opaque.hwp");
+    let out = run(&[
+        "new".as_ref(),
+        "--from".as_ref(),
+        json_path.as_os_str(),
+        "-o".as_ref(),
+        hwp5.as_os_str(),
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    hwp5
+}
+
+/// F1: only what the cross-format accounting ADDS may publish. An event the HWPX writer itself
+/// reports refuses an HWP5 to `.hwpx` edit, exactly as it did before this change, so the new
+/// reporting does not widen what publishes.
+#[test]
+fn hwp5_to_hwpx_edit_still_refuses_an_event_the_writer_itself_reports() {
+    let dir = workdir("writer-own");
+    let input = hwp5_with_an_unrepresentable_control(&dir);
+    // The convert accounting for the same input names the writer's event, so the premise holds.
+    let loss = dir.join("loss.json");
+    let converted = run(&[
+        "convert".as_ref(),
+        input.as_os_str(),
+        "-o".as_ref(),
+        dir.join("conv.hwpx").as_os_str(),
+        "--loss-report".as_ref(),
+        loss.as_os_str(),
+    ]);
+    assert!(converted.status.success(), "{}", stderr(&converted));
+    let ledger: Value = serde_json::from_slice(&std::fs::read(&loss).unwrap()).unwrap();
+    assert!(
+        ledger["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["code"] == "opaque_control_unrepresentable"),
+        "the writer reports the unknown control: {ledger}"
+    );
+    for verify in [false, true] {
+        let output = dir.join(format!("out-{verify}.hwpx"));
+        let report = dir.join(format!("report-{verify}.json"));
+        let extra: &[&str] = if verify { &["--verify"] } else { &[] };
+        let edited = edit_set_meta(&input, &output, &report, extra);
+        assert!(!edited.status.success(), "verify={verify}: must refuse");
+        assert!(
+            !output.exists(),
+            "verify={verify}: a refused edit publishes nothing"
+        );
+        assert!(
+            stderr(&edited).contains("opaque_control_unrepresentable"),
+            "{}",
+            stderr(&edited)
+        );
+        let refusal = read_report(&report);
+        assert_eq!(refusal["refusal"]["code"], "preservation_loss", "{refusal}");
+        let events = refusal["refusal"]["values"]["events"].as_array().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e["code"] == "opaque_control_unrepresentable"),
+            "{refusal}"
+        );
+    }
+}
+
 /// The local-only samples, from the issue's AC1: `--set-meta` and a top-level `--replace`
 /// with `--verify` to `.hwpx`.
 fn assert_sample_verifies(sample: &str, replace: &str) {

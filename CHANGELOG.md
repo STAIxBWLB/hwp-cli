@@ -34,8 +34,10 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   events, the `hwp-preservation-report-v1` shape. An `edit` from an HWP5 input to `.hwpx` now runs
   the loss accounting `convert` runs for that pair, so its losses are reported in stderr, MCP
   `preservation` and this list instead of being published silently. Like `convert` without
-  `--strict` it publishes with those events; `paragraph_range_tag_unrepresentable` and
-  `font_type_info_unrepresentable` still refuse it, and edits to `.hwp` keep refusing on any event.
+  `--strict` it publishes with the events that accounting adds. Every event the HWPX writer itself
+  reports still refuses the edit, as before, and so do `paragraph_range_tag_unrepresentable` and
+  `font_type_info_unrepresentable` from the accounting. Edits to `.hwp` keep refusing on any event.
+  A `verify_mismatch` caused only by a lost section element names it in `values.missing_element`.
   A consumer that accepts `"1.3"` must also accept `"1.4"`
   ([#583](https://github.com/STAIxBWLB/agent-hwp/issues/583)).
 

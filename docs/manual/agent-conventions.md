@@ -453,10 +453,13 @@ An `ahwp edit` from an HWP5 input to a `.hwpx` output runs the same loss account
 convert` for that pair, with or without `--verify`. The events (`{code, resource, disposition,
 count}`, the `hwp-preservation-report-v1` shape) go to stderr, to the MCP `preservation` field,
 and, since schema 1.4, to the `preservation` list of the `--report` file. The list is absent when
-nothing was lost. Like `convert` without `--strict`, such an edit publishes with its events
-reported: `metadata_value_removed` alone fires on every HWP5 to HWPX save, because HWPX stores
-timestamps to the second. Two events still refuse it, `paragraph_range_tag_unrepresentable` and
-`font_type_info_unrepresentable`. An edit to a `.hwp` output keeps its refuse-on-any-event policy.
+nothing was lost. Like `convert` without `--strict`, such an edit publishes with the events
+the accounting adds reported: `metadata_value_removed` alone fires on every HWP5 to HWPX save, because HWPX stores
+timestamps to the second. Every event the HWPX writer itself reports still refuses the edit, as
+before (an opaque or image-filled control, an unrepresentable shape, a dropped binary, a dropped
+range tag), and of the added events `paragraph_range_tag_unrepresentable` and
+`font_type_info_unrepresentable` refuse too. An edit to a `.hwp` output keeps its
+refuse-on-any-event policy.
 
 `--verify` in this direction compares the HWPX re-read with the edited document after projecting
 the fields the two formats encode differently (trailing bytes of header records, the numeric note
@@ -465,7 +468,8 @@ named and commented in `project_hwp5_to_hwpx_representation`. Text, structure, g
 every field not on that list are still compared, the output must still carry the section's
 `hp:footNotePr`, `hp:endNotePr` and `hp:pageBorderFill` elements when the source had those records,
 and re-typed drawing objects are accepted only when `control_removed` was reported. Any other
-difference refuses as `verify_mismatch`. The cost: for the byte-encoded fields on that list the
+difference refuses as `verify_mismatch`; when only a section element was lost, `values.missing_element`
+names it (`footnote_shape`, `endnote_shape` or `page_border_fill`) and `counts` is empty. The cost: for the byte-encoded fields on that list the
 digest cannot see a real loss inside those bytes.
 
 ### The preservation ledger

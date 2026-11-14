@@ -139,6 +139,7 @@ impl Refusal {
     /// names come from a fixed vocabulary and the values are counts, never document content.
     pub fn verify_mismatch(
         counts: impl IntoIterator<Item = (&'static str, usize, usize)>,
+        missing_element: Option<&'static str>,
         prose: impl Into<String>,
     ) -> Self {
         let counts = counts
@@ -147,7 +148,12 @@ impl Refusal {
                 serde_json::json!({"name": name, "expected": expected, "actual": actual})
             })
             .collect::<Vec<_>>();
-        Self::new(VERIFY_MISMATCH, prose).with("counts", Value::Array(counts))
+        let refusal = Self::new(VERIFY_MISMATCH, prose).with("counts", Value::Array(counts));
+        match missing_element {
+            // 1.4 (#583): the HWPX output lost a section element the HWP5 source declared.
+            Some(element) => refusal.with("missing_element", element),
+            None => refusal,
+        }
     }
 
     pub fn unclassified(message: impl Into<String>) -> Self {

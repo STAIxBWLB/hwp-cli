@@ -632,21 +632,46 @@ impl EditReportV1<'_> {
     }
 }
 
-/// #583: the events of an HWP5 to HWPX edit that still refuse. Every other event is reported and
-/// the edit publishes, as `ahwp convert` does without `--strict`: edit's same-format policy
-/// refuses on any event, and `metadata_value_removed` (HWPX timestamps are second precision)
-/// fires on every HWP5 to HWPX save, so that policy here would refuse every such edit.
+/// #583: the events of an HWP5 to HWPX edit that refuse. `writer_own` is what the HWPX writer
+/// itself reported; `all` is that plus the accounting this change adds (`convert`'s container
+/// and semantic inspection).
+///
+/// - Every event the writer itself reported refuses, exactly as before this change: dropped
+///   range tags, opaque or image-filled controls, unrepresentable shapes and binaries.
+/// - What the accounting adds is reported and publishes, as `ahwp convert` does without
+///   `--strict`. `metadata_value_removed` fires on every HWP5 to HWPX save (HWPX timestamps are
+///   second precision), so refusing on it would refuse every such edit. Two accounting events
+///   still refuse because their contracts predate this rule: dropped PARA_RANGE_TAG records
+///   (#529) and font typeInfo with no native mapping.
 fn refusing_cross_format_events(
-    report: &hwp_model::PreservationReport,
+    writer_own: &hwp_model::PreservationReport,
+    all: &hwp_model::PreservationReport,
 ) -> hwp_model::PreservationReport {
-    let mut refusing = hwp_model::PreservationReport::new();
-    for event in &report.events {
-        if matches!(
+    let mut refusing = writer_own.clone();
+    for event in &all.events {
+        if !matches!(
             event.code,
             hwp_model::PreservationCode::ParagraphRangeTagUnrepresentable
                 | hwp_model::PreservationCode::FontTypeInfoUnrepresentable
         ) {
-            refusing.record(event.clone());
+            continue;
+        }
+        // `all` already contains the writer's own events, so only the accounting's share of
+        // this event is added: the count beyond what the writer itself reported.
+        let already = writer_own
+            .events
+            .iter()
+            .filter(|own| {
+                own.code == event.code
+                    && own.resource == event.resource
+                    && own.disposition == event.disposition
+            })
+            .map(|own| own.count)
+            .sum::<usize>();
+        if event.count > already {
+            let mut added = event.clone();
+            added.count -= already;
+            refusing.record(added);
         }
     }
     refusing
@@ -745,6 +770,7 @@ fn classify_run_error(error: &anyhow::Error) -> Refusal {
                 .counts
                 .iter()
                 .map(|(name, expected, actual)| (*name, *expected, *actual)),
+            mismatch.missing_element,
             format!("{error:#}"),
         );
     }
@@ -2301,6 +2327,10 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         .collect::<Vec<_>>();
     let cross_format_hwpx =
         output_format == OutputFormat::Hwpx && original_doc.meta.source_format == "hwp5";
+    // #583: the events the HWPX writer itself reported, kept apart from the accounting added
+    // below. On main every one of them refused an HWP5 to `.hwpx` edit and still does; only
+    // what the accounting adds may publish.
+    let writer_own_events = std::cell::RefCell::new(hwp_model::PreservationReport::new());
     let write_staged = |source: &Path, staged: &Path| {
         let mut report = write_output(
             &doc,
@@ -2313,6 +2343,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         // pair, so its losses are reported instead of published silently. Same-format and
         // HWP-output runs keep the existing same-container inspection below.
         if cross_format_hwpx {
+            *writer_own_events.borrow_mut() = report.preservation.clone();
             report.preservation.extend(
                 crate::commands::preservation::inspect_cross_format_container(
                     &original_doc,
@@ -2343,10 +2374,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
     };
     let verify_staged = |staged: &Path, writer_report: &hwp_model::WriteReport| {
         if cross_format_hwpx {
-            // Follows non-strict `convert`: the events are reported, not refused. Two stay
-            // refusals because their contracts predate this rule: dropped PARA_RANGE_TAG
-            // records (#529) and font typeInfo with no native mapping.
             reject_edit_preservation_loss(&refusing_cross_format_events(
+                &writer_own_events.borrow(),
                 &writer_report.preservation,
             ))?;
         } else if output_format.supports_verify() {
@@ -6181,31 +6210,31 @@ fn collapse_retyped_shapes(paragraph: &mut hwp_model::Paragraph) {
         })
         .sum();
     paragraph.controls.retain(|control| !is_shape(control));
-    // Positions in WCHAR units: drop the removed stubs and shift later runs back by 8 each.
+    // Positions in WCHAR units: drop the removed stubs and move each run back by the total
+    // width of the removed stubs that end at or before the run's position. A stub is counted
+    // when its end (start + width) is at or before the run start, so a stub that ends exactly
+    // where a run starts is counted too.
     let mut position = 0_u32;
-    let mut removed_before = Vec::new();
-    let mut removed = 0_u32;
+    let mut removed_ends: Vec<(u32, u32)> = Vec::new();
     let mut kept = Vec::with_capacity(paragraph.chars.len());
     for ch in std::mem::take(&mut paragraph.chars) {
         let width = ch.wchar_width();
-        removed_before.push((position, removed));
-        position += width;
         if let hwp_model::HwpChar::ExtCtrl { ctrl_id, .. } = &ch
             && is_drawing_object_id(ctrl_id)
         {
-            removed += width;
+            removed_ends.push((position + width, width));
         } else {
             kept.push(ch);
         }
+        position += width;
     }
     paragraph.chars = kept;
     for (run_position, _) in &mut paragraph.char_shape_runs {
-        let shift = removed_before
+        let shift: u32 = removed_ends
             .iter()
-            .take_while(|(start, _)| *start < *run_position)
-            .last()
-            .map(|(_, removed)| *removed)
-            .unwrap_or(0);
+            .filter(|(end, _)| *end <= *run_position)
+            .map(|(_, width)| *width)
+            .sum();
         *run_position = run_position.saturating_sub(shift);
     }
     // Remaining extended characters point at controls by index; renumber them.
@@ -6230,7 +6259,8 @@ fn collapse_retyped_shapes(paragraph: &mut hwp_model::Paragraph) {
     });
 }
 
-/// The first section's `SectionDef`, where the notes and the page borders are declared.
+/// Every section's `SectionDef`, in section order: where the notes and the page borders are
+/// declared.
 fn section_defs(document: &hwp_model::Document) -> Vec<&hwp_model::SectionDef> {
     document
         .sections
@@ -6466,6 +6496,9 @@ struct SemanticVerificationMismatch {
     /// The differing count invariants (#578): `(name, expected, actual)`. Empty when only the
     /// canonical digest differs, which is then the whole report.
     counts: Vec<(&'static str, usize, usize)>,
+    /// #583: the section element the HWPX output lost, when that is what failed (`footnote_shape`,
+    /// `endnote_shape` or `page_border_fill`). It is a fixed name, never document content.
+    missing_element: Option<&'static str>,
 }
 
 impl std::fmt::Display for SemanticVerificationMismatch {
@@ -6625,13 +6658,16 @@ fn verify_output_projected(
                 semantic_signature_for(&doc, target),
             ),
         };
-        let uncovered = projected
-            .and_then(|_| section_note_elements_missing(expected, &doc))
-            .is_some();
-        if actual_signature != expected_signature || uncovered {
+        let missing_element = projected.and_then(|_| section_note_elements_missing(expected, &doc));
+        if actual_signature != expected_signature || missing_element.is_some() {
+            let mut summary = semantic_mismatch_summary(&expected_signature, &actual_signature);
+            if let Some(element) = missing_element {
+                summary.push_str(&format!(", missing_element={element}"));
+            }
             return Err(SemanticVerificationMismatch {
-                summary: semantic_mismatch_summary(&expected_signature, &actual_signature),
+                summary,
                 counts: semantic_count_differences(&expected_signature, &actual_signature),
+                missing_element,
             }
             .into());
         }
@@ -8265,6 +8301,168 @@ mod tests {
         );
     }
 
+    /// #583 review F1: the policy split between the HWPX writer's own events and what the
+    /// cross-format accounting adds. Every writer event refuses; the accounting's plain-loss
+    /// events publish; its range-tag and font-type-info events still refuse; and an event the
+    /// writer and the accounting both report is not counted twice.
+    #[test]
+    fn cross_format_refusal_keeps_every_writer_event_and_publishes_only_plain_added_losses() {
+        use hwp_model::{
+            PreservationCode as Code, PreservationDisposition as Disposition, PreservationEvent,
+            PreservationReport, PreservationResourceKind as Kind,
+        };
+        let event = |code, resource, count| {
+            PreservationEvent::new(code, resource, Disposition::Unrepresentable, count)
+        };
+        let report = |events: Vec<PreservationEvent>| {
+            let mut report = PreservationReport::new();
+            for event in events {
+                report.record(event);
+            }
+            report
+        };
+        let codes = |report: &PreservationReport| {
+            report
+                .events
+                .iter()
+                .map(|e| (e.code, e.count))
+                .collect::<Vec<_>>()
+        };
+        // Every code the HWPX writer can report on its own refuses.
+        for code in [
+            Code::OpaqueControlUnrepresentable,
+            Code::ImageFillUnrepresentable,
+            Code::GsoShapeUnrepresentable,
+            Code::GsoHeaderUnrepresentable,
+            Code::BinaryAssetRemoved,
+            Code::ParagraphRangeTagUnrepresentable,
+        ] {
+            let own = report(vec![event(code, Kind::Control, 2)]);
+            let mut all = own.clone();
+            all.record(event(Code::MetadataValueRemoved, Kind::Metadata, 2));
+            assert_eq!(
+                codes(&refusing_cross_format_events(&own, &all)),
+                vec![(code, 2)],
+                "{code} reported by the writer must refuse, and only it"
+            );
+        }
+        // What the accounting adds publishes.
+        let own = PreservationReport::new();
+        let added = report(vec![
+            event(Code::MetadataValueRemoved, Kind::Metadata, 2),
+            event(Code::ControlRemoved, Kind::Control, 143),
+            event(Code::BinaryAssetRemoved, Kind::BinaryAsset, 1),
+            event(Code::HwpContainerStreamRemoved, Kind::ContainerStream, 1),
+        ]);
+        assert!(
+            refusing_cross_format_events(&own, &added).is_lossless(),
+            "plain losses the accounting adds publish"
+        );
+        // Two added events keep refusing (#529 and font typeInfo).
+        let added = report(vec![
+            event(Code::ParagraphRangeTagUnrepresentable, Kind::Metadata, 1),
+            event(Code::FontTypeInfoUnrepresentable, Kind::Metadata, 3),
+            event(Code::MetadataValueRemoved, Kind::Metadata, 2),
+        ]);
+        assert_eq!(
+            codes(&refusing_cross_format_events(&own, &added)),
+            vec![
+                (Code::FontTypeInfoUnrepresentable, 3),
+                (Code::ParagraphRangeTagUnrepresentable, 1)
+            ]
+        );
+        // `all` is the writer's report plus the accounting, merged by code. A range tag the
+        // writer reported once and the accounting did not add to stays one, and one the
+        // accounting added to is the writer's count plus its own share.
+        let tag = |count| {
+            event(
+                Code::ParagraphRangeTagUnrepresentable,
+                Kind::Metadata,
+                count,
+            )
+        };
+        let own = report(vec![tag(1)]);
+        assert_eq!(
+            codes(&refusing_cross_format_events(&own, &own)),
+            vec![(Code::ParagraphRangeTagUnrepresentable, 1)],
+            "the writer's own event is not counted twice"
+        );
+        let mut merged = own.clone();
+        merged.record(tag(2));
+        assert_eq!(
+            codes(&refusing_cross_format_events(&own, &merged)),
+            vec![(Code::ParagraphRangeTagUnrepresentable, 3)],
+            "the writer's 1 plus the accounting's added 2"
+        );
+    }
+
+    /// #583 review F2: a refusal caused only by a lost section element names that element in
+    /// `values.missing_element`, with empty `counts`.
+    #[test]
+    fn missing_section_element_is_named_in_the_refusal() {
+        let error: anyhow::Error = SemanticVerificationMismatch {
+            summary: "x".into(),
+            counts: Vec::new(),
+            missing_element: Some("page_border_fill"),
+        }
+        .into();
+        let refusal = classify_run_error(&error);
+        assert_eq!(refusal.code, refusal::VERIFY_MISMATCH);
+        assert_eq!(refusal.values["counts"], serde_json::json!([]));
+        assert_eq!(refusal.values["missing_element"], "page_border_fill");
+    }
+
+    /// #583 review F3: a run moves back by every removed stub that ends at or before its
+    /// position, including one that ends exactly where the run starts.
+    #[test]
+    fn retyped_shape_stubs_shift_runs_by_every_stub_that_ends_before_them() {
+        let stub = |ctrl_index| hwp_model::HwpChar::ExtCtrl {
+            code: 11,
+            ctrl_id: *b"rect",
+            payload: Vec::new(),
+            ctrl_index: Some(ctrl_index),
+        };
+        let mut doc = hwp_convert::from_markdown("가나");
+        let paragraph = &mut doc.sections[0].paragraphs[0];
+        paragraph.chars = vec![
+            hwp_model::HwpChar::Text('가'),
+            stub(0),
+            stub(1),
+            hwp_model::HwpChar::Text('나'),
+        ];
+        paragraph.controls.clear();
+        for _ in 0..2 {
+            paragraph
+                .controls
+                .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+                    ctrl_id: *b"rect",
+                    data: Vec::new(),
+                    paragraph_lists: Vec::new(),
+                    extras: Vec::new(),
+                    raw_children: Vec::new(),
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: None,
+                    caption: None,
+                    hwpx_raw_xml: None,
+                    container_box: None,
+                }));
+        }
+        // Runs at 0, at 9 (right after the first stub), and at 17 (right after both).
+        paragraph.char_shape_runs = vec![
+            (0, hwp_model::CharShapeId(0)),
+            (9, hwp_model::CharShapeId(1)),
+            (17, hwp_model::CharShapeId(2)),
+        ];
+        collapse_retyped_shapes(paragraph);
+        let positions: Vec<u32> = paragraph.char_shape_runs.iter().map(|(p, _)| *p).collect();
+        assert_eq!(
+            positions,
+            vec![0, 1, 1],
+            "each run moves back by the stubs before it"
+        );
+    }
+
     /// #583 review: the drawing-object count of a raw-backed `gso ` control is the number of
     /// SHAPE_COMPONENT records outside its paragraph lists, minus a group's container. This is
     /// the unit the HWPX re-read counts in, so a group of two members is two and a plain object
@@ -8318,6 +8516,7 @@ mod tests {
         let error: anyhow::Error = SemanticVerificationMismatch {
             summary: semantic_mismatch_summary(&left, &right),
             counts: semantic_count_differences(&left, &right),
+            missing_element: None,
         }
         .into();
         let refusal = classify_run_error(&error.context("snapshot 기반 출력 검증 실패"));
@@ -8332,6 +8531,7 @@ mod tests {
         let digest_only: anyhow::Error = SemanticVerificationMismatch {
             summary: "x".into(),
             counts: Vec::new(),
+            missing_element: None,
         }
         .into();
         let refusal = classify_run_error(&digest_only);
