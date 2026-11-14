@@ -52,8 +52,8 @@ pub use field::{
 };
 pub use form::{FormField, FormFieldSource, fill_form_fields, scan_form_fields};
 pub use format::{
-    CharFormat, KEEP_TOGETHER_REFUSAL, PageProps, ParaProps, apply_para_props_at, restyle_range_at,
-    set_break_before_at, set_cell_para_props, set_char_format, set_indent_level_at, set_page_def,
+    CharFormat, PageProps, ParaProps, apply_para_props_at, restyle_range_at, set_break_before_at,
+    set_cell_para_props, set_char_format, set_indent_level_at, set_keep_together_at, set_page_def,
     set_para_align, set_para_align_at, set_para_props, shift_head_level_at,
 };
 pub use frames::{

@@ -1,9 +1,9 @@
-//! #420: typed break-before, an idempotent indentation recipe and the keep-together refusal.
+//! Typed break-before, idempotent indentation and evidence-backed keep-together flags.
 //!
 //! Break-before writes the paragraph-header `break_type` page bit (0x04) of a BODY paragraph,
 //! the one placement genuine Hangul-saved files show in both formats (HWP5 `break_type`, HWPX
-//! `pageBreak`). Keep-together has no genuine saved evidence for the paragraph-shape bits and
-//! must refuse before writing. Tests assert structure, never font-dependent page counts.
+//! `pageBreak`). Keep-together writes the independent paragraph-shape bits from #540 G4.
+//! Tests assert structure, never font-dependent page counts.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -532,24 +532,195 @@ fn indent_level_never_touches_inner_spaces_labels_or_a_paragraph_without_leading
 
 // ---- keep_together -------------------------------------------------------------------------
 
+/// Inspect the persisted state even on refusal: the pre-fix CLI publishes no output, so
+/// the original remains the observed document. The red assertion is the requested bit,
+/// not an early unwrap of the refusal or a missing output file.
 #[test]
-fn keep_together_refuses_before_writing_and_names_the_missing_evidence() {
+fn keep_together_sets_and_clears_only_the_supplied_bit_in_both_formats() {
+    use std::io::Read;
     for extension in ["hwp", "hwpx"] {
-        let fixture = Fixture::new("keep", extension);
-        let before = read(&fixture.base);
-        for field in ["keep_with_next", "keep_lines", "break_before_shape"] {
-            let message = fixture.refuse(
-                &fixture.base.clone(),
-                &format!("keep-{field}"),
-                json!([{"op":"keep_together","address":at(&before, TARGET),field:true}]),
-            );
-            assert!(
-                message.contains("keep_together")
-                    && message.contains("Hangul")
-                    && message.contains("set_break_before"),
-                "{extension} {field}: the refusal names the cause and the supported alternative: {message}"
-            );
+        let fixture = Fixture::new("keep-bits", extension);
+        for (field, bit, attribute) in [
+            ("keep_with_next", 17, "keepWithNext"),
+            ("keep_lines", 18, "keepLines"),
+            ("break_before_shape", 19, "pageBreakBefore"),
+        ] {
+            // Include widow/orphan and the other two keep bits in the preservation premise.
+            for on in [true, false] {
+                let mut seeded = read(&fixture.base);
+                let pi = index(&seeded, TARGET);
+                let si = seeded.sections[0].paragraphs[pi].para_shape.0 as usize;
+                seeded.header.para_shapes[si].attr1 |= 0xf << 16;
+                if on {
+                    seeded.header.para_shapes[si].attr1 &= !(1 << bit);
+                }
+                let input = fixture.path(&format!("seed-{field}-{on}"));
+                if extension == "hwp" {
+                    hwp5::write_document(&seeded, &input, &hwp5::WriteOptions::default()).unwrap();
+                } else {
+                    hwpx::write_document(&seeded, &input).unwrap();
+                }
+                let before = read(&input);
+                let p = paragraph(&before, TARGET);
+                let prior = before.header.para_shapes[p.para_shape.0 as usize].attr1;
+                let header_break = p.header.break_type;
+                let (output, run) = fixture.edit(
+                    &input,
+                    &format!("keep-{field}-{on}"),
+                    json!([{"op":"keep_together","address":at(&before, TARGET),field:on}]),
+                );
+                let after = read(if output.exists() { &output } else { &input });
+                let p = paragraph(&after, TARGET);
+                let actual = after.header.para_shapes[p.para_shape.0 as usize].attr1;
+                let expected = if on {
+                    prior | (1 << bit)
+                } else {
+                    prior & !(1 << bit)
+                };
+                assert_eq!(
+                    actual,
+                    expected,
+                    "{extension} {field}={on}: exact attr1 including all untouched bits; CLI: {}",
+                    String::from_utf8_lossy(&run.stderr)
+                );
+                success(run, "keep_together");
+                assert_eq!(
+                    p.header.break_type, header_break,
+                    "shape flag is not header break_type"
+                );
+                for original in &before.sections[0].paragraphs {
+                    let other = paragraph(&after, &original.plain_text());
+                    if original.plain_text() != TARGET {
+                        assert_eq!(
+                            after.header.para_shapes[other.para_shape.0 as usize].attr1,
+                            before.header.para_shapes[original.para_shape.0 as usize].attr1,
+                            "shared source shape must not mutate other paragraphs"
+                        );
+                    }
+                }
+                if extension == "hwpx" {
+                    let mut zip =
+                        zip::ZipArchive::new(std::fs::File::open(&output).unwrap()).unwrap();
+                    let mut xml = String::new();
+                    zip.by_name("Contents/header.xml")
+                        .unwrap()
+                        .read_to_string(&mut xml)
+                        .unwrap();
+                    let mut reader = quick_xml::Reader::from_str(&xml);
+                    let mut selected = false;
+                    let mut checked = false;
+                    loop {
+                        use quick_xml::events::Event;
+                        match reader.read_event().unwrap() {
+                            Event::Start(e) if e.local_name().as_ref() == "paraPr" => {
+                                selected = e.attributes().flatten().any(|a| {
+                                    a.key.as_ref() == "id"
+                                        && a.value.as_ref() == p.para_shape.0.to_string()
+                                });
+                            }
+                            Event::Empty(e)
+                                if selected && e.local_name().as_ref() == "breakSetting" =>
+                            {
+                                let attrs: std::collections::BTreeMap<String, String> = e
+                                    .attributes()
+                                    .map(|a| {
+                                        let a = a.unwrap();
+                                        (a.key.as_ref().to_string(), a.value.into_owned())
+                                    })
+                                    .collect();
+                                assert_eq!(attrs[attribute], if on { "1" } else { "0" });
+                                for (name, shift) in [
+                                    ("widowOrphan", 16),
+                                    ("keepWithNext", 17),
+                                    ("keepLines", 18),
+                                    ("pageBreakBefore", 19),
+                                ] {
+                                    assert_eq!(
+                                        attrs[name],
+                                        if expected & (1 << shift) != 0 {
+                                            "1"
+                                        } else {
+                                            "0"
+                                        }
+                                    );
+                                }
+                                checked = true;
+                            }
+                            Event::Eof => break,
+                            _ => {}
+                        }
+                    }
+                    assert!(checked, "serialized target breakSetting exists");
+                }
+                let (repeat, run) = fixture.edit(
+                    &output,
+                    &format!("repeat-{field}-{on}"),
+                    json!([{"op":"keep_together","address":at(&after, TARGET),field:on}]),
+                );
+                success(run, "keep_together repeated");
+                assert_eq!(
+                    std::fs::read(output).unwrap(),
+                    std::fs::read(repeat).unwrap()
+                );
+            }
         }
+    }
+}
+
+#[test]
+fn keep_together_supports_first_body_and_cell_paragraph_addresses() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("keep-scope", extension);
+        let listed = hwp()
+            .arg("cat")
+            .arg(&fixture.base)
+            .args(["--format", "json", "--with-segments", "--segments", "v2"])
+            .output()
+            .unwrap();
+        success(
+            Output {
+                status: listed.status,
+                stdout: Vec::new(),
+                stderr: listed.stderr.clone(),
+            },
+            "catalogue",
+        );
+        let envelope: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let cell = envelope["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["kind"] == "para" && s["path"]["indices"].as_array().unwrap().len() == 4)
+            .unwrap();
+        let before = read(&fixture.base);
+        let (output, run) = fixture.edit(&fixture.base, "scope",
+            json!([
+                {"op":"keep_together","address":{"at":{"section":0,"paragraph":0}},"keep_with_next":true},
+                {"op":"keep_together","address":{"id":cell["id"]},"keep_lines":true}
+            ]));
+        success(run, "first body and cell keep flags");
+        let after = read(&output);
+        let first = &after.sections[0].paragraphs[0];
+        assert!(after.header.para_shapes[first.para_shape.0 as usize].keep_with_next());
+        assert_eq!(
+            first.header.break_type,
+            before.sections[0].paragraphs[0].header.break_type
+        );
+        let cell_para = after.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(&t.cells[0].paragraphs[0]),
+                _ => None,
+            })
+            .unwrap();
+        assert!(after.header.para_shapes[cell_para.para_shape.0 as usize].keep_lines());
+        assert_eq!(cell_para.plain_text(), CELL);
+        assert_eq!(
+            paragraph(&after, TARGET).para_shape,
+            paragraph(&before, TARGET).para_shape
+        );
     }
 }
 

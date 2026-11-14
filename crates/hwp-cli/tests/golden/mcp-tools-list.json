@@ -1602,13 +1602,13 @@
           "type": "array"
         },
         "keep_together": {
-          "description": "항상 거부됨: 문단 모양의 다음 문단과 함께·문단 보호·쪽 나눔 비트는 한글이 저장한 정품 파일에서 관찰된 적이 없어 쓰지 않는다. 새 쪽에서 시작하려면 set_break_before를 사용",
+          "description": "문단 모양의 다음 문단과 함께·문단 보호·문단 앞 쪽 나눔을 설정/해제. 지정한 필드만 변경하며 헤더 쪽 나눔과 독립적. 본문·셀 등 주소로 선택한 문단에 적용. 렌더러의 페이지 배치 반영은 보장하지 않음",
           "items": {
             "additionalProperties": false,
             "properties": {
               "address": {
                 "additionalProperties": false,
-                "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
+                "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문·셀 등 중첩 문단도 선택 가능",
                 "properties": {
                   "at": {
                     "additionalProperties": false,

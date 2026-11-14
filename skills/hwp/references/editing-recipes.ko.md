@@ -203,8 +203,12 @@ ahwp compare ./paged.hwpx ./final.hwpx --format json > ./indent-compare.json
 선택자를 현재 목록의 `paragraph_id`로 바꾼다. 완전한 참조 ID는 기능 파일에 있다. `level`은
 0부터 7이고 `step`/`hanging`은 단위 문자열이다. 선행 공백 문자만 제거하고 문단 여백·들여쓰기를
 사용하므로 내부 단어나 표 격자는 바꾸지 않는다. `set_break_before`는 본문 전용이며 셀 문단과
-구역 첫 문단은 거부한다. `keep_together`는 HWP5 플래그 인코딩에 실제 저장 파일의 증거가 없어
-현재 거부한다. 글꼴을 몰래 줄이거나 지원하지 않는 프로필 묶음 유지를 주장하지 않는다.
+구역 첫 문단은 거부한다. `keep_together`는 본문·중첩 문단 하나의 `keep_with_next`, `keep_lines`,
+`break_before_shape` 중 지정한 플래그만 설정·해제한다(셀 문단은 최신 문단 `id` 사용).
+예: `[{"op":"keep_together","address":{"at":{"section":0,"paragraph":2}},"keep_with_next":true,"keep_lines":true}]`.
+Hangul 12.30.0 G4(#540)에서 확인한 문단 모양 비트 17-19이며 헤더 쪽 나눔과 독립적이다.
+필드 하나 이상이 필요하고 나머지 비트는 유지한다. 렌더러 페이지 배치 보장은 추가되지 않는다.
+글꼴을 몰래 줄이거나 프로필 묶음의 시각 검증을 주장하지 않는다.
 
 반복 들여쓰기 배열은 `paged-catalog.json`에서 **새로 얻은** 문단 ID를 사용한다. 기록된 두 번째
 적용은 네 연산 각각 변경 0개를 보고하고 비교 결과가 동일하며 네이티브 바이트도 일치한다.

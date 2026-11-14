@@ -1081,7 +1081,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["op", "address"],
-          "description": "Always refused before anything is written: the paragraph-shape keep-with-next, keep-lines and break-before bits (attr1 bits 17 to 19) never appear in any genuine Hangul-saved file available, so there is no saved byte to base the encoding on. The refusal names the remedy: save a sample from Hangul with the option on, or use set_break_before to start a new page.",
+          "description": "Set or clear only supplied paragraph-shape flags: keep_with_next (attr1 bit 17), keep_lines (18), break_before_shape (19), verified in Hangul 12.30.0 (#540 G4). At least one field is required. Supports body and nested paragraph addresses like set_align. Other shape bits and paragraph-header break_type are unchanged. Renderer pagination is outside this operation's contract.",
           "properties": {
             "op": { "const": "keep_together" },
             "address": { "$ref": "#/$defs/paragraphAddress" },

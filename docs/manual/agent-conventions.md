@@ -394,13 +394,12 @@ array of `hwp_edit` of the same name.
   marks first, or use `set_para` with `left_mm` and `indent_mm`, which strips nothing. Running
   it a second time strips nothing, adds no paragraph shape, keeps the paragraph's native line
   layout and reports `pieces_touched` 0.
-- `keep_together` (`keep_with_next`, `keep_lines`, `break_before_shape`) is always refused before
-  anything is written. No Hangul-saved file available sets those paragraph-shape bits, so their
-  storage cannot be established without guessing. To lift the refusal, save from Hangul a
-  document with the option turned on and compare the bytes first. Use `set_break_before` to
-  start a new page.
+- `keep_together` sets or clears only supplied `keep_with_next`, `keep_lines`, `break_before_shape`
+  fields (attr1 bits 17-19, Hangul 12.30.0 G4). At least one field is required. Like `set_align`,
+  it accepts one body or nested paragraph address, including a cell paragraph. It preserves
+  unspecified bits and header `break_type`; repeating it is a no-op. Renderer pagination is outside this contract.
 
-Both ops address one paragraph at a time, so a stale `id` is refused as with any addressed op.
+These ops address one paragraph at a time, so a stale `id` is refused as with any addressed op.
 A `set_format` run address resolves against the document before the batch, so a batch that
 strips blanks (`set_indent_level`) or replaces text in the same paragraph before it is refused
 with nothing written, naming the cause: put `set_format` first, or run the edits separately.
@@ -416,10 +415,8 @@ object, and when one op refused, that op's entry carries the same object with `s
 result, and writes the same report to its `report` argument for any refusal raised after the
 arguments are read. Stderr and the MCP error text keep the full Korean sentence for people;
 `refusal.message` is a fixed, content-free sentence per code that never quotes request content
-(#348). An MCP refusal raised while the arguments are still being read (for example
-`keep_together`) comes back only in `structuredContent`, with no file at the `report` argument
-because no edit plan exists yet; other argument errors (a malformed or out-of-root argument) may
-come back with no `structuredContent.refusal` at all. An `apply_form_bindings` batch publishes
+(#348). Argument errors raised before an edit plan exists (such as a missing `keep_together` field
+or an out-of-root path) may return without `structuredContent.refusal` or a report file. An `apply_form_bindings` batch publishes
 only its receipt, refused or not.
 
 ```json
@@ -433,7 +430,6 @@ Branch on `code`, never on `message`. Values the user typed (anchors, style name
 | `code` | `values` |
 | --- | --- |
 | `range_tag_shift` | none |
-| `keep_together_unsupported` | `op_index`, `requested` (keep field names) |
 | `section_owner_insert`, `section_owner_move` | none |
 | `add_table.anchor_not_found` | `anchor` |
 | `insert_blocks.unknown_style` | `style`, `missing_style` |

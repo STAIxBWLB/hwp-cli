@@ -10,12 +10,22 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
-**Docs**
+**Added**
+
+- `keep_together` now applies supplied `keep_with_next`, `keep_lines` and
+  `break_before_shape` paragraph-shape flags through CLI edit-ops and MCP `hwp_edit`,
+  preserving other bits and independent header breaks. Encoding follows Hangul 12.30.0
+  saved evidence (#540 G4); body and nested paragraph addresses are supported. The
+  unsupported refusal code is removed; missing fields still refuse. No renderer pagination
+  behavior or edited-output Hancom-open guarantee is added (#568).
+
+**Documentation**
 
 - The original-form capability record gains `hancom_open_export_receipts` with one agent-performed
   (not person-run) Hancom Office Hangul 12.30.0 open/export receipt for a released ahwp 2.0.0 rerun,
   bound to that rerun's artifact and PDF hashes. The recorded reference run stays `not_run`; the
   editing recipes say so in both languages. Part of #540.
+
 
 ## [2.0.0]
 

@@ -211,8 +211,12 @@ Replace the selector with the current catalogue's `paragraph_id`; complete refer
 the asset. `level` is 0 through 7, `step`/`hanging` are unit strings. It removes only leading blank
 characters and uses paragraph margins/indent, without changing inner words or the table grid.
 `set_break_before` is body-only and refuses cell paragraphs and a section's first paragraph.
-`keep_together` currently refuses because its HWP5 flag encoding lacks genuine saved-file proof.
-Do not silently shrink fonts or claim that a profile is kept together when it is not supported.
+`keep_together` sets/clears supplied `keep_with_next`, `keep_lines`, `break_before_shape`
+flags on one body or nested paragraph (cell paragraphs use a current paragraph `id`).
+Example: `[{"op":"keep_together","address":{"at":{"section":0,"paragraph":2}},"keep_with_next":true,"keep_lines":true}]`.
+These are paragraph-shape bits 17-19, verified by Hangul 12.30.0 G4 (#540), independent of
+header breaks. At least one field is required; other bits stay unchanged. This adds no renderer
+pagination guarantee. Do not silently shrink fonts or claim a visually verified profile grouping.
 
 The repeat indentation array uses **refreshed** paragraph IDs from `paged-catalog.json`. The
 recorded second pass touches 0 pieces for each of the four operations; comparison is identical,

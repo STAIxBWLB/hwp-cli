@@ -377,12 +377,12 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
   (#470) 공백을 지워야 할 때 거부한다. 표시를 먼저 지우거나, 아무것도 지우지 않는 `set_para`의
   `left_mm`·`indent_mm`을 쓴다. 두 번째 실행은 아무것도 지우지 않고 문단 모양도 추가하지 않으며
   문단의 네이티브 줄 배치를 그대로 두고 `pieces_touched` 0으로 보고한다.
-- `keep_together`(`keep_with_next`, `keep_lines`, `break_before_shape`)는 아무것도 쓰기 전에 항상
-  거부한다. 쓸 수 있는 한글 저장 파일 중 이 문단 모양 비트를 켠 것이 없어, 추측 없이는 저장 방식을
-  정할 수 없다. 거부를 풀려면 한글에서 해당 옵션을 켜 저장한 문서를 받아 바이트를 먼저 비교해야
-  한다. 새 쪽에서 시작하려면 `set_break_before`를 쓴다.
+- `keep_together`는 지정한 `keep_with_next`, `keep_lines`, `break_before_shape` 필드만 설정·해제한다
+  (attr1 비트 17-19, Hangul 12.30.0 G4). 필드 하나 이상이 필요하다. `set_align`처럼 셀을 포함한
+  본문·중첩 문단 주소 하나를 지원한다. 미지정 비트와 헤더 `break_type` 유지, 반복은 변경 없음.
+  렌더러 페이지 배치 반영은 이 계약의 범위 밖이다.
 
-두 연산 모두 문단 하나를 주소로 가리키므로, 낡은 `id`는 다른 주소 지정 연산처럼 거부된다.
+이 연산들은 모두 문단 하나를 주소로 가리키므로, 낡은 `id`는 다른 주소 지정 연산처럼 거부된다.
 `set_format`의 run 주소는 일괄 편집 이전 문서를 기준으로 해석되므로, 같은 문단의 앞쪽 공백을
 지우거나(`set_indent_level`) 글을 바꾸는 연산이 먼저 오는 일괄 편집은 원인을 알리며 아무것도
 쓰지 않고 거부한다. `set_format`을 앞에 두거나 편집을 나누어 실행한다.
@@ -397,10 +397,8 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 결과의 `structuredContent.refusal`로 같은 객체를 돌려준다. stderr는 사람이 읽는 한국어 문장을
 그대로 유지하고, MCP 오류 텍스트도 같은 문장을 담는다. `refusal.message`는 코드마다 정해진 고정
 문장이며 요청 내용을 인용하지 않는다(#348). 인자를 다 읽은 뒤 나온 MCP 거부는 `report` 인자
-경로에도 같은 보고서를 쓴다. MCP 인자를 읽는 단계에서 나온 거부(예: `keep_together`)는
-`structuredContent`로만 돌아오고, 아직 편집 계획이 없으므로 `report` 인자 경로에는 파일을 쓰지
-않는다. 그 밖의 인자 오류(형식이 잘못되었거나 허용 경로 밖인 인자)는 `structuredContent.refusal`
-없이 돌아올 수 있다. `apply_form_bindings` 배치는 거부되어도 receipt만 남긴다.
+경로에도 같은 보고서를 쓴다. 편집 계획을 만들기 전의 인자 오류(`keep_together` 필드 누락·허용 경로 밖의 경로 등)는
+`structuredContent.refusal`이나 보고서 파일 없이 돌아올 수 있다. `apply_form_bindings` 배치는 거부되어도 receipt만 남긴다.
 
 ```json
 {"code":"insert_blocks.unknown_style","values":{"style":"Heading 9","missing_style":"refuse"},"message":"..."}
@@ -413,7 +411,6 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 | `code` | `values` |
 | --- | --- |
 | `range_tag_shift` | 없음 |
-| `keep_together_unsupported` | `op_index`, `requested`(keep 필드 이름) |
 | `section_owner_insert`, `section_owner_move` | 없음 |
 | `add_table.anchor_not_found` | `anchor` |
 | `insert_blocks.unknown_style` | `style`, `missing_style` |
