@@ -167,6 +167,47 @@ pub fn synthesize_linesegs_seeded(
 pub struct NativeBodyCache<'a> {
     pub original: Option<&'a Paragraph>,
     pub unchanged: bool,
+    /// First stored position of this source paragraph's successor, even if the edited successor
+    /// is new or changed. This is a source offset, not a floating-table pagination formula (#590).
+    pub successor_v_pos: Option<i32>,
+}
+
+fn native_floating_host(source: NativeBodyCache<'_>) -> bool {
+    source.unchanged
+        && source.original.is_some_and(|p| {
+            !p.line_segs.is_empty()
+                && p.line_segs.iter().all(|line| line.seg_width == 0)
+                && p.controls.iter().any(|c| match c {
+                    Control::Table(t) => t.placement.as_ref().is_some_and(|p| !p.treat_as_char),
+                    _ => false,
+                })
+        })
+}
+
+fn translated_native_lines(original: &Paragraph, delta: i32) -> Vec<LineSeg> {
+    original
+        .line_segs
+        .iter()
+        .map(|line| LineSeg {
+            v_pos: line.v_pos.saturating_add(delta),
+            ..*line
+        })
+        .collect()
+}
+
+/// #590 ruling: carry the source successor offset, without guessing the table's page split.
+/// The main loop adds the next paragraph's top spacing, so remove it from this cursor once.
+fn native_floating_cursor(
+    source: NativeBodyCache<'_>,
+    delta: i32,
+    next_top: i32,
+    line_cursor: i32,
+    space_after: i32,
+) -> i32 {
+    source.successor_v_pos.map_or_else(
+        || line_cursor.saturating_add(space_after),
+        |next| next.saturating_add(delta).saturating_sub(next_top),
+    )
 }
 
 struct NativeBodyWalk<'a, 'b> {
@@ -176,7 +217,9 @@ struct NativeBodyWalk<'a, 'b> {
 
 /// Native edit synthesis with source-aware body preservation. Source metadata is in
 /// section/paragraph order. Return the body indices whose complete source records the writer
-/// should retain. Nested lists keep the existing seam policy, and authored synthesis is unchanged.
+/// should retain. A moved unchanged zero-width floating host instead translates source successor
+/// caches until the next edit (#590); these are not returned as verbatim records. Nested lists
+/// keep the existing seam policy, and authored synthesis is unchanged.
 pub fn synthesize_native_linesegs_seeded(
     doc: &mut Document,
     store: &mut FontStore,
@@ -449,6 +492,9 @@ fn synthesize_linesegs_inner(
         let mut v_pos = 0i32;
         let native_mode = native.is_some() && !use_fragment_flow;
         let mut keep_body_suffix = native_mode;
+        // After an unchanged native floating host moves, carry source successor positions until
+        // the next edit. These translated caches are not whole-record verbatim keeps (#590).
+        let mut floating_delta = None;
         for pi in 0..doc.sections[si].paragraphs.len() {
             // #540 G1 / #584: serialized body spacing is twice its HWPUNIT value on every
             // source path. Nested cache/list rules are independent and stay unchanged.
@@ -476,6 +522,33 @@ fn synthesize_linesegs_inner(
                 }
                 // A cache-less source record still stays cache-less in the output. Measure its
                 // ephemeral flow below, exactly as the existing cache-less-prefix fallback did.
+            }
+            let next_top = snap.sections[si]
+                .paragraphs
+                .get(pi + 1)
+                .and_then(|p| snap.header.para_shapes.get(p.para_shape.0 as usize))
+                .map_or(0, |shape| shape.spacing_top / 2);
+            if let Some(delta) = floating_delta {
+                if let Some(source) = source.filter(|s| s.unchanged)
+                    && let Some(original) = source.original.filter(|p| !p.line_segs.is_empty())
+                {
+                    let current = &mut doc.sections[si].paragraphs[pi];
+                    current.line_segs = translated_native_lines(original, delta);
+                    let last = current.line_segs.last().expect("nonempty source cache");
+                    let line_cursor = last
+                        .v_pos
+                        .saturating_add(last.line_height)
+                        .saturating_add(last.line_spacing);
+                    v_pos = if native_floating_host(source) {
+                        native_floating_cursor(source, delta, next_top, line_cursor, sp_bottom)
+                    } else {
+                        saved_body_cursor(current, sp_bottom).expect("nonempty translated cache")
+                    };
+                    continue;
+                }
+                // A changed/new neighbour uses the pending source offset once, then resumes
+                // ordinary synthesis. Later unchanged records cannot re-enable this run.
+                floating_delta = None;
             }
             let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
             // A seeded paragraph continues the flow a caller measured before it, so an edited
@@ -515,7 +588,14 @@ fn synthesize_linesegs_inner(
                     table_total = table_total.saturating_add(table_height(t));
                 }
             }
-            // Move the whole table to the next page when it does not fit in the current remainder.
+            let floating_source =
+                source.filter(|s| native_mode && !keep_body_suffix && native_floating_host(*s));
+            // Native floating hosts stay in body flow; table pagination does not reset their
+            // anchor or consume the entire table as a body-line advance (#590 saved bytes).
+            if floating_source.is_some() {
+                table_total = 0;
+            }
+            // Other table blocks retain the existing whole-table page-fit fallback.
             if section_anchors.is_none()
                 && table_total > 0
                 && v_pos > 0
@@ -531,13 +611,26 @@ fn synthesize_linesegs_inner(
             }
             let anchor_v = v_pos;
             let src = &snap.sections[si].paragraphs[pi];
-            let mut segs = compute_linesegs(
-                store, &snap, src, body_width, content_h, &mut v_pos, warnings,
-            );
-            // The exact position compute_linesegs advanced to. It is captured before anything
-            // rewrites the cursor, because the committed segs cannot reproduce it: the serialized
-            // line_spacing caps the reading at the base line, so FIXED spacing below it (or 0)
-            // would otherwise move the following paragraph (#509).
+            let mut segs = if let Some(source) = floating_source {
+                let original = source.original.expect("matched floating host");
+                let delta = anchor_v.saturating_sub(original.line_segs[0].v_pos);
+                let lines = translated_native_lines(original, delta);
+                let last = lines.last().expect("nonempty source floating cache");
+                v_pos = last
+                    .v_pos
+                    .saturating_add(last.line_height)
+                    .saturating_add(last.line_spacing);
+                floating_delta = Some(delta);
+                lines
+            } else {
+                compute_linesegs(
+                    store, &snap, src, body_width, content_h, &mut v_pos, warnings,
+                )
+            };
+            // Capture the line cursor before applying table/source-offset flow. Ordinary
+            // compute_linesegs may advance less than its serialized cache can express: FIXED
+            // spacing below the base (or 0) must not gain the cache's base-height floor (#509).
+            // A translated floating host instead uses the stored line advance above (#590).
             let line_cursor = v_pos;
             if anchor.is_some_and(|anchor| anchor.starts_page)
                 && let Some(first) = segs.first_mut()
@@ -549,7 +642,17 @@ fn synthesize_linesegs_inner(
             // following text from overlapping the table (which Hangul flags as corruption), and
             // space-after moves the next paragraph's first line down. `body_cursor` holds both
             // readings, so measuring a kept prefix from its saved record cannot drift from this.
-            v_pos = body_cursor(anchor_v, line_cursor, table_total, sp_bottom);
+            v_pos = if let Some(source) = floating_source {
+                native_floating_cursor(
+                    source,
+                    floating_delta.expect("translated host"),
+                    next_top,
+                    line_cursor,
+                    sp_bottom,
+                )
+            } else {
+                body_cursor(anchor_v, line_cursor, table_total, sp_bottom)
+            };
             doc.sections[si].paragraphs[pi].line_segs = segs;
             if keep_body_suffix {
                 if unchanged {
@@ -1288,6 +1391,7 @@ mod tests {
             Some(NativeBodyCache {
                 original: Some(p),
                 unchanged: true,
+                successor_v_pos: None,
             })
         }
         assert!(native_body_suffix_fits(&original, entry(&following), 3000));
@@ -1351,6 +1455,11 @@ mod tests {
                     .map(|(pi, p)| NativeBodyCache {
                         original: Some(p),
                         unchanged: !(si == 0 && pi == 0),
+                        successor_v_pos: section
+                            .paragraphs
+                            .get(pi + 1)
+                            .and_then(|p| p.line_segs.first())
+                            .map(|line| line.v_pos),
                     })
                     .collect::<Vec<_>>()
             })
