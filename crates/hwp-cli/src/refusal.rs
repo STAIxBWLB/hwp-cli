@@ -1,4 +1,4 @@
-//! Machine-readable refusal object for `edit-report-v1` 1.1 (and 1.2's `document_protected`) and the MCP `hwp_edit` error result
+//! Machine-readable refusal object for `edit-report-v1` 1.1 (plus 1.2's `document_protected` and 1.3's `verify_mismatch`) and the MCP `hwp_edit` error result
 //! (#531). A refusal carries a stable snake_case `code`, the structured inputs behind it in
 //! `values` (user-typed strings live here, never spliced into a code or a path string), and the
 //! human sentence in `message`, which is exactly what stderr prints.
@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// Every code `edit-report-v1` 1.2 may carry in `refusal.code`. Keep this list, the schema
+/// Every code `edit-report-v1` 1.3 may carry in `refusal.code`. Keep this list, the schema
 /// enum and the manual tables in step; `refusal_codes_match_schema` pins the first two.
 pub const REFUSAL_CODES: &[&str] = &[
     RANGE_TAG_SHIFT,
@@ -29,6 +29,7 @@ pub const REFUSAL_CODES: &[&str] = &[
     UNAPPLIED_REQUESTS,
     NO_APPLICABLE_EDITS,
     DOCUMENT_PROTECTED,
+    VERIFY_MISMATCH,
     UNCLASSIFIED,
 ];
 
@@ -48,6 +49,7 @@ pub const PRESERVATION_LOSS: &str = "preservation_loss";
 pub const UNAPPLIED_REQUESTS: &str = "unapplied_requests";
 pub const NO_APPLICABLE_EDITS: &str = "no_applicable_edits";
 pub const DOCUMENT_PROTECTED: &str = "document_protected";
+pub const VERIFY_MISMATCH: &str = "verify_mismatch";
 pub const UNCLASSIFIED: &str = "unclassified";
 
 /// Every `values.protection` class `document_protected` may carry (`edit-report-v1` 1.2, #571).
@@ -92,6 +94,9 @@ pub fn fixed_message(code: &str) -> &'static str {
         UNAPPLIED_REQUESTS => "적용되지 않은 편집 요청이 있습니다",
         NO_APPLICABLE_EDITS => "문서를 바꾼 편집 요청이 없습니다",
         DOCUMENT_PROTECTED => "보호된 문서라 열 수 없어 거부했습니다",
+        VERIFY_MISMATCH => {
+            "저장한 결과를 다시 읽은 문서가 편집 결과와 달라 거부했습니다. 편집 대상이 글상자·머리말·꼬리말처럼 HWP5 출력에 기록되지 않는 영역에 있는지 확인하고, 있다면 본문으로 옮겨 다시 시도하거나 values.counts와 함께 보고하세요"
+        }
         _ => "편집이 거부되었습니다",
     }
 }
@@ -127,6 +132,22 @@ impl Refusal {
     pub fn document_protected(protection: &'static str, prose: impl Into<String>) -> Self {
         debug_assert!(PROTECTION_CLASSES.contains(&protection));
         Self::new(DOCUMENT_PROTECTED, prose).with("protection", protection)
+    }
+
+    /// `--verify` re-read the staged output and its semantic signature differed from the edited
+    /// document (#578). `counts` are the differing count invariants as (name, expected, actual);
+    /// names come from a fixed vocabulary and the values are counts, never document content.
+    pub fn verify_mismatch(
+        counts: impl IntoIterator<Item = (&'static str, usize, usize)>,
+        prose: impl Into<String>,
+    ) -> Self {
+        let counts = counts
+            .into_iter()
+            .map(|(name, expected, actual)| {
+                serde_json::json!({"name": name, "expected": expected, "actual": actual})
+            })
+            .collect::<Vec<_>>();
+        Self::new(VERIFY_MISMATCH, prose).with("counts", Value::Array(counts))
     }
 
     pub fn unclassified(message: impl Into<String>) -> Self {

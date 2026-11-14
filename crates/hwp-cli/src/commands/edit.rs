@@ -613,7 +613,7 @@ impl EditReportV1<'_> {
             .count();
         let failed_count = report.ops.len() - applied_count;
         EditReportV1 {
-            schema_version: "1.2",
+            schema_version: "1.3",
             contract: "hwp-edit-report-v1",
             output: &report.output,
             dry_run: report.dry_run,
@@ -708,6 +708,18 @@ fn classify_run_error(error: &anyhow::Error) -> Refusal {
     }
     if let Some(protection) = protection_class(error) {
         return Refusal::document_protected(protection, format!("{error:#}"));
+    }
+    if let Some(mismatch) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SemanticVerificationMismatch>())
+    {
+        return Refusal::verify_mismatch(
+            mismatch
+                .counts
+                .iter()
+                .map(|(name, expected, actual)| (*name, *expected, *actual)),
+            format!("{error:#}"),
+        );
     }
     Refusal::from_convert_message(format!("{error:#}"))
 }
@@ -5078,6 +5090,20 @@ fn canonicalize_hwp_numberings(document: &mut hwp_model::Document, source_format
     document.header.numberings = records;
 }
 
+/// Clears the instance id (bytes 18..22) of every PARA_HEADER inside a raw-backed control
+/// subtree. The HWP5 writer gives each paragraph it re-emits a non-zero id (Hancom treats 0 as
+/// abnormal, A8), including paragraphs in raw text boxes and headers whose source bytes carry
+/// 0 (#578). `canonicalize_paragraph` already clears the id of every modeled paragraph for the
+/// same reason; this applies it to the raw bytes, and every other raw byte stays compared.
+fn clear_raw_paragraph_instance_ids(records: &mut [hwp_model::OpaqueRecord]) {
+    for record in records {
+        if record.tag == hwp5::record::tag::PARA_HEADER && record.data.len() >= 22 {
+            record.data[18..22].fill(0);
+        }
+        clear_raw_paragraph_instance_ids(&mut record.children);
+    }
+}
+
 fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
     if hwp_convert::field::is_field_ctrl_id(&generic.ctrl_id) {
         // HWP5 exposes CTRL_DATA both as raw and as an extracted extra.
@@ -5097,6 +5123,9 @@ fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
             }
         }
     }
+    // Last: `note_has_redundant_raw_children` above compares the raw bytes with the writer's own
+    // emission, ids included, so the ids may only be cleared once that comparison has run.
+    clear_raw_paragraph_instance_ids(&mut generic.raw_children);
 }
 
 fn canonical_document(
@@ -5896,10 +5925,12 @@ fn semantic_signature_for(
     }
 }
 
-fn semantic_mismatch_summary(expected: &SemanticSignature, actual: &SemanticSignature) -> String {
-    fn digest_hex(digest: &[u8; 32]) -> String {
-        digest.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
+/// The count invariants that differ between two signatures, as (name, expected, actual). Names
+/// are a fixed vocabulary and the values are counts: no document content (#578).
+fn semantic_count_differences(
+    expected: &SemanticSignature,
+    actual: &SemanticSignature,
+) -> Vec<(&'static str, usize, usize)> {
     let fields = [
         ("sections", expected.counts.sections, actual.counts.sections),
         (
@@ -5947,9 +5978,18 @@ fn semantic_mismatch_summary(expected: &SemanticSignature, actual: &SemanticSign
             actual.counts.text_chars,
         ),
     ];
-    let differences = fields
+    fields
         .into_iter()
         .filter(|(_, expected, actual)| expected != actual)
+        .collect()
+}
+
+fn semantic_mismatch_summary(expected: &SemanticSignature, actual: &SemanticSignature) -> String {
+    fn digest_hex(digest: &[u8; 32]) -> String {
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+    let differences = semantic_count_differences(expected, actual)
+        .into_iter()
         .map(|(name, expected, actual)| format!("{name}={expected}->{actual}"))
         .collect::<Vec<_>>();
     let counts = if differences.is_empty() {
@@ -5972,14 +6012,19 @@ fn verify_output(output: &Path, expected: Option<&hwp_model::Document>) -> anyho
 /// Typed phase marker for callers that must classify a mismatch without parsing diagnostics.
 /// Its display preserves the existing bounded, content-free mismatch summary.
 #[derive(Debug)]
-struct SemanticVerificationMismatch(String);
+struct SemanticVerificationMismatch {
+    summary: String,
+    /// The differing count invariants (#578): `(name, expected, actual)`. Empty when only the
+    /// canonical digest differs, which is then the whole report.
+    counts: Vec<(&'static str, usize, usize)>,
+}
 
 impl std::fmt::Display for SemanticVerificationMismatch {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
             "재읽은 문서의 의미 불변식이 편집 결과와 다릅니다 ({})",
-            self.0
+            self.summary
         )
     }
 }
@@ -6111,9 +6156,10 @@ fn verify_output_with_success_log(
         let expected = semantic_signature_for(expected, target);
         let actual = semantic_signature_for(&doc, target);
         if actual != expected {
-            return Err(SemanticVerificationMismatch(semantic_mismatch_summary(
-                &expected, &actual,
-            ))
+            return Err(SemanticVerificationMismatch {
+                summary: semantic_mismatch_summary(&expected, &actual),
+                counts: semantic_count_differences(&expected, &actual),
+            }
             .into());
         }
     }
@@ -7351,6 +7397,119 @@ mod tests {
         });
         let signature = semantic_signature_for(&doc, Some(SemanticTarget::Hwpx));
         assert_eq!(signature.counts.bin_streams, 0);
+    }
+
+    /// A PARA_HEADER payload whose instance id (bytes 18..22) is `id` and whose other bytes are
+    /// non-zero, so a projection that clears more than the id would show.
+    fn para_header_record(
+        id: u32,
+        children: Vec<hwp_model::OpaqueRecord>,
+    ) -> hwp_model::OpaqueRecord {
+        let mut data = vec![0xAB_u8; 24];
+        data[18..22].copy_from_slice(&id.to_le_bytes());
+        hwp_model::OpaqueRecord {
+            tag: hwp5::record::tag::PARA_HEADER,
+            data,
+            children,
+        }
+    }
+
+    fn raw_backed_document(ids: [u32; 2]) -> hwp_model::Document {
+        let mut doc = hwp_convert::from_markdown("본문");
+        let nested = para_header_record(ids[1], Vec::new());
+        let list_header = hwp_model::OpaqueRecord {
+            tag: hwp5::record::tag::LIST_HEADER,
+            data: vec![1, 2, 3],
+            children: vec![nested],
+        };
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+                ctrl_id: *b"gso ",
+                data: vec![7; 8],
+                paragraph_lists: Vec::new(),
+                extras: Vec::new(),
+                raw_children: vec![para_header_record(ids[0], vec![list_header])],
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                container_box: None,
+            }));
+        doc
+    }
+
+    /// #578: the HWP5 writer gives re-emitted paragraphs inside a raw-backed control a non-zero
+    /// instance id where the source had 0. That id is identity, not content: the signatures
+    /// agree. Every other raw byte is still compared.
+    #[test]
+    fn raw_backed_paragraph_instance_ids_are_not_semantic_for_hwp_targets() {
+        let target = Some(SemanticTarget::Hwp);
+        let source = semantic_signature_for(&raw_backed_document([0, 0]), target);
+        let written =
+            semantic_signature_for(&raw_backed_document([0x1000_0013, 0x1000_0014]), target);
+        assert_eq!(source, written, "instance ids alone must not fail --verify");
+
+        let mut changed = raw_backed_document([0, 0]);
+        let hwp_model::Control::Generic(generic) = changed.sections[0].paragraphs[0]
+            .controls
+            .last_mut()
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        generic.raw_children[0].children[0].data[0] ^= 1;
+        assert_ne!(
+            source,
+            semantic_signature_for(&changed, target),
+            "a real change to a raw byte other than the id still differs"
+        );
+        let mut tail = raw_backed_document([0, 0]);
+        let hwp_model::Control::Generic(generic) =
+            tail.sections[0].paragraphs[0].controls.last_mut().unwrap()
+        else {
+            unreachable!()
+        };
+        generic.raw_children[0].data[0] ^= 1;
+        assert_ne!(source, semantic_signature_for(&tail, target));
+    }
+
+    /// #578 AC2: a mismatch that does remain possible is classified `verify_mismatch` with the
+    /// differing count invariants, never `unclassified`, and carries no document content.
+    #[test]
+    fn semantic_mismatch_is_classified_with_its_differing_invariants() {
+        let secret = "PRIVATE-CONTENT-THAT-MUST-NOT-LEAK";
+        let expected = hwp_convert::from_markdown(secret);
+        let mut actual = expected.clone();
+        actual.sections.push(hwp_model::Section::default());
+        let (left, right) = (semantic_signature(&expected), semantic_signature(&actual));
+        let error: anyhow::Error = SemanticVerificationMismatch {
+            summary: semantic_mismatch_summary(&left, &right),
+            counts: semantic_count_differences(&left, &right),
+        }
+        .into();
+        let refusal = classify_run_error(&error.context("snapshot 기반 출력 검증 실패"));
+        assert_eq!(refusal.code, refusal::VERIFY_MISMATCH);
+        assert_eq!(
+            refusal.values["counts"],
+            serde_json::json!([{"name": "sections", "expected": 1, "actual": 2}])
+        );
+        let serialized = serde_json::to_string(&refusal).unwrap();
+        assert!(!serialized.contains(secret), "{serialized}");
+
+        let digest_only: anyhow::Error = SemanticVerificationMismatch {
+            summary: "x".into(),
+            counts: Vec::new(),
+        }
+        .into();
+        let refusal = classify_run_error(&digest_only);
+        assert_eq!(refusal.code, refusal::VERIFY_MISMATCH);
+        assert_eq!(refusal.values["counts"], serde_json::json!([]));
+        assert_eq!(
+            classify_run_error(&anyhow::anyhow!("something else")).code,
+            refusal::UNCLASSIFIED
+        );
     }
 
     #[test]

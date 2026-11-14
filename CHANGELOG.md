@@ -24,9 +24,21 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   covers an absent and a wrong password, for HWP5 and HWPX. The code is read from the typed open
   error, not the message. Existing codes and fields are unchanged, so a consumer that accepts
   `"1.1"` must also accept `"1.2"` ([#571](https://github.com/STAIxBWLB/agent-hwp/issues/571)).
+- `edit-report-v1` 1.3: a `--verify` run whose re-read output differs from the edited document
+  now reports `verify_mismatch` instead of `unclassified`. `values.counts` lists the differing
+  count invariants (`text_chars`, `paragraphs`, and so on) as `{name, expected, actual}`; an empty
+  list means only the canonical digest differs. It names counts only, never document content.
+  Existing codes and fields are unchanged, so a consumer that accepts `"1.2"` must also accept
+  `"1.3"` ([#578](https://github.com/STAIxBWLB/agent-hwp/issues/578)).
 
 **Fixed**
 
+- `edit --verify` no longer refuses a correct `insert_blocks` (or any body edit that re-emits
+  paragraphs) on HWP5 documents with raw-backed controls such as text boxes and headers. The
+  writer gives each paragraph it re-emits a non-zero PARA_HEADER instance id, including those
+  inside such controls whose source bytes carry 0, and the verifier compared those raw bytes. The
+  instance id is now treated as identity, not content, there too. Every other raw byte is still
+  compared ([#578](https://github.com/STAIxBWLB/agent-hwp/issues/578)).
 - Authored-document body line-cache synthesis reads paragraph spacing at half the serialized
   value and retains space-before at plain-body section starts and explicit breaks, matching six
   Hangul 12.30.0 saved G1 positions (#540, #570). Floating-section anchor synthesis retains the same
