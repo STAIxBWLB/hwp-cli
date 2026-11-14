@@ -371,6 +371,8 @@ pub(crate) struct RawSeg {
     /// Run cuts recorded at a control precede the next Text-driven emphasis transition and
     /// follow deleted markers. Text-derived cuts retain their existing whitespace/marker
     /// affinity, which need not attribute typed spaces or generated delimiters to one owner.
+    /// This affinity belongs to the recording buffer; absorption into a parent resolves and
+    /// clears it so a later parent edit cannot reinterpret the child's cuts.
     pub start_follows_deletions: bool,
     pub end_follows_deletions: bool,
 }
@@ -2633,5 +2635,209 @@ mod run_control_tests {
     #[test]
     fn visible_text_in_a_merged_html_cell_keeps_its_source_run() {
         nested_ownership_case("html");
+    }
+    /// Child symbols: NB, TAB, FW, ordinary x, ordinary typed space.
+    /// Expected visible positions follow source emission order, independently
+    /// of every published range, path and control record.
+    fn assert_absorbed_child_ownership(prefix: char, prefix_shape: u16, symbols: &[usize]) {
+        let mut child_chars = Vec::new();
+        let mut child_visible_sources = Vec::new();
+        let mut child_length = 0u32;
+        for symbol in symbols {
+            let character = match symbol {
+                0 => HwpChar::CharCtrl(ctrl_char::NB_SPACE),
+                1 => HwpChar::InlineCtrl {
+                    code: ctrl_char::TAB,
+                    payload: vec![0; 12],
+                },
+                2 => HwpChar::CharCtrl(ctrl_char::FW_SPACE),
+                3 => {
+                    child_visible_sources.push(child_length);
+                    HwpChar::Text('x')
+                }
+                4 => HwpChar::Text(' '),
+                _ => unreachable!(),
+            };
+            if *symbol == 1 {
+                assert_eq!(
+                    character.wchar_width(),
+                    8,
+                    "child TAB source coordinates use eight WCHAR units"
+                );
+            }
+            child_length += character.wchar_width();
+            child_chars.push(character);
+        }
+        let child = Paragraph {
+            chars: child_chars,
+            char_shape_runs: vec![(0, CharShapeId(0))],
+            ..Default::default()
+        };
+        let anchor = HwpChar::ExtCtrl {
+            code: ctrl_char::OBJECT,
+            ctrl_id: *b"gso ",
+            payload: Vec::new(),
+            ctrl_index: Some(0),
+        };
+        assert_eq!(
+            anchor.wchar_width(),
+            8,
+            "the parent's child anchor occupies eight source units"
+        );
+        let parent = Paragraph {
+            chars: vec![HwpChar::Text(prefix), anchor, HwpChar::Text('x')],
+            char_shape_runs: vec![(0, CharShapeId(prefix_shape)), (1, CharShapeId(0))],
+            controls: vec![Control::Generic(GenericControl {
+                ctrl_id: *b"gso ",
+                data: Vec::new(),
+                paragraph_lists: vec![hwp_model::ParagraphList {
+                    header_data: Vec::new(),
+                    paragraphs: vec![child],
+                }],
+                extras: Vec::new(),
+                raw_children: Vec::new(),
+                gso_shapes: Vec::new(),
+                equation: None,
+                column_def: None,
+                caption: None,
+                hwpx_raw_xml: None,
+                container_box: None,
+            })],
+            ..Default::default()
+        };
+        let (md, segments) = emit(&doc_of(vec![parent]));
+        let visible: Vec<_> = md
+            .chars()
+            .enumerate()
+            .filter_map(|(at, character)| (character == 'x').then_some(at))
+            .collect();
+        // Each item is (paragraph path, exact run path, visible source index, source span).
+        let mut expected = Vec::new();
+        let suffix_run = usize::from(prefix_shape != 0);
+        if prefix == 'x' {
+            expected.push((
+                vec![0],
+                vec![0, 0],
+                0u32,
+                (0u32, if suffix_run == 0 { 10 } else { 1 }),
+            ));
+        }
+        for source in child_visible_sources {
+            expected.push((vec![0, 0, 0], vec![0, 0, 0, 0], source, (0, child_length)));
+        }
+        expected.push((
+            vec![0],
+            vec![0, suffix_run],
+            9,
+            (if suffix_run == 0 { 0 } else { 1 }, 10),
+        ));
+        assert_eq!(
+            visible.len(),
+            expected.len(),
+            "all parent/child visible Text must survive: {prefix:?} shape={prefix_shape} child={symbols:?} {md:?}"
+        );
+        for (at, (paragraph, expected_run, source, expected_span)) in
+            visible.into_iter().zip(expected)
+        {
+            let owners: Vec<_> = segments
+                .iter()
+                .filter(|run| {
+                    run.kind == SegmentKind::Run
+                        && run.path.section == 0
+                        && run.path.indices.len() == paragraph.len() + 1
+                        && run.path.indices.starts_with(&paragraph)
+                        && run.start <= at
+                        && at < run.end
+                })
+                .collect();
+            assert_eq!(
+                owners.len(),
+                1,
+                "visible Text needs exactly one owner in its own paragraph: {prefix:?} shape={prefix_shape} child={symbols:?} source={source} at={at} {paragraph:?} {segments:?} {md:?}"
+            );
+            let owner = owners[0];
+            assert_eq!(
+                owner.path.indices, expected_run,
+                "visible parent/child Text must keep its source path: {prefix:?} shape={prefix_shape} child={symbols:?} at={at} {md:?}"
+            );
+            let span = owner.source_chars.expect("visible owner source range");
+            assert_eq!(
+                (span.start, span.end),
+                expected_span,
+                "visible owner source span: {owner:?}"
+            );
+            assert!(
+                span.start <= source && source < span.end,
+                "visible owner must contain its exact source index"
+            );
+            if paragraph == [0] {
+                // Ancestor runs may enclose child text, but a descendant must never
+                // claim a parent's visible character after rebasing into that parent.
+                assert!(
+                    !segments.iter().any(|run| {
+                        run.kind == SegmentKind::Run
+                            && run.path.indices.starts_with(&[0, 0, 0])
+                            && run.start <= at
+                            && at < run.end
+                    }),
+                    "child run must not cover parent visible Text: {prefix:?} shape={prefix_shape} child={symbols:?} source={source} at={at} {segments:?} {md:?}"
+                );
+            }
+        }
+        let mut siblings = std::collections::BTreeMap::new();
+        for run in segments.iter().filter(|run| run.kind == SegmentKind::Run) {
+            let mut paragraph = run.path.indices.clone();
+            paragraph.pop();
+            siblings
+                .entry((run.path.section, paragraph))
+                .or_insert_with(Vec::new)
+                .push(run);
+        }
+        for runs in siblings.values_mut() {
+            runs.sort_by_key(|run| {
+                let source = run.source_chars.expect("sibling source range");
+                (source.start, source.end)
+            });
+            for pair in runs.windows(2) {
+                assert!(
+                    pair[0].end <= pair[1].start,
+                    "siblings must stay disjoint inside each parent path: {prefix:?} shape={prefix_shape} child={symbols:?} {pair:?} {md:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_absorbed_nb_space_run_does_not_claim_parent_text() {
+        assert_absorbed_child_ownership(' ', 1, &[0]);
+    }
+
+    #[test]
+    fn an_absorbed_tab_run_does_not_claim_parent_text() {
+        assert_absorbed_child_ownership(' ', 1, &[1]);
+    }
+
+    #[test]
+    fn absorbed_child_affinity_stays_inside_its_recording_buffer() {
+        let mut count = 0usize;
+        for prefix in ['x', ' '] {
+            for shape in [0, 1] {
+                for length in 0..=2usize {
+                    for case in 0..5usize.pow(length as u32) {
+                        let mut value = case;
+                        let symbols: Vec<_> = (0..length)
+                            .map(|_| {
+                                let symbol = value % 5;
+                                value /= 5;
+                                symbol
+                            })
+                            .collect();
+                        assert_absorbed_child_ownership(prefix, shape, &symbols);
+                        count += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(count, 124);
     }
 }
