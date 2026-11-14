@@ -1118,3 +1118,87 @@ fn g1_zero_space_before_still_starts_at_zero_in_both_paths() {
         );
     }
 }
+
+/// #590 measured body positions, with an explicit line break replacing font-dependent wrapping.
+#[test]
+fn native_growing_edit_keeps_floating_table_host_at_the_body_cursor() {
+    use hwp_model::LineSeg;
+    use hwp_render::lineseg::{BodyFlow, NativeBodyCache, synthesize_native_linesegs_seeded};
+
+    let mut source =
+        hwp_convert::from_markdown("Edited\n\nBefore\n\nHost\n\nAfter\n\nTail one\n\nTail two\n");
+    source.meta.source_format = "hwp5".into();
+    for shape in &mut source.header.char_shapes {
+        shape.base_size = 1000;
+    }
+    for shape in &mut source.header.para_shapes {
+        shape.spacing_top = 0;
+        shape.spacing_bottom = 600;
+        shape.line_spacing_type = 0;
+        shape.line_spacing = 160;
+        shape.line_spacing_old = 160;
+    }
+    let fill = add_fill(&mut source, 0x0012_3456);
+    let cell = paragraph(&source);
+    source.sections[0].paragraphs[2]
+        .controls
+        .push(Control::Table(table(vec![cell], fill, 150_000)));
+    for (index, (para, y)) in source.sections[0]
+        .paragraphs
+        .iter_mut()
+        .zip([0, 1900, 3800, 4412, 6312, 8212])
+        .enumerate()
+    {
+        para.header.instance_id = index as u32 + 1;
+        para.line_segs = vec![LineSeg {
+            text_start: 0,
+            v_pos: y,
+            line_height: 1000,
+            text_height: 1000,
+            baseline_gap: 850,
+            line_spacing: 600,
+            col_start: 0,
+            seg_width: if index == 2 { 0 } else { 42520 },
+            flags: 0x0006_0000,
+        }];
+    }
+    let mut edited = source.clone();
+    assert_eq!(
+        hwp_convert::replace_text(&mut edited, "Edited", "Edited\nAdded", false).unwrap(),
+        1
+    );
+    let matching = vec![
+        source.sections[0]
+            .paragraphs
+            .iter()
+            .enumerate()
+            .map(|(i, para)| NativeBodyCache {
+                original: Some(para),
+                unchanged: i != 0,
+            })
+            .collect(),
+    ];
+    let mut fonts = FontStore::new_isolated();
+    let mut issues = RenderIssueAccumulator::new();
+    synthesize_native_linesegs_seeded(
+        &mut edited,
+        &mut fonts,
+        &mut issues,
+        &BodyFlow::default(),
+        &matching,
+    );
+    let paras = &edited.sections[0].paragraphs;
+    assert_eq!(paras[0].line_segs.len(), 2, "height-changing premise");
+    assert_eq!(
+        paras[1].line_segs[0].v_pos, 3500,
+        "preceding body flow premise"
+    );
+    assert_eq!(
+        paras[2].line_segs[0].v_pos, 5400,
+        "floating host continues from the prior body paragraph"
+    );
+    assert_eq!(
+        paras[2].line_segs[0].seg_width, 0,
+        "saved floating host remains a zero-width anchor"
+    );
+}
