@@ -1220,11 +1220,11 @@ fn write_hwp_impl(
     let mut report = hwp_model::WriteReport::new();
     let owned;
     let doc = if source_has_edits {
-        // Native HWP edits keep every unchanged paragraph as an immutable source
-        // subtree. Missing line layout therefore identifies changed/new paragraphs;
-        // synthesize them before stream materialization. The source-aware writer
-        // replaces the renderer's output for every unchanged paragraph with the
-        // original record tree, so originally cache-less paragraphs stay untouched.
+        // Native HWP edits retain source body records through height-neutral runs. After the
+        // first height-changing/new/moved body paragraph, the rest of that section reflows.
+        // Nested lists retain their own seam and local-context validity rules. The writer
+        // restores complete source records only for the body indices the walk reports kept;
+        // that includes cache-less source paragraphs in retained regions.
         let mut d = doc.clone();
         let mut store = if isolated_font_files.is_some() {
             hwp_render::FontStore::new_isolated()
@@ -1410,9 +1410,9 @@ enum SuffixCache {
     Keep,
 }
 
-/// Put the saved records the output keeps back into the document, before and after the renderer's
-/// synthesis. This limits new PARA_LINE_SEG records to what the edit moved, including paragraphs
-/// nested in table cells and generic controls.
+/// Stage/restore the existing body prefix and valid nested records around synthesis. The native
+/// body walk additionally identifies retained height-neutral body suffix records; nested lists
+/// keep their seam policy and local parent-layout checks.
 fn restore_unchanged_native_paragraphs(
     original: &hwp_model::Document,
     edited: &hwp_model::Document,
