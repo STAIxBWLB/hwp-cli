@@ -231,6 +231,9 @@ fn same_native_control_extents(original: &[Control], current: &[Control]) -> boo
             (Control::SectionDef(a), Control::SectionDef(b)) => a == b,
             (Control::Table(a), Control::Table(b)) => {
                 a.common_data == b.common_data
+                    && a.placement == b.placement
+                    && a.table_tail == b.table_tail
+                    && a.extras == b.extras
                     && a.attr == b.attr
                     && a.cell_spacing == b.cell_spacing
                     && table_height(a) == table_height(b)
@@ -241,12 +244,15 @@ fn same_native_control_extents(original: &[Control], current: &[Control]) -> boo
                             && a.margins == b.margins
                             && a.list_attr == b.list_attr
                             && a.header_tail == b.header_tail
+                            && a.extras == b.extras
                             && same_native_list_caches(&a.paragraphs, &b.paragraphs)
                     })
                     && same_native_caption(a.caption.as_ref(), b.caption.as_ref())
             }
             (Control::Picture(a), Control::Picture(b)) => {
                 a.common_data == b.common_data
+                    && a.extras == b.extras
+                    && a.effects_raw == b.effects_raw
                     && a.width == b.width
                     && a.height == b.height
                     && a.treat_as_char == b.treat_as_char
@@ -257,6 +263,8 @@ fn same_native_control_extents(original: &[Control], current: &[Control]) -> boo
             (Control::Generic(a), Control::Generic(b)) => {
                 a.ctrl_id == b.ctrl_id
                     && a.data == b.data
+                    && a.raw_children == b.raw_children
+                    && a.extras == b.extras
                     && a.equation == b.equation
                     && a.container_box == b.container_box
                     && a.gso_shapes.len() == b.gso_shapes.len()
@@ -1191,7 +1199,7 @@ mod tests {
         taller.line_segs[0].line_height += 1;
         assert!(!native_body_height_neutral(&original, &taller));
         let mut count = shifted.clone();
-        count.line_segs.push(count.line_segs[0].clone());
+        count.line_segs.push(count.line_segs[0]);
         assert!(
             !native_body_height_neutral(&original, &count),
             "same overall extent cannot hide changed line count"
@@ -1207,6 +1215,15 @@ mod tests {
         assert!(
             !native_body_height_neutral(&host, &changed),
             "changed nested cache disqualifies even equal table height"
+        );
+        let mut opaque = host.clone();
+        let Control::Table(table) = &mut opaque.controls[0] else {
+            unreachable!()
+        };
+        table.table_tail.push(1);
+        assert!(
+            !native_body_height_neutral(&host, &opaque),
+            "opaque object changes cannot establish equal layout context"
         );
     }
 
