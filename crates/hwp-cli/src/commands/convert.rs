@@ -2630,6 +2630,64 @@ mod tests {
         assert_native_body_run_order(false);
     }
 
+    /// G1's stored post-break top is raw/2 while the existing native synthesizer still adds
+    /// raw top. Equal line extent alone must not place a retained neighbour inside that line.
+    #[test]
+    fn native_neutral_post_break_spacing_keeps_the_successor_outside_the_changed_line() {
+        let dir =
+            std::env::temp_dir().join(format!("ahwp-g3-break-overlap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_, mut seed) = native_suffix_source(&dir);
+        let source = dir.join("break-source.hwp");
+        let output = dir.join("break-output.hwp");
+        let mut shape =
+            seed.header.para_shapes[seed.sections[0].paragraphs[3].para_shape.0 as usize].clone();
+        shape.spacing_top = 2400;
+        shape.spacing_bottom = 0;
+        seed.sections[0].paragraphs[3].para_shape =
+            hwp_model::ParaShapeId(seed.header.para_shapes.len() as u16);
+        seed.header.para_shapes.push(shape);
+        seed.sections[0].paragraphs[3].header.break_type |= 4;
+        seed.sections[0].paragraphs[3].line_segs[0].v_pos = 1200;
+        seed.sections[0].paragraphs[4].line_segs[0].v_pos = 2800;
+        hwp5::write_document(
+            &seed,
+            &source,
+            &hwp5::WriteOptions {
+                preserve_linesegs: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = hwp5::read_document(&source).unwrap().document;
+        let mut edited = original.clone();
+        edited.sections[0].paragraphs[3]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[3].line_segs.clear();
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        let changed = current.sections[0].paragraphs[3].line_segs.last().unwrap();
+        let following = current.sections[0].paragraphs[4].line_segs.first().unwrap();
+        assert!(
+            following.v_pos >= changed.v_pos + changed.line_height,
+            "G1 native top mismatch must not overlap retained suffix: changed top={}, bottom={}, following={}",
+            changed.v_pos,
+            changed.v_pos + changed.line_height,
+            following.v_pos
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Snapshot with three saved caches, an edit in the middle paragraph, and a fully synthesized
     /// copy whose every cache is the placeholder 999.
     fn restore_fixture() -> (

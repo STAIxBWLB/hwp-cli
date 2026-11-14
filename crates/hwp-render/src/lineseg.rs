@@ -244,7 +244,6 @@ fn same_native_control_extents(original: &[Control], current: &[Control]) -> boo
                             && a.margins == b.margins
                             && a.list_attr == b.list_attr
                             && a.header_tail == b.header_tail
-                            && a.extras == b.extras
                             && same_native_list_caches(&a.paragraphs, &b.paragraphs)
                     })
                     && same_native_caption(a.caption.as_ref(), b.caption.as_ref())
@@ -288,6 +287,7 @@ fn same_native_control_extents(original: &[Control], current: &[Control]) -> boo
 
 fn native_body_height_neutral(original: &Paragraph, current: &Paragraph) -> bool {
     !original.line_segs.is_empty()
+        && (original.header.break_type & 0x0c) == (current.header.break_type & 0x0c)
         && original.line_segs.len() == current.line_segs.len()
         && body_cache_extent(&original.line_segs) == body_cache_extent(&current.line_segs)
         // PARA_LINE_SEG page/column-start bits, as used by layout.rs (#540 G3).
@@ -1193,6 +1193,14 @@ mod tests {
             assert!(
                 !native_body_height_neutral(&original, &boundary),
                 "page/column boundary changes disqualify"
+            );
+        }
+        for bit in [0x04, 0x08] {
+            let mut boundary = shifted.clone();
+            boundary.header.break_type ^= bit;
+            assert!(
+                !native_body_height_neutral(&original, &boundary),
+                "header page/column boundary changes disqualify"
             );
         }
         let mut taller = shifted.clone();
