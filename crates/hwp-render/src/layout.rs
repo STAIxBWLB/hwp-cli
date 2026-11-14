@@ -1262,7 +1262,7 @@ fn layout_document_pages(
             }
             let tabs = crate::tab::tab_stops(doc, para);
             // #540 G1: section-start space-before is retained. `para_geometry` already
-            // converts serialized spacing at two HWPUNIT per stored unit for body anchors.
+            // halves serialized spacing to HWPUNIT for body anchors.
             let geom = para_geometry(doc, para);
             let links = crate::shape::hyperlink_ranges(para);
             // Do not consume a list counter for a paragraph that has no visible line at all.

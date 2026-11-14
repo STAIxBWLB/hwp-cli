@@ -571,9 +571,8 @@ fn first_line_pushed_after_floating_table_uses_resolved_page_anchor() {
 }
 
 #[test]
-fn explicit_break_keeps_prior_space_before_in_both_section_paths() {
-    // Keep the prior positive space-before on each path. Their pre-existing
-    // raw-vs-half-unit discrepancy remains tracked by #415.
+fn explicit_break_uses_half_unit_space_before_in_both_section_paths() {
+    // #540 G1: both paths retain half the serialized space-before.
     for floating in [false, true] {
         let mut source = hwp_convert::from_markdown("Anchor\n\nHeading\n");
         let mut heading_shape = source.header.para_shapes
@@ -604,15 +603,14 @@ fn explicit_break_keeps_prior_space_before_in_both_section_paths() {
         );
         synthesize(&mut source);
         assert_eq!(
-            source.sections[0].paragraphs[1].line_segs[0].v_pos,
-            if floating { 1200 } else { 2400 },
-            "explicit break resets the cursor but keeps the path's prior space-before (floating={floating})"
+            source.sections[0].paragraphs[1].line_segs[0].v_pos, 1200,
+            "explicit break resets the cursor and retains half-unit space-before (floating={floating})"
         );
     }
 }
 
 #[test]
-fn floating_section_first_paragraph_omits_only_its_space_before() {
+fn floating_section_first_paragraph_retains_half_unit_space_before() {
     let mut source = hwp_convert::from_markdown("First\n\nFollowing\n");
     let mut first_shape =
         source.header.para_shapes[source.sections[0].paragraphs[0].para_shape.0 as usize].clone();
@@ -631,8 +629,8 @@ fn floating_section_first_paragraph_omits_only_its_space_before() {
         hwp_render::lineseg::synthesize_linesegs(&mut cached, &mut store, &mut issues);
         for section in &cached.sections {
             assert_eq!(
-                section.paragraphs[0].line_segs[0].v_pos, 0,
-                "B5: every section's first body paragraph starts at zero despite space-before"
+                section.paragraphs[0].line_segs[0].v_pos, 1200,
+                "G1: every section start retains half the serialized space-before"
             );
         }
     }
@@ -1104,4 +1102,18 @@ fn g1_native_edit_synthesis_keeps_its_existing_spacing_arithmetic() {
         [0, 2600, 8200, 15800, 2400, 4000],
         "#570 changes authored-document synthesis; the native edit/seed path stays unchanged"
     );
+}
+
+#[test]
+fn g1_zero_space_before_still_starts_at_zero_in_both_paths() {
+    for floating in [false, true] {
+        let mut doc = g1_spacing_document(floating);
+        let first_shape = doc.sections[0].paragraphs[0].para_shape.0 as usize;
+        doc.header.para_shapes[first_shape].spacing_top = 0;
+        synthesize(&mut doc);
+        assert_eq!(
+            doc.sections[0].paragraphs[0].line_segs[0].v_pos, 0,
+            "B5 zero-top control"
+        );
+    }
 }
