@@ -10,6 +10,31 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+## [2.1.0]
+
+**Compatibility**
+
+- `edit-report-v1` reports now carry `schema_version` `1.4` (2.0.0 wrote `1.1`). 1.2 adds the
+  `document_protected` refusal code, 1.3 the `verify_mismatch` code and 1.4 the optional
+  `preservation` list and `values.missing_element`. Every earlier field and code is unchanged; a
+  consumer that accepts only `"1.1"` must also accept `"1.2"` to `"1.4"`, and one that branches on
+  `unclassified` now sees `document_protected` or `verify_mismatch` for those runs
+  ([#571](https://github.com/STAIxBWLB/agent-hwp/issues/571),
+  [#578](https://github.com/STAIxBWLB/agent-hwp/issues/578),
+  [#583](https://github.com/STAIxBWLB/agent-hwp/issues/583)).
+- An `edit` from an HWP5 input to `.hwpx` now reports the losses `convert` reports for that pair
+  (stderr, MCP `preservation`, the report's `preservation` list), where 2.0.0 published them
+  silently. Whether it publishes is unchanged: the HWPX writer's own events still refuse it, and
+  `--verify` in that direction now accepts faithful output instead of refusing every run
+  ([#583](https://github.com/STAIxBWLB/agent-hwp/issues/583)).
+- `keep_together` edit ops that 2.0.0 refused as unsupported now apply the supplied flags
+  ([#568](https://github.com/STAIxBWLB/agent-hwp/issues/568)).
+- Synthesized line caches change bytes for the same input: authored documents and native HWP5
+  edits read paragraph spacing at half the serialized value, and native edits keep unchanged
+  suffix paragraph records after height-neutral changes. Text and structure are unchanged
+  ([#570](https://github.com/STAIxBWLB/agent-hwp/issues/570),
+  [#584](https://github.com/STAIxBWLB/agent-hwp/issues/584), #540 G3).
+
 **Added**
 
 - `keep_together` now applies supplied `keep_with_next`, `keep_lines` and
