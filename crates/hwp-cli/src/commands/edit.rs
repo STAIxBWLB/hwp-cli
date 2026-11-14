@@ -5105,7 +5105,6 @@ fn clear_raw_paragraph_instance_ids(records: &mut [hwp_model::OpaqueRecord]) {
 }
 
 fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
-    clear_raw_paragraph_instance_ids(&mut generic.raw_children);
     if hwp_convert::field::is_field_ctrl_id(&generic.ctrl_id) {
         // HWP5 exposes CTRL_DATA both as raw and as an extracted extra.
         // Keep the raw bytes and any extra that is not an exact duplicate.
@@ -5124,6 +5123,9 @@ fn canonicalize_hwp_generic(generic: &mut hwp_model::GenericControl) {
             }
         }
     }
+    // Last: `note_has_redundant_raw_children` above compares the raw bytes with the writer's own
+    // emission, ids included, so the ids may only be cleared once that comparison has run.
+    clear_raw_paragraph_instance_ids(&mut generic.raw_children);
 }
 
 fn canonical_document(
