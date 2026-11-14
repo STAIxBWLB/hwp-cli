@@ -335,8 +335,11 @@ PDF-parity 계약을 따른다. 자동 렌더링으로 사람이 수행한 `pass
 
 일치하는 `hancom-verification-receipt-v1`이 있으면 인증 정책에 `receipt`, `require_pass: true`,
 `require_artifact_sha256: true`를 담은 `document.hancom_open`을 추가하고 정확한 산출물을 새
-리포트 디렉터리로 인증할 수 있다. 참조 실행에는 한컴 열기·내보내기 증거가 **없으며**
-그 승인은 미검증 상태다.
+리포트 디렉터리로 인증할 수 있다. 기록된 참조 실행에는 한컴 열기·내보내기 증거가 **없다**.
+릴리스된 ahwp 2.0.0으로 별도 재실행한 결과에는 에이전트가 수행한(사람이 수행하지 않은) 영수증이
+하나 있다. macOS의 한컴오피스 한글 12.30.0이 그 `final.hwpx`/`final.hwp`를 열고 PDF로 내보냈다
+(능력 기록의 `hancom_open_export_receipts`). 이 영수증은 해당 2.0.0 해시에만 적용되며 certify,
+픽셀 동일성, HWP 넘침 경고는 여전히 미검증이다.
 
 ## 네이티브 마이그레이션 대조표
 

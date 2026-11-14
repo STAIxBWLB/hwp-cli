@@ -10,6 +10,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+**Docs**
+
+- The original-form capability record gains `hancom_open_export_receipts` with one agent-performed
+  (not person-run) Hancom Office Hangul 12.30.0 open/export receipt for a released ahwp 2.0.0 rerun,
+  bound to that rerun's artifact and PDF hashes. The recorded reference run stays `not_run`; the
+  editing recipes say so in both languages. Part of #540.
+
 ## [2.0.0]
 
 **Breaking**

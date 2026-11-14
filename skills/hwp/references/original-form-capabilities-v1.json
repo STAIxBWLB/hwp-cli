@@ -62,7 +62,7 @@
     "Owner-authored synthetic P0 variant only; no private or genuine raw-Hancom corpus is a reference input.",
     "source_sha256 in an original_form plan is declared/echoed, not checked against a separately loaded source. Retain extraction and binding receipts.",
     "Original-form certification checks expected values and table row/column dimensions, not a full source-to-output width/border/style/merge projection.",
-    "No person-run Hancom open/export, universal native-table PDF, portable golden pages, or pixel-parity evidence.",
+    "No person-run Hancom open/export, universal native-table PDF, portable golden pages, or pixel-parity evidence. The recorded reference_run artifacts have no Hancom evidence; hancom_open_export_receipts holds one agent-performed Hancom open/export receipt bound only to a separate rerun with released ahwp 2.0.0 and its own artifact hashes.",
     "HWP retains one table_cell_content_overflow warning despite complete expected-text coverage and a passing selected policy; visual/native review remains separate.",
     "This reference build was a pre-release main build that reported package version 1.4.0; version text alone does not establish feature availability. The workflow first ships in v1.5.0.",
     "Self-contained JSON re-entry was compared semantically on this fixture, not asserted byte-identical to the original native file or universal opaque-record preservation."
@@ -1923,5 +1923,39 @@
       "output_sha256": "2f94068771a348909f2dd431f6ca7423e43c0dd05929cf819a53ad128415f39a"
     }
   },
+  "hancom_open_export_receipts": [
+    {
+      "id": "hancom-open-export-2026-11-14",
+      "source": "agent-hwp #540 G5 comment, 2026-11-14",
+      "performer": "agent via desktop computer use at the owner's instruction; not person-run",
+      "applies_to": "released ahwp 2.0.0 rerun artifacts below only; not the reference_run (pre-release a2397e05, reported 1.4.0) hashes",
+      "product": {
+        "version": "2.0.0",
+        "build_role": "released_binary",
+        "install": "Homebrew"
+      },
+      "rerun_method": "The recorded reference artifacts are not reproducible byte for byte with a released binary (compose gives a different source.hwpx). The recorded binding plan was rebased onto the fresh prepared source: 23/23 occurrence ids remapped one to one with the hwp-convert/src/form/binding.rs formula, values unchanged; indent-repeat paragraph ids refreshed by positional suffix (4/4).",
+      "hancom": {
+        "product": "Hancom Office Hangul",
+        "version": "12.30.0 (6544)",
+        "os": "macOS 27.2.1 (26B131)"
+      },
+      "artifacts": {
+        "prepared.hwpx": "66be73e62d5c366162e0e4ccf9075bc6629fe6217ef17ab50c61346054c32158",
+        "bound.hwpx": "a2e63483a24aecb34d3b394f695b50c260253a18dcc593e666216153a65a1400",
+        "final.hwpx": "84a928db57a4386d4a4f607881541d5481684ce6fdd3a19006fe1705aba9654a",
+        "final.hwp": "7a439ec49b2a370909c309a41b11d5c3383d41da57ac28fb6e871379506ec627",
+        "hancom_pdf_of_final.hwpx": "1913aefbb0133271573ac5562e4bfee4b988294813ef86847c1fa271f6e4d053",
+        "hancom_pdf_of_final.hwp": "4aaad586e4cc1fa28a26d0960afd2a93853d3cde1c1826f65c93bb5ede369ac6"
+      },
+      "result": "pass",
+      "observed": "Both files opened with no error or repair dialog, 6 pages each. Save as PDF exported 6 pages each; pages 1-6 begin with the form starts APPLICATION, DEVELOPMENT, PROFILE_1..4 in order, and the bound values appear.",
+      "not_verified": [
+        "certify: the pinned NanumGothic fonts are absent on the Hancom host.",
+        "Visual or pixel parity against ahwp render.",
+        "The HWP table_cell_content_overflow warning was not checked visually in Hancom."
+      ]
+    }
+  ],
   "reference_input_use": "These are complete source-bound inputs for the recorded synthetic build only. Compare fresh identities, review every occurrence/copy, and author a new plan for any different source. Copy the selected JSON values into named local files; do not edit native IR to imitate this workflow."
 }

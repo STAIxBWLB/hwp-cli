@@ -349,7 +349,11 @@ being claimed; do not fill in a person-run `pass` from automated rendering.
 When a matching `hancom-verification-receipt-v1` is available, the certification policy can add
 `document.hancom_open` with `receipt`, `require_pass: true`, and
 `require_artifact_sha256: true`, then certify the exact artifact into a fresh report directory.
-The reference run has **no** Hancom open/export evidence; that sign-off remains unverified.
+The recorded reference run has **no** Hancom open/export evidence. A separate rerun with released
+ahwp 2.0.0 has one agent-performed (not person-run) receipt: Hancom Office Hangul 12.30.0 on macOS
+opened and exported its `final.hwpx`/`final.hwp` (`hancom_open_export_receipts` in the capability
+record). It covers only those 2.0.0 hashes, and certify, pixel parity and the HWP overflow warning
+remain unverified.
 
 ## Native migration crosswalk
 
