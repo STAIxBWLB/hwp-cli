@@ -619,7 +619,7 @@ impl EditReportV1<'_> {
             .count();
         let failed_count = report.ops.len() - applied_count;
         EditReportV1 {
-            schema_version: "1.4",
+            schema_version: "1.5",
             contract: "hwp-edit-report-v1",
             output: &report.output,
             dry_run: report.dry_run,
@@ -675,6 +675,93 @@ fn refusing_cross_format_events(
         }
     }
     refusing
+}
+
+/// #577: an edit changed paragraphs the HWP5 writer will not write.
+#[derive(Debug)]
+struct RawBackedEditRefusal {
+    /// `(kind, count)`: how many controls of each kind hold a changed paragraph.
+    controls: Vec<(&'static str, usize)>,
+}
+
+impl std::fmt::Display for RawBackedEditRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kinds = self
+            .controls
+            .iter()
+            .map(|(kind, count)| format!("{kind} {count}개"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(
+            formatter,
+            "{} ({kinds})",
+            refusal::fixed_message(refusal::RAW_BACKED_EDIT)
+        )
+    }
+}
+
+impl std::error::Error for RawBackedEditRefusal {}
+
+/// The control kind, from a fixed vocabulary, for a raw-backed generic control.
+fn raw_backed_kind(ctrl_id: &[u8; 4]) -> &'static str {
+    match ctrl_id {
+        b"fn  " => "footnote",
+        b"en  " => "endnote",
+        b"head" => "header",
+        b"foot" => "footer",
+        id if is_drawing_object_id(id) => "shape_or_text_box",
+        _ => "other",
+    }
+}
+
+/// #577: the raw-backed controls whose mirrored paragraphs the edit changed, or `None`.
+///
+/// A raw-backed control (`raw_children` non-empty) is written from its source records, never
+/// from `paragraph_lists`, which only mirror it for reading and for text edits. An edit does
+/// not add or remove controls inside one, so the original and edited documents are walked in
+/// step and a control is reported when its mirror differs. Every other change is untouched.
+fn raw_backed_edit_refusal(
+    original: &hwp_model::Document,
+    edited: &hwp_model::Document,
+) -> Option<RawBackedEditRefusal> {
+    fn walk(
+        original: &[hwp_model::Paragraph],
+        edited: &[hwp_model::Paragraph],
+        counts: &mut std::collections::BTreeMap<&'static str, usize>,
+    ) {
+        for (before, after) in original.iter().zip(edited) {
+            for (a, b) in before.controls.iter().zip(&after.controls) {
+                match (a, b) {
+                    (hwp_model::Control::Generic(ga), hwp_model::Control::Generic(gb)) => {
+                        if !ga.raw_children.is_empty() {
+                            if ga.paragraph_lists != gb.paragraph_lists {
+                                *counts.entry(raw_backed_kind(&ga.ctrl_id)).or_default() += 1;
+                            }
+                            // A raw-backed control is written verbatim as a whole, so what it
+                            // holds is covered by the comparison above.
+                            continue;
+                        }
+                        for (la, lb) in ga.paragraph_lists.iter().zip(&gb.paragraph_lists) {
+                            walk(&la.paragraphs, &lb.paragraphs, counts);
+                        }
+                    }
+                    (hwp_model::Control::Table(ta), hwp_model::Control::Table(tb)) => {
+                        for (ca, cb) in ta.cells.iter().zip(&tb.cells) {
+                            walk(&ca.paragraphs, &cb.paragraphs, counts);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut counts = std::collections::BTreeMap::new();
+    for (a, b) in original.sections.iter().zip(&edited.sections) {
+        walk(&a.paragraphs, &b.paragraphs, &mut counts);
+    }
+    (!counts.is_empty()).then(|| RawBackedEditRefusal {
+        controls: counts.into_iter().collect(),
+    })
 }
 
 /// #531: `reject_preservation_loss` for `edit`, with the refusal classified as
@@ -760,6 +847,12 @@ fn classify_run_error(error: &anyhow::Error) -> Refusal {
     }
     if let Some(protection) = protection_class(error) {
         return Refusal::document_protected(protection, format!("{error:#}"));
+    }
+    if let Some(raw) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<RawBackedEditRefusal>())
+    {
+        return Refusal::raw_backed_edit(raw.controls.iter().copied(), format!("{error:#}"));
     }
     if let Some(mismatch) = error
         .chain()
@@ -2317,6 +2410,34 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             },
             reason: NO_APPLICABLE_EDITS_REASON.to_string(),
             inner: None,
+        }
+        .into());
+    }
+
+    // #577: the HWP5 writer emits a raw-backed control from its source records, so an edit that
+    // changed the paragraphs mirrored from one is dropped. Refuse it here, before anything is
+    // written, with or without `--verify`. A `.hwpx` output emits from the edited paragraphs and
+    // keeps the edit, so only an HWP5 output is refused.
+    if output_format == OutputFormat::Hwp
+        && original_doc.meta.source_format == "hwp5"
+        && let Some(refusal) = raw_backed_edit_refusal(&original_doc, &doc)
+    {
+        let reason = refusal.to_string();
+        return Err(EditAbort {
+            report: EditReport {
+                output: output.display().to_string(),
+                applied: edits,
+                warnings: Vec::new(),
+                preservation: hwp_model::PreservationReport::new(),
+                ops: ops_outcomes,
+                dry_run: plan.dry_run,
+                refusal: Some(Refusal::raw_backed_edit(
+                    refusal.controls.iter().copied(),
+                    reason.clone(),
+                )),
+            },
+            reason,
+            inner: Some(anyhow::Error::new(refusal)),
         }
         .into());
     }
@@ -8298,6 +8419,120 @@ mod tests {
             sig(&source, covered),
             sig(&more, covered),
             "an added drawing object must still differ"
+        );
+    }
+
+    fn raw_backed_box_around(inner: hwp_model::Paragraph, raw: bool) -> hwp_model::GenericControl {
+        hwp_model::GenericControl {
+            ctrl_id: *b"gso ",
+            data: vec![1; 4],
+            paragraph_lists: vec![hwp_model::ParagraphList {
+                header_data: Vec::new(),
+                paragraphs: vec![inner],
+            }],
+            extras: Vec::new(),
+            raw_children: if raw {
+                vec![hwp_model::OpaqueRecord {
+                    tag: hwp5::record::tag::LIST_HEADER,
+                    data: vec![1],
+                    children: Vec::new(),
+                }]
+            } else {
+                Vec::new()
+            },
+            gso_shapes: Vec::new(),
+            equation: None,
+            column_def: None,
+            caption: None,
+            hwpx_raw_xml: None,
+            container_box: None,
+        }
+    }
+
+    /// A body paragraph holding a text box whose own paragraph holds a 1x1 table, the structure
+    /// of #577 (path `[p, 0, 0, 0]`).
+    fn document_with_a_table_in_a_text_box(raw: bool) -> hwp_model::Document {
+        let table_doc = hwp_convert::from_markdown("| a |\n|---|\n| b |\n");
+        let table = table_doc.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|paragraph| &paragraph.controls)
+            .find(|control| matches!(control, hwp_model::Control::Table(_)))
+            .expect("the markdown table")
+            .clone();
+        let mut doc = hwp_convert::from_markdown("본문");
+        let mut inner = doc.sections[0].paragraphs[0].clone();
+        inner.controls = vec![table];
+        doc.sections[0].paragraphs[0]
+            .controls
+            .push(hwp_model::Control::Generic(raw_backed_box_around(
+                inner, raw,
+            )));
+        doc
+    }
+
+    /// #577: `set_cell` reaches a table inside a text box, and when that box is raw-backed the
+    /// edit is detected, with the control kind and count. A modeled (not raw-backed) box is
+    /// written from its paragraphs, so the same edit is not refused.
+    #[test]
+    fn set_cell_inside_a_raw_backed_text_box_is_detected_and_a_modeled_one_is_not() {
+        let original = document_with_a_table_in_a_text_box(true);
+        let mut edited = original.clone();
+        hwp_convert::set_cell(&mut edited, 0, 0, 0, "ZZ").expect("the table is reachable");
+        assert_ne!(original, edited, "set_cell changed the mirrored table");
+        let refusal = raw_backed_edit_refusal(&original, &edited).expect("the edit is dropped");
+        assert_eq!(refusal.controls, vec![("shape_or_text_box", 1)]);
+
+        let modeled = document_with_a_table_in_a_text_box(false);
+        let mut edited = modeled.clone();
+        hwp_convert::set_cell(&mut edited, 0, 0, 0, "ZZ").unwrap();
+        assert!(
+            raw_backed_edit_refusal(&modeled, &edited).is_none(),
+            "a text box the writer emits from its paragraphs keeps the edit"
+        );
+    }
+
+    /// #577: no change, no refusal, and a body-only edit on a document that holds a raw-backed
+    /// control is not refused.
+    #[test]
+    fn raw_backed_detector_ignores_unchanged_mirrors_and_body_edits() {
+        let original = document_with_a_table_in_a_text_box(true);
+        assert!(raw_backed_edit_refusal(&original, &original).is_none());
+        let mut edited = original.clone();
+        let paragraph = &mut edited.sections[0].paragraphs[0];
+        let slot = paragraph
+            .chars
+            .iter_mut()
+            .find_map(|c| match c {
+                hwp_model::HwpChar::Text(ch) => Some(ch),
+                _ => None,
+            })
+            .unwrap();
+        *slot = '변';
+        assert_ne!(original, edited);
+        assert!(raw_backed_edit_refusal(&original, &edited).is_none());
+    }
+
+    /// #577: the refusal is classified `raw_backed_edit` from the typed error, with the control
+    /// list, and carries the fixed message.
+    #[test]
+    fn raw_backed_refusal_is_classified_from_the_typed_error() {
+        let error: anyhow::Error = RawBackedEditRefusal {
+            controls: vec![("footnote", 2), ("shape_or_text_box", 1)],
+        }
+        .into();
+        let refusal = classify_run_error(&error.context("wrapped"));
+        assert_eq!(refusal.code, refusal::RAW_BACKED_EDIT);
+        assert_eq!(
+            refusal.values["controls"],
+            serde_json::json!([
+                {"kind": "footnote", "count": 2},
+                {"kind": "shape_or_text_box", "count": 1}
+            ])
+        );
+        assert_eq!(
+            refusal.message,
+            refusal::fixed_message(refusal::RAW_BACKED_EDIT)
         );
     }
 

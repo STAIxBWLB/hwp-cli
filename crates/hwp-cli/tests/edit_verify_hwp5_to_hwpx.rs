@@ -137,7 +137,7 @@ fn hwp5_to_hwpx_edit_without_verify_reports_and_publishes_its_losses() {
         "metadata_value_removed alone must not block publication"
     );
     let report = read_report(&report);
-    assert_eq!(report["schema_version"], "1.4", "{report}");
+    assert_eq!(report["schema_version"], "1.5", "{report}");
     assert_eq!(event_codes(&report), ["metadata_value_removed"], "{report}");
     assert_eq!(
         report["preservation"][0],
