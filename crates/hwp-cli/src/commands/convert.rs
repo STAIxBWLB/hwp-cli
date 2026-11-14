@@ -1595,7 +1595,7 @@ fn body_flow_seeds(
             .header
             .para_shapes
             .get(previous.para_shape.0 as usize)
-            .map_or(0, |shape| shape.spacing_bottom);
+            .map_or(0, |shape| shape.spacing_bottom / 2);
         // The synthesizer's own vertical rule measures the prefix, and a genuinely cache-less
         // prefix has no bottom to continue from.
         let Some(v_pos_hu) = hwp_render::lineseg::saved_body_cursor(previous, space_after) else {
