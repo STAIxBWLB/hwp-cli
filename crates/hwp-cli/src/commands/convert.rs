@@ -1241,8 +1241,9 @@ fn write_hwp_impl(
             store.load_dir(&font_dir);
         }
         let mut warns = hwp_render::RenderIssueAccumulator::new();
-        // The paragraphs before the first edit keep their saved caches, so the re-synthesized
-        // suffix has to continue from where that prefix ends: a bare section-top cursor gave the
+        // The first changed body paragraph continues from its kept predecessor. After a neutral
+        // edit, unchanged body records remain saved; the first height-changing edit makes the
+        // rest of that section reflow. A bare section-top cursor gave the
         // first changed paragraph a v_pos *above* its kept predecessor, which the renderer reads
         // as a page start and draws the change mid-page (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
@@ -1254,7 +1255,37 @@ fn write_hwp_impl(
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Drop);
         }
-        hwp_render::lineseg::synthesize_linesegs_seeded(
+        let source_body = source.map_or_else(Vec::new, |(_, original)| {
+            doc.sections
+                .iter()
+                .enumerate()
+                .map(|(si, section)| {
+                    let saved = original
+                        .sections
+                        .get(si)
+                        .map_or(&[][..], |s| s.paragraphs.as_slice());
+                    let matches = match_unchanged_paragraphs(saved, &section.paragraphs);
+                    section
+                        .paragraphs
+                        .iter()
+                        .enumerate()
+                        .map(|(pi, paragraph)| {
+                            // Insertion/deletion/movement changes the flow even when a shifted paragraph's
+                            // own content matches. There is no same-position stored extent to retain.
+                            let original = matches[pi]
+                                .filter(|index| *index == pi)
+                                .map(|index| &saved[index]);
+                            hwp_render::lineseg::NativeBodyCache {
+                                original,
+                                unchanged: original
+                                    .is_some_and(|old| unchanged_content(old, paragraph)),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        });
+        let kept_body = hwp_render::lineseg::synthesize_native_linesegs_seeded(
             &mut d,
             &mut store,
             &mut warns,
@@ -1262,11 +1293,21 @@ fn write_hwp_impl(
                 seeds: &seeds,
                 preserve_nested: source.is_some(),
             },
+            &source_body,
         );
-        // The walk re-synthesized every body cache; hand the kept prefix its saved records back and
-        // keep what it synthesized behind the seam.
+        // Nested lists retain their existing reflow and local-context validity rules. Body records
+        // are retained only until this section's first height-changing edit; a new section resets.
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Keep);
+            for (si, pi) in kept_body {
+                if let Some(saved) = source_body
+                    .get(si)
+                    .and_then(|s| s.get(pi))
+                    .and_then(|s| s.original)
+                {
+                    d.sections[si].paragraphs[pi] = saved.clone();
+                }
+            }
         }
         warns.absorb(store.issues.finish());
         report
@@ -1364,7 +1405,8 @@ enum SuffixCache {
     /// Before the walk runs. A saved line cache behind the seam is measured against a flow the edit
     /// moved (a taller neighbour, a shifted index), so it is dropped and the walk re-synthesizes it.
     Drop,
-    /// After the walk. The cache the renderer synthesized is the flow the output keeps.
+    /// After the walk, retain synthesized nested/height-changing-body caches. The separate
+    /// native body policy may restore height-neutral body records returned by the walk.
     Keep,
 }
 
