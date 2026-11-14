@@ -180,6 +180,15 @@ fn replace_confined_to_a_raw_text_box_is_refused_with_verify_mismatch() {
         .unwrap();
     assert!(validator.is_valid(&report), "{report}");
     assert_eq!(report["refusal"]["code"], "verify_mismatch", "{report}");
+    // The only signal of a blocked edit names a next step, not just the cause (F1).
+    let message = report["refusal"]["message"].as_str().unwrap();
+    assert_eq!(message, hwp_cli::refusal::fixed_message("verify_mismatch"));
+    assert!(
+        message.contains("글상자")
+            && message.contains("본문으로 옮겨")
+            && message.contains("values.counts"),
+        "{message}"
+    );
     let counts = report["refusal"]["values"]["counts"].as_array().unwrap();
     assert!(
         counts.iter().any(|count| count["name"] == "text_chars"

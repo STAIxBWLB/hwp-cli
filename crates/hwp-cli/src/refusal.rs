@@ -94,7 +94,9 @@ pub fn fixed_message(code: &str) -> &'static str {
         UNAPPLIED_REQUESTS => "적용되지 않은 편집 요청이 있습니다",
         NO_APPLICABLE_EDITS => "문서를 바꾼 편집 요청이 없습니다",
         DOCUMENT_PROTECTED => "보호된 문서라 열 수 없어 거부했습니다",
-        VERIFY_MISMATCH => "저장한 결과를 다시 읽은 문서가 편집 결과와 달라 거부했습니다",
+        VERIFY_MISMATCH => {
+            "저장한 결과를 다시 읽은 문서가 편집 결과와 달라 거부했습니다. 편집 대상이 글상자·머리말·꼬리말처럼 HWP5 출력에 기록되지 않는 영역에 있는지 확인하고, 있다면 본문으로 옮겨 다시 시도하거나 values.counts와 함께 보고하세요"
+        }
         _ => "편집이 거부되었습니다",
     }
 }
