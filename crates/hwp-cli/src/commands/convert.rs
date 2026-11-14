@@ -2411,8 +2411,20 @@ mod tests {
         }
         table.cells[0].paragraphs[0].line_segs[0].line_height = 5000;
         document.meta.source_format = "hwp5".to_owned();
-        hwp5::write_document(&document, &source, &hwp5::WriteOptions::default()).unwrap();
+        hwp5::write_document(
+            &document,
+            &source,
+            &hwp5::WriteOptions {
+                preserve_linesegs: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let original = hwp5::read_document(&source).unwrap().document;
+        assert!(
+            !original.sections[0].paragraphs[1].line_segs.is_empty(),
+            "fixture must store the edited paragraph cache"
+        );
         let mut edited = original.clone();
         edited.sections[0].paragraphs[1]
             .chars
@@ -2421,7 +2433,7 @@ mod tests {
         write_hwp_impl(
             &edited,
             &output,
-            false,
+            true,
             false,
             false,
             Some(&[]),
