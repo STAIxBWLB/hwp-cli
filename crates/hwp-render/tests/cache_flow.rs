@@ -1140,9 +1140,20 @@ fn native_growing_edit_keeps_floating_table_host_at_the_body_cursor() {
     }
     let fill = add_fill(&mut source, 0x0012_3456);
     let cell = paragraph(&source);
+    let mut floating = table(vec![cell], fill, 1000);
+    floating.rows = 150;
+    floating.row_cell_counts = vec![1; 150];
+    let template = floating.cells[0].clone();
+    floating.cells = (0..150)
+        .map(|row| {
+            let mut cell = template.clone();
+            cell.row = row;
+            cell
+        })
+        .collect();
     source.sections[0].paragraphs[2]
         .controls
-        .push(Control::Table(table(vec![cell], fill, 150_000)));
+        .push(Control::Table(floating));
     for (index, (para, y)) in source.sections[0]
         .paragraphs
         .iter_mut()
