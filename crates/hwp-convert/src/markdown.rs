@@ -221,6 +221,8 @@ struct Body {
     /// run piece can close at the right source offset wherever the flush happens. One cursor,
     /// assigned once per character, so the segment path and the text path cannot drift.
     source_pos: u32,
+    /// A control boundary can precede the Text-driven emphasis transition.
+    source_is_control: bool,
 }
 
 impl Deref for Body {
@@ -265,6 +267,11 @@ impl Body {
         for mut seg in segs {
             seg.start = map(seg.start);
             seg.end = map(seg.end).max(seg.start);
+            // Cut provenance belongs to the child buffer. In the parent these are fixed
+            // rebased cuts; clearing both flags also keeps a collapsed child point empty
+            // when the parent's own emphasis markers are removed.
+            seg.start_follows_deletions = false;
+            seg.end_follows_deletions = false;
             // A control whose projected character was trimmed away did not reach this buffer.
             seg.controls = seg
                 .controls
@@ -293,11 +300,32 @@ impl Body {
         }
     }
 
-    /// Applies a byte move [`close_span_moves`] made inside this buffer to the control offsets the
-    /// open run recorded, so each still points at its own projected character.
-    fn shift_controls(&mut self, moves: &[ByteMove]) {
+    /// Carries recorded controls and run boundaries through emphasis edits in this buffer.
+    fn shift_offsets(&mut self, moves: &[ByteMove]) {
         // A span can outlive a run whose marks matched the next one, so runs already closed
         // into `segs` follow the move too.
+        for run in self
+            .segs
+            .iter_mut()
+            .filter(|run| run.kind == SegmentKind::Run)
+        {
+            for movement in moves {
+                if run.start_follows_deletions {
+                    run.start = movement.boundary(run.start);
+                }
+                if run.end_follows_deletions {
+                    run.end = movement.boundary(run.end);
+                }
+            }
+        }
+        if let Some(run) = self.open_run.as_mut() {
+            for movement in moves {
+                if run.start_follows_deletions {
+                    run.start = movement.boundary(run.start);
+                }
+            }
+            // Its end is an unset sentinel until close_run_at records the current cursor.
+        }
         for run in self.open_run.iter_mut().chain(self.segs.iter_mut()) {
             for (_, off, _) in run.controls.iter_mut() {
                 for m in moves {
@@ -312,8 +340,8 @@ impl Body {
         self.close_run_at(self.s.len());
     }
 
-    /// Closes the open run at `at`, which the run boundary logic places between the previous
-    /// run's closing emphasis marker and the next one's opening marker.
+    /// Closes the open run at a recorded Markdown cut. A cut encountered at a control
+    /// can precede the next Text-driven emphasis transition and follows any deleted markers.
     ///
     /// The piece's source span ends at the character the walk is on, so a flush triggered BY a
     /// block control closes the piece before that control's own characters: the control is not
@@ -321,6 +349,7 @@ impl Body {
     fn close_run_at(&mut self, at: usize) {
         if let Some(mut seg) = self.open_run.take() {
             seg.end = at.max(seg.start);
+            seg.end_follows_deletions = self.source_is_control;
             if let Some((source_start, _)) = seg.source {
                 seg.source = Some((source_start, self.source_pos));
             }
@@ -813,40 +842,60 @@ struct Span {
     content_at: usize,
 }
 
-/// One byte relocation [`close_span_moves`] performs: `len` bytes that started at `from` now start at
-/// `to`, and everything between shifts by `len` the other way.
+/// An actual string edit made by [`close_span_moves`], in execution order.
 #[derive(Clone, Copy)]
-struct ByteMove {
-    from: usize,
-    to: usize,
-    len: usize,
+enum ByteMove {
+    Remove {
+        start: usize,
+        end: usize,
+    },
+    Insert {
+        at: usize,
+        len: usize,
+    },
+    Rotate {
+        start: usize,
+        middle: usize,
+        end: usize,
+    },
 }
 
 impl ByteMove {
-    /// Where a byte that was at `off` sits after the move.
+    /// Where an existing byte sits after the edit; controls never occupy removed markers.
     fn apply(self, off: usize) -> usize {
-        let ByteMove { from, to, len } = self;
-        if off >= from && off < from + len {
-            to + (off - from)
-        } else if to < from && off >= to && off < from {
-            off + len
-        } else if to > from && off >= from + len && off < to + len {
-            off - len
-        } else {
-            off
+        match self {
+            Self::Remove { start, end } => off - off.saturating_sub(start).min(end - start),
+            Self::Insert { at, len } => off + if off >= at { len } else { 0 },
+            Self::Rotate { start, middle, end } if (middle..end).contains(&off) => {
+                start + off - middle
+            }
+            Self::Rotate { start, middle, end } if (start..middle).contains(&off) => {
+                off + end - middle
+            }
+            Self::Rotate { .. } => off,
+        }
+    }
+
+    /// Deferred control cuts follow deletions, including cuts at old EOF. Insertion and rotation affect
+    /// only whitespace and generated delimiters, so retaining cuts inside those regions cannot
+    /// transfer visible non-whitespace text. This affinity preserves existing valid ranges;
+    /// surviving control characters constrain their pieces separately during reconciliation.
+    fn boundary(self, off: usize) -> usize {
+        match self {
+            Self::Remove { .. } => self.apply(off),
+            Self::Insert { .. } | Self::Rotate { .. } => off,
         }
     }
 }
 
-/// Closes an emphasis span on a [`Body`]: the open run's recorded controls follow the whitespace the
-/// close relocates, so `at` keeps pointing at the projected character (#543).
+/// Closes an emphasis span and carries recorded run cuts and control anchors through its edits.
 fn close_body_span(body: &mut Body, marks: Marks, span: Span, html: bool) {
     let moves = close_span_moves(&mut body.s, marks, span, html);
-    body.shift_controls(&moves);
+    body.shift_offsets(&moves);
 }
 
 /// Closes every open mark and resets them (a link boundary, a line break), keeping the
-/// recorded controls in step. A later text character reopens what it needs.
+/// recorded offsets in step. A later text character reopens what it needs.
 fn close_body_marks(body: &mut Body, marks: &mut Marks, span: Span, html: bool) {
     close_body_span(body, *marks, span, html);
     *marks = Marks::default();
@@ -861,7 +910,7 @@ fn close_body_marks(body: &mut Body, marks: &mut Marks, span: Span, html: bool) 
 /// HTML mode and HTML-only effects such as underline/scripts do not depend on whitespace and
 /// close normally. Empty marks after a reset require no action.
 ///
-/// Returns the byte moves it made inside `body`, in order, so recorded offsets can follow them.
+/// Returns edits affecting recorded offsets, in execution order.
 fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> Vec<ByteMove> {
     let mut moves = Vec::new();
     if marks == Marks::default() {
@@ -879,12 +928,9 @@ fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> 
     let kept_len = content.trim_end().len();
     if kept_len == 0 {
         // Whitespace-only content: remove opening markers and retain just the whitespace.
-        // The content moves back over the removed marker; no control sits inside a marker.
-        let content_len = body.len() - span.content_at;
-        moves.push(ByteMove {
-            from: span.content_at,
-            to: span.open_at,
-            len: content_len,
+        moves.push(ByteMove::Remove {
+            start: span.open_at,
+            end: span.content_at,
         });
         body.replace_range(span.open_at..span.content_at, "");
         return moves;
@@ -896,10 +942,9 @@ fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> 
     body.push_str(&close);
     body.push_str(&trail);
     if !trail.is_empty() {
-        moves.push(ByteMove {
-            from: span.content_at + kept_len,
-            to: span.content_at + kept_len + close.len(),
-            len: trail.len(),
+        moves.push(ByteMove::Insert {
+            at: span.content_at + kept_len,
+            len: close.len(),
         });
     }
     // Move leading whitespace before the opening markers.
@@ -907,10 +952,10 @@ fn close_span_moves(body: &mut String, marks: Marks, span: Span, html: bool) -> 
         let lead = body[span.content_at..span.content_at + lead_len].to_string();
         body.replace_range(span.content_at..span.content_at + lead_len, "");
         body.insert_str(span.open_at, &lead);
-        moves.push(ByteMove {
-            from: span.content_at,
-            to: span.open_at,
-            len: lead_len,
+        moves.push(ByteMove::Rotate {
+            start: span.open_at,
+            middle: span.content_at,
+            end: span.content_at + lead_len,
         });
     }
     moves
@@ -1209,6 +1254,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
         // ends at THIS character rather than the previous one - and a control's own characters
         // belong to no piece.
         body.source_pos = wchar_pos;
+        body.source_is_control = !matches!(ch, HwpChar::Text(_));
         // Transition marks using the character shape at the current position.
         // Close and reopen all marks on change to keep nesting consistent.
         if let HwpChar::Text(_) = ch {
@@ -1347,6 +1393,7 @@ fn render_fragments(doc: &Document, para: &Paragraph, ctx: &mut Ctx) -> Vec<Frag
     // The walk has consumed the whole paragraph, so the last piece's source span ends at the
     // paragraph's end — the same bound `run_wchar_bounds` gives the last canonical run.
     body.source_pos = wchar_pos;
+    body.source_is_control = false;
     body.close_open();
     flush_inline(&mut body, &mut fragments);
     fragments
@@ -1381,6 +1428,8 @@ fn para_segment(
         point,
         source: None,
         controls: Vec::new(),
+        start_follows_deletions: false,
+        end_follows_deletions: false,
     })
 }
 
@@ -1414,6 +1463,8 @@ fn open_run_segment(
         // Filled in by `close_run_at`: the end is only known when the piece ends.
         source: Some((source_at, source_at)),
         controls: Vec::new(),
+        start_follows_deletions: body.source_is_control,
+        end_follows_deletions: false,
     });
 }
 
@@ -1444,6 +1495,8 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             point: false,
             source: None,
             controls: Vec::new(),
+            start_follows_deletions: false,
+            end_follows_deletions: false,
         });
     } else if code == ctrl_char::FIELD_START && crate::field::is_field_ctrl_id(&g.ctrl_id) {
         body.open_fields.push(RawSeg {
@@ -1458,6 +1511,8 @@ fn open_control_segment(ctx: &Ctx, body: &mut Body, code: u16, control: &Control
             point: false,
             source: None,
             controls: Vec::new(),
+            start_follows_deletions: false,
+            end_follows_deletions: false,
         });
     }
 }
@@ -1545,6 +1600,8 @@ fn render_control(
                     point: false,
                     source: None,
                     controls: Vec::new(),
+                    start_follows_deletions: false,
+                    end_follows_deletions: false,
                 });
             }
         }
@@ -1576,6 +1633,8 @@ fn render_control(
                     point: false,
                     source: None,
                     controls: Vec::new(),
+                    start_follows_deletions: false,
+                    end_follows_deletions: false,
                 });
             }
             push_block(body, marks, ctx.html_mode, fragments, block, span);
@@ -1826,6 +1885,8 @@ fn render_gfm_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Body
                 point: false,
                 source: None,
                 controls: Vec::new(),
+                start_follows_deletions: false,
+                end_follows_deletions: false,
             });
         }
         if let Some(slot) = grid[row].get_mut(cell.col as usize) {
@@ -1951,6 +2012,8 @@ fn render_html_table(doc: &Document, table: &Table, ctx: &mut Ctx, out: &mut Bod
                     point: false,
                     source: None,
                     controls: Vec::new(),
+                    start_follows_deletions: false,
+                    end_follows_deletions: false,
                 });
             }
         }
