@@ -99,7 +99,7 @@ Windows는 로드맵 항목이 아니다. 현재 ubuntu, macOS, Windows가 모�
 
 ## 설치
 
-새 명령은 `ahwp`를 사용한다. `hwp` 호환 이름은 1.x 동안 유지되며 2.0에서 제거된다.
+명령 이름은 `ahwp`다. 2.0에서 1.x의 `hwp` 호환 이름을 제거했으므로 스크립트와 MCP 클라이언트 설정의 `hwp`를 `ahwp`로 바꾼다.
 
 ### 한 줄 스크립트 (macOS / Linux)
 
@@ -128,8 +128,8 @@ brew install ahwp
 ahwp --version
 ```
 
-업그레이드는 `brew update && brew upgrade ahwp`. 예전 `hwp` 포뮬러로 설치한 기기는
-`formula_renames.json`을 통해 그대로 이전된다. 지원 플랫폼은 macOS(Apple Silicon·Intel)와 Linux x86_64다.
+업그레이드는 `brew update && brew upgrade ahwp`. 예전 `hwp` 포뮬러가 남은 기기는 다음
+`brew update` 때 `formula_renames.json`으로 `ahwp`로 이전되며, `brew install ahwp`로도 옮길 수 있다. 지원 플랫폼은 macOS(Apple Silicon·Intel)와 Linux x86_64다.
 
 ### 사전 빌드 바이너리
 
@@ -191,7 +191,7 @@ Rust edition 2024, `rust-version = 1.93` 이상이 필요하다.
 ```sh
 ahwp update            # 최신 릴리스로 자체 교체 (체크섬 대조 후 원자적 교체)
 ahwp update --check    # 교체 없이 현재/최신 버전만 확인
-ahwp update --tag v0.9.0   # 특정 버전으로 되돌리기
+ahwp update --tag v1.6.2   # 특정 버전으로 되돌리기(v1.6.0 이상)
 ```
 
 설치 방식을 스스로 판별한다. 한 줄 스크립트·릴리스 아카이브·`cargo install`로 설치했으면 실행 중인

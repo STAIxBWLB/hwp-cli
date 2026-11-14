@@ -1,6 +1,6 @@
 //! `hwp new --doc-head`/`--doc-foot` frame tracer (GONG-03 plan 01, D-01/D-02/D-03/D-04).
 //!
-//! Drives the real binary via `CARGO_BIN_EXE_hwp` against temp dirs only — no fixtures, no fonts,
+//! Drives the real binary via `CARGO_BIN_EXE_ahwp` against temp dirs only — no fixtures, no fonts,
 //! no network, mirroring `tests/skill_templates.rs`'s harness style.
 
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use hwp_model::{Control, Document, HwpChar, Paragraph};
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn temp_dir(label: &str) -> PathBuf {

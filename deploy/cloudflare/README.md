@@ -182,7 +182,7 @@ digest.
 The image is built from the published release tarball, so a deploy downloads a binary rather than
 compiling one: the build finishes in seconds and the image is 129 MB. Moving to a new `hwp` release
 means bumping `HWP_VERSION` and `HWP_SHA256` together in `container/Dockerfile.slim` - the checksum
-is published next to the tarball as `hwp-<version>-<target>.sha256`, and a mismatch fails the build.
+is published next to the tarball as `ahwp-<version>-<target>.sha256`, and a mismatch fails the build.
 To try a change that is not released yet, point `wrangler.jsonc` at `container/Dockerfile` instead
 (source build, `image_build_context` `../..`, several minutes for the Rust compile).
 

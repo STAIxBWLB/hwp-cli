@@ -49,7 +49,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "7ca6e6d9a9c1b84d1f3df1fecb21879d96a5651dce25a12a1acdb82e9fb3fbd1",
+        actual, "1f797971b51cbede7771e0718bc7232b0c191aee436183f322bb5ec4320c0315",
         "render-layout-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -387,7 +387,7 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 /// Runs one render with `--layout-json` and returns the layout file's bytes.

@@ -215,7 +215,7 @@ ahwp render out.hwpx -o page1.png --pages 1 --font-dir fonts/
 
 ## 6. MCP
 
-위의 모든 레시피는 `hwp`가 MCP stdio 서버로 실행될 때 MCP 도구와 일대일로 대응됩니다:
+위의 모든 레시피는 `ahwp`가 MCP stdio 서버로 실행될 때 MCP 도구와 일대일로 대응됩니다:
 `ahwp new` → `hwp_new`, `ahwp fill` → `hwp_fill`, `ahwp render` → `hwp_render`,
 `ahwp validate` → `hwp_validate`, 그리고 `ahwp lint` → `hwp_lint`. 서버는 항상 최소
 하나의 `--root`를 지정해 시작해 도구가 샌드박스 작업 공간만 접근하게 하세요. 도구

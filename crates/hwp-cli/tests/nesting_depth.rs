@@ -22,7 +22,7 @@ fn flat_table(dir: &std::path::Path) -> PathBuf {
     let markdown = dir.join("table.md");
     std::fs::write(&markdown, TABLE_MARKDOWN).unwrap();
     let flat = dir.join("flat.hwpx");
-    let created = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let created = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .args(["new", "--from"])
         .arg(&markdown)
         .arg("-o")
@@ -70,7 +70,7 @@ fn hwp_cat_refuses_a_deep_file_instead_of_aborting() {
     let deep = dir.join("deep.hwpx");
     write_nested_tables(&flat, 2000, &deep);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let output = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("cat")
         .arg(&deep)
         .output()
@@ -93,7 +93,7 @@ fn hwp_cat_refuses_a_deep_file_instead_of_aborting() {
 /// Runs `hwp <args>` and fails the test if it has not exited within `limit`,
 /// killing it so an exponential run cannot hang the suite.
 fn run_within(args: &[&std::ffi::OsStr], limit: std::time::Duration) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())

@@ -80,7 +80,7 @@ pub enum Hwp5Error {
     Signed,
 
     #[error(
-        "배포용 문서(ViewText)의 원본 구조는 지원하지 않습니다. hwp cat/convert/render는 배포용 문서를 읽을 수 있습니다"
+        "배포용 문서(ViewText)의 원본 구조는 지원하지 않습니다. ahwp cat/convert/render는 배포용 문서를 읽을 수 있습니다"
     )]
     DistributionDoc,
 

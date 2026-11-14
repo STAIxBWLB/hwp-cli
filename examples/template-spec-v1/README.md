@@ -8,7 +8,7 @@ and the second item's `count` so both top-level and list-field defaults are visi
 in the report.
 
 ```sh
-hwp template examples/template-spec-v1/report-template.yaml \
+ahwp template examples/template-spec-v1/report-template.yaml \
   --data examples/template-spec-v1/report-data.json \
   -o report.hwpx --report
 ```

@@ -492,8 +492,8 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       # The checklist line is conditional ("if the corpus ships"). It does not: release.yml
-      # publishes the ahwp binary archive only (plus the 1.x hwp compatibility name inside it and
-      # the legacy hwp- asset name, #510). Assert that shape rather than assume it.
+      # publishes the ahwp binary archive only (2.0 dropped the hwp compatibility name and the
+      # legacy hwp- asset name, #510). Assert that shape rather than assume it.
       - name: Gate release-archive-fonts
         id: gate-release-archive-fonts
         if: ${{ !cancelled() && steps.trust.outputs.trusted == 'yes' }}
@@ -505,7 +505,7 @@ jobs:
           # that runs later can reach them.
           GATES_FILE="$(mktemp)"
           status=pass
-          evidence='.github/workflows/release.yml packages bin: ahwp through upload-rust-binary-action, names the ahwp-<tag>-<target> asset, and republishes the same bytes as hwp-<tag>-<target> with the hwp compatibility name inside each archive; the claude.ai bundle packs bin/ahwp, which its bootstrap installs; it names no font file, so the corpus does not ship and no OFL inventory is required'
+          evidence='.github/workflows/release.yml packages bin: ahwp through upload-rust-binary-action, names the ahwp-<tag>-<target> asset with its <archive-without-extension>.sha256 checksum and publishes no hwp alias or legacy hwp- asset; the claude.ai bundle packs bin/ahwp, which its bootstrap installs; it names no font file, so the corpus does not ship and no OFL inventory is required'
           if grep -nEi '\.(ttf|otf|ttc|woff2?)' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml names a font file in the published assets, so the archive needs an OFL license inventory'
@@ -515,17 +515,12 @@ jobs:
           elif ! grep -q 'archive: $bin-$tag-$target' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml no longer names its archive $bin-$tag-$target, so the published asset name is not the command name plus the target'
-          elif ! grep -q '${archive/ahwp-/hwp-}' .github/workflows/release.yml; then
+          elif grep -nE 'alias-assets|(^|[^a])hwp-"?\$tag|"\$dir/hwp' .github/workflows/release.yml; then
             status=fail
-            evidence='.github/workflows/release.yml no longer derives the legacy hwp-<tag>-<target> asset name, so an installed 1.x hwp update would find no asset to download'
-          elif ! grep -q '"$dir/ahwp" "$dir/hwp"' .github/workflows/release.yml \
-            || ! grep -q '"$dir/ahwp.exe" "$dir/hwp.exe"' .github/workflows/release.yml; then
+            evidence='.github/workflows/release.yml publishes an hwp alias or a legacy hwp-<tag>-<target> asset again; 2.0 removed both (#510 Phase 4)'
+          elif ! grep -q 'checksum: sha256' .github/workflows/release.yml; then
             status=fail
-            evidence='.github/workflows/release.yml no longer adds the hwp compatibility name beside ahwp (and hwp.exe beside ahwp.exe) inside the archive, so the 1.x command name would disappear from an extracted archive'
-          elif ! grep -q '"\$stem\.sha256"' .github/workflows/release.yml \
-            || ! grep -q '"\$legacy_stem\.sha256"' .github/workflows/release.yml; then
-            status=fail
-            evidence='.github/workflows/release.yml no longer writes the checksum asset as <archive-without-extension>.sha256 (canonical and legacy), which is the name upload-rust-binary-action, scripts/install.sh, update and update_formula.sh all use; a sidecar named after the archive file pairs an archive with the wrong bytes'
+            evidence='.github/workflows/release.yml no longer publishes the <archive-without-extension>.sha256 checksum that scripts/install.sh, update and update_formula.sh read'
           elif ! grep -q 'cp "$work/ahwp" "$bundle/bin/ahwp"' .github/workflows/release.yml \
             || ! grep -q 'cp "$here/bin/ahwp" "$dest_dir/ahwp"' skills/hwp/claude-web/bootstrap.sh; then
             status=fail
@@ -821,8 +816,8 @@ jobs:
             status=fail
             evidence="refs/tags/${tag} points at ${tag_sha}, but this run evaluated ${EVALUATED_SHA}; the checkout and the tag disagree about which commit is being released"
           else
-            # Only the install.sh snippets, which all pipe into `sh -s --`. `hwp update --tag
-            # v0.9.0` is a rollback example and is deliberately not compared. Each README must
+            # Only the install.sh snippets, which all pipe into `sh -s --`. `ahwp update --tag
+            # v1.6.2` is a rollback example and is deliberately not compared. Each README must
             # carry the complete pin on its own.
             status=pass
             evidence="the install.sh --tag snippets in README.md and README.ko.md pin ${tag}"

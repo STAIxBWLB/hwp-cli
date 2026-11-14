@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use sha1::Digest as _;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn temp_dir(label: &str) -> PathBuf {

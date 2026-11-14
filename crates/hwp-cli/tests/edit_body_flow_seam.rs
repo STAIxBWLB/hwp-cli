@@ -41,7 +41,7 @@ fn input() -> Document {
 
 fn edit_path(source: &Path, name: &str, arguments: &[&str]) -> (PathBuf, Document) {
     let output = work_dir().join(name);
-    let result = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("edit")
         .arg(source)
         .arg("-o")
@@ -499,7 +499,7 @@ fn out_of_page_saved_cursor_does_not_panic() {
 /// page-count and glyph assertions in CI).
 fn render_layout(source: &Path, name: &str) -> serde_json::Value {
     let layout = work_dir().join(name);
-    let result = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("render")
         .arg(source)
         .arg("-o")

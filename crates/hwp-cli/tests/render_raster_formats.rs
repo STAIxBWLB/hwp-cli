@@ -29,7 +29,7 @@ fn out_dir(name: &str) -> PathBuf {
 /// Render the sample into `dir/out.<ext>`, returning the page files in page order.
 fn render(dir: &Path, ext: &str, format: Option<&str>) -> Vec<PathBuf> {
     let output = dir.join(format!("out.{ext}"));
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hwp"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ahwp"));
     cmd.arg("render").args(["--dpi", DPI]);
     if let Some(format) = format {
         cmd.args(["--format", format]);
@@ -175,7 +175,7 @@ fn jpeg_and_webp_reports_validate_against_the_published_schema() {
     for (ext, format) in [("jpg", "jpeg"), ("webp", "webp")] {
         let dir = out_dir(&format!("report-{format}"));
         let report_path = dir.join("report.json");
-        let done = Command::new(env!("CARGO_BIN_EXE_hwp"))
+        let done = Command::new(env!("CARGO_BIN_EXE_ahwp"))
             .arg("render")
             .args(["--dpi", DPI, "--format", format, "--report"])
             .arg(&report_path)

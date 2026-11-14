@@ -292,7 +292,7 @@ fn run_caption_conversion(label: &str, owner: Owner, nested: bool, strict: bool)
     let output = dir.join("converted.hwp");
     let report = dir.join("loss.json");
     let source_bytes = std::fs::read(&input).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_hwp"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ahwp"));
     command
         .arg("convert")
         .arg(&input)

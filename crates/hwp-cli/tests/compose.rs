@@ -7,7 +7,7 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn repo(rel: &str) -> PathBuf {

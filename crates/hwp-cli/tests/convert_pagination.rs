@@ -20,7 +20,7 @@ impl Drop for ProbeDir {
 }
 
 fn run(args: &[&str], dir: &Path) -> Vec<u8> {
-    let output = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let output = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .args(args)
         .current_dir(dir)
         .output()

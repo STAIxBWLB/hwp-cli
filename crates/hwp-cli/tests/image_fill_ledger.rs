@@ -15,7 +15,7 @@ use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn temp(name: &str) -> PathBuf {

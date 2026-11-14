@@ -5,8 +5,8 @@
 `basic.json`과 `comprehensive.yaml`은 자급식이다.
 
 ```bash
-hwp compose examples/document-spec-v1/basic.json -o /tmp/basic.hwpx
-hwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/comprehensive.hwpx
+ahwp compose examples/document-spec-v1/basic.json -o /tmp/basic.hwpx
+ahwp compose examples/document-spec-v1/comprehensive.yaml -o /tmp/comprehensive.hwpx
 ```
 
 `image-block.yaml`은 자산 상대경로 이미지 저작을 보여준다. `examples/document-spec-v1/assets/logo.png`에

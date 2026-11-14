@@ -5,7 +5,7 @@
 네이티브·결정론적 인증 프로파일을 새 디렉터리로 실행한다.
 
 ```sh
-hwp certify input.hwpx \
+ahwp certify input.hwpx \
   --policy examples/certification-v1/native-policy.json \
   --report certification-report
 ```
@@ -21,7 +21,7 @@ report 경로는 미리 존재하면 안 된다. 성공하면 `report.json`, `ma
 이 정책은 내용 없는(content-free) 선택적 증거 섹션 두 가지도 함께 보여 준다.
 
 - `document.preservation`은 `preservation-report-v1` 산출물(예: `preservation-report.json`,
-  `hwp convert --loss-report`로 생성)을 읽어 손실 합계가 `max_loss_codes`를 넘으면 실패한다.
+  `ahwp convert --loss-report`로 생성)을 읽어 손실 합계가 `max_loss_codes`를 넘으면 실패한다.
 - `document.hancom_open`은 한컴오피스가 복구·손상 경고 없이 문서를 열었다는
   `hancom-verification-receipt-v1` 산출물(`hancom-receipt.json` 참고)을 읽고,
   `require_pass`가 참일 때 receipt 결과가 `pass`가 아니면 실패한다.

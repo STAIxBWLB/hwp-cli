@@ -375,7 +375,7 @@ on macOS.
 | HWP edit (the source-preserving writer) | The container round-trips; opens without a warning |
 
 CLI-side gates to check before opening: ZIP entry-set identity for every surgical edit, byte
-identity of every opaque entry (media 24→24, containers 5→5), `hwp validate` clean on all outputs,
+identity of every opaque entry (media 24→24, containers 5→5), `ahwp validate` clean on all outputs,
 strict hwpx→hwp failing closed (`binary_asset_removed`, `control_removed`,
 `hwpx_package_entry_removed`, `opaque_control_unrepresentable`) and strict hwp→hwpx failing closed
 (`control_removed`, `metadata_value_removed`).

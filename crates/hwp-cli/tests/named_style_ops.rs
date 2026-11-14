@@ -18,7 +18,7 @@ const NESTED_NOTE: &str = "Nested note.";
 const CREATED: &str = "Body thirteen";
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn success(output: Output, context: &str) {

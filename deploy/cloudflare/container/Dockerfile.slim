@@ -1,6 +1,6 @@
 # hwp MCP session container, built from a published release.
 #
-# Prefer this over ../Dockerfile once a release carries `hwp serve`: it skips the
+# Prefer this over ../Dockerfile once a release carries `ahwp serve`: it skips the
 # Rust toolchain entirely, so the build is a download rather than a compile and
 # the image is the runtime base plus fonts plus the binary, nothing else.
 #
@@ -10,7 +10,7 @@
 #     docker build -f Dockerfile.slim -t hwp-mcp .
 #
 # To move to a new release, bump HWP_VERSION and HWP_SHA256 together. The sha256
-# is published alongside the tarball as hwp-<version>-<target>.sha256; the build
+# is published alongside the tarball as ahwp-<version>-<target>.sha256; the build
 # fails loudly if it does not match, which is the point.
 
 ARG HWP_VERSION=v1.6.3
@@ -27,12 +27,12 @@ ARG HWP_SHA256
 ADD https://github.com/STAIxBWLB/agent-hwp/releases/download/${HWP_VERSION}/ahwp-${HWP_VERSION}-${HWP_TARGET}.tar.gz /tmp/hwp.tar.gz
 RUN set -eux; \
     echo "${HWP_SHA256}  /tmp/hwp.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin ahwp hwp; \
-    chmod +x /usr/local/bin/hwp; \
-    hwp --version; \
+    tar -xzf /tmp/hwp.tar.gz -C /usr/local/bin ahwp; \
+    chmod +x /usr/local/bin/ahwp; \
+    ahwp --version; \
     # A release without `serve` would otherwise fail only at runtime, inside a
     # container nobody is watching.
-    hwp serve --help >/dev/null
+    ahwp serve --help >/dev/null
 
 FROM debian:bookworm-slim
 # Rendering and PDF output need real font files; fonts-nanum matches the font
@@ -41,7 +41,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends fonts-nanum \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=fetch /usr/local/bin/hwp /usr/local/bin/hwp
+COPY --from=fetch /usr/local/bin/ahwp /usr/local/bin/ahwp
 
 RUN useradd --create-home --uid 10001 hwp \
  && mkdir -p /work \
@@ -49,13 +49,13 @@ RUN useradd --create-home --uid 10001 hwp \
 USER hwp
 WORKDIR /work
 
-# No init: `hwp serve` handles SIGTERM itself since 0.15.1, so it stops correctly
+# No init: `ahwp serve` handles SIGTERM itself since 0.15.1, so it stops correctly
 # even as PID 1, where the kernel delivers no signal that still has its default
 # disposition. If HWP_VERSION is ever moved back below 0.15.1, put tini back -
 # without one, the platform's idle stop is discarded and the container bills
 # until it is destroyed outright.
 EXPOSE 8080
-CMD ["hwp", "serve", \
+CMD ["ahwp", "serve", \
      "--addr", "0.0.0.0:8080", \
      "--root", "/work", \
      "--files", \

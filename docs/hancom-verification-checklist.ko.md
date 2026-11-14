@@ -331,7 +331,7 @@ source와 파생 결과는 commit하지 않는다. 하네스는 `run-authoring-v
 | HWP 편집(source-preserving writer) | 컨테이너 왕복, 경고 없이 열림 |
 
 열기 전 CLI 측 게이트: 모든 surgical 편집의 ZIP 엔트리 집합 동일, opaque 엔트리 전량 바이트
-동일(미디어 24→24, container 5→5), 모든 결과물 `hwp validate` 클린, strict hwpx→hwp는
+동일(미디어 24→24, container 5→5), 모든 결과물 `ahwp validate` 클린, strict hwpx→hwp는
 fail-closed(`binary_asset_removed`, `control_removed`, `hwpx_package_entry_removed`,
 `opaque_control_unrepresentable`), strict hwp→hwpx도 fail-closed(`control_removed`,
 `metadata_value_removed`).

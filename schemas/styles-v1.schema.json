@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hwp-cli.staix.net/schemas/styles-v1.schema.json",
   "title": "hwp-styles-v1",
-  "description": "The listing `hwp styles <file> --format json` and the MCP tool `hwp_styles` emit: every named style of the document with its resolved attributes and the paragraphs that use it. `attrs` has exactly the shape of the `style` level of `segment-envelope-v2`, and `used_by` holds `para` segment ids as `hwp cat --with-segments --segments v2` publishes them, so the two artifacts join on id alone. The listing is closed: a field added, removed or renamed is a new major schema.",
+  "description": "The listing `ahwp styles <file> --format json` and the MCP tool `hwp_styles` emit: every named style of the document with its resolved attributes and the paragraphs that use it. `attrs` has exactly the shape of the `style` level of `segment-envelope-v2`, and `used_by` holds `para` segment ids as `ahwp cat --with-segments --segments v2` publishes them, so the two artifacts join on id alone. The listing is closed: a field added, removed or renamed is a new major schema.",
   "type": "object",
   "additionalProperties": false,
   "required": [

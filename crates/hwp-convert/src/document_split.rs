@@ -449,7 +449,7 @@ impl std::fmt::Display for RangeError {
             ),
             RangeError::AnchorMissing { anchor } => write!(
                 f,
-                "{anchor}에 해당하는 본문 문단이 없습니다. 표 안의 문단은 지정할 수 없고 제목은 문단 전체 텍스트와 같아야 합니다. `hwp cat`으로 정확한 텍스트나 책갈피 이름을 확인하세요"
+                "{anchor}에 해당하는 본문 문단이 없습니다. 표 안의 문단은 지정할 수 없고 제목은 문단 전체 텍스트와 같아야 합니다. `ahwp cat`으로 정확한 텍스트나 책갈피 이름을 확인하세요"
             ),
             RangeError::AnchorAmbiguous { anchor, matches } => {
                 let places: Vec<String> = matches
@@ -477,11 +477,11 @@ impl std::fmt::Display for RangeError {
             ),
             RangeError::LostResource { reference } => write!(
                 f,
-                "선택한 범위가 원본에 들어 있지 않은 바이너리({reference})를 참조합니다. 원본 문서에서 그 바이너리(그림 파일)가 빠져 있으니, 원본 패키지에 그 파일을 되돌려 놓거나 그 바이너리를 쓰지 않는 다른 범위를 고르세요 (`hwp cat`으로 범위 안 그림을 확인할 수 있습니다)"
+                "선택한 범위가 원본에 들어 있지 않은 바이너리({reference})를 참조합니다. 원본 문서에서 그 바이너리(그림 파일)가 빠져 있으니, 원본 패키지에 그 파일을 되돌려 놓거나 그 바이너리를 쓰지 않는 다른 범위를 고르세요 (`ahwp cat`으로 범위 안 그림을 확인할 수 있습니다)"
             ),
             RangeError::EmptyDocument => write!(
                 f,
-                "문서에 구역이 없어 범위를 추출할 수 없습니다. 본문이 있는 문서인지 `hwp cat`으로 확인하고, 비어 있다면 다른 파일을 지정하세요"
+                "문서에 구역이 없어 범위를 추출할 수 없습니다. 본문이 있는 문서인지 `ahwp cat`으로 확인하고, 비어 있다면 다른 파일을 지정하세요"
             ),
         }
     }
@@ -2718,7 +2718,7 @@ mod tests {
         doc.sections.clear();
         let error = extract_range(&doc, "h", &selector(heading("A"), None, true)).unwrap_err();
         assert_eq!(error, RangeError::EmptyDocument);
-        assert!(error.to_string().contains("hwp cat"), "{error}");
+        assert!(error.to_string().contains("ahwp cat"), "{error}");
     }
 
     // ───────────── T9-F16: video, bullets, parameter sets ─────────────
@@ -3387,7 +3387,7 @@ mod tests {
         assert_eq!(
             count_tables(&paragraph),
             reached,
-            "count_tables must number tables exactly as hwp edit --set-cell does"
+            "count_tables must number tables exactly as ahwp edit --set-cell does"
         );
         // outer, nested in its cell, and the text-box table; the caption table takes none.
         assert_eq!(reached, 3);
@@ -3462,7 +3462,7 @@ mod tests {
         for error in cases {
             let message = error.to_string();
             assert!(
-                message.contains("hwp cat") || message.contains("--from"),
+                message.contains("ahwp cat") || message.contains("--from"),
                 "{message}"
             );
         }

@@ -76,32 +76,29 @@ runtime, Developer ID Application authority를 확인한 뒤, 서명된 실행 �
 통과합니다. 임시 인증서,
 API key, keychain은 helper와 항상 실행되는 cleanup 단계에서 제거합니다.
 
-Linux의 alias 재포장 이후 macOS 작업이 각 아키텍처의 archive를 다운로드해 `ahwp`와 `hwp`의
-바이트가 같은지 비교합니다. 두 코드 서명은 Apple anchor와 `vars.APPLE_TEAM_ID`의 인증서
-leaf team ID 요구 조건으로 검증합니다. 두 명령에 `spctl --assess --type install --verbose=2`도
-실행하며, 성공 종료와 `accepted`, `source=Notarized Developer ID`를 모두 요구합니다. ticket
-전파 지연을 위해 각 명령을 최대 3회 검사하고 회차 사이에 10초를 기다립니다(명령당 재시도
-대기 최대 20초). 횟수를 소진하면 재시도 한도, 마지막 검사 출력과 다음 진단 방법을 알리고
-작업을 실패 처리합니다. 이 작업이 통과해야 attestation과 공개 릴리스가 진행됩니다. 단일 실행
-파일에는 ticket을 staple할 수 없으므로 Gatekeeper가 공증 ticket을 온라인으로 조회합니다.
+업로드 이후 macOS 작업이 각 아키텍처의 archive를 다운로드해 `ahwp`의 코드 서명을 Apple anchor와
+`vars.APPLE_TEAM_ID`의 인증서 leaf team ID 요구 조건으로 검증합니다. 2.0 archive에는 `hwp`
+alias가 없습니다(#510). `ahwp`에 `spctl --assess --type install --verbose=2`도 실행하며, 성공
+종료와 `accepted`, `source=Notarized Developer ID`를 모두 요구합니다. ticket 전파 지연을 위해
+최대 3회 검사하고 회차 사이에 10초를 기다립니다(재시도 대기 최대 20초). 횟수를 소진하면 재시도
+한도, 마지막 검사 출력과 다음 진단 방법을 알리고 작업을 실패 처리합니다. 이 작업이 통과해야
+attestation과 공개 릴리스가 진행됩니다. 단일 실행 파일에는 ticket을 staple할 수 없으므로
+Gatekeeper가 공증 ticket을 온라인으로 조회합니다.
 
 readiness는 자격증명을 사용하지 않는 `--dry-run` 경로만 실행합니다. shell mock은 Apple 서비스
 없이 실패 경로를 검사합니다. 어느 결과도 실제 자격증명, 공증 또는 Gatekeeper의 동작을 증명하지
-않습니다. 첫 실제 검증은 소유자가 승인한 `v1.6.3` 릴리스에서 수행합니다. 두 macOS
-`verify-macos-assets` 작업 결과를 기록하고, 다운로드한 두 명령을 Gatekeeper로 검사합니다.
+않습니다. 첫 실제 검증은 소유자가 승인한 `v2.0.0` 릴리스에서 수행합니다. 두 macOS
+`verify-macos-assets` 작업 결과를 기록하고, 다운로드한 `ahwp`를 Gatekeeper로 검사합니다.
 빈 임시 디렉터리에서 Apple Silicon용으로 실행하는 예시는 다음과 같습니다.
 
 ```bash
-gh release download v1.6.3 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v1.6.3-aarch64-apple-darwin.tar.gz'
-tar -xzf ahwp-v1.6.3-aarch64-apple-darwin.tar.gz
+gh release download v2.0.0 --repo STAIxBWLB/agent-hwp --pattern 'ahwp-v2.0.0-aarch64-apple-darwin.tar.gz'
+tar -xzf ahwp-v2.0.0-aarch64-apple-darwin.tar.gz
 APPLE_TEAM_ID="$(gh variable get APPLE_TEAM_ID --repo STAIxBWLB/agent-hwp)"
 signer_requirement="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
 codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./ahwp
 codesign -dv --verbose=4 ./ahwp
-codesign --verify --strict --verbose=2 -R "=$signer_requirement" ./hwp
-codesign -dv --verbose=4 ./hwp
 spctl --assess --type install --verbose=2 ./ahwp
-spctl --assess --type install --verbose=2 ./hwp
 ```
 
 `x86_64-apple-darwin` archive에서도 서명과 Gatekeeper 검사를 반복합니다. authority는 Developer ID

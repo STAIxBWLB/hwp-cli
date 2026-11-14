@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hwp-cli.staix.net/schemas/edit-ops-v1.schema.json",
   "title": "hwp-cli EditOps v1",
-  "description": "Contract for `hwp edit --ops <file.json>`: a flat, ordered array of typed edit operations, applied in order. Shape-only: exactly-one selectors, paired image sizes, count >= 1, and non-empty strings are enforced by the parser after this schema passes. Compilation also requires document-spec-v1.schema.json registered under its $id (https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json), including batches without insert_blocks. Load both bundled schemas together; the CLI embeds and registers them offline. Minor revision (#525): `replace` also accepts an address that names a run - `at.run` for the whole run, or `chars` for one WCHAR window inside it - instead of every match in the paragraph. That is an added address shape: every operation that validated before still validates and still means the same thing, and the id, the required keys and the version stay edit-ops-v1.",
+  "description": "Contract for `ahwp edit --ops <file.json>`: a flat, ordered array of typed edit operations, applied in order. Shape-only: exactly-one selectors, paired image sizes, count >= 1, and non-empty strings are enforced by the parser after this schema passes. Compilation also requires document-spec-v1.schema.json registered under its $id (https://hwp-cli.staix.net/schemas/document-spec-v1.schema.json), including batches without insert_blocks. Load both bundled schemas together; the CLI embeds and registers them offline. Minor revision (#525): `replace` also accepts an address that names a run - `at.run` for the whole run, or `chars` for one WCHAR window inside it - instead of every match in the paragraph. That is an added address shape: every operation that validated before still validates and still means the same thing, and the id, the required keys and the version stay edit-ops-v1.",
   "type": "array",
   "minItems": 1,
   "maxItems": 10000,
@@ -630,7 +630,7 @@
     },
     "charRange": {
       "type": "array",
-      "description": "A [start, end) WCHAR sub-range, in UTF-16 code units absolute within the source paragraph (A1) — the same coordinate space `restyle_range` already takes, matching render-layout-v1's source_chars and document_split.rs's ParagraphAddress.wchar_offset. This is a DIFFERENT coordinate space from segment-envelope-v2's char_range (Unicode scalars into the rendered markdown); nothing converts between them, so a caller holding a char_range from `hwp cat --segments v2` must convert before composing this field.",
+      "description": "A [start, end) WCHAR sub-range, in UTF-16 code units absolute within the source paragraph (A1) — the same coordinate space `restyle_range` already takes, matching render-layout-v1's source_chars and document_split.rs's ParagraphAddress.wchar_offset. This is a DIFFERENT coordinate space from segment-envelope-v2's char_range (Unicode scalars into the rendered markdown); nothing converts between them, so a caller holding a char_range from `ahwp cat --segments v2` must convert before composing this field.",
       "items": { "type": "integer", "minimum": 0, "maximum": 1048575 },
       "minItems": 2,
       "maxItems": 2

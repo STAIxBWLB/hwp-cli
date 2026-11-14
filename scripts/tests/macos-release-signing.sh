@@ -154,17 +154,14 @@ import pathlib
 import sys
 import tarfile
 root = pathlib.Path(sys.argv[1])
-for altered in (False, True):
-    with tarfile.open(root / ("altered.tar.gz" if altered else "signed.tar.gz"), "w:gz") as archive:
-        for name, data in (("ahwp", b"signed executable\n"), ("hwp", b"altered\n" if altered else b"signed executable\n")):
-            entry = tarfile.TarInfo(name)
-            if name == "hwp" and not altered:
-                entry.type = tarfile.LNKTYPE
-                entry.linkname = "ahwp"
-                archive.addfile(entry)
-            else:
-                entry.size = len(data)
-                archive.addfile(entry, io.BytesIO(data))
+# 2.0 archives carry only `ahwp` (#510 Phase 4). The second archive names the executable
+# only by the retired `hwp` name, which verify-archive must refuse.
+for archive_name, member in (("signed.tar.gz", "ahwp"), ("legacy-only.tar.gz", "hwp")):
+    with tarfile.open(root / archive_name, "w:gz") as archive:
+        data = b"signed executable\n"
+        entry = tarfile.TarInfo(member)
+        entry.size = len(data)
+        archive.addfile(entry, io.BytesIO(data))
 PY
 
 followup_case() {
@@ -230,11 +227,12 @@ followup_case() {
             ;;
         gatekeeper-retry)
             env MOCK_SPCTL=retry bash "$helper" verify-archive "$tmp/signed.tar.gz" >"$tmp/log" 2>&1
-            [ -f "$RUNNER_TEMP/assessment-count" ] && [ "$(cat "$RUNNER_TEMP/assessment-count")" = 4 ] || {
-                echo 'FAIL: Gatekeeper retry must assess ahwp three times and hwp once' >&2; exit 1;
+            # 2.0 archives carry ahwp alone (#510), so only ahwp is assessed.
+            [ -f "$RUNNER_TEMP/assessment-count" ] && [ "$(cat "$RUNNER_TEMP/assessment-count")" = 3 ] || {
+                echo 'FAIL: Gatekeeper retry must assess ahwp three times and nothing else' >&2; exit 1;
             }
             [ "$(grep -c '^sleep$' "$MOCK_CALLS")" = 2 ]
-            [ "$(grep -c 'Gatekeeper accepted' "$tmp/log")" = 2 ]
+            [ "$(grep -c 'Gatekeeper accepted' "$tmp/log")" = 1 ]
             ;;
         duplicate-identity)
             expect_failure 'exactly one valid Developer ID Application' env MOCK_IDENTITY=duplicate bash "$helper" prepare
@@ -311,13 +309,15 @@ encoded_key="$(printf '%s' "$APPLE_API_KEY" | base64)"
 env APPLE_API_KEY="$encoded_key" bash "$helper" notarize "$tmp/signed.tar.gz" "$work" >/dev/null
 expect_failure 'APPLE_API_KEY must be PEM or base64 PEM' env APPLE_API_KEY=invalid bash "$helper" notarize "$tmp/signed.tar.gz" "$work"
 
-expect_failure 'alias differs from ahwp' bash "$helper" verify-archive "$tmp/altered.tar.gz"
+expect_failure 'invalid or missing executable members' bash "$helper" verify-archive "$tmp/legacy-only.tar.gz"
 : >"$MOCK_LOG"
 bash "$helper" verify-archive "$tmp/signed.tar.gz" >/dev/null
-for name in ahwp hwp; do
-    grep -Fx -- "--verify:$name" "$MOCK_LOG" >/dev/null
-    grep -Fx -- "-dv:$name" "$MOCK_LOG" >/dev/null
-done
+grep -Fx -- "--verify:ahwp" "$MOCK_LOG" >/dev/null
+grep -Fx -- "-dv:ahwp" "$MOCK_LOG" >/dev/null
+if grep -F ':hwp' "$MOCK_LOG" >/dev/null; then
+    echo 'FAIL: verify-archive still checks the retired hwp name' >&2
+    exit 1
+fi
 bash "$helper" cleanup "$work"
 [ ! -e "$work" ]
 mkdir -p "$RUNNER_TEMP/ahwp-signing.unowned"
@@ -358,7 +358,8 @@ assert upload.index("macos-release-signing.sh prepare") < upload.index("taiki-e/
 for name in ("APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "KEYCHAIN_PASSWORD", "APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER_ID"):
     assert "secrets." + name in upload
 assert "always() && runner.os == 'macOS'" in upload
-assert "needs: alias-assets" in jobs["verify-macos-assets"]
+assert "needs: upload-assets" in jobs["verify-macos-assets"]
+assert "alias-assets" not in jobs
 assert "gh release download" in jobs["verify-macos-assets"]
 assert "macos-release-signing.sh verify-archive" in jobs["verify-macos-assets"]
 assert "needs: [skill-bundle, verify-macos-assets]" in jobs["attest"]

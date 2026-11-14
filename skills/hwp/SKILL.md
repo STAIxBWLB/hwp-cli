@@ -294,7 +294,7 @@ Compare `total_pages` in the two render reports (the report also carries `font_c
 `font_resolution_complete`; rendering needs CJK fonts, and page counts depend on the fonts
 available). A changed page count is a review signal, not proof of content drift: an IR
 round-trip alone can reflow layout — verified on the fixture, where a plain
-`hwp convert --to hwpx` round-trip rendered 6 pages before and 5 after while the
+`ahwp convert --to hwpx` round-trip rendered 6 pages before and 5 after while the
 byte-preserving `--replace` fast path kept the original count. When layout must stay
 untouched, prefer `--replace`-only edits (the package-preserving path) and treat any
 page-count change as a reason to inspect the rendered pages, not to weaken validation.

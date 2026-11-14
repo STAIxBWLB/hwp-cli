@@ -28,7 +28,7 @@ use std::process::Command;
 use hwp_model::{Control, Document, HwpChar, Paragraph};
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn repo(relative: &str) -> PathBuf {

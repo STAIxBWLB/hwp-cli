@@ -22,7 +22,7 @@ struct Workspace {
 }
 
 fn hwp(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .args(args)
         .current_dir(dir)
         .output()

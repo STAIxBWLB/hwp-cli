@@ -10,6 +10,33 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
+These changes ship as 2.0.0.
+
+**Breaking**
+
+- The `hwp` command name is gone; the command is `ahwp`. The 1.x compatibility pieces are
+  removed: the `hwp` binary target and its terminal deprecation line, the `hwp` hard link (`hwp.exe`
+  copy) inside every release archive, the legacy `hwp-<tag>-<target>` release assets with their
+  checksums, the `hwp-` asset and `hwp`-only archive fallback in `ahwp update` and
+  `scripts/install.sh`, the `hwp` alias that `scripts/install.sh` and the claude.ai bundle's
+  `bootstrap.sh` installed, and the `hwp` name the Homebrew formula installed. The formula and
+  `scripts/update_formula.sh` now read the `ahwp-` assets, and the container images run
+  `ahwp serve`. The release's macOS archive verification checks the signed `ahwp` alone, and
+  the release workflow refuses a tag below 2.0.0, since a 1.x release must ship the `hwp` bridge.
+  `ahwp update --tag` and `install.sh --tag` accept only v1.6.0 or later, the first releases
+  that publish `ahwp-` assets.
+  Migration: replace `hwp` with `ahwp` in scripts and MCP client configurations
+  (`command: ahwp`, `args: ["mcp", ...]`); on Homebrew run `brew update && brew upgrade ahwp`, or
+  `brew install ahwp`. A 1.5 or older install cannot `hwp update` to 2.0 (it fetches only the
+  `hwp-` assets 2.0 no longer publishes): rerun `scripts/install.sh` or `brew install ahwp`, or
+  first run `hwp update --tag v1.6.2` and then `ahwp update`. MCP tool names (`hwp_*`), the skill
+  name `hwp`, the `HWP_*` environment
+  variables and the schema ids are unchanged. `formula_renames.json` stays, so a machine still
+  on formula `hwp` migrates on its next `brew update`. `form-discovery-v1` `next_step` keeps
+  its stable token `"hwp fields"`, which now means `ahwp fields`; a consumer that shows it to a
+  person should print `ahwp fields`
+  ([#510](https://github.com/STAIxBWLB/agent-hwp/issues/510)).
+
 **Compatibility**
 
 - Native HWP5 preservation gates used by `edit`, `fill`, `new`/`compose`, `split`, `corpus`

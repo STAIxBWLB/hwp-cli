@@ -19,24 +19,24 @@ written as HTML fragments (contract:
 
 ```bash
 # 1) Build the template as hwpx
-hwp new --from template.md -o template.hwpx
+ahwp new --from template.md -o template.hwpx
 
 # 2) Splice parts into the anchors (field substitution and part splice in one run)
-hwp fill template.hwpx -o result.hwpx \
+ahwp fill template.hwpx -o result.hwpx \
   --set 작성일=2026-08-01 \
   --set 개요=@part-overview.md \
   --set 실적표=@part-table.md \
   --set 구성도=@part-diagram.md
 
 # 3) Validate
-hwp validate result.hwpx
+ahwp validate result.hwpx
 ```
 
 ## Rules
 
 - An anchor paragraph must contain only `{{name}}`. A `{{name}}` inside a sentence cannot
   be spliced as a block and is only handled as plain field substitution.
-- Template and parts must share the hwp-cli default palette family (outputs of `hwp new`
+- Template and parts must share the hwp-cli default palette family (outputs of `ahwp new`
   or `compose`). Parts inherit the template's typography.
 - Relative image paths inside a part resolve against the part file's directory. SVG is
   embedded via validation + deterministic PNG rasterization (SVG with scripts or external

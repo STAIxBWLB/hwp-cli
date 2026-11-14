@@ -27,7 +27,7 @@ fn golden_path() -> PathBuf {
 /// Receive is a thread plus `recv_timeout`, and shutdown is stdin EOF then a `try_wait` loop, both
 /// copied from `cli_surface.rs::mcp_stdio_session` — the shape that keeps CI from hanging.
 fn tools_list() -> serde_json::Value {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

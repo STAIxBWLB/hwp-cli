@@ -14,7 +14,7 @@ mod fixture_skip;
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 /// A fresh scratch directory per call — a distinct directory per test (and per

@@ -14,7 +14,7 @@ use std::process::Command;
 use hwp_model::{Control, Table};
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 fn test_dir(name: &str) -> PathBuf {
@@ -2939,7 +2939,7 @@ fn schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "ea9a8a2aead13b1675689a9dab8f7bb204889e761d4b8911bc77170b93c8b2ab",
+        actual, "d7560920c48e19aea74bbe67a183d2dc68da6d5c729094b605ceaedfacfb14fe",
         "edit-ops-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }
@@ -2962,7 +2962,7 @@ fn edit_report_schema_hash_frozen() {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     assert_eq!(
-        actual, "663692e89029633fb5b7b34798e15f4a09633f1f7d7b2a86773241c2b4bb1877",
+        actual, "e6871172d01e470231b8d389b68fed0a79d01c7caef414f83ddeedc1b1d4c100",
         "edit-report-v1.schema.json changed — update the pinned contract hash consciously"
     );
 }

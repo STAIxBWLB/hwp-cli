@@ -13,7 +13,7 @@ mod temp_path;
 const INJECTED: &str = "a; layout_overflow at $.z: b";
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 struct Fixture {

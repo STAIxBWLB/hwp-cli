@@ -72,7 +72,7 @@ fn tmp_dir(test: &str) -> PathBuf {
 
 fn spawn(test: &str, files: bool) -> Serve {
     let root = tmp_dir(test);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hwp"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ahwp"));
     cmd.arg("serve")
         .arg("--addr")
         .arg("127.0.0.1:0")
@@ -635,7 +635,7 @@ fn serve_answers_healthz_while_another_head_is_incomplete() {
 
 #[test]
 fn serve_refuses_to_start_without_a_usable_root() {
-    let missing_root = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let missing_root = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .args(["serve", "--addr", "127.0.0.1:0"])
         .output()
         .unwrap();
@@ -646,7 +646,7 @@ fn serve_refuses_to_start_without_a_usable_root() {
 
     let absent = std::env::temp_dir().join(format!("hwp-serve-absent-{}", std::process::id()));
     assert!(!Path::new(&absent).exists());
-    let bad_root = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let bad_root = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .args(["serve", "--addr", "127.0.0.1:0", "--root"])
         .arg(&absent)
         .output()

@@ -19,7 +19,7 @@ struct Fixture {
     expected: Value,
 }
 fn run(dir: &Path, args: &[&str]) -> Vec<u8> {
-    let result = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .args(args)
         .current_dir(dir)
         .output()
@@ -33,7 +33,7 @@ fn run(dir: &Path, args: &[&str]) -> Vec<u8> {
 }
 fn compose(dir: &Path) {
     let spec = dir.join("original-form.spec.json").canonicalize().unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_hwp"))
+    let result = Command::new(env!("CARGO_BIN_EXE_ahwp"))
         .arg("compose")
         .arg(spec)
         .args(["-o", "source.hwpx"])

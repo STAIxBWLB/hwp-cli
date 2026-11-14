@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hwp-cli.staix.net/schemas/form-discovery-v1.schema.json",
   "title": "hwp-cli FormDiscovery v1",
-  "description": "Source-bound local form occurrence inventory. label and old_text contain source content and require explicit local review handling; they are not public log/receipt fields. Native fields are inventory-only and direct callers to hwp fields. Runtime additionally verifies source identity, occurrence identity and start <= end.",
+  "description": "Source-bound local form occurrence inventory. label and old_text contain source content and require explicit local review handling; they are not public log/receipt fields. Native fields are inventory-only and direct callers to ahwp fields. Runtime additionally verifies source identity, occurrence identity and start <= end.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -77,7 +77,7 @@
       "sources": [
         { "path": "deploy/cloudflare/src/index.ts", "line": 18, "end_line": 37, "label": "Worker OAuth provider + PAT" },
         { "path": "deploy/cloudflare/src/mcp-api.ts", "line": 190, "end_line": 196, "label": "forward to container /mcp" },
-        { "path": "deploy/aws/Dockerfile.agentcore", "line": 82, "end_line": 87, "label": "AgentCore runs hwp serve" }
+        { "path": "deploy/aws/Dockerfile.agentcore", "line": 82, "end_line": 87, "label": "AgentCore runs ahwp serve" }
       ]
     },
     {

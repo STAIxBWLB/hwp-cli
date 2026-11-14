@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hwp-cli.staix.net/schemas/segment-envelope-v2.schema.json",
   "title": "hwp-segment-envelope-v2",
-  "description": "The envelope `hwp cat --with-segments --segments v2` emits, for `--format markdown` and `--format json`. One segment ties a range of the emitted markdown to the IR node that produced it, so an editor can address what it displays. Ranges nest: a `run` lies inside its `para` (the one exception, a drawing object's paragraph that a block interrupted, is described under `kind`), a `cell` inside its `table`, and siblings at one level do not overlap.",
+  "description": "The envelope `ahwp cat --with-segments --segments v2` emits, for `--format markdown` and `--format json`. One segment ties a range of the emitted markdown to the IR node that produced it, so an editor can address what it displays. Ranges nest: a `run` lies inside its `para` (the one exception, a drawing object's paragraph that a block interrupted, is described under `kind`), a `cell` inside its `table`, and siblings at one level do not overlap.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "contract", "markdown", "segments"],
@@ -17,7 +17,7 @@
     },
     "markdown": {
       "type": "string",
-      "description": "The markdown `hwp cat --format markdown` emits for the same document, byte-identical: both come from one emission core, which the segment run only asks to record spans. Every `char_range` in `segments` indexes into THIS string. It is carried in BOTH formats, `--format json` included: the offsets would otherwise index a string the envelope does not hold, and would silently shift with `--with-header-footer` and `--with-hidden` while everything the envelope carries stayed identical. The envelope resolves its own offsets."
+      "description": "The markdown `ahwp cat --format markdown` emits for the same document, byte-identical: both come from one emission core, which the segment run only asks to record spans. Every `char_range` in `segments` indexes into THIS string. It is carried in BOTH formats, `--format json` included: the offsets would otherwise index a string the envelope does not hold, and would silently shift with `--with-header-footer` and `--with-hidden` while everything the envelope carries stayed identical. The envelope resolves its own offsets."
     },
     "segments": {
       "type": "array",
@@ -25,7 +25,7 @@
       "items": { "$ref": "#/$defs/segment" }
     },
     "document": {
-      "description": "Present only for `--format json`: the document IR `hwp cat --format json` emits for the same document, unchanged, carried as a sibling of `segments` so a consumer parses one value rather than two from one stream. Absent for `--format markdown`. It is an addition to `markdown`, never a replacement for it: `char_range` resolves against `markdown` in this format too."
+      "description": "Present only for `--format json`: the document IR `ahwp cat --format json` emits for the same document, unchanged, carried as a sibling of `segments` so a consumer parses one value rather than two from one stream. Absent for `--format markdown`. It is an addition to `markdown`, never a replacement for it: `char_range` resolves against `markdown` in this format too."
     }
   },
   "$defs": {
@@ -76,7 +76,7 @@
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/run_control" },
-          "description": "The character controls this `run` piece projected as ordinary text, in document order (https://github.com/STAIxBWLB/agent-hwp/issues/543). The markdown cannot tell a typed space from a non-breaking or fixed-width space, or a typed `-` from a soft hyphen, so a consumer that turns a selection of run text into a text replace needs this list to see that the stored characters differ from the projection. Four controls are listed: `tab` (code 9, an 8-unit inline control, projected as a space), `hyphen` (code 24, projected as `-`), `nb_space` (code 30, projected as a space) and `fw_space` (code 31, projected as a space). Line breaks are not listed: they end the line rather than projecting as run text. PRESENT ONLY WHEN THE PIECE PROJECTED AT LEAST ONE OF THEM: a run with none omits the key rather than carrying an empty array, so the projected text and every other field are unchanged. `run` segments only, enforced by this object's `dependentSchemas`. A control whose projected character the emitter trimmed away (leading or trailing whitespace of a table cell, a blank line the cleanup collapsed) did not reach the markdown and is not listed. One list per piece: a run a block control interrupts lists each control on the piece that emitted it."
+          "description": "The character controls this `run` piece projected as ordinary text, in document order (https://github.com/STAIxBWLB/agent-hwp/issues/543). The markdown cannot tell a typed space from a non-breaking or fixed-width space, or a typed `-` from a stored hyphen control, so a consumer that turns a selection of run text into a text replace needs this list to see that the stored characters differ from the projection. Four controls are listed: `tab` (code 9, an 8-unit inline control, projected as a space), `hyphen` (code 24, projected as `-`), `nb_space` (code 30, projected as a space) and `fw_space` (code 31, projected as a space). Line breaks are not listed: they end the line rather than projecting as run text. PRESENT ONLY WHEN THE PIECE PROJECTED AT LEAST ONE OF THEM: a run with none omits the key rather than carrying an empty array, so the projected text and every other field are unchanged. `run` segments only, enforced by this object's `dependentSchemas`. A control whose projected character the emitter trimmed away (leading or trailing whitespace of a table cell, a blank line the cleanup collapsed) did not reach the markdown and is not listed. One list per piece: a run a block control interrupts lists each control on the piece that emitted it."
         }
       }
     },

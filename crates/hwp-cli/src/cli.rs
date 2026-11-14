@@ -590,7 +590,7 @@ pub enum Cmd {
         files: bool,
     },
 
-    /// Self-update: fetch the latest `hwp` from GitHub releases and replace the running binary
+    /// Self-update: fetch the latest `ahwp` from GitHub releases and replace the running binary
     Update {
         /// Report the current and latest versions without replacing
         #[arg(long)]

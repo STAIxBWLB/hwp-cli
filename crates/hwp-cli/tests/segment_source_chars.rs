@@ -29,7 +29,7 @@ use hwp_model::{Control, Document, HwpChar, Paragraph, Section, ctrl_char};
 mod temp_path;
 
 fn hwp() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_hwp"))
+    Command::new(env!("CARGO_BIN_EXE_ahwp"))
 }
 
 // ---------------------------------------------------------------------------
