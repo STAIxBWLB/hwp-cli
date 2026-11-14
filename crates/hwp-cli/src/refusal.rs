@@ -1,4 +1,4 @@
-//! Machine-readable refusal object for `edit-report-v1` 1.1 and the MCP `hwp_edit` error result
+//! Machine-readable refusal object for `edit-report-v1` 1.1 (and 1.2's `document_protected`) and the MCP `hwp_edit` error result
 //! (#531). A refusal carries a stable snake_case `code`, the structured inputs behind it in
 //! `values` (user-typed strings live here, never spliced into a code or a path string), and the
 //! human sentence in `message`, which is exactly what stderr prints.
@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// Every code `edit-report-v1` 1.1 may carry in `refusal.code`. Keep this list, the schema
+/// Every code `edit-report-v1` 1.2 may carry in `refusal.code`. Keep this list, the schema
 /// enum and the manual tables in step; `refusal_codes_match_schema` pins the first two.
 pub const REFUSAL_CODES: &[&str] = &[
     RANGE_TAG_SHIFT,
@@ -28,6 +28,7 @@ pub const REFUSAL_CODES: &[&str] = &[
     PRESERVATION_LOSS,
     UNAPPLIED_REQUESTS,
     NO_APPLICABLE_EDITS,
+    DOCUMENT_PROTECTED,
     UNCLASSIFIED,
 ];
 
@@ -46,7 +47,25 @@ pub const INSERT_BLOCKS_INVALID_SPEC: &str = "insert_blocks.invalid_spec";
 pub const PRESERVATION_LOSS: &str = "preservation_loss";
 pub const UNAPPLIED_REQUESTS: &str = "unapplied_requests";
 pub const NO_APPLICABLE_EDITS: &str = "no_applicable_edits";
+pub const DOCUMENT_PROTECTED: &str = "document_protected";
 pub const UNCLASSIFIED: &str = "unclassified";
+
+/// Every `values.protection` class `document_protected` may carry (`edit-report-v1` 1.2, #571).
+/// `password` covers both an absent and a wrong password, as the engine cannot tell them apart
+/// without becoming a credential oracle.
+pub const PROTECTION_CLASSES: &[&str] = &[
+    PROTECTION_PASSWORD,
+    PROTECTION_CERTIFICATE_ENCRYPTION,
+    PROTECTION_CERTIFICATE_DRM,
+    PROTECTION_DRM,
+    PROTECTION_SIGNATURE,
+];
+
+pub const PROTECTION_PASSWORD: &str = "password";
+pub const PROTECTION_CERTIFICATE_ENCRYPTION: &str = "certificate_encryption";
+pub const PROTECTION_CERTIFICATE_DRM: &str = "certificate_drm";
+pub const PROTECTION_DRM: &str = "drm";
+pub const PROTECTION_SIGNATURE: &str = "signature";
 
 /// The fixed, content-free sentence `refusal.message` carries for each code (#348, #531).
 /// It never interpolates request text, patterns, anchors, URLs, names or error chains; the
@@ -72,6 +91,7 @@ pub fn fixed_message(code: &str) -> &'static str {
         PRESERVATION_LOSS => "보존할 수 없는 데이터를 지우거나 바꾸게 되어 거부했습니다",
         UNAPPLIED_REQUESTS => "적용되지 않은 편집 요청이 있습니다",
         NO_APPLICABLE_EDITS => "문서를 바꾼 편집 요청이 없습니다",
+        DOCUMENT_PROTECTED => "보호된 문서라 열 수 없어 거부했습니다",
         _ => "편집이 거부되었습니다",
     }
 }
@@ -101,6 +121,12 @@ impl Refusal {
     pub fn with(mut self, key: &str, value: impl Into<Value>) -> Self {
         self.values.insert(key.to_owned(), value.into());
         self
+    }
+
+    /// An open-time protection refusal (#571). `protection` is one of [`PROTECTION_CLASSES`].
+    pub fn document_protected(protection: &'static str, prose: impl Into<String>) -> Self {
+        debug_assert!(PROTECTION_CLASSES.contains(&protection));
+        Self::new(DOCUMENT_PROTECTED, prose).with("protection", protection)
     }
 
     pub fn unclassified(message: impl Into<String>) -> Self {
@@ -265,6 +291,22 @@ mod tests {
         for code in REFUSAL_CODES {
             assert!(!fixed_message(code).is_empty());
         }
+    }
+
+    #[test]
+    fn protection_classes_match_schema() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json"))
+                .unwrap();
+        let description = schema["$defs"]["refusal"]["properties"]["code"]["description"]
+            .as_str()
+            .unwrap();
+        for class in PROTECTION_CLASSES {
+            assert!(description.contains(&format!("`{class}`")), "{class}");
+        }
+        let refusal = Refusal::document_protected(PROTECTION_DRM, "x");
+        assert_eq!(refusal.values["protection"], "drm");
+        assert_eq!(refusal.message, fixed_message(DOCUMENT_PROTECTED));
     }
 
     #[test]

@@ -16,8 +16,8 @@
   ],
   "properties": {
     "schema_version": {
-      "enum": ["1.0", "1.1"],
-      "description": "1.1 (#531) adds the optional `refusal` objects and writes the report on refused runs; every 1.0 field is unchanged. Writers emit 1.1."
+      "enum": ["1.0", "1.1", "1.2"],
+      "description": "1.1 (#531) adds the optional `refusal` objects and writes the report on refused runs; every 1.0 field is unchanged. 1.2 (#571) adds the `document_protected` refusal code; every 1.1 field and code is unchanged. Writers emit 1.2."
     },
     "contract": { "const": "hwp-edit-report-v1" },
     "output": { "type": "string" },
@@ -44,8 +44,8 @@
       "required": ["code", "values", "message"],
       "properties": {
         "code": {
-          "enum": ["range_tag_shift", "section_owner_insert", "section_owner_move", "add_table.anchor_not_found", "insert_blocks.unknown_style", "insert_blocks.invalid_definition", "insert_blocks.style_not_paragraph", "insert_blocks.duplicate_style", "insert_blocks.style_cycle", "insert_blocks.style_id_overflow", "layout_overflow", "insert_blocks.invalid_spec", "preservation_loss", "unapplied_requests", "no_applicable_edits", "unclassified"],
-          "description": "Stable snake_case id, named like the preservation-report-v1 event codes. `range_tag_shift`: An edit would move or drop an uninterpreted PARA_RANGE_TAG range mark. values: {}. `section_owner_insert`: An insertion would land in front of a section's setup paragraph. values: {}. `section_owner_move`: A move would land in front of a section's setup paragraph. values: {}. `add_table.anchor_not_found`: No top-level paragraph contains the add_table anchor. values: anchor (string, as given). `insert_blocks.unknown_style`: A style used by insert_blocks is not in the target and was not created (no definition, or missing_style=refuse). values: style (string), missing_style (create|refuse). `insert_blocks.invalid_definition`: A style definition could not be compiled, or the DocumentSpec issues sit under $.styles or $.lists. values: style and detail (string) for a compile failure; issues and container_width_mm for a validation failure. `insert_blocks.style_not_paragraph`: The named target style is not a paragraph style. values: style. `insert_blocks.duplicate_style`: The target holds the style name more than once. values: style. `insert_blocks.style_cycle`: based_on forms a cycle. values: style. `insert_blocks.style_id_overflow`: The style id does not fit HWP's one byte. values: style, style_id, max_style_id (integers). `layout_overflow`: DocumentSpec validation found a width that exceeds the insertion container. values: issues (list of {code, path, message, measured_width_mm?}, path a list of segments: strings, and integers for array indices; measured_width_mm is the image or table width, or the column sum, that overflowed, one decimal), container_width_mm (number, one decimal). `insert_blocks.invalid_spec`: DocumentSpec validation failed with no layout_overflow and no style or list issue. values: issues, container_width_mm, as for layout_overflow. `preservation_loss`: The writer would remove or change data it cannot preserve. values: events (list of {code, resource, disposition, count}; code is a preservation-report-v1 event code). `unapplied_requests`: Some requests matched nothing and --allow-partial was not given. values: {}; the failed entries of `ops` name which requests missed. `no_applicable_edits`: No request changed the document. values: {}. `unclassified`: Any other refusal. values: {}. Its message is the fixed sentence for `unclassified`; the full sentence is on stderr only."
+          "enum": ["range_tag_shift", "section_owner_insert", "section_owner_move", "add_table.anchor_not_found", "insert_blocks.unknown_style", "insert_blocks.invalid_definition", "insert_blocks.style_not_paragraph", "insert_blocks.duplicate_style", "insert_blocks.style_cycle", "insert_blocks.style_id_overflow", "layout_overflow", "insert_blocks.invalid_spec", "preservation_loss", "unapplied_requests", "no_applicable_edits", "document_protected", "unclassified"],
+          "description": "Stable snake_case id, named like the preservation-report-v1 event codes. `range_tag_shift`: An edit would move or drop an uninterpreted PARA_RANGE_TAG range mark. values: {}. `section_owner_insert`: An insertion would land in front of a section's setup paragraph. values: {}. `section_owner_move`: A move would land in front of a section's setup paragraph. values: {}. `add_table.anchor_not_found`: No top-level paragraph contains the add_table anchor. values: anchor (string, as given). `insert_blocks.unknown_style`: A style used by insert_blocks is not in the target and was not created (no definition, or missing_style=refuse). values: style (string), missing_style (create|refuse). `insert_blocks.invalid_definition`: A style definition could not be compiled, or the DocumentSpec issues sit under $.styles or $.lists. values: style and detail (string) for a compile failure; issues and container_width_mm for a validation failure. `insert_blocks.style_not_paragraph`: The named target style is not a paragraph style. values: style. `insert_blocks.duplicate_style`: The target holds the style name more than once. values: style. `insert_blocks.style_cycle`: based_on forms a cycle. values: style. `insert_blocks.style_id_overflow`: The style id does not fit HWP's one byte. values: style, style_id, max_style_id (integers). `layout_overflow`: DocumentSpec validation found a width that exceeds the insertion container. values: issues (list of {code, path, message, measured_width_mm?}, path a list of segments: strings, and integers for array indices; measured_width_mm is the image or table width, or the column sum, that overflowed, one decimal), container_width_mm (number, one decimal). `insert_blocks.invalid_spec`: DocumentSpec validation failed with no layout_overflow and no style or list issue. values: issues, container_width_mm, as for layout_overflow. `preservation_loss`: The writer would remove or change data it cannot preserve. values: events (list of {code, resource, disposition, count}; code is a preservation-report-v1 event code). `unapplied_requests`: Some requests matched nothing and --allow-partial was not given. values: {}; the failed entries of `ops` name which requests missed. `no_applicable_edits`: No request changed the document. values: {}. `document_protected` (1.2): The input document is protected and cannot be opened. values: protection (string), one of `password` (a password is required or the one given is wrong; the engine does not tell the two apart, HWP5 and HWPX), `certificate_encryption`, `certificate_drm`, `drm` or `signature` (the HWP5 FileHeader gates). A distribution document is not refused here, since it is readable. `unclassified`: Any other refusal. values: {}. Its message is the fixed sentence for `unclassified`; the full sentence is on stderr only."
         },
         "values": {
           "type": "object",
@@ -54,6 +54,22 @@
         "message": {
           "type": "string",
           "description": "A fixed, content-free sentence for `code` (Korean); it never interpolates request content (#348). The full human sentence is on stderr only. Its wording may change between releases."
+        }
+      },
+      "if": {
+        "properties": { "code": { "const": "document_protected" } },
+        "required": ["code"]
+      },
+      "then": {
+        "properties": {
+          "values": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["protection"],
+            "properties": {
+              "protection": { "enum": ["password", "certificate_encryption", "certificate_drm", "drm", "signature"] }
+            }
+          }
         }
       }
     },

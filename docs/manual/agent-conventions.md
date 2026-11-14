@@ -409,7 +409,7 @@ Evidence and limits are recorded in `docs/design/07-hangul-compat-rules.md` (J1 
 ### Classify a refused edit
 
 A refused `ahwp edit` still writes the `edit-report-v1` file that `--report` names, and
-`--dry-run` still prints it. The report (schema version 1.1) carries a top-level `refusal`
+`--dry-run` still prints it. The report (schema version 1.2) carries a top-level `refusal`
 object, and when one op refused, that op's entry carries the same object with `status:
 "failed"`. MCP `hwp_edit` returns the same object as `structuredContent.refusal` of its error
 result, and writes the same report to its `report` argument for any refusal raised after the
@@ -439,7 +439,10 @@ Branch on `code`, never on `message`. Values the user typed (anchors, style name
 | `layout_overflow`, `insert_blocks.invalid_spec` | `issues` (`code`, `path` as a list, `message`, and for an overflow `measured_width_mm`), `container_width_mm` |
 | `preservation_loss` | `events` (`code`, `resource`, `disposition`, `count`) |
 | `unapplied_requests`, `no_applicable_edits` | none; failed `ops` entries name the misses |
+| `document_protected` | `protection`: `password`, `certificate_encryption`, `certificate_drm`, `drm` or `signature` |
 | `unclassified` | none; any refusal not listed above |
+
+`document_protected` (1.2) is an open-time refusal: the input is protected, so the run has no `ops`. `password` covers an absent and a wrong password alike, for HWP5 and HWPX; the engine does not tell them apart. A distribution document is readable, so it is not refused. Consumers that accept only 1.1 must also accept 1.2; every 1.1 field and code is unchanged.
 
 ### The preservation ledger
 
