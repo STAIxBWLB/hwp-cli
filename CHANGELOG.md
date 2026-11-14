@@ -14,14 +14,20 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Compatibility**
 
-- `edit-report-v1` reports now carry `schema_version` `1.4` (2.0.0 wrote `1.1`). 1.2 adds the
-  `document_protected` refusal code, 1.3 the `verify_mismatch` code and 1.4 the optional
-  `preservation` list and `values.missing_element`. Every earlier field and code is unchanged; a
-  consumer that accepts only `"1.1"` must also accept `"1.2"` to `"1.4"`, and one that branches on
-  `unclassified` now sees `document_protected` or `verify_mismatch` for those runs
+- `edit-report-v1` reports now carry `schema_version` `1.5` (2.0.0 wrote `1.1`). 1.2 adds the
+  `document_protected` refusal code, 1.3 the `verify_mismatch` code, 1.4 the optional
+  `preservation` list and `values.missing_element`, and 1.5 the `raw_backed_edit` code. Every
+  earlier field and code is unchanged; a consumer that accepts only `"1.1"` must also accept
+  `"1.2"` to `"1.5"`, and one that branches on `unclassified` now sees `document_protected` or
+  `verify_mismatch` for those runs
   ([#571](https://github.com/STAIxBWLB/agent-hwp/issues/571),
   [#578](https://github.com/STAIxBWLB/agent-hwp/issues/578),
-  [#583](https://github.com/STAIxBWLB/agent-hwp/issues/583)).
+  [#583](https://github.com/STAIxBWLB/agent-hwp/issues/583),
+  [#577](https://github.com/STAIxBWLB/agent-hwp/issues/577)).
+- An `edit` of an HWP5 input written as `.hwp` whose change lies inside a text box or other shape,
+  a footnote, an endnote, a header or a footer now exits non-zero with `raw_backed_edit` and
+  publishes nothing. 2.0.0 exited 0 and kept the old text there. Write `.hwpx` to keep such an
+  edit ([#577](https://github.com/STAIxBWLB/agent-hwp/issues/577)).
 - An `edit` from an HWP5 input to `.hwpx` now reports the losses `convert` reports for that pair
   (stderr, MCP `preservation`, the report's `preservation` list), where 2.0.0 published them
   silently. Whether it publishes is unchanged: the HWPX writer's own events still refuse it, and
