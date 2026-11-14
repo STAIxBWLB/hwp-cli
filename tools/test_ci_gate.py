@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -736,6 +737,12 @@ class WorkflowTests(unittest.TestCase):
         Runs the real jq filter of every reader (ci.yml decision, release.yml verify-ci x2,
         release-readiness.yml x2) against one check-runs payload that holds both runs.
         """
+        if shutil.which("jq") is None:
+            # The hosted ubuntu runner ships jq, and ci-ok runs this suite there: it must never
+            # skip in CI. Only a local mirror without jq (the dgx02 verify container) may skip.
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                self.fail("jq is required to run the real latest-run filters in CI")
+            self.skipTest("jq not installed; the hosted CI run enforces this test")
         filters = []
         for path in [".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/release-readiness.yml"]:
             filters += [(path, m) for m in re.findall(r"""'(\[\.check_runs\[\] \| select\(\.name == \$n\)\][^']*)'""", (ROOT / path).read_text())]
