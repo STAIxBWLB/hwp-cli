@@ -320,7 +320,6 @@ measured, so that half is inference and is marked as such in
 
 **What remains open:** the HWP5 paragraph header's bit 0x04 is what the saved files show, but whether Hangul also honours a page break set on the first paragraph of a later section, or inside a table cell, is untested. Those placements are refused, not guessed. The inline-spacing-units question is tracked separately in #415.
 
-
 G4 (Hancom 12.30.0 build 6544, #540):
 
 | Option | HWP5 attr1 | HWPX `hh:breakSetting` |
