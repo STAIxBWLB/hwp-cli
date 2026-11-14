@@ -392,7 +392,7 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 ### 거부된 편집 분류
 
 `ahwp edit`가 거부되어도 `--report`로 지정한 `edit-report-v1` 파일은 기록되고, `--dry-run`도
-보고서를 출력한다. 보고서(스키마 버전 1.4)는 최상위 `refusal` 객체를 담고, 연산 하나가
+보고서를 출력한다. 보고서(스키마 버전 1.5)는 최상위 `refusal` 객체를 담고, 연산 하나가
 거부했으면 그 연산 항목도 `status: "failed"`와 함께 같은 객체를 담는다. MCP `hwp_edit`는 오류
 결과의 `structuredContent.refusal`로 같은 객체를 돌려준다. stderr는 사람이 읽는 한국어 문장을
 그대로 유지하고, MCP 오류 텍스트도 같은 문장을 담는다. `refusal.message`는 코드마다 정해진 고정
@@ -421,12 +421,24 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 | `preservation_loss` | `events`(`code`, `resource`, `disposition`, `count`) |
 | `unapplied_requests`, `no_applicable_edits` | 없음. 실패한 `ops` 항목이 놓친 요청을 알려 준다 |
 | `document_protected` | `protection`: `password`, `certificate_encryption`, `certificate_drm`, `drm`, `signature` 중 하나 |
+| `raw_backed_edit` | `controls`: 편집이 텍스트를 바꾼 컨트롤 종류별 `{kind, count}` (`footnote`, `endnote`, `header`, `footer`, `shape_or_text_box`, `other`) |
 | `verify_mismatch` | `counts`: 다른 개수 불변식 목록, 각 항목은 `{name, expected, actual}`. 빈 목록이면 정규화 해시만 다르다 |
 | `unclassified` | 없음. 위에 없는 모든 거부 |
 
 `document_protected`(1.2)는 문서를 여는 단계의 거부다. 입력이 보호되어 있으므로 `ops`가 비어 있다. `password`는 암호가 없는 경우와 틀린 경우를 모두 가리키며(HWP5와 HWPX), 엔진은 둘을 구분하지 않는다. 배포용 문서는 읽을 수 있으므로 거부하지 않는다. 1.1만 받는 소비자는 1.2도 받아야 한다. 1.1의 모든 필드와 코드는 그대로다.
 
 `verify_mismatch`(1.3)는 `--verify`가 다시 읽은 출력이 편집 결과와 다를 때 보고하는 코드다. 아무것도 게시하지 않는다. `counts`는 개수 불변식 이름(`sections`, `paragraphs`, `tables`, `pictures`, `generic_controls`, `fields`, `bookmarks`, `hyperlinks`, `bin_streams`, `char_shapes`, `para_shapes`, `styles`, `text_chars`)만 담고 문서 내용은 담지 않는다. 1.3 이전에는 이 거부가 `unclassified`였다.
+
+### HWP5 작성기가 다시 쓰지 않는 컨트롤 안의 편집
+
+HWP5 작성기는 저장된 HWP5 파일에서 읽은 글상자·도형, 각주, 미주, 머리말, 꼬리말을 편집이 바꾼 문단이
+아니라 저장된 레코드에서 그대로 쓴다. 1.5 이전에는 그 안을 대상으로 한 `--replace`, `--set-cell`,
+타입 연산이 `--verify` 여부와 관계없이 종료 코드 0으로 끝나고 출력에는 예전 텍스트가 남았다. 이제는
+아무것도 쓰기 전에 `raw_backed_edit`로 거부하며, `values.controls`가 종류와 개수를 담고 아무것도
+게시하지 않는다. 출력을 `.hwpx`로 하면 편집한 문단에서 쓰므로 편집이 반영된다. 아니면 한글에서 그
+컨트롤을 직접 편집한다. 이 검사는 HWP5 입력을 `.hwp`로 쓸 때만 적용되고, 모든 연산에 적용되며, 같은
+문서의 다른 곳을 편집하는 것은 거부하지 않는다. 계획이 컨트롤을 어디로 옮겼든 바뀐 컨트롤을 찾는다. 컨트롤은 위치가 아니라 저장된 레코드로 짝을 짓기 때문에, 같은 계획에서 문단을 삽입·삭제·이동해도 각주 편집이 가려지지 않고 각주를 건드리지 않은 편집이 거부되지도 않는다. 편집한 텍스트를 저장된 레코드에 되써 넣는 것은
+저장 파일 근거가 없어 하지 않는다.
 
 ### 교차 형식 편집의 손실
 
