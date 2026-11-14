@@ -14,7 +14,9 @@ on:
         default: ""
   push:
     branches: [main]
+  # ready_for_review starts the run that includes macOS for a PR opened as a draft (#575).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   CARGO_TERM_COLOR: always
@@ -44,6 +46,8 @@ jobs:
     outputs:
       run_full: ${{ steps.dedupe.outputs.run_full }}
       skip_kind: ${{ steps.dedupe.outputs.skip_kind }}
+      macos_deferred: ${{ steps.macos.outputs.macos_deferred }}
+      test_os: ${{ steps.macos.outputs.test_os }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -93,7 +97,7 @@ jobs:
                     all_green=true
                     for name in "${expected[@]}"; do
                       if ! state="$(jq -r --arg n "$name" \
-                        '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
+                        '[.check_runs[] | select(.name == $n)] | sort_by([.started_at // "", .id // 0]) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
                         <<<"$runs")"; then
                         echo "::warning::Could not parse PR gate check states; running full CI."
                         all_green=false
@@ -129,6 +133,34 @@ jobs:
               echo "$reason."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # #575: STAIxBWLB can run 5 macOS jobs at once, org-wide, so macOS waits for a ready PR.
+      # A draft PR drops the macOS entry from the test matrix and defers it: `test (macos-latest)`
+      # stays in `expected`, and ci-ok FAILS with the deferral message instead of passing, so the
+      # main-push dedup and the release gate can never borrow a run that did not test macOS.
+      # `gh pr ready` fires ready_for_review, which starts a run with all three legs. Only a
+      # pull_request that is positively a draft defers; an unknown draft state runs macOS.
+      - name: Decide the macOS test leg
+        id: macos
+        shell: bash
+        env:
+          RUN_FULL: ${{ steps.dedupe.outputs.run_full }}
+        run: |
+          set -euo pipefail
+          verdict="$(python3 scripts/ci_gate.py macos)"
+          deferred=false
+          test_os='["ubuntu-latest","macos-latest","windows-latest"]'
+          # A lightweight run has no test legs at all, so there is nothing to defer.
+          if [ "$verdict" = "defer" ] && [ "$RUN_FULL" = "true" ]; then
+            deferred=true
+            test_os='["ubuntu-latest","windows-latest"]'
+          fi
+          echo "macos_deferred=$deferred" >> "$GITHUB_OUTPUT"
+          echo "test_os=$test_os" >> "$GITHUB_OUTPUT"
+          if [ "$deferred" = "true" ]; then
+            echo "### macOS deferred" >> "$GITHUB_STEP_SUMMARY"
+            echo "Draft PR: the macOS test leg runs when the PR is marked ready (gh pr ready)." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # Gate layout: platform-independent checks run ONCE in `lint`; the 3-OS matrix in `test`
   # runs only cargo test; the fixed Ubuntu PDF-parity job runs the committed public oracle.
@@ -328,12 +360,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # All three are required gates: ubuntu (CI baseline) + macOS (owner's main
-          # platform) + windows (MSVC build/tests, and the release binaries come from here).
-          - { os: ubuntu-latest }
-          - { os: macos-latest }
-          - { os: windows-latest }
+        # All three are required gates: ubuntu (CI baseline) + macOS (owner's main
+        # platform) + windows (MSVC build/tests, and the release binaries come from here).
+        # The decision job lists all three, and drops macOS on a draft PR only (#575).
+        os: ${{ fromJSON(needs.decision.outputs.test_os || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

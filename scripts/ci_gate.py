@@ -17,6 +17,17 @@ class GateError(RuntimeError):
     pass
 
 
+# The exact workflow command a deferred macOS aggregate prints (#575). It is printed verbatim:
+# diagnostic_cause would rewrite its "::".
+MACOS_DEFERRED_ANNOTATION = (
+    "::error title=macOS deferred::draft PR; macOS runs when the PR is marked ready (gh pr ready)"
+)
+
+
+class DeferredError(GateError):
+    """A required gate was deliberately not run yet: the aggregate fails, never succeeds (#575)."""
+
+
 def diagnostic_cause(value, limit=1200):
     """Bound public diagnostics; never replay workflow commands or credential material."""
     detail = " ".join(str(value).split())
@@ -123,6 +134,21 @@ def path_decision(event_name, event, sha, ref, repo):
     return "full" if requires_full(changed_paths(base, sha)) else "paths"
 
 
+def macos_decision(event_name, event):
+    """`defer` only for a pull_request that is positively a draft; `run` for everything else.
+
+    A pull_request event without a boolean `draft` is unknown: it raises, and the caller runs
+    macOS rather than deferring it. An unknown state therefore never skips the macOS leg, and
+    the aggregate only ever fails on a deferral it was told about (#575).
+    """
+    if event_name != "pull_request":
+        return "run"
+    draft = event.get("pull_request", {}).get("draft")
+    if not isinstance(draft, bool):
+        raise GateError("pull_request event carries no boolean draft state")
+    return "defer" if draft else "run"
+
+
 def aggregate(needs):
     if set(needs) != GATES | {"decision"}:
         raise GateError("aggregate dependency set differs; update ci-ok needs and policy together")
@@ -136,9 +162,19 @@ def aggregate(needs):
         expected = "skipped"
     else:
         raise GateError("CI decision outputs are missing/invalid; inspect decision and rerun CI")
+    macos_deferred = outputs.get("macos_deferred")
+    if macos_deferred not in {"true", "false"}:
+        raise GateError("CI decision macos_deferred output is missing/invalid; inspect decision and rerun CI")
+    if macos_deferred == "true" and expected != "success":
+        raise GateError("CI decision defers macOS on a lightweight run; inspect decision and rerun CI")
     for name in sorted(GATES):
         if needs[name].get("result") != expected:
             raise GateError(f"{name} did not report expected {expected}; inspect its job and rerun CI")
+    # Checked last so a real failure is reported in preference to the deferral. A deferred
+    # aggregate must never succeed: the main-push dedup and the release gate would otherwise
+    # borrow a PR run that never tested macOS (#575).
+    if macos_deferred == "true":
+        raise DeferredError(MACOS_DEFERRED_ANNOTATION)
 
 
 
@@ -207,7 +243,7 @@ def formula_gate(repo, branch, head, timeout=600, poll=10, clock=time.monotonic,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["paths", "aggregate", "formula"])
+    parser.add_argument("mode", choices=["paths", "macos", "aggregate", "formula"])
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"))
     parser.add_argument("--branch")
     parser.add_argument("--head")
@@ -224,11 +260,21 @@ def main():
                 print(f"::warning::Path proof unavailable: {diagnostic_cause(error)}; running full CI", file=sys.stderr)
                 result = "full"
             print(result)
+        elif args.mode == "macos":
+            event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+            try:
+                print(macos_decision(os.environ["GITHUB_EVENT_NAME"], event))
+            except GateError as error:
+                print(f"::warning::macOS deferral not decidable: {diagnostic_cause(error)}; running macOS", file=sys.stderr)
+                print("run")
         elif args.mode == "aggregate":
             aggregate(json.loads(os.environ["NEEDS_JSON"]))
             print("ci-ok: all required results satisfied")
         else:
             formula_gate(args.repo, args.branch, args.head)
+    except DeferredError:
+        print(MACOS_DEFERRED_ANNOTATION, file=sys.stderr)
+        return 1
     except GateError as error:
         print(f"::error::{diagnostic_cause(error, 2000)}", file=sys.stderr)
         return 1

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -257,9 +258,50 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIn("workflow dispatch forbidden", err.getvalue())
 
 
+class MacosDecisionTests(unittest.TestCase):
+    def pull(self, draft):
+        pull_request = {"number": 1} if draft is gate else {"number": 1, "draft": draft}
+        return {"pull_request": pull_request}
+
+    def test_only_a_positive_draft_pull_request_defers(self):
+        self.assertEqual(gate.macos_decision("pull_request", self.pull(True)), "defer")
+        self.assertEqual(gate.macos_decision("pull_request", self.pull(False)), "run")
+
+    def test_unknown_draft_state_is_an_error_never_a_silent_deferral(self):
+        for draft in [gate, None, "true", "false", 0, 1, ""]:
+            with self.subTest(draft=draft), self.assertRaises(gate.GateError):
+                gate.macos_decision("pull_request", self.pull(draft))
+        with self.assertRaises(gate.GateError):
+            gate.macos_decision("pull_request", {})
+
+    def test_other_events_always_run_macos(self):
+        for name in ["push", "workflow_dispatch", "schedule"]:
+            with self.subTest(name=name):
+                self.assertEqual(gate.macos_decision(name, {"pull_request": {"draft": True}}), "run")
+                self.assertEqual(gate.macos_decision(name, {}), "run")
+
+    def run_mode(self, name, event):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "event.json"
+            path.write_text(json.dumps(event))
+            env = {**os.environ, "GITHUB_EVENT_NAME": name, "GITHUB_EVENT_PATH": str(path)}
+            return subprocess.run(["python3", str(ROOT / "scripts/ci_gate.py"), "macos"], env=env, capture_output=True, text=True, timeout=10)
+
+    def test_cli_defers_a_draft_and_runs_macos_when_the_state_is_unknown(self):
+        draft = self.run_mode("pull_request", self.pull(True))
+        self.assertEqual((draft.returncode, draft.stdout.strip()), (0, "defer"), draft.stderr)
+        ready = self.run_mode("pull_request", self.pull(False))
+        self.assertEqual((ready.returncode, ready.stdout.strip()), (0, "run"), ready.stderr)
+        unknown = self.run_mode("pull_request", self.pull(None))
+        self.assertEqual((unknown.returncode, unknown.stdout.strip()), (0, "run"), "an unknown draft state must run macOS, not defer it")
+        self.assertIn("::warning::", unknown.stderr)
+        push = self.run_mode("push", {})
+        self.assertEqual(push.stdout.strip(), "run")
+
+
 class AggregateTests(unittest.TestCase):
-    def needs(self, full=True, kind="none"):
-        return {"decision": {"result": "success", "outputs": {"run_full": "true" if full else "false", "skip_kind": kind}}, **{name: {"result": "success" if full else "skipped"} for name in gate.GATES}}
+    def needs(self, full=True, kind="none", deferred="false"):
+        return {"decision": {"result": "success", "outputs": {"run_full": "true" if full else "false", "skip_kind": kind, "macos_deferred": deferred}}, **{name: {"result": "success" if full else "skipped"} for name in gate.GATES}}
 
     def test_full_and_only_justified_skips_succeed(self):
         gate.aggregate(self.needs())
@@ -286,7 +328,9 @@ class AggregateTests(unittest.TestCase):
                         gate.aggregate(needs)
 
     def test_decision_missing_unknown_or_inconsistent_outputs_fail(self):
-        for outputs in [{}, {"run_full": "true"}, {"skip_kind": "none"}, {"run_full": True, "skip_kind": "none"}, {"run_full": "true", "skip_kind": "paths"}, {"run_full": "false", "skip_kind": "none"}, {"run_full": "false", "skip_kind": "unknown"}]:
+        for outputs in [{}, {"run_full": "true"}, {"skip_kind": "none"}, {"run_full": True, "skip_kind": "none"}, {"run_full": "true", "skip_kind": "paths"}, {"run_full": "false", "skip_kind": "none"}, {"run_full": "false", "skip_kind": "unknown"},
+                        {"run_full": "true", "skip_kind": "none"}, {"run_full": "true", "skip_kind": "none", "macos_deferred": ""},
+                        {"run_full": "true", "skip_kind": "none", "macos_deferred": True}, {"run_full": "true", "skip_kind": "none", "macos_deferred": "maybe"}]:
             with self.subTest(outputs=outputs):
                 needs = self.needs()
                 needs["decision"]["outputs"] = outputs
@@ -298,6 +342,39 @@ class AggregateTests(unittest.TestCase):
                 needs["decision"]["result"] = state
                 with self.assertRaises(gate.GateError):
                     gate.aggregate(needs)
+
+    def test_ready_pr_runs_macos_and_succeeds(self):
+        gate.aggregate(self.needs(True, "none", "false"))
+
+    def test_draft_pr_deferral_fails_with_the_exact_annotation(self):
+        # Draft: the deferred leg is not in `test`, so every other gate still succeeded.
+        with self.assertRaises(gate.DeferredError) as raised:
+            gate.aggregate(self.needs(True, "none", "true"))
+        self.assertEqual(str(raised.exception), "::error title=macOS deferred::draft PR; macOS runs when the PR is marked ready (gh pr ready)")
+        self.assertEqual(gate.MACOS_DEFERRED_ANNOTATION, str(raised.exception))
+
+    def test_deferral_never_hides_a_real_failure(self):
+        needs = self.needs(True, "none", "true")
+        needs["lint"] = {"result": "failure"}
+        with self.assertRaises(gate.GateError) as raised:
+            gate.aggregate(needs)
+        self.assertNotIsInstance(raised.exception, gate.DeferredError, "the real failure is reported, not the deferral")
+
+    def test_deferral_on_a_lightweight_run_is_inconsistent_and_fails(self):
+        for kind in ["paths", "dedupe", "formula"]:
+            with self.subTest(kind=kind), self.assertRaises(gate.GateError) as raised:
+                gate.aggregate(self.needs(False, kind, "true"))
+            self.assertNotIsInstance(raised.exception, gate.DeferredError)
+
+    def test_main_prints_the_annotation_verbatim_and_fails_a_deferred_aggregate(self):
+        for deferred, code in [("true", 1), ("false", 0)]:
+            with self.subTest(deferred=deferred):
+                env = {**os.environ, "NEEDS_JSON": json.dumps(self.needs(True, "none", deferred))}
+                result = subprocess.run(["python3", str(ROOT / "scripts/ci_gate.py"), "aggregate"], env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                if deferred == "true":
+                    self.assertEqual(result.stderr.strip(), gate.MACOS_DEFERRED_ANNOTATION)
+                    self.assertNotIn("ci-ok: all required results satisfied", result.stdout)
 
     def test_missing_or_extra_dependency_fails(self):
         for name in ["decision", *gate.GATES]:
@@ -611,8 +688,88 @@ class WorkflowTests(unittest.TestCase):
         for name in ["decision", "lint", "pdf-parity"]:
             self.assertRegex(jobs[name], rf"(?m)^    name:\s*{re.escape(name)}\s*$")
         self.assertIn("name: test (${{ matrix.os }})", jobs["test"])
+        # The matrix comes from decision.test_os (#575); a ready or non-PR run lists all three.
+        self.assertIn("os: ${{ fromJSON(needs.decision.outputs.test_os ||", jobs["test"])
+        full = re.search(r"test_os='(\[[^']*\])'", jobs["decision"])
+        self.assertIsNotNone(full)
+        self.assertEqual(json.loads(full.group(1)), ["ubuntu-latest", "macos-latest", "windows-latest"])
         for platform in ["ubuntu-latest", "macos-latest", "windows-latest"]:
-            self.assertIn(f"os: {platform}", jobs["test"])
+            self.assertIn(f"test ({platform})", jobs["decision"], "expected must keep every test leg, deferred or not")
+
+    def test_pull_request_types_include_ready_for_review(self):
+        content, _ = self.jobs()
+        events = content.split("\njobs:\n", 1)[0]
+        self.assertRegex(events, r"(?m)^  pull_request:\n    types: \[opened, synchronize, reopened, ready_for_review\]$")
+
+    def decision_macos_step(self, event_name, event, run_full="true", draft_verdict=None):
+        """Runs the real `Decide the macOS test leg` step with the real ci_gate.py."""
+        _, jobs = self.jobs()
+        step = jobs["decision"].split("      - name: Decide the macOS test leg\n", 1)[1]
+        script = step.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] if line.startswith("          ") else line for line in script.splitlines())
+        with tempfile.TemporaryDirectory() as tmp:
+            out, summary, path = Path(tmp) / "out", Path(tmp) / "summary", Path(tmp) / "event.json"
+            path.write_text(json.dumps(event))
+            env = {**os.environ, "GITHUB_EVENT_NAME": event_name, "GITHUB_EVENT_PATH": str(path),
+                   "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary), "RUN_FULL": run_full}
+            result = subprocess.run(["bash", "-c", "cd " + str(ROOT) + "\n" + script], env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return dict(line.split("=", 1) for line in out.read_text().splitlines())
+
+    def test_decision_drops_macos_only_on_a_full_draft_pr_run(self):
+        full = ["ubuntu-latest", "macos-latest", "windows-latest"]
+        draft = self.decision_macos_step("pull_request", {"pull_request": {"draft": True}})
+        self.assertEqual(draft["macos_deferred"], "true")
+        self.assertEqual(json.loads(draft["test_os"]), ["ubuntu-latest", "windows-latest"])
+        ready = self.decision_macos_step("pull_request", {"pull_request": {"draft": False}})
+        self.assertEqual((ready["macos_deferred"], json.loads(ready["test_os"])), ("false", full))
+        unknown = self.decision_macos_step("pull_request", {"pull_request": {}})
+        self.assertEqual((unknown["macos_deferred"], json.loads(unknown["test_os"])), ("false", full), "unknown draft state must run macOS")
+        push = self.decision_macos_step("push", {})
+        self.assertEqual((push["macos_deferred"], json.loads(push["test_os"])), ("false", full))
+        # A lightweight draft run has no test legs, so ci-ok must keep its skipped-success rule.
+        light = self.decision_macos_step("pull_request", {"pull_request": {"draft": True}}, run_full="false")
+        self.assertEqual((light["macos_deferred"], json.loads(light["test_os"])), ("false", full))
+
+    def test_every_check_run_reader_takes_the_latest_run_per_name(self):
+        """AC4: a head with a failed draft ci-ok and a later successful ready ci-ok is verified by the latter.
+
+        Runs the real jq filter of every reader (ci.yml decision, release.yml verify-ci x2,
+        release-readiness.yml x2) against one check-runs payload that holds both runs.
+        """
+        if shutil.which("jq") is None:
+            # The hosted ubuntu runner ships jq, and ci-ok runs this suite there: it must never
+            # skip in CI. Only a local mirror without jq (the dgx02 verify container) may skip.
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                self.fail("jq is required to run the real latest-run filters in CI")
+            self.skipTest("jq not installed; the hosted CI run enforces this test")
+        filters = []
+        for path in [".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/release-readiness.yml"]:
+            filters += [(path, m) for m in re.findall(r"""'(\[\.check_runs\[\] \| select\(\.name == \$n\)\][^']*)'""", (ROOT / path).read_text())]
+        self.assertEqual([path for path, _ in filters].count(".github/workflows/ci.yml"), 1)
+        self.assertEqual([path for path, _ in filters].count(".github/workflows/release.yml"), 2)
+        self.assertEqual([path for path, _ in filters].count(".github/workflows/release-readiness.yml"), 2)
+        def runs(*items):
+            return json.dumps({"check_runs": [{"name": "ci-ok", "status": s, "conclusion": c, "started_at": a, "completed_at": b} for s, c, a, b in items]})
+        draft_fail = ("completed", "failure", "2026-11-14T01:00:00Z", "2026-11-14T01:10:00Z")
+        ready_pass = ("completed", "success", "2026-11-14T02:00:00Z", "2026-11-14T02:10:00Z")
+        ready_pending = ("in_progress", None, "2026-11-14T02:30:00Z", None)
+        cases = [
+            (runs(draft_fail, ready_pass), "completed/success"),
+            (runs(ready_pass, draft_fail), "completed/success"),
+            (runs(ready_pass, ready_pending), "in_progress/pending"),
+            (runs(ready_pending, ready_pass), "in_progress/pending"),
+            # The old completed_at ordering sorted a pending run (null) first, so a newer pending
+            # run was hidden behind the older failed draft run.
+            (runs(draft_fail, ready_pending), "in_progress/pending"),
+            (runs(("completed", "success", "2026-11-14T02:00:00Z", "2026-11-14T02:10:00Z"), ("completed", "failure", "2026-11-14T03:00:00Z", "2026-11-14T03:10:00Z")), "completed/failure"),
+        ]
+        for path, expression in filters:
+            for payload, expected in cases:
+                with self.subTest(path=path, expected=expected, payload=payload[:60]):
+                    result = subprocess.run(["jq", "-r", "--arg", "n", "ci-ok", expression], input=payload, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
 
     def test_release_state_classifier_allows_only_success_or_absent_legacy_fallback(self):
         release = (ROOT / ".github/workflows/release.yml").read_text()
@@ -677,7 +834,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_decision_malformed_jq_falls_back_to_full_without_aborting(self):
         _, jobs = self.jobs()
-        run_block = jobs["decision"].split("        run: |\n", 1)[1]
+        # Only the dedupe step: the macOS step that follows it is exercised by its own test.
+        run_block = jobs["decision"].split("        run: |\n", 1)[1].split("\n      # #575:", 1)[0]
         script = "\n".join(line[10:] if line.startswith("          ") else line for line in run_block.splitlines())
         # Execute the actual decision shell with PATH shims; no Python policy, git or gh is real.
         for stage in ["selection", "number", "head", "state"]:

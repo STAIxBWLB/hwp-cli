@@ -88,6 +88,12 @@ scripts/check.sh               # the one gate: fmt -> clippy -> test -> fixture/
   against origin's main**.
 - Open a PR only once `scripts/check.sh` passes. **Squash merge once CI is green (ubuntu + macOS +
   windows all required)**, keeping the `(#N)` suffix convention in the merge commit title.
+- **Draft first.** Open the PR with `gh pr create --draft`, and run `gh pr ready` just before
+  reporting the task done. The org runs at most 5 macOS jobs at once, so CI skips the macOS test leg
+  on a draft PR: `ci-ok` fails on a draft with `macOS deferred`, by design, and `gh pr ready` starts
+  the run with all three test legs. A push to a ready PR runs macOS as before. During a small fix
+  round you may return the PR to draft with `gh pr ready --undo`, then `gh pr ready` again. Merge
+  only on the ready run's green `ci-ok` at the exact head.
 
 ## Data policy (important)
 
