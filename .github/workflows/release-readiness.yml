@@ -515,7 +515,9 @@ jobs:
           elif ! grep -q 'archive: $bin-$tag-$target' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml no longer names its archive $bin-$tag-$target, so the published asset name is not the command name plus the target'
-          elif grep -nE 'alias-assets|(^|[^a])hwp-"?\$tag|"\$dir/hwp' .github/workflows/release.yml; then
+          # Match the alias-assets job key, not prose: release.yml's 2.x guard names
+          # alias-assets in a comment and in its refusal message.
+          elif grep -nE '^  alias-assets:|(^|[^a])hwp-"?\$tag|"\$dir/hwp' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml publishes an hwp alias or a legacy hwp-<tag>-<target> asset again; 2.0 removed both (#510 Phase 4)'
           elif ! grep -q 'checksum: sha256' .github/workflows/release.yml; then
