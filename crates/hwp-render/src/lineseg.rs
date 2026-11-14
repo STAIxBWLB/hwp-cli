@@ -912,6 +912,84 @@ mod tests {
         }
     }
 
+    // Exercise the existing native-cache entry point so the pre-fix test compiles and
+    // fails on geometry, not on a missing resolver API. No fonts or fixture files are used.
+    fn native_test_width(margins: [u16; 4]) -> i32 {
+        let snap = hwp_convert::from_markdown("Cell\n");
+        let mut cell = cell_with(&[0]);
+        cell.margins = margins;
+        cell.paragraphs[0].line_segs.clear();
+        let mut table = table_with(cell);
+        table.inner_margins = [510, 510, 141, 141];
+        let mut parent = Paragraph {
+            controls: vec![Control::Table(table)],
+            ..Default::default()
+        };
+        let mut fonts = FontStore::new_isolated();
+        let mut issues = RenderIssueAccumulator::new();
+        fill_nested(
+            &mut parent,
+            20000,
+            &snap,
+            &mut fonts,
+            &mut issues,
+            ListCaches::Recompute,
+        );
+        let Control::Table(table) = &parent.controls[0] else {
+            unreachable!()
+        };
+        table.cells[0].paragraphs[0].line_segs[0].seg_width
+    }
+
+    fn native_test_height(margins: [u16; 4]) -> i32 {
+        let mut cell = cell_with(&[0]);
+        cell.margins = margins;
+        let mut table = table_with(cell);
+        table.inner_margins = [510, 510, 141, 141];
+        table_height(&table)
+    }
+
+    #[test]
+    fn native_margin_all_sentinel_width_uses_table_inner_sides() {
+        assert_eq!(native_test_width([u16::MAX; 4]), 5000 - 510 - 510);
+    }
+
+    #[test]
+    fn native_margin_all_sentinel_height_has_no_65535_term() {
+        // Vertical fallback to the table is inferred; absence of a sentinel term is observed.
+        assert_eq!(
+            native_test_height([u16::MAX; 4]),
+            141 + 1000 + 141 + TABLE_BLOCK_PADDING
+        );
+    }
+
+    #[test]
+    fn native_margin_single_horizontal_sentinel_keeps_the_other_side_zero() {
+        assert_eq!(native_test_width([u16::MAX, 0, 20, 30]), 5000 - 510);
+    }
+
+    #[test]
+    fn native_margin_single_vertical_sentinel_keeps_the_other_side_zero() {
+        assert_eq!(
+            native_test_height([0, 0, u16::MAX, 0]),
+            141 + 1000 + TABLE_BLOCK_PADDING
+        );
+    }
+
+    #[test]
+    fn native_margin_zero_and_ordinary_values_are_unchanged_controls() {
+        for margins in [[0, 0, 0, 0], [0, 250, 10, 20], [200, 300, 40, 50]] {
+            assert_eq!(
+                native_test_width(margins),
+                5000 - i32::from(margins[0]) - i32::from(margins[1])
+            );
+            assert_eq!(
+                native_test_height(margins),
+                i32::from(margins[2]) + 1000 + i32::from(margins[3]) + TABLE_BLOCK_PADDING
+            );
+        }
+    }
+
     #[test]
     fn table_height_multi_paragraph_cell_is_not_double_counted() {
         // Four paragraphs at v_pos 0/1600/3200/4800 give cell line block 4800 + 1000.
