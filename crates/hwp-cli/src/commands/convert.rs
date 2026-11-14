@@ -2394,6 +2394,7 @@ mod tests {
     }
 
     fn native_suffix_source(dir: &std::path::Path) -> (std::path::PathBuf, hwp_model::Document) {
+        use hwp_model::{Control, GsoPlacement};
         let source = dir.join("source.hwp");
         let mut document = hwp_convert::from_markdown(
             "Prefix\n\nEdit here\n\n| A | B |\n|---|---|\n| C | D |\n\nTail one\n\nTail two\n",
@@ -2464,7 +2465,7 @@ mod tests {
     /// The suffix includes a floating table with a deliberately taller saved cell cache.
     #[test]
     fn native_height_neutral_body_suffix_records_stay_verbatim() {
-        use hwp_model::{Control, GsoPlacement};
+        use hwp_model::Control;
         let dir = std::env::temp_dir().join(format!("ahwp-g3-suffix-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (source, original) = native_suffix_source(&dir);
@@ -2485,6 +2486,11 @@ mod tests {
         )
         .unwrap();
         let result = hwp5::read_document(&output).unwrap().document;
+        assert_eq!(
+            result.sections[0].paragraphs[1].plain_text(),
+            format!("X{}", original.sections[0].paragraphs[1].plain_text()),
+            "the native text edit must be published"
+        );
         let before = &original.sections[0].paragraphs[1].line_segs;
         let changed = &result.sections[0].paragraphs[1].line_segs;
         let extent = |lines: &[hwp_model::LineSeg]| {
@@ -2556,7 +2562,10 @@ mod tests {
             .insert(0, hwp_model::HwpChar::Text('X'));
         edited.sections[0].paragraphs[neutral].line_segs.clear();
         let text = edited.sections[0].paragraphs[growing].plain_text();
-        assert_eq!(hwp_convert::replace_text(&mut edited, &text, "A\nB\nC"), 1);
+        assert_eq!(
+            hwp_convert::replace_text(&mut edited, &text, "A\nB\nC", false).unwrap(),
+            1
+        );
         write_hwp_impl(
             &edited,
             &output,
