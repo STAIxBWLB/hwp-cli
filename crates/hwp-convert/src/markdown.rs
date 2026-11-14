@@ -267,6 +267,11 @@ impl Body {
         for mut seg in segs {
             seg.start = map(seg.start);
             seg.end = map(seg.end).max(seg.start);
+            // Cut provenance belongs to the child buffer. In the parent these are fixed
+            // rebased cuts; clearing both flags also keeps a collapsed child point empty
+            // when the parent's own emphasis markers are removed.
+            seg.start_follows_deletions = false;
+            seg.end_follows_deletions = false;
             // A control whose projected character was trimmed away did not reach this buffer.
             seg.controls = seg
                 .controls
