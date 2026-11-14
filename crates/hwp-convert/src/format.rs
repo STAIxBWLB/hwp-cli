@@ -287,12 +287,53 @@ pub fn set_para_align_at(doc: &mut Document, path: &SegmentPath, align: u8) -> b
     applied
 }
 
-/// Why `keep_together` is not implemented. The paragraph-shape bits it would write (attr1 bit 17
-/// keep-with-next, bit 18 keep-lines, bit 19 break-before) are **unverified**: none of the
-/// genuine Hangul-saved files available (902 parsed, about 13,000 paragraph shapes) sets any of
-/// them, so there is no saved byte to copy the encoding from (`docs/design/07-hangul-compat-rules.md`,
-/// rule J2). The op refuses before writing and names the supported alternative.
-pub const KEEP_TOGETHER_REFUSAL: &str = "keep_together는 아직 지원하지 않습니다: 문단 모양의 '다음 문단과 함께'·'문단 보호'·'문단 앞 쪽 나눔' 비트는 한글이 저장한 정품 파일에서 한 번도 관찰되지 않아 저장 형식을 추측할 수 없습니다(Hangul-saved sample required). 한글에서 해당 옵션을 켜 저장한 파일을 제공하면 근거를 맞추어 구현합니다. 새 쪽에서 시작하려면 set_break_before를 사용하세요";
+/// Set supplied paragraph-shape flags, verified in Hangul 12.30.0 (#540 G4, rule J2).
+/// Uses the same body/nested paragraph address scope as `set_para_align_at` and never
+/// changes the paragraph header's independent `break_type`. Unspecified bits stay intact.
+/// Returns whether the shape changed; identical requests preserve line caches.
+pub fn set_keep_together_at(
+    doc: &mut Document,
+    path: &SegmentPath,
+    keep_with_next: Option<bool>,
+    keep_lines: Option<bool>,
+    break_before_shape: Option<bool>,
+) -> bool {
+    let mut shapes = std::mem::take(&mut doc.header.para_shapes);
+    let changed = if let Some(para) = crate::address::paragraph_at_mut(doc, path) {
+        let mut shape = shapes
+            .get(para.para_shape.0 as usize)
+            .cloned()
+            .unwrap_or_default();
+        let prior = shape.attr1;
+        for (bit, value) in [
+            (17, keep_with_next),
+            (18, keep_lines),
+            (19, break_before_shape),
+        ] {
+            if let Some(on) = value {
+                if on {
+                    shape.attr1 |= 1 << bit;
+                } else {
+                    shape.attr1 &= !(1 << bit);
+                }
+            }
+        }
+        if shape.attr1 == prior {
+            false
+        } else {
+            para.para_shape = find_or_insert_para(&mut shapes, shape);
+            para.line_segs.clear();
+            true
+        }
+    } else {
+        false
+    };
+    doc.header.para_shapes = shapes;
+    if changed {
+        crate::address::invalidate_ancestors(doc, path);
+    }
+    changed
+}
 
 /// Address-driven page-break-before for ONE body paragraph: sets or clears the page bit (0x04)
 /// of the paragraph header's `break_type`, the encoding both genuine formats show (HWP5
@@ -1071,6 +1112,40 @@ mod tests {
             section: 0,
             indices: vec![index],
         }
+    }
+
+    #[test]
+    fn keep_together_preserves_caches_on_noop_and_invalid_address() {
+        let mut doc = from_markdown::from_markdown("First\n\nSecond\n");
+        let path = body_path(1);
+        let prior = doc.clone();
+        assert!(!set_keep_together_at(
+            &mut doc,
+            &body_path(999),
+            Some(true),
+            None,
+            None
+        ));
+        assert_eq!(doc, prior);
+        assert!(set_keep_together_at(
+            &mut doc,
+            &path,
+            Some(true),
+            Some(true),
+            Some(true)
+        ));
+        assert!(doc.sections[0].paragraphs[1].line_segs.is_empty());
+        let count = doc.header.para_shapes.len();
+        let prior = doc.clone();
+        assert!(!set_keep_together_at(
+            &mut doc,
+            &path,
+            Some(true),
+            Some(true),
+            Some(true)
+        ));
+        assert_eq!(doc, prior);
+        assert_eq!(doc.header.para_shapes.len(), count);
     }
 
     #[test]

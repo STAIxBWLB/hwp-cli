@@ -199,6 +199,13 @@ pub(crate) enum TypedEditOperation {
         step: i32,
         hanging: i32,
     },
+    /// Copy-on-write paragraph-shape flags (attr1 bits 17-19), independent of header breaks.
+    KeepTogether {
+        address: hwp_convert::address::Address,
+        keep_with_next: Option<bool>,
+        keep_lines: Option<bool>,
+        break_before_shape: Option<bool>,
+    },
     AddRow {
         table: usize,
         at: Option<u16>,
@@ -516,6 +523,7 @@ fn typed_op_kind(operation: &TypedEditOperation) -> &'static str {
         TypedEditOperation::OutdentPara { .. } => "outdent_para",
         TypedEditOperation::SetBreakBefore { .. } => "set_break_before",
         TypedEditOperation::SetIndentLevel { .. } => "set_indent_level",
+        TypedEditOperation::KeepTogether { .. } => "keep_together",
         TypedEditOperation::AddRow { .. } => "add_row",
         TypedEditOperation::AddCol { .. } => "add_col",
         TypedEditOperation::DeleteRow { .. } => "delete_row",
@@ -1339,6 +1347,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                 | TypedEditOperation::ApplyStyle { .. }
                 | TypedEditOperation::UpdateStyle { .. }
                 | TypedEditOperation::SetBreakBefore { .. }
+                | TypedEditOperation::KeepTogether { .. }
                 | TypedEditOperation::SetIndentLevel { .. }
         )
     });
@@ -2090,6 +2099,7 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
                     | TypedEditOperation::ApplyStyle { .. }
                     | TypedEditOperation::UpdateStyle { .. }
                     | TypedEditOperation::SetBreakBefore { .. }
+                    | TypedEditOperation::KeepTogether { .. }
                     | TypedEditOperation::SetIndentLevel { .. }
             )
         {
@@ -2449,6 +2459,7 @@ fn preflight_addressed_ops(
             | TypedEditOperation::IndentPara { address }
             | TypedEditOperation::OutdentPara { address }
             | TypedEditOperation::SetBreakBefore { address, .. }
+            | TypedEditOperation::KeepTogether { address, .. }
             | TypedEditOperation::SetIndentLevel { address, .. }
             | TypedEditOperation::InsertBlocks { address, .. }
             | TypedEditOperation::ApplyStyle { address, .. } => {
@@ -3359,6 +3370,7 @@ fn failure_reason(operation: &TypedEditOperation) -> String {
         | Op::IndentPara { .. }
         | Op::OutdentPara { .. }
         | Op::SetBreakBefore { .. }
+        | Op::KeepTogether { .. }
         | Op::SetIndentLevel { .. }
         | Op::AddRow { .. }
         | Op::AddCol { .. }
@@ -4082,6 +4094,24 @@ fn apply_typed_operation(
                 .map_err(|error| anyhow::anyhow!(error))?;
             eprintln!("문단 내어쓰기(주소): {current_path} → 수준 {new_level}");
             *edits += 1;
+        }
+        TypedEditOperation::KeepTogether {
+            keep_with_next,
+            keep_lines,
+            break_before_shape,
+            ..
+        } => {
+            let target = resolved_target.expect("preflight resolved keep_together address");
+            let current_path = offsets.current_path(&target.path)?;
+            if hwp_convert::set_keep_together_at(
+                doc,
+                &current_path,
+                *keep_with_next,
+                *keep_lines,
+                *break_before_shape,
+            ) {
+                *edits += 1;
+            }
         }
         TypedEditOperation::SetBreakBefore { on, .. } => {
             let target = resolved_target

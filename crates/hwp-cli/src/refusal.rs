@@ -14,7 +14,6 @@ use serde_json::{Map, Value};
 /// enum and the manual tables in step; `refusal_codes_match_schema` pins the first two.
 pub const REFUSAL_CODES: &[&str] = &[
     RANGE_TAG_SHIFT,
-    KEEP_TOGETHER_UNSUPPORTED,
     SECTION_OWNER_INSERT,
     SECTION_OWNER_MOVE,
     ADD_TABLE_ANCHOR_NOT_FOUND,
@@ -33,7 +32,6 @@ pub const REFUSAL_CODES: &[&str] = &[
 ];
 
 pub const RANGE_TAG_SHIFT: &str = "range_tag_shift";
-pub const KEEP_TOGETHER_UNSUPPORTED: &str = "keep_together_unsupported";
 pub const SECTION_OWNER_INSERT: &str = "section_owner_insert";
 pub const SECTION_OWNER_MOVE: &str = "section_owner_move";
 pub const ADD_TABLE_ANCHOR_NOT_FOUND: &str = "add_table.anchor_not_found";
@@ -58,7 +56,6 @@ pub fn fixed_message(code: &str) -> &'static str {
         RANGE_TAG_SHIFT => {
             "편집이 해석하지 않은 범위 태그(PARA_RANGE_TAG)를 옮기거나 지우게 되어 거부했습니다"
         }
-        KEEP_TOGETHER_UNSUPPORTED => "keep_together는 아직 지원하지 않습니다",
         SECTION_OWNER_INSERT => "구역 설정 문단 앞에 삽입하게 되어 거부했습니다",
         SECTION_OWNER_MOVE => "구역 설정 문단 앞으로 이동하게 되어 거부했습니다",
         ADD_TABLE_ANCHOR_NOT_FOUND => "add_table 앵커를 담은 최상위 문단이 없습니다",

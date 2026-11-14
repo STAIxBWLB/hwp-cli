@@ -667,6 +667,63 @@ fn keep_together_sets_and_clears_only_the_supplied_bit_in_both_formats() {
     }
 }
 
+#[test]
+fn keep_together_supports_first_body_and_cell_paragraph_addresses() {
+    for extension in ["hwp", "hwpx"] {
+        let fixture = Fixture::new("keep-scope", extension);
+        let listed = hwp()
+            .arg("cat")
+            .arg(&fixture.base)
+            .args(["--format", "json", "--with-segments", "--segments", "v2"])
+            .output()
+            .unwrap();
+        success(
+            Output {
+                status: listed.status,
+                stdout: Vec::new(),
+                stderr: listed.stderr.clone(),
+            },
+            "catalogue",
+        );
+        let envelope: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        let cell = envelope["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["kind"] == "para" && s["path"]["indices"].as_array().unwrap().len() == 4)
+            .unwrap();
+        let before = read(&fixture.base);
+        let (output, run) = fixture.edit(&fixture.base, "scope",
+            json!([
+                {"op":"keep_together","address":{"at":{"section":0,"paragraph":0}},"keep_with_next":true},
+                {"op":"keep_together","address":{"id":cell["id"]},"keep_lines":true}
+            ]));
+        success(run, "first body and cell keep flags");
+        let after = read(&output);
+        let first = &after.sections[0].paragraphs[0];
+        assert!(after.header.para_shapes[first.para_shape.0 as usize].keep_with_next());
+        assert_eq!(
+            first.header.break_type,
+            before.sections[0].paragraphs[0].header.break_type
+        );
+        let cell_para = after.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| &p.controls)
+            .find_map(|c| match c {
+                Control::Table(t) => Some(&t.cells[0].paragraphs[0]),
+                _ => None,
+            })
+            .unwrap();
+        assert!(after.header.para_shapes[cell_para.para_shape.0 as usize].keep_lines());
+        assert_eq!(cell_para.plain_text(), CELL);
+        assert_eq!(
+            paragraph(&after, TARGET).para_shape,
+            paragraph(&before, TARGET).para_shape
+        );
+    }
+}
+
 // ---- set_indent_level: run boundaries and leading controls (T12-F1, T12-F2) -----------------
 
 /// The character shape in effect at WCHAR offset `wpos` of `para`.

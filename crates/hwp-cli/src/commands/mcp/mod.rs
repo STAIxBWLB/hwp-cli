@@ -1840,8 +1840,7 @@ fn tool_edit_structured(args: &Value, ctx: &dyn FileAuthority) -> McpToolResult 
     for item in arg_array(args, "outdent_para")? {
         operations.push(ops_entry_item(item, "outdent_para")?);
     }
-    // #420: page-break-before, the idempotent indentation recipe and the keep_together refusal
-    // also ride the ops channel's own deserialization, so the refusals are the CLI's words.
+    // Pagination operations share the CLI ops deserialization and engine.
     for item in arg_array(args, "set_break_before")? {
         operations.push(ops_entry_item(item, "set_break_before")?);
     }
@@ -1849,27 +1848,7 @@ fn tool_edit_structured(args: &Value, ctx: &dyn FileAuthority) -> McpToolResult 
         operations.push(ops_entry_item(item, "set_indent_level")?);
     }
     for item in arg_array(args, "keep_together")? {
-        // #531: op_index is the op's position in the whole batch, as `ops[].index` and the
-        // CLI report it, not its position inside the keep_together array.
-        let index = operations.len();
-        operations.push(ops_entry_item(item, "keep_together").map_err(|message| {
-            if crate::edit_ops::is_keep_together_refusal(&message) {
-                let requested: Vec<&str> = ["keep_with_next", "keep_lines", "break_before_shape"]
-                    .into_iter()
-                    // Non-null only, as the CLI's keep_together_requested counts them.
-                    .filter(|key| item.get(*key).is_some_and(|value| !value.is_null()))
-                    .collect();
-                let refusal = hwp_cli::refusal::Refusal::new(
-                    hwp_cli::refusal::KEEP_TOGETHER_UNSUPPORTED,
-                    message.clone(),
-                )
-                .with("op_index", index)
-                .with("requested", requested);
-                refused_edit(message, &refusal)
-            } else {
-                McpToolError::from(message)
-            }
-        })?);
+        operations.push(ops_entry_item(item, "keep_together")?);
     }
     // #428 T4: `insert_blocks` rides the ops channel's own OpsEntry deserialization too (the
     // item is the edit-ops object without its `op` tag), so the address rules, the schema
@@ -2878,7 +2857,7 @@ fn tool_defs() -> Vec<Value> {
                     "description": "문단 한 개의 앞쪽 공백만 제거하고(구역·필드·책갈피 같은 보이지 않는 선행 컨트롤은 제자리에 두고 그 뒤 공백을 지우며, 남은 첫 글자는 글자 모양 유지, 형광펜·교정 부호가 있는 문단은 거부) 왼쪽 여백=level*step, 내어쓰기=hanging으로 문단 모양에 반영(멱등: 두 번째 실행은 변경 없음)"},
                 "keep_together": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {
                     "address": {"type": "object", "additionalProperties": false,
-                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문 문단이어야 한다",
+                        "description": "주소 선택자 — id(체크섬 segment id)와 at({section,paragraph}) 중 정확히 하나. 본문·셀 등 중첩 문단도 선택 가능",
                         "properties": {
                             "id": {"type": "string", "description": "체크섬 segment id(ahwp cat --with-segments)"},
                             "at": {"type": "object", "additionalProperties": false,
@@ -2887,7 +2866,7 @@ fn tool_defs() -> Vec<Value> {
                         }},
                     "keep_with_next": {"type": "boolean"}, "keep_lines": {"type": "boolean"}, "break_before_shape": {"type": "boolean"}},
                     "required": ["address"]},
-                    "description": "항상 거부됨: 문단 모양의 다음 문단과 함께·문단 보호·쪽 나눔 비트는 한글이 저장한 정품 파일에서 관찰된 적이 없어 쓰지 않는다. 새 쪽에서 시작하려면 set_break_before를 사용"},
+                    "description": "문단 모양의 다음 문단과 함께·문단 보호·문단 앞 쪽 나눔을 설정/해제. 지정한 필드만 변경하며 헤더 쪽 나눔과 독립적. 본문·셀 등 주소로 선택한 문단에 적용. 렌더러의 페이지 배치 반영은 보장하지 않음"},
                 "set_page": {"type": "object", "properties": {
                     "width_mm": {"type": "number"}, "height_mm": {"type": "number"},
                     "margin_left_mm": {"type": "number"}, "margin_right_mm": {"type": "number"},
@@ -4331,27 +4310,23 @@ mod tests {
         }
     }
 
-    /// #531 review F1: keep_together's `op_index` is its position in the whole batch, the same
-    /// index the CLI reports, so an op ahead of it shifts the index.
+    /// Keep flags use the shared engine even after another operation in the batch.
     #[test]
-    fn hwp_edit_keep_together_op_index_is_the_batch_index() {
-        let source = temp_file("refusal-keep-index-source.hwpx");
-        create_hwpx(&source, "본문");
-        let output = temp_file("refusal-keep-index-out.hwpx");
-        let _ = std::fs::remove_file(&output);
-        let mut args = json!({
-            "input": source,
-            "output": output,
-            "replace": [{"from": "본문", "to": "내용"}],
-            "keep_together": [{"address": {"at": {"section": 0, "paragraph": 0}}, "keep_lines": true}],
-        });
+    fn hwp_edit_keep_together_applies_after_replace() {
+        let source = temp_file("keep-batch-source.hwpx");
+        create_hwpx(&source, "Body");
+        let output = temp_file("keep-batch-out.hwpx");
+        let mut args = json!({"input":source,"output":output,
+            "replace":[{"from":"Body","to":"Changed"}],
+            "keep_together":[{"address":{"at":{"section":0,"paragraph":0}},"keep_lines":true}]});
         let response = call_tool("hwp_edit", &mut args, &ctx());
-        assert_eq!(response["isError"], true, "{response}");
-        let refusal = &response["structuredContent"]["refusal"];
-        assert_eq!(refusal["code"], "keep_together_unsupported", "{response}");
-        assert_eq!(refusal["values"]["op_index"], 1, "{response}");
-        assert!(!output.exists());
-        let _ = std::fs::remove_file(&source);
+        assert_ne!(response["isError"], true, "{response}");
+        let doc = load_document(&output).unwrap();
+        let p = &doc.sections[0].paragraphs[0];
+        assert!(doc.header.para_shapes[p.para_shape.0 as usize].keep_lines());
+        for path in [&source, &output] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     /// #531 P2: a refusal that is not an aborted batch (here the input does not load) still
@@ -4386,31 +4361,31 @@ mod tests {
         }
     }
 
-    /// #531: a keep field given as null is not requested, as in the CLI.
+    /// Null is an omitted field in the legacy typed MCP transport, as before.
     #[test]
-    fn hwp_edit_keep_together_requested_skips_null_fields() {
-        let source = temp_file("refusal-keep-null-source.hwpx");
-        create_hwpx(&source, "본문");
-        let output = temp_file("refusal-keep-null-out.hwpx");
-        let mut args = json!({
-            "input": source,
-            "output": output,
-            "keep_together": [{"address": {"at": {"section": 0, "paragraph": 0}},
-                "keep_lines": true, "keep_with_next": null}],
-        });
+    fn hwp_edit_keep_together_null_field_does_not_clear_an_unspecified_bit() {
+        let source = temp_file("keep-null-source.hwpx");
+        create_hwpx(&source, "Body");
+        let mut doc = load_document(&source).unwrap();
+        for shape in &mut doc.header.para_shapes {
+            shape.attr1 |= 1 << 17;
+        }
+        hwpx::write_document(&doc, &source).unwrap();
+        let output = temp_file("keep-null-out.hwpx");
+        let mut args = json!({"input":source,"output":output,
+            "keep_together":[{"address":{"at":{"section":0,"paragraph":0}},
+                "keep_lines":true,"keep_with_next":null}]});
         let response = call_tool("hwp_edit", &mut args, &ctx());
-        let refusal = &response["structuredContent"]["refusal"];
-        assert_eq!(refusal["code"], "keep_together_unsupported", "{response}");
-        assert_eq!(
-            refusal["values"]["requested"],
-            json!(["keep_lines"]),
-            "{response}"
-        );
-        let _ = std::fs::remove_file(&source);
+        assert_ne!(response["isError"], true, "{response}");
+        let doc = load_document(&output).unwrap();
+        let shape = &doc.header.para_shapes[doc.sections[0].paragraphs[0].para_shape.0 as usize];
+        assert!(shape.keep_lines() && shape.keep_with_next());
+        for path in [&source, &output] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
-    /// `style_tables` rejects an unknown preset name through the same `OfficialPreset::parse`
-    /// error the CLI `--style-tables` flag produces.
+    /// Reject unknown presets through the same parser as the CLI.
     #[test]
     fn hwp_edit_style_tables_rejects_unknown_preset() {
         let source = temp_file("style-tables-unknown-preset-source.hwpx");
@@ -6358,7 +6333,7 @@ mod tests {
 
     /// #420: `set_break_before`/`set_indent_level`/`keep_together` over MCP reach the same
     /// engine the CLI `--ops` channel drives: byte-identical output on success, the same
-    /// refusals (cell-less here: first paragraph, a bad level, keep_together) with no output.
+    /// refusals (first paragraph, a bad level, a missing keep field) with no output.
     #[test]
     fn mcp_typed_pagination_ops_match_the_cli_ops_channel() {
         // Markdown import trims leading blanks, so the leading-blank strip itself is pinned by
@@ -6386,7 +6361,9 @@ mod tests {
                 "set_indent_level": [
                     {"address": {"at": {"section": 0, "paragraph": indented}},
                      "level": 2, "step": "5mm", "hanging": "3mm"}
-                ]
+                ],
+                "keep_together": [{"address":{"at":{"section":0,"paragraph":plain}},
+                    "keep_with_next":true,"keep_lines":true,"break_before_shape":true}]
             }),
             &ctx(),
         )
@@ -6400,7 +6377,9 @@ mod tests {
                  "address": {"at": {"section": 0, "paragraph": plain}}, "value": "on"},
                 {"op": "set_indent_level",
                  "address": {"at": {"section": 0, "paragraph": indented}},
-                 "level": 2, "step": "5mm", "hanging": "3mm"}
+                 "level": 2, "step": "5mm", "hanging": "3mm"},
+                {"op":"keep_together","address":{"at":{"section":0,"paragraph":plain}},
+                 "keep_with_next":true,"keep_lines":true,"break_before_shape":true}
             ])
             .to_string(),
             &cli_out,
@@ -6424,7 +6403,7 @@ mod tests {
             "shape carries the indentation"
         );
 
-        // Refusals write nothing and carry the cause: first paragraph, bad level, keep_together.
+        // Refusals write nothing: first paragraph, bad level, missing keep field.
         for (label, args) in [
             (
                 "first",
@@ -6440,8 +6419,7 @@ mod tests {
             (
                 "keep",
                 json!({"keep_together": [
-                    {"address": {"at": {"section": 0, "paragraph": plain}},
-                     "keep_with_next": true}]}),
+                    {"address": {"at": {"section": 0, "paragraph": plain}}}]}),
             ),
         ] {
             let refused = temp_file(&format!("typed-pagination-refused-{label}.hwpx"));

@@ -158,18 +158,13 @@ fn add_table_anchor_miss_names_the_anchor_as_a_value() {
 }
 
 #[test]
-fn keep_together_refusal_lists_the_requested_fields() {
-    let fixture = Fixture::new("keep");
+fn keep_together_without_a_field_still_refuses_without_an_unsupported_code() {
+    let fixture = Fixture::new("keep-missing");
     let report = fixture.refused_ops(
-        "keep",
-        json!([{"op":"keep_together","address":{"at":{"section":0,"paragraph":0}},"keep_lines":true}]),
+        "keep-missing",
+        json!([{"op":"keep_together","address":{"at":{"section":0,"paragraph":0}}}]),
     );
-    assert_eq!(report["refusal"]["code"], "keep_together_unsupported");
-    assert_eq!(
-        report["refusal"]["values"]["requested"],
-        json!(["keep_lines"])
-    );
-    assert_eq!(report["refusal"]["values"]["op_index"], 0);
+    assert_eq!(report["refusal"]["code"], "unclassified");
 }
 
 #[test]

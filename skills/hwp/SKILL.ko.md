@@ -427,9 +427,10 @@ ahwp validate bound.hwpx
   포함), 안쪽 간격이나 번호 라벨은 건드리지 않는다. 남은 첫 글자는 굵게 등 원래 글자 모양을
   유지한다. 공백만 있는 문단은 그대로 둔다. 형광펜·교정 부호가 있는 문단은 공백을 지워야 할 때 거부되므로
   표시를 먼저 지우거나 `set_para`의 `left_mm`을 쓴다.
-- `keep_together`(다음 문단과 함께, 문단 보호)는 항상 거부된다. 해당 비트를 보여 주는 한글 저장
-  표본이 없다. 재시도하지 말고 `set_break_before`를 쓰거나 한글에서 저장한 표본을 요청한다.
-- MCP에서는 `hwp_edit`의 `set_break_before`, `set_indent_level` 배열을 쓴다.
+- `keep_together`는 본문·중첩 문단 하나의 `keep_with_next`, `keep_lines`, `break_before_shape` 중
+  지정한 필드만 설정·해제한다(attr1 비트 17-19, #540 G4). 다른 비트·헤더 쪽 나눔은 유지한다.
+  필드 하나 이상이 필요하며 렌더러 페이지 배치 반영은 보장하지 않는다.
+- MCP에서는 `hwp_edit`의 `set_break_before`, `set_indent_level`, `keep_together` 배열을 쓴다.
 
 ## MCP 서버
 
