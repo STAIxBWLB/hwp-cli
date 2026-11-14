@@ -10,7 +10,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
-These changes ship as 2.0.0.
+## [2.0.0]
 
 **Breaking**
 
@@ -28,10 +28,9 @@ These changes ship as 2.0.0.
   Migration: replace `hwp` with `ahwp` in scripts and MCP client configurations
   (`command: ahwp`, `args: ["mcp", ...]`); on Homebrew run `brew update && brew upgrade ahwp`, or
   `brew install ahwp`. A 1.5 or older install cannot `hwp update` to 2.0 (it fetches only the
-  `hwp-` assets 2.0 no longer publishes): rerun `scripts/install.sh` or `brew install ahwp`, or
-  first run `hwp update --tag v1.6.2` and then `ahwp update`. MCP tool names (`hwp_*`), the skill
-  name `hwp`, the `HWP_*` environment
-  variables and the schema ids are unchanged. `formula_renames.json` stays, so a machine still
+  `hwp-` assets 2.0 no longer publishes): rerun `scripts/install.sh` or `brew install ahwp`.
+  MCP tool names (`hwp_*`), the skill name `hwp`, the `HWP_*` environment variables and the
+  schema ids are unchanged. `formula_renames.json` stays, so a machine still
   on formula `hwp` migrates on its next `brew update`. `form-discovery-v1` `next_step` keeps
   its stable token `"hwp fields"`, which now means `ahwp fields`; a consumer that shows it to a
   person should print `ahwp fields`
@@ -49,6 +48,19 @@ These changes ship as 2.0.0.
   binding plans after conversion because the source hash changes. `split` retains its input
   format and form bindings require matching native formats; this does not add cross-format
   output to either command.
+- `cat --segments v2` envelopes now carry `schema_version` `1.2`. Every 1.1 field keeps its
+  definition and `controls` is optional; a consumer that accepts only `"1.1"` must also accept
+  `"1.2"`. The 1.1 schema closes `run` objects (`additionalProperties: false`), so a consumer
+  that validates envelopes must switch to the 1.2 `schemas/segment-envelope-v2.schema.json`.
+  Run `char_range` values can change in two cases: a run that projects a tab, hyphen,
+  non-breaking or fixed-width space now grows to cover that control where emphasis relocates
+  it across a run boundary (its neighbours shift to stay disjoint), and ranges that used to be
+  wrong are corrected (sibling pieces that overlapped after a leading-whitespace trim, and
+  visible text published under a preceding trimmed space's run). Markdown text is unchanged,
+  and so are the ranges of every other paragraph
+  ([#543](https://github.com/STAIxBWLB/agent-hwp/issues/543),
+  [#557](https://github.com/STAIxBWLB/agent-hwp/issues/557),
+  [#558](https://github.com/STAIxBWLB/agent-hwp/issues/558)).
 
 **Added**
 
@@ -63,7 +75,10 @@ These changes ship as 2.0.0.
 
 **Documentation**
 
-- README and docs restructured for people and agents: a short README front door with a task-keyed "Where to go next" table, reference sections moved unchanged into one-topic `docs/manual/` pages, agent conventions split out of `ai-integrations`, and `docs/README.md` as a map of every page ([#560](https://github.com/STAIxBWLB/agent-hwp/issues/560)).
+- README and docs restructured for people and agents: a short README front door with a
+  task-keyed "Where to go next" table, reference sections moved unchanged into one-topic
+  `docs/manual/` pages, agent conventions split out of `ai-integrations`, and `docs/README.md`
+  as a map of every page ([#560](https://github.com/STAIxBWLB/agent-hwp/issues/560)).
 
 **Fixed**
 
@@ -75,16 +90,14 @@ These changes ship as 2.0.0.
   `.hwpx` remedy; CLI conversion and merge report the loss and refuse under `--strict`
   (MCP `hwp_convert` remains strict by default).
   The font mapping remains tracked under [#540](https://github.com/STAIxBWLB/agent-hwp/issues/540).
-- `cat --segments v2`: sibling run ranges remain ordered and disjoint when emphasis moves
-  leading or trailing whitespace across run boundaries. Surviving projected controls stay on
-  the run that emitted them. This also removes overlapping ranges caused by leading-trim
-  collapse; the Markdown text is unchanged
+- `cat --segments v2`: sibling run pieces no longer overlap when a leading-whitespace trim
+  collapses several shape runs into one position (188 of 9,331 short control-free paragraphs
+  in an exhaustive enumeration). The Markdown text is unchanged
   ([#557](https://github.com/STAIxBWLB/agent-hwp/issues/557)).
 - `cat --segments v2`: visible non-whitespace text retains its owning run when a
   whitespace-only emphasis span collapses. The published run ID, style and source range now
   identify the visible text instead of a preceding trimmed space; Markdown is unchanged
   ([#558](https://github.com/STAIxBWLB/agent-hwp/issues/558)).
-
 
 ## [1.6.3]
 
