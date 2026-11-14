@@ -551,51 +551,120 @@ fn keep_together_sets_and_clears_only_the_supplied_bit_in_both_formats() {
                 let pi = index(&seeded, TARGET);
                 let si = seeded.sections[0].paragraphs[pi].para_shape.0 as usize;
                 seeded.header.para_shapes[si].attr1 |= 0xf << 16;
-                if on { seeded.header.para_shapes[si].attr1 &= !(1 << bit); }
+                if on {
+                    seeded.header.para_shapes[si].attr1 &= !(1 << bit);
+                }
                 let input = fixture.path(&format!("seed-{field}-{on}"));
                 if extension == "hwp" {
                     hwp5::write_document(&seeded, &input, &hwp5::WriteOptions::default()).unwrap();
-                } else { hwpx::write_document(&seeded, &input).unwrap(); }
+                } else {
+                    hwpx::write_document(&seeded, &input).unwrap();
+                }
                 let before = read(&input);
                 let p = paragraph(&before, TARGET);
                 let prior = before.header.para_shapes[p.para_shape.0 as usize].attr1;
                 let header_break = p.header.break_type;
-                let (output, run) = fixture.edit(&input, &format!("keep-{field}-{on}"),
-                    json!([{"op":"keep_together","address":at(&before, TARGET),field:on}]));
+                let (output, run) = fixture.edit(
+                    &input,
+                    &format!("keep-{field}-{on}"),
+                    json!([{"op":"keep_together","address":at(&before, TARGET),field:on}]),
+                );
                 let after = read(if output.exists() { &output } else { &input });
                 let p = paragraph(&after, TARGET);
                 let actual = after.header.para_shapes[p.para_shape.0 as usize].attr1;
-                let expected = if on { prior | (1 << bit) } else { prior & !(1 << bit) };
-                assert_eq!(actual, expected,
+                let expected = if on {
+                    prior | (1 << bit)
+                } else {
+                    prior & !(1 << bit)
+                };
+                assert_eq!(
+                    actual,
+                    expected,
                     "{extension} {field}={on}: exact attr1 including all untouched bits; CLI: {}",
-                    String::from_utf8_lossy(&run.stderr));
+                    String::from_utf8_lossy(&run.stderr)
+                );
                 success(run, "keep_together");
-                assert_eq!(p.header.break_type, header_break, "shape flag is not header break_type");
+                assert_eq!(
+                    p.header.break_type, header_break,
+                    "shape flag is not header break_type"
+                );
                 for original in &before.sections[0].paragraphs {
                     let other = paragraph(&after, &original.plain_text());
                     if original.plain_text() != TARGET {
-                        assert_eq!(after.header.para_shapes[other.para_shape.0 as usize].attr1,
+                        assert_eq!(
+                            after.header.para_shapes[other.para_shape.0 as usize].attr1,
                             before.header.para_shapes[original.para_shape.0 as usize].attr1,
-                            "shared source shape must not mutate other paragraphs");
+                            "shared source shape must not mutate other paragraphs"
+                        );
                     }
                 }
                 if extension == "hwpx" {
-                    let mut zip = zip::ZipArchive::new(std::fs::File::open(&output).unwrap()).unwrap();
+                    let mut zip =
+                        zip::ZipArchive::new(std::fs::File::open(&output).unwrap()).unwrap();
                     let mut xml = String::new();
-                    zip.by_name("Contents/header.xml").unwrap().read_to_string(&mut xml).unwrap();
-                    let tree = roxmltree::Document::parse(&xml).unwrap();
-                    let shape_id = p.para_shape.0.to_string();
-                    let shape = tree.descendants().find(|n| n.has_tag_name("paraPr") && n.attribute("id") == Some(shape_id.as_str())).unwrap();
-                    let settings = shape.descendants().find(|n| n.has_tag_name("breakSetting")).unwrap();
-                    assert_eq!(settings.attribute(attribute), Some(if on { "1" } else { "0" }));
-                    for (name, shift) in [("widowOrphan",16),("keepWithNext",17),("keepLines",18),("pageBreakBefore",19)] {
-                        assert_eq!(settings.attribute(name), Some(if expected & (1 << shift) != 0 { "1" } else { "0" }));
+                    zip.by_name("Contents/header.xml")
+                        .unwrap()
+                        .read_to_string(&mut xml)
+                        .unwrap();
+                    let mut reader = quick_xml::Reader::from_str(&xml);
+                    let mut selected = false;
+                    let mut checked = false;
+                    loop {
+                        use quick_xml::events::Event;
+                        match reader.read_event().unwrap() {
+                            Event::Start(e) if e.local_name().as_ref() == b"paraPr" => {
+                                selected = e.attributes().flatten().any(|a| {
+                                    a.key.as_ref() == b"id"
+                                        && a.value.as_ref() == p.para_shape.0.to_string().as_bytes()
+                                });
+                            }
+                            Event::Empty(e)
+                                if selected && e.local_name().as_ref() == b"breakSetting" =>
+                            {
+                                let attrs: std::collections::BTreeMap<String, String> = e
+                                    .attributes()
+                                    .map(|a| {
+                                        let a = a.unwrap();
+                                        (
+                                            String::from_utf8(a.key.as_ref().to_vec()).unwrap(),
+                                            String::from_utf8(a.value.into_owned()).unwrap(),
+                                        )
+                                    })
+                                    .collect();
+                                assert_eq!(attrs[attribute], if on { "1" } else { "0" });
+                                for (name, shift) in [
+                                    ("widowOrphan", 16),
+                                    ("keepWithNext", 17),
+                                    ("keepLines", 18),
+                                    ("pageBreakBefore", 19),
+                                ] {
+                                    assert_eq!(
+                                        attrs[name],
+                                        if expected & (1 << shift) != 0 {
+                                            "1"
+                                        } else {
+                                            "0"
+                                        }
+                                    );
+                                }
+                                checked = true;
+                            }
+                            Event::Eof => break,
+                            _ => {}
+                        }
                     }
+                    assert!(checked, "serialized target breakSetting exists");
                 }
-                let (repeat, run) = fixture.edit(&output, &format!("repeat-{field}-{on}"),
-                    json!([{"op":"keep_together","address":at(&after, TARGET),field:on}]));
+                let (repeat, run) = fixture.edit(
+                    &output,
+                    &format!("repeat-{field}-{on}"),
+                    json!([{"op":"keep_together","address":at(&after, TARGET),field:on}]),
+                );
                 success(run, "keep_together repeated");
-                assert_eq!(std::fs::read(output).unwrap(), std::fs::read(repeat).unwrap());
+                assert_eq!(
+                    std::fs::read(output).unwrap(),
+                    std::fs::read(repeat).unwrap()
+                );
             }
         }
     }
