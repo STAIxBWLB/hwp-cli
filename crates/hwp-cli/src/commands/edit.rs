@@ -613,7 +613,7 @@ impl EditReportV1<'_> {
             .count();
         let failed_count = report.ops.len() - applied_count;
         EditReportV1 {
-            schema_version: "1.1",
+            schema_version: "1.2",
             contract: "hwp-edit-report-v1",
             output: &report.output,
             dry_run: report.dry_run,
@@ -703,7 +703,44 @@ fn classify_op_error(operation: &TypedEditOperation, error: &anyhow::Error) -> R
 /// #531: the run-level refusal for an error that carries no classified op (load, preflight,
 /// conflict, writer and verifier failures, and the legacy flags).
 fn classify_run_error(error: &anyhow::Error) -> Refusal {
-    Refusal::find_in(error).unwrap_or_else(|| Refusal::from_convert_message(format!("{error:#}")))
+    if let Some(refusal) = Refusal::find_in(error) {
+        return refusal;
+    }
+    if let Some(protection) = protection_class(error) {
+        return Refusal::document_protected(protection, format!("{error:#}"));
+    }
+    Refusal::from_convert_message(format!("{error:#}"))
+}
+
+/// #571: the protection class of an open-time protection refusal, read from the typed error in
+/// the chain (the hwp5 header gate, the HWPX encryption marker, or the shared loader's password
+/// refusal), never from message text. `None` for every other error.
+fn protection_class(error: &anyhow::Error) -> Option<&'static str> {
+    error.chain().find_map(|cause| {
+        if let Some(error) = cause.downcast_ref::<hwp5::Hwp5Error>() {
+            return match error {
+                hwp5::Hwp5Error::Encrypted => Some(refusal::PROTECTION_PASSWORD),
+                hwp5::Hwp5Error::CertEncrypted => Some(refusal::PROTECTION_CERTIFICATE_ENCRYPTION),
+                hwp5::Hwp5Error::CertDrm => Some(refusal::PROTECTION_CERTIFICATE_DRM),
+                hwp5::Hwp5Error::Drm => Some(refusal::PROTECTION_DRM),
+                hwp5::Hwp5Error::Signed => Some(refusal::PROTECTION_SIGNATURE),
+                _ => None,
+            };
+        }
+        if matches!(
+            cause.downcast_ref::<hwpx::HwpxError>(),
+            Some(hwpx::HwpxError::Encrypted)
+        ) || matches!(
+            cause.downcast_ref::<crate::commands::cat::LoadDocumentError>(),
+            Some(crate::commands::cat::LoadDocumentError::Password(_))
+        ) || cause
+            .downcast_ref::<crate::commands::cat::PasswordRefusal>()
+            .is_some()
+        {
+            return Some(refusal::PROTECTION_PASSWORD);
+        }
+        None
+    })
 }
 
 /// #531: the refusal an `execute` error carries: the classified run-level refusal of an

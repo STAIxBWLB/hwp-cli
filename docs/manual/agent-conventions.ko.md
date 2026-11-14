@@ -392,7 +392,7 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 ### 거부된 편집 분류
 
 `ahwp edit`가 거부되어도 `--report`로 지정한 `edit-report-v1` 파일은 기록되고, `--dry-run`도
-보고서를 출력한다. 보고서(스키마 버전 1.1)는 최상위 `refusal` 객체를 담고, 연산 하나가
+보고서를 출력한다. 보고서(스키마 버전 1.2)는 최상위 `refusal` 객체를 담고, 연산 하나가
 거부했으면 그 연산 항목도 `status: "failed"`와 함께 같은 객체를 담는다. MCP `hwp_edit`는 오류
 결과의 `structuredContent.refusal`로 같은 객체를 돌려준다. stderr는 사람이 읽는 한국어 문장을
 그대로 유지하고, MCP 오류 텍스트도 같은 문장을 담는다. `refusal.message`는 코드마다 정해진 고정
@@ -420,7 +420,10 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 | `layout_overflow`, `insert_blocks.invalid_spec` | `issues`(`code`, 목록인 `path`, `message`, 넘친 경우 `measured_width_mm`), `container_width_mm` |
 | `preservation_loss` | `events`(`code`, `resource`, `disposition`, `count`) |
 | `unapplied_requests`, `no_applicable_edits` | 없음. 실패한 `ops` 항목이 놓친 요청을 알려 준다 |
+| `document_protected` | `protection`: `password`, `certificate_encryption`, `certificate_drm`, `drm`, `signature` 중 하나 |
 | `unclassified` | 없음. 위에 없는 모든 거부 |
+
+`document_protected`(1.2)는 문서를 여는 단계의 거부다. 입력이 보호되어 있으므로 `ops`가 비어 있다. `password`는 암호가 없는 경우와 틀린 경우를 모두 가리키며(HWP5와 HWPX), 엔진은 둘을 구분하지 않는다. 배포용 문서는 읽을 수 있으므로 거부하지 않는다. 1.1만 받는 소비자는 1.2도 받아야 한다. 1.1의 모든 필드와 코드는 그대로다.
 
 ### 보존 손실 원장
 

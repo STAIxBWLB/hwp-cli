@@ -18,6 +18,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   saved evidence (#540 G4); body and nested paragraph addresses are supported. The
   unsupported refusal code is removed; missing fields still refuse. No renderer pagination
   behavior or edited-output Hancom-open guarantee is added (#568).
+- `edit-report-v1` 1.2: a refusal because the input document is protected now has its own code,
+  `document_protected`, with `values.protection` set to `password`, `certificate_encryption`,
+  `certificate_drm`, `drm` or `signature`. Before, these runs reported `unclassified`. `password`
+  covers an absent and a wrong password, for HWP5 and HWPX. The code is read from the typed open
+  error, not the message. Existing codes and fields are unchanged, so a consumer that accepts
+  `"1.1"` must also accept `"1.2"` ([#571](https://github.com/STAIxBWLB/agent-hwp/issues/571)).
 
 **Fixed**
 

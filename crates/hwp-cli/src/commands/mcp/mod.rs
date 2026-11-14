@@ -4310,6 +4310,60 @@ mod tests {
         }
     }
 
+    /// #571: an open-time protection refusal comes back as `document_protected` with its class
+    /// in `structuredContent.refusal`, and the `report` argument's file carries the same object.
+    #[test]
+    fn hwp_edit_protected_input_carries_document_protected() {
+        let source = temp_file("protected-mcp-source.hwp");
+        let output = temp_file("protected-mcp-out.hwp");
+        let report = temp_file("protected-mcp-report.json");
+        for path in [&output, &report] {
+            let _ = std::fs::remove_file(path);
+        }
+        create_hwpx(&source, "본문");
+        // Set the DRM bit (1 << 4) in a native copy's FileHeader attributes (DWORD at 36..40).
+        let native = temp_file("protected-mcp-native.hwp");
+        let document = crate::commands::cat::load_document(&source).unwrap();
+        hwp5::write_document(&document, &native, &hwp5::WriteOptions::default()).unwrap();
+        {
+            use std::io::{Read, Write};
+            let mut cfb = cfb::open_rw(&native).unwrap();
+            let mut header = Vec::new();
+            cfb.open_stream("/FileHeader")
+                .unwrap()
+                .read_to_end(&mut header)
+                .unwrap();
+            let attrs = u32::from_le_bytes(header[36..40].try_into().unwrap());
+            header[36..40].copy_from_slice(&(attrs | 1 << 4).to_le_bytes());
+            cfb.create_stream("/FileHeader")
+                .unwrap()
+                .write_all(&header)
+                .unwrap();
+        }
+        let mut args = json!({
+            "input": native,
+            "output": output,
+            "report": report,
+            "replace": [{"from": "본문", "to": "x"}],
+        });
+        let response = call_tool("hwp_edit", &mut args, &ctx());
+        assert_eq!(response["isError"], true, "{response}");
+        let refusal = &response["structuredContent"]["refusal"];
+        assert_eq!(refusal["code"], "document_protected", "{response}");
+        assert_eq!(
+            refusal["values"],
+            json!({"protection": "drm"}),
+            "{response}"
+        );
+        let written: Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        assert_eq!(&written["refusal"], refusal);
+        assert!(edit_report_v1_validator().is_valid(&written), "{written}");
+        assert!(!output.exists());
+        for path in [&source, &native, &report] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     /// Keep flags use the shared engine even after another operation in the batch.
     #[test]
     fn hwp_edit_keep_together_applies_after_replace() {

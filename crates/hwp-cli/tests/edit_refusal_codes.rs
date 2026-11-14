@@ -1,7 +1,8 @@
-//! #531: a refused `hwp edit` run still writes edit-report-v1 (1.1), and the refusal carries a
+//! #531: a refused `hwp edit` run still writes edit-report-v1 (1.2), and the refusal carries a
 //! stable code, structured values and the human message. One test per code family; the
 //! range-tag and preservation families live beside their fixtures in `range_tag_edits.rs` and
 //! `edit_surgical.rs`.
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -93,7 +94,7 @@ fn read_report(path: &Path) -> Value {
         validator.is_valid(&report),
         "refused report must validate: {report}"
     );
-    assert_eq!(report["schema_version"], "1.1");
+    assert_eq!(report["schema_version"], "1.2");
     report
 }
 
@@ -336,4 +337,219 @@ fn report_write_failure_keeps_the_refusal() {
     assert_refused(&run, &output);
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(stderr.contains("표 #99를 찾을 수 없습니다"), "{stderr}");
+}
+
+// --- #571: open-time protection refusals carry `document_protected` and a typed class. ---
+
+/// HWP5 FileHeader attribute bits (DWORD at 36..40), mirrored from the private attr module in
+/// crates/hwp5/src/file_header.rs, as `cli_surface.rs` mirrors them.
+const BIT_ENCRYPTED: u32 = 1 << 1;
+const BIT_DRM: u32 = 1 << 4;
+const BIT_HAS_SIGNATURE: u32 = 1 << 7;
+const BIT_CERT_ENCRYPTED: u32 = 1 << 8;
+const BIT_CERT_DRM: u32 = 1 << 10;
+
+fn sample() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/samples/report-tables.hwpx")
+}
+
+/// The committed sample converted to HWP5 with `bits` ORed into the FileHeader attributes.
+fn protected_hwp(dir: &Path, name: &str, bits: u32) -> PathBuf {
+    let path = dir.join(format!("{name}.hwp"));
+    let run = hwp()
+        .arg("convert")
+        .arg(sample())
+        .arg("-o")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let mut cfb = cfb::open_rw(&path).unwrap();
+    let mut header = Vec::new();
+    std::io::Read::read_to_end(&mut cfb.open_stream("/FileHeader").unwrap(), &mut header).unwrap();
+    let attrs = u32::from_le_bytes(header[36..40].try_into().unwrap());
+    header[36..40].copy_from_slice(&(attrs | bits).to_le_bytes());
+    cfb.create_stream("/FileHeader")
+        .unwrap()
+        .write_all(&header)
+        .unwrap();
+    path
+}
+
+/// The committed sample repacked with an encryption-data manifest, as `cli_surface.rs` does.
+fn encrypted_hwpx(dir: &Path) -> PathBuf {
+    const MANIFEST: &[u8] = br##"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><odf:file-entry full-path="Contents/header.xml" media-type="application/xml" size="1"><odf:encryption-data checksum-type="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#sha256-1k" checksum="AAAA"><odf:algorithm algorithm-name="http://www.w3.org/2001/04/xmlenc#aes256-cbc" initialisation-vector="AAAA"/><odf:key-derivation key-derivation-name="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0#pbkdf2" key-size="32" iteration-count="1024" salt="AAAA"/><odf:start-key-generation start-key-generation-name="http://www.w3.org/2000/09/xmldsig#sha256" key-size="32"/></odf:encryption-data></odf:file-entry></odf:manifest>"##;
+    let path = dir.join("encrypted.hwpx");
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(sample()).unwrap()).unwrap();
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    writer
+        .start_file(
+            "mimetype",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+    writer
+        .write_all(hwpx::package::MIMETYPE.as_bytes())
+        .unwrap();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().unwrap().into_owned();
+        if name == "mimetype" {
+            continue;
+        }
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
+        if name == "META-INF/manifest.xml" {
+            data = MANIFEST.to_vec();
+        }
+        writer
+            .start_file(
+                &name,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated),
+            )
+            .unwrap();
+        writer.write_all(&data).unwrap();
+    }
+    writer.finish().unwrap();
+    path
+}
+
+/// Runs `edit <input> -o <out> <args> --report <file>`, asserts the refusal and returns the
+/// schema-valid report.
+fn refused_open(dir: &Path, input: &Path, label: &str, args: &[&str]) -> Value {
+    let output = dir.join(format!("{label}.out.hwpx"));
+    let report = dir.join(format!("{label}.report.json"));
+    let run = hwp()
+        .arg("edit")
+        .arg(input)
+        .arg("-o")
+        .arg(&output)
+        .args(args)
+        .arg("--report")
+        .arg(&report)
+        .output()
+        .unwrap();
+    assert_refused(&run, &output);
+    assert!(!run.stderr.is_empty(), "stderr keeps the human sentence");
+    read_report(&report)
+}
+
+fn assert_protected(report: &Value, protection: &str) {
+    let refusal = &report["refusal"];
+    assert_eq!(refusal["code"], "document_protected", "{report}");
+    assert_eq!(
+        refusal["values"],
+        json!({"protection": protection}),
+        "{report}"
+    );
+    assert_eq!(
+        refusal["message"],
+        hwp_cli::refusal::fixed_message("document_protected")
+    );
+    assert_eq!(report["ops"], json!([]), "{report}");
+}
+
+/// Every HWP5 FileHeader protection class the engine tells apart gets its own value, through
+/// both entry points (`--replace` flags and `--ops`).
+#[test]
+fn hwp5_protection_classes_write_document_protected() {
+    let dir = temp_path::TempPath::new("hwp571", "hwp5");
+    let _ = std::fs::remove_dir_all(&*dir);
+    std::fs::create_dir_all(&*dir).unwrap();
+    let ops = dir.join("ops.json");
+    std::fs::write(
+        &ops,
+        serde_json::to_vec(&json!([{"op":"replace","from":"a","to":"b"}])).unwrap(),
+    )
+    .unwrap();
+    for (name, bits, protection) in [
+        ("pw", BIT_ENCRYPTED, "password"),
+        ("cert_enc", BIT_CERT_ENCRYPTED, "certificate_encryption"),
+        ("cert_drm", BIT_CERT_DRM, "certificate_drm"),
+        ("drm", BIT_DRM, "drm"),
+        ("signed", BIT_HAS_SIGNATURE, "signature"),
+    ] {
+        let input = protected_hwp(&dir, name, bits);
+        let flags = refused_open(
+            &dir,
+            &input,
+            &format!("{name}-flags"),
+            &["--replace", "a=>b"],
+        );
+        assert_protected(&flags, protection);
+        let typed = refused_open(
+            &dir,
+            &input,
+            &format!("{name}-ops"),
+            &["--ops", ops.to_str().unwrap()],
+        );
+        assert_protected(&typed, protection);
+    }
+}
+
+/// An encrypted HWPX package is a password refusal on every HWPX path, including the
+/// package-preserving `--replace` fast path that never goes through the shared loader.
+#[test]
+fn encrypted_hwpx_writes_document_protected_password() {
+    let dir = temp_path::TempPath::new("hwp571", "hwpx");
+    let _ = std::fs::remove_dir_all(&*dir);
+    std::fs::create_dir_all(&*dir).unwrap();
+    let input = encrypted_hwpx(&dir);
+    let replace = refused_open(&dir, &input, "replace", &["--replace", "a=>b"]);
+    assert_protected(&replace, "password");
+    let other = refused_open(&dir, &input, "row", &["--add-row", "0:0"]);
+    assert_protected(&other, "password");
+}
+
+/// A refusal that is not a protection one keeps its own code: the classifier reads the typed
+/// error, not the message, so a protection sentence in user text selects nothing.
+#[test]
+fn protection_sentence_in_user_text_does_not_select_the_code() {
+    let fixture = Fixture::new("protected-text");
+    let anchor =
+        "DRM으로 보호된 문서는 지원하지 않습니다. 한글에서 DRM 보안을 해제한 뒤 다시 저장하세요.";
+    let report = fixture.refused_ops(
+        "protected-text",
+        json!([{"op":"add_table","anchor":anchor,"rows":[["a"]]}]),
+    );
+    assert_eq!(report["refusal"]["code"], "add_table.anchor_not_found");
+}
+
+/// A document that is not protected never reports the code.
+#[test]
+fn unprotected_refusal_is_not_document_protected() {
+    let fixture = Fixture::new("not-protected");
+    let report = fixture.refused("not-protected", &["--add-row", "99"]);
+    assert_ne!(report["refusal"]["code"], "document_protected");
+}
+
+/// A schema-valid `document_protected` must name a known class.
+#[test]
+fn schema_requires_a_known_protection_class() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&schema)
+        .unwrap();
+    let report = |values: Value| {
+        json!({"schema_version":"1.2","contract":"hwp-edit-report-v1","output":"o","dry_run":false,
+            "ops":[],"applied_count":0,"failed_count":0,
+            "refusal":{"code":"document_protected","values":values,"message":"m"}})
+    };
+    assert!(validator.is_valid(&report(json!({"protection":"drm"}))));
+    assert!(!validator.is_valid(&report(json!({"protection":"other"}))));
+    assert!(!validator.is_valid(&report(json!({}))));
+    for class in hwp_cli::refusal::PROTECTION_CLASSES {
+        assert!(
+            validator.is_valid(&report(json!({"protection": class}))),
+            "{class}"
+        );
+    }
 }
