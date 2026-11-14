@@ -5992,6 +5992,11 @@ fn project_hwp5_to_hwpx_representation(
 
 fn project_hwp5_paragraphs(paragraphs: &mut [hwp_model::Paragraph], reported: ReportedEvents) {
     for paragraph in paragraphs {
+        // Before the per-control projection below: it counts the drawing objects in the raw
+        // trees, which item 7 then clears.
+        if reported.controls {
+            collapse_retyped_shapes(paragraph);
+        }
         for control in &mut paragraph.controls {
             match control {
                 hwp_model::Control::SectionDef(def) => {
@@ -6075,10 +6080,29 @@ fn project_hwp5_paragraphs(paragraphs: &mut [hwp_model::Paragraph], reported: Re
                 }
             }
         }
-        if reported.controls {
-            collapse_retyped_shapes(paragraph);
-        }
     }
+}
+
+/// SHAPE_COMPONENT records (tag 76) in a raw record tree outside its paragraph lists: one per
+/// drawing object of a `gso ` control, including a group's container and each of its members.
+fn count_shape_components(record: &hwp_model::OpaqueRecord) -> usize {
+    // A paragraph list inside the tree (a text box's text) is counted through the modeled
+    // `paragraph_lists`, where a shape nested in it is a control of its own paragraph.
+    if record.tag == hwp5::record::tag::LIST_HEADER || record.tag == hwp5::record::tag::PARA_HEADER
+    {
+        return 0;
+    }
+    // A group's container component (`$con`, stored reversed) is the group itself: the HWPX
+    // re-read holds its members as controls and no control for the container, so it is not
+    // counted. Every member and every ungrouped object is.
+    let is_member =
+        record.tag == hwp5::record::tag::SHAPE_COMPONENT && !record.data.starts_with(b"noc$");
+    usize::from(is_member)
+        + record
+            .children
+            .iter()
+            .map(count_shape_components)
+            .sum::<usize>()
 }
 
 /// Control ids a HWPX re-read gives to the drawing objects HWP5 stores as `gso `.
@@ -6136,6 +6160,26 @@ fn collapse_retyped_shapes(paragraph: &mut hwp_model::Paragraph) {
             }
         }
     }
+    // The number of drawing objects is kept: the `control_removed` event states that controls
+    // were re-typed, not how many, so a re-read with one object fewer or more must still differ.
+    // The two sides count in the same unit, a drawing object. The HWP5 side holds each as a
+    // SHAPE_COMPONENT record inside the raw tree of its `gso ` control (a group is one `gso `
+    // with its container and members as components); the HWPX re-read holds each as a typed
+    // control and the group members as separate controls.
+    let shapes: usize = paragraph
+        .controls
+        .iter()
+        .map(|control| match control {
+            hwp_model::Control::Generic(g) if is_drawing_object_id(&g.ctrl_id) => {
+                if g.raw_children.is_empty() {
+                    1
+                } else {
+                    g.raw_children.iter().map(count_shape_components).sum()
+                }
+            }
+            _ => 0,
+        })
+        .sum();
     paragraph.controls.retain(|control| !is_shape(control));
     // Positions in WCHAR units: drop the removed stubs and shift later runs back by 8 each.
     let mut position = 0_u32;
@@ -6177,6 +6221,11 @@ fn collapse_retyped_shapes(paragraph: &mut hwp_model::Paragraph) {
     paragraph.extras.push(hwp_model::OpaqueRecord {
         tag: 0xFFF0,
         data: text.into_bytes(),
+        children: Vec::new(),
+    });
+    paragraph.extras.push(hwp_model::OpaqueRecord {
+        tag: 0xFFF1,
+        data: (shapes as u64).to_le_bytes().to_vec(),
         children: Vec::new(),
     });
 }
@@ -8186,6 +8235,74 @@ mod tests {
             sig(&source, covered),
             sig(&changed, covered),
             "a changed text inside the retyped shape still differs"
+        );
+        // #583 review: the event says controls were re-typed, not how many. A re-read with one
+        // drawing object fewer or more must still differ. Measured on a real sample before this
+        // check: removing any of 80 of 149 drawing objects went undetected.
+        let mut fewer = with_shape("상자 글", *b"rect");
+        let paragraph = &mut fewer.sections[0].paragraphs[0];
+        paragraph.controls.pop();
+        paragraph.chars.pop();
+        assert_ne!(
+            sig(&source, covered),
+            sig(&fewer, covered),
+            "a dropped drawing object must still differ"
+        );
+        let mut more = with_shape("상자 글", *b"rect");
+        let extra = more.sections[0].paragraphs[0].controls[0].clone();
+        let paragraph = &mut more.sections[0].paragraphs[0];
+        paragraph.controls.push(extra);
+        paragraph.chars.push(hwp_model::HwpChar::ExtCtrl {
+            code: 11,
+            ctrl_id: *b"rect",
+            payload: b"rect".to_vec(),
+            ctrl_index: Some(1),
+        });
+        assert_ne!(
+            sig(&source, covered),
+            sig(&more, covered),
+            "an added drawing object must still differ"
+        );
+    }
+
+    /// #583 review: the drawing-object count of a raw-backed `gso ` control is the number of
+    /// SHAPE_COMPONENT records outside its paragraph lists, minus a group's container. This is
+    /// the unit the HWPX re-read counts in, so a group of two members is two and a plain object
+    /// is one, whatever else the raw tree holds.
+    #[test]
+    fn shape_components_are_counted_as_the_hwpx_reread_counts_objects() {
+        let component = |id: &[u8; 4], children: Vec<hwp_model::OpaqueRecord>| {
+            let mut data = id.to_vec();
+            data.extend_from_slice(&id[..]);
+            hwp_model::OpaqueRecord {
+                tag: hwp5::record::tag::SHAPE_COMPONENT,
+                data,
+                children,
+            }
+        };
+        let plain = component(b"cer$", Vec::new());
+        assert_eq!(count_shape_components(&plain), 1);
+        let group = component(
+            b"noc$",
+            vec![
+                component(b"lle$", Vec::new()),
+                component(b"lle$", Vec::new()),
+            ],
+        );
+        assert_eq!(
+            count_shape_components(&group),
+            2,
+            "members count, the container does not"
+        );
+        let with_text = hwp_model::OpaqueRecord {
+            tag: hwp5::record::tag::LIST_HEADER,
+            data: Vec::new(),
+            children: vec![component(b"cer$", Vec::new())],
+        };
+        assert_eq!(
+            count_shape_components(&with_text),
+            0,
+            "a shape inside a text box's paragraph list is counted through the list"
         );
     }
 
