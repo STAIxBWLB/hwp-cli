@@ -35,7 +35,7 @@
     "preservation": {
       "type": "array",
       "maxItems": 1000,
-      "description": "1.4 (#583). The typed preservation events of the run, in the shape of `hwp-preservation-report-v1` events: what the write removed or could not represent, with counts only and never document content. Absent when the run lost nothing. An `edit` from an HWP5 input to `.hwpx` runs the accounting `ahwp convert` runs for the same pair and publishes with its events, as `convert` does without `--strict`; two events still refuse that edit, `paragraph_range_tag_unrepresentable` and `font_type_info_unrepresentable`. `--verify` in that direction accepts a difference only when it is a named format projection or is covered by a reported event.",
+      "description": "1.4 (#583). The typed preservation events of the run, in the shape of `hwp-preservation-report-v1` events: what the write removed or could not represent, with counts only and never document content. Absent when the run lost nothing. An `edit` from an HWP5 input to `.hwpx` runs the accounting `ahwp convert` runs for the same pair and publishes with the events that accounting adds, as `convert` does without `--strict`. Every event the HWPX writer itself reports still refuses that edit, as before (an opaque or image-filled control, an unrepresentable shape or header, a dropped binary, a dropped range tag), and of the added events `paragraph_range_tag_unrepresentable` and `font_type_info_unrepresentable` refuse too. `--verify` in that direction accepts a difference only when it is a named format projection or is covered by a reported event.",
       "items": {
         "type": "object",
         "additionalProperties": false,

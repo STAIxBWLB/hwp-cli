@@ -386,3 +386,28 @@ fn edit_report_preservation_events_match_the_preservation_report_schema() {
         );
     }
 }
+
+/// The schema's prose must not claim a smaller refusal set than the policy has: it once said
+/// only two events refuse, after the policy was widened beyond what was ruled (#583 review F1).
+#[test]
+fn edit_report_schema_describes_the_cross_format_refusal_policy() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../schemas/edit-report-v1.schema.json")).unwrap();
+    let description = schema["properties"]["preservation"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(
+        description.contains("Every event the HWPX writer itself reports still refuses"),
+        "{description}"
+    );
+    assert!(
+        !description.contains("two events still refuse"),
+        "{description}"
+    );
+    for code in [
+        "paragraph_range_tag_unrepresentable",
+        "font_type_info_unrepresentable",
+    ] {
+        assert!(description.contains(code), "{code}: {description}");
+    }
+}
