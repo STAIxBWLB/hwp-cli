@@ -389,7 +389,7 @@ ahwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.j
 
 ### 네이티브 양식 바인딩 검토와 적용
 
-제공된 양식을 바인딩하기 전에 [정본 바인딩 절차](https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/ai-integrations.ko.md#네이티브-양식-바인딩-검토와-적용)에서 닫힌 계획 스키마, 복제 주소 맵, 거부 범위를 읽는다.
+제공된 양식을 바인딩하기 전에 [정본 바인딩 절차](https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/agent-conventions.ko.md#네이티브-양식-바인딩-검토와-적용)에서 닫힌 계획 스키마, 복제 주소 맵, 거부 범위를 읽는다.
 
 ```bash
 ahwp slots source.hwpx --json --forms --occurrences > local-catalog.json

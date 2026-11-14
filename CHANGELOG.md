@@ -61,6 +61,10 @@ These changes ship as 2.0.0.
   on a run with none, and the projected text is unchanged. The envelope is now
   `schema_version` `1.2` ([#543](https://github.com/STAIxBWLB/agent-hwp/issues/543)).
 
+**Documentation**
+
+- README and docs restructured for people and agents: a short README front door with a task-keyed "Where to go next" table, reference sections moved unchanged into one-topic `docs/manual/` pages, agent conventions split out of `ai-integrations`, and `docs/README.md` as a map of every page ([#560](https://github.com/STAIxBWLB/agent-hwp/issues/560)).
+
 **Fixed**
 
 - `edit --verify` projects known HWP5 writer materialization when editing HWPX into `.hwp`,

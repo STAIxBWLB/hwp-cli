@@ -395,7 +395,7 @@ ahwp edit doc.hwpx -o with-component.hwpx --ops component.json --report report.j
 
 ### Review and apply native form bindings
 
-Before binding supplied forms, read the [canonical binding recipe](https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/ai-integrations.md#review-and-apply-native-form-bindings) for the closed plan schema, copy maps and refusal boundaries.
+Before binding supplied forms, read the [canonical binding recipe](https://github.com/STAIxBWLB/agent-hwp/blob/main/docs/manual/agent-conventions.md#review-and-apply-native-form-bindings) for the closed plan schema, copy maps and refusal boundaries.
 
 ```bash
 ahwp slots source.hwpx --json --forms --occurrences > local-catalog.json
