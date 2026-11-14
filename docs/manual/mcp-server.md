@@ -18,19 +18,9 @@ The copy-paste Windows setup, create/validate acceptance test, reusable agent in
 symptom-driven recovery are in the dedicated
 [Amazon Quick Desktop runbook](amazon-quick-desktop.md).
 
-Amazon Quick Desktop can launch this local stdio server and expose all 23 tools. Install the
-publish-safe skill into its active profile with:
-
-```sh
-ahwp skill export --install amazon-quick
-```
-
-On Windows, create a dedicated exchange root under `%USERPROFILE%\AppData\LocalLow` (for example
-`hwp-quick-workspace`) and pass its absolute path as the MCP `--root` (Quick arguments do not
-expand environment variables). Quick starts the local MCP child at Low mandatory integrity, so
-`C:\TEMP` can pass tool discovery but reject the first write. Quick's local-folder permissions do
-not change that write integrity; use the dedicated runbook's creation, import JSON, and recovery
-steps.
+Amazon Quick Desktop can launch this local stdio server and expose all 23 tools. Its skill
+install and the Windows `LocalLow` workspace setup are in
+[AI client integrations](ai-integrations.md#amazon-quick-desktop).
 
 Amazon Quick Web cannot launch a local stdio process. `ahwp serve` now runs the same tools over
 HTTP for container deployment (`POST /mcp`, see [deployment design](../design/22-remote-mcp-deployment.md)),

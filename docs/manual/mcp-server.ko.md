@@ -17,18 +17,9 @@ Amazon Quick Desktop)과 번들 에이전트 스킬(`ahwp skill export`):
 Windows 복사·실행 설정, 생성·검증 acceptance test, 재사용 가능한 에이전트 지침, 증상별 복구는 전용
 [Amazon Quick Desktop 가이드](amazon-quick-desktop.ko.md)에 정리했다.
 
-Amazon Quick Desktop은 로컬 stdio 서버를 실행해 23개 도구를 모두 노출할 수 있다. publish-safe
-스킬은 활성 프로필에 다음과 같이 설치한다.
-
-```sh
-ahwp skill export --install amazon-quick
-```
-
-Windows에서는 `%USERPROFILE%\AppData\LocalLow` 아래에 전용 교환 root(예: `hwp-quick-workspace`)를
-만들고 그 절대 경로를 MCP `--root`로 전달한다(Quick 인자는 환경 변수를 확장하지 않는다). Quick은
-로컬 MCP 자식을 Low mandatory integrity로 시작하므로 `C:\TEMP`에서 도구 탐색은 통과해도 첫 쓰기가
-거부될 수 있다. Quick의 로컬 폴더 권한은 이 쓰기 무결성을 바꾸지 않으므로 전용 가이드의
-생성·import JSON·복구 절차를 따른다.
+Amazon Quick Desktop은 로컬 stdio 서버를 실행해 23개 도구를 모두 노출할 수 있다. 스킬 설치와
+Windows `LocalLow` 워크스페이스 설정은
+[AI 클라이언트 연동](ai-integrations.ko.md#amazon-quick-desktop)에 있다.
 
 Amazon Quick Web은 로컬 stdio 프로세스를 시작할 수 없다. 이제 `ahwp serve`가 같은 도구를
 컨테이너 배포용 HTTP로 제공한다(`POST /mcp`,

@@ -36,6 +36,7 @@ Help is shown in English by default and in Korean under a Korean locale; overrid
 | `diff <input> --ref <png>` | Compare a render against a Hancom reference PNG (ink, offset, pixel difference, MAE) |
 | `compare <a> <b>` | Paragraph and structural differences between two documents, leaving both untouched. Exit codes follow diff(1): 0 identical, 1 differences found, 2 the run failed |
 | `mcp` | Run the MCP stdio server |
+| `serve` | Serve the same MCP tools over HTTP (`POST /mcp`) for container deployment. See [Remote MCP deployment](../design/22-remote-mcp-deployment.md) |
 | `skill export` | Export or install the bundled agent skill, including Amazon Quick profile discovery |
 | `update` | Self-update (a brew installation delegates to `brew upgrade`) |
 | `dump <file>` | [developer] Dump record and package structure |

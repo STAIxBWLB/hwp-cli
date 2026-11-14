@@ -20,7 +20,8 @@ The default location is `~/.local/bin` (if it is not on PATH, the script says so
 location or version with arguments or environment variables:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v1.6.0
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh \
+  | sh -s -- --dir /usr/local/bin --tag v1.6.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 

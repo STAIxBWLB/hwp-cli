@@ -20,7 +20,7 @@ Linux/macOS 서버와 CI에서 그대로 돈다.
 제공한다. 차트·OLE 개체는 지원하지 않고, 수식은 근사 렌더하며, 바이트 동일 왕복은 hwp 출신·무수정
 문서에만 보장한다.
 
-- **한컴 동등성 주장 없음** 최종 판정은 언제나 한글(한컴오피스) 실기에서 열리는지 여부다.
+- **한컴 동등성 주장 없음.** 최종 판정은 언제나 한글(한컴오피스) 실기에서 열리는지 여부다.
 
 전체 기능 목록, 상태 표, 한계, 로드맵은 [ahwp의 기능과 한계](docs/manual/capabilities.ko.md)에 있다.
 미구현 기능은 [12-feature-gaps](docs/design/12-feature-gaps.ko.md)에 정리돼 있다.
@@ -78,20 +78,20 @@ ahwp mcp --root . --font-dir ./fonts                  # AI 클라이언트용 MC
 |---|---|
 | 전체 기능, 상태 표, 한계, 로드맵 확인 | [ahwp의 기능과 한계](docs/manual/capabilities.ko.md) |
 | 다른 플랫폼·컨테이너·서버리스 빌드에 설치, 폰트 준비 | [설치와 업데이트](docs/manual/install.ko.md) |
-| 명령이나 플래그 찾기 | [명령 한눈에 보기](docs/manual/commands.ko.md), 이어서 자동 생성된 [CLI 레퍼런스](docs/manual/cli-reference.ko.md) |
+| 명령이나 플래그 찾기 | [명령 한눈에 보기](docs/manual/commands.ko.md) |
 | 문서 변환, 텍스트·markdown·추출 근거 세그먼트 추출 | [Markdown 내보내기](docs/manual/markdown-export.ko.md) |
-| 문서 편집, 양식 채우기, 양식 필드 바인딩 | [에이전트 규약](docs/manual/agent-conventions.ko.md) |
+| 문서 편집·채우기, 양식 필드 바인딩(워크플로와 규약) | [에이전트 규약](docs/manual/agent-conventions.ko.md) |
 | 명세로 새 문서 작성, 공문 작성, JSON에서 재생성 | [문서 작성](docs/manual/authoring.ko.md) |
 | 작성한 파일 인증, 구조 코퍼스 실행 | [인증과 구조 코퍼스](docs/manual/certification.ko.md) |
 | AI 에이전트에서 MCP로 `ahwp` 사용 | [MCP 서버](docs/manual/mcp-server.ko.md) |
-| 특정 AI 클라이언트 설정, 에이전트 스킬 설치 | [AI 클라이언트 연동](docs/manual/ai-integrations.ko.md) ([Amazon Quick Desktop 가이드](docs/manual/amazon-quick-desktop.ko.md)) |
+| 특정 AI 클라이언트 설정(Amazon Quick 포함), 에이전트 스킬 설치 | [AI 클라이언트 연동](docs/manual/ai-integrations.ko.md) |
 | MCP 서버 원격 배포 | [원격 MCP 배포](docs/design/22-remote-mcp-deployment.ko.md) |
 | 그 밖의 페이지 찾기 | [문서 지도](docs/README.ko.md) |
-| 기여, 소스 빌드 | [개발](docs/manual/development.ko.md)과 [AGENTS.md](AGENTS.md) |
+| 기여, 소스 빌드 | [개발](docs/manual/development.ko.md) |
 
 ## 버전 정책
 
-hwp-cli는 1.0.0부터 [유의적 버전](https://semver.org/lang/ko/)을 따른다. 다음 중 하나라도
+agent-hwp는 1.0.0부터 [유의적 버전](https://semver.org/lang/ko/)을 따른다. 다음 중 하나라도
 호환되지 않게 바뀌면 주 버전을 올린다.
 
 - `ahwp` CLI의 명령, 플래그, 종료 코드

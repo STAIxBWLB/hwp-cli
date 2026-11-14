@@ -36,6 +36,7 @@
 | `diff <input> --ref <png>` | 렌더 결과를 한글 기준 PNG와 비교(잉크·오프셋·픽셀 오차·MAE) |
 | `compare <a> <b>` | 문서 두 개의 문단·구조 차이를 보고하며 두 입력 모두 수정하지 않음. 종료 코드는 diff(1) 관례(0 동일, 1 차이 발견, 2 실행 실패) |
 | `mcp` | MCP stdio 서버 실행 |
+| `serve` | 같은 MCP 도구를 컨테이너 배포용 HTTP(`POST /mcp`)로 제공. [원격 MCP 배포](../design/22-remote-mcp-deployment.ko.md) 참고 |
 | `skill export` | Amazon Quick 프로필 자동 탐색을 포함한 번들 에이전트 스킬 내보내기/설치 |
 | `update` | 자체 업데이트(brew 설치본은 `brew upgrade`에 위임) |
 | `dump <file>` | [개발자용] 레코드/패키지 구조 덤프 |

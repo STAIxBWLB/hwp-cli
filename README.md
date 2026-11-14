@@ -22,7 +22,7 @@ official-document templates, and serves the same operations to AI agents over MC
 objects are not supported, equations render as an approximation, and only unmodified hwp-origin
 documents round-trip byte-identically.
 
-- **No Hancom parity claim** The final verdict is always whether the file opens correctly in Hancom Office.
+- **No Hancom parity claim.** The final verdict is always whether the file opens correctly in Hancom Office.
 
 The full feature list, status table, limitations and roadmap are in
 [What ahwp does and its limits](docs/manual/capabilities.md). Unimplemented features are catalogued
@@ -82,20 +82,20 @@ More examples, and every command at a glance, are in [Commands at a glance](docs
 |---|---|
 | See every feature, the status table, limits and roadmap | [What ahwp does and its limits](docs/manual/capabilities.md) |
 | Install on another platform, in a container or serverless build, or set up fonts | [Install and update](docs/manual/install.md) |
-| Look up a command or a flag | [Commands at a glance](docs/manual/commands.md), then the generated [CLI reference](docs/manual/cli-reference.md) |
+| Look up a command or a flag | [Commands at a glance](docs/manual/commands.md) |
 | Convert a document or extract text, markdown or provenance segments | [Markdown export](docs/manual/markdown-export.md) |
-| Edit a document, fill a form or bind form fields | [Agent conventions](docs/manual/agent-conventions.md) |
+| Edit or fill a document, or bind form fields (workflows and conventions) | [Agent conventions](docs/manual/agent-conventions.md) |
 | Author new documents from specs, write 공문 or regenerate from JSON | [Authoring documents](docs/manual/authoring.md) |
 | Certify a written file or run the structured corpus | [Certification and the structured corpus](docs/manual/certification.md) |
 | Use `ahwp` from an AI agent over MCP | [MCP server](docs/manual/mcp-server.md) |
-| Set up a specific AI client or install the agent skill | [AI client integrations](docs/manual/ai-integrations.md) ([Amazon Quick Desktop runbook](docs/manual/amazon-quick-desktop.md)) |
+| Set up a specific AI client (including Amazon Quick) or install the agent skill | [AI client integrations](docs/manual/ai-integrations.md) |
 | Deploy the MCP server remotely | [Remote MCP deployment](docs/design/22-remote-mcp-deployment.md) |
 | Find any other page | [The docs map](docs/README.md) |
-| Contribute or build from source | [Development](docs/manual/development.md) and [AGENTS.md](AGENTS.md) |
+| Contribute or build from source | [Development](docs/manual/development.md) |
 
 ## Versioning
 
-hwp-cli follows [Semantic Versioning](https://semver.org) from 1.0.0. A breaking change to any of
+agent-hwp follows [Semantic Versioning](https://semver.org) from 1.0.0. A breaking change to any of
 the following needs a new major version:
 
 - the `ahwp` CLI's commands, flags and exit codes;

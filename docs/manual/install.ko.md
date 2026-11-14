@@ -19,7 +19,8 @@ curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/in
 기본 위치는 `~/.local/bin`이다(PATH에 없으면 안내를 출력한다). 위치·버전은 인자나 환경변수로 바꾼다:
 
 ```sh
-curl -fsSL .../install.sh | sh -s -- --dir /usr/local/bin --tag v1.6.0
+curl -fsSL https://raw.githubusercontent.com/STAIxBWLB/agent-hwp/main/scripts/install.sh \
+  | sh -s -- --dir /usr/local/bin --tag v1.6.0
 HWP_INSTALL_DIR=~/bin sh scripts/install.sh
 ```
 
