@@ -948,7 +948,7 @@ jobs:
           fallback_ok=true
           for name in "${expected[@]}"; do
             state="$(jq -r --arg n "$name" \
-              '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
+              '[.check_runs[] | select(.name == $n)] | sort_by([.started_at // "", .id // 0]) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
               <<<"$runs")"
             echo "$name: $state"
             printf '%s\t%s\n' "$name" "$state" >>"$CHECK_RUNS_FILE"
@@ -1010,7 +1010,7 @@ jobs:
                   head_problems=""
                   for name in "${expected[@]}"; do
                     state="$(jq -r --arg n "$name" \
-                      '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
+                      '[.check_runs[] | select(.name == $n)] | sort_by([.started_at // "", .id // 0]) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
                       <<<"$head_runs")"
                     echo "$name (PR #$pr_number head): $state"
                     [ "$state" = "completed/success" ] || { head_green=false; head_problems="${head_problems:+$head_problems, }$name=$state"; }

@@ -63,7 +63,7 @@ jobs:
             runs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?filter=latest&per_page=100")" || return 1
             for name in "${fallback_expected[@]}"; do
               state="$(jq -r --arg n "$name" \
-                '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
+                '[.check_runs[] | select(.name == $n)] | sort_by([.started_at // "", .id // 0]) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
                 <<<"$runs")"
               echo "$name: $state"
               [ "$state" = "completed/success" ] || failed=1
@@ -94,7 +94,7 @@ jobs:
           fallback_ok=true
           for name in "${expected[@]}"; do
             state="$(jq -r --arg n "$name" \
-              '[.check_runs[] | select(.name == $n)] | sort_by(.completed_at) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
+              '[.check_runs[] | select(.name == $n)] | sort_by([.started_at // "", .id // 0]) | .[-1] | if . == null then "absent" else "\(.status)/\(.conclusion // "pending")" end' \
               <<<"$runs")"
             echo "$name: $state"
             case "$state" in
