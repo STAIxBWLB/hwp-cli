@@ -314,7 +314,7 @@ fn assert_native_cell_width(cell_margins: [u16; 4], table_margins: [u16; 4], exp
     );
     assert_eq!(
         object.cells[0].paragraphs[0].line_segs[0].seg_width, expected,
-        "native width matches base raw-margin arithmetic, including sentinels"
+        "native width uses per-side table inheritance only for cell sentinels"
     );
 }
 
@@ -324,13 +324,17 @@ fn native_all_zero_cell_margins_keep_full_width() {
 }
 
 #[test]
-fn native_cell_margin_sentinel_keeps_base_raw_width_with_nonzero_table_margins() {
-    assert_native_cell_width([u16::MAX, u16::MAX, 100, 100], [100, 200, 100, 100], 1);
+fn native_cell_margin_sentinel_inherits_nonzero_table_margins() {
+    assert_native_cell_width(
+        [u16::MAX, u16::MAX, 100, 100],
+        [100, 200, 100, 100],
+        CELL_WIDTH - 300,
+    );
 }
 
 #[test]
-fn native_cell_margin_sentinel_keeps_base_raw_width_with_zero_table_margins() {
-    assert_native_cell_width([u16::MAX, u16::MAX, 100, 100], [0; 4], 1);
+fn native_cell_margin_sentinel_inherits_explicit_zero_table_margins() {
+    assert_native_cell_width([u16::MAX, u16::MAX, 100, 100], [0; 4], CELL_WIDTH);
 }
 
 #[test]

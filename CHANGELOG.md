@@ -35,6 +35,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   remain conservative exclusions; table-relative host-line placement is out of scope. Native HWP5
   edit/seed arithmetic, nested lists and per-line wrapping rules are unchanged.
 
+- Native-cache cell margins resolve only `0xffff` per side to the table's inner margins in
+  cell widths and table heights, preventing a one-unit width or a 65535-unit margin term.
+  Explicit zeros and ordinary margins remain unchanged; raw IR margins and the separate render
+  margin policy are preserved. Horizontal inheritance is evidenced; vertical inheritance is
+  inferred, with only absence of a 65535 term observed (#576, part of #540 G2).
+
 **Documentation**
 
 - The original-form capability record gains `hancom_open_export_receipts` with one agent-performed

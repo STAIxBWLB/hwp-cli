@@ -412,6 +412,19 @@ impl ListCaches {
     }
 }
 
+/// Native-cache rule (#540 G2, #576): only 0xffff inherits the same table margin side.
+/// Explicit zero stays zero. Horizontal inheritance is observed; vertical inheritance is
+/// inferred. Work on copied arrays so raw IR margins remain available for identity writes.
+fn native_cache_cell_margins(margins: [u16; 4], inner_margins: [u16; 4]) -> [u16; 4] {
+    std::array::from_fn(|side| {
+        if margins[side] == u16::MAX {
+            inner_margins[side]
+        } else {
+            margins[side]
+        }
+    })
+}
+
 /// Synthesize every nested paragraph list: table captions/cells, controls within cells
 /// (including nested tables), picture captions, object paragraph lists and object captions.
 /// This matches the lists where hwp-convert walk_para_lists can insert paragraphs.
@@ -444,12 +457,8 @@ fn fill_nested(
                     );
                 }
                 for cell in &mut t.cells {
-                    // Retain base native-cache arithmetic, including raw sentinels.
-                    // Width/height sentinel interpretation requires genuine-byte
-                    // evidence before changing written geometry (#425).
-                    let w =
-                        (cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]))
-                            .max(1);
+                    let margins = native_cache_cell_margins(cell.margins, t.inner_margins);
+                    let w = (cell.width.0 - i32::from(margins[0]) - i32::from(margins[1])).max(1);
                     fill_list(
                         &mut cell.paragraphs,
                         w,
@@ -598,9 +607,10 @@ fn table_height(table: &Table) -> i32 {
         // v_pos + line_height is already the whole cell height. Summing paragraph heights
         // would count earlier paragraphs twice because their heights are included in later v_pos.
         let block = cell.paragraphs.last().map_or(0, para_line_block);
-        let cell_h = i32::from(cell.margins[2])
+        let margins = native_cache_cell_margins(cell.margins, table.inner_margins);
+        let cell_h = i32::from(margins[2])
             .saturating_add(block)
-            .saturating_add(i32::from(cell.margins[3]));
+            .saturating_add(i32::from(margins[3]));
         if cell_h > row_heights[r] {
             row_heights[r] = cell_h;
         }
@@ -909,6 +919,84 @@ mod tests {
             cells: vec![cell],
             caption: None,
             extras: Vec::new(),
+        }
+    }
+
+    // Exercise the existing native-cache entry point so the pre-fix test compiles and
+    // fails on geometry, not on a missing resolver API. No fonts or fixture files are used.
+    fn native_test_width(margins: [u16; 4]) -> i32 {
+        let snap = hwp_convert::from_markdown("Cell\n");
+        let mut cell = cell_with(&[0]);
+        cell.margins = margins;
+        cell.paragraphs[0].line_segs.clear();
+        let mut table = table_with(cell);
+        table.inner_margins = [510, 510, 141, 141];
+        let mut parent = Paragraph {
+            controls: vec![Control::Table(table)],
+            ..Default::default()
+        };
+        let mut fonts = FontStore::new_isolated();
+        let mut issues = RenderIssueAccumulator::new();
+        fill_nested(
+            &mut parent,
+            20000,
+            &snap,
+            &mut fonts,
+            &mut issues,
+            ListCaches::Recompute,
+        );
+        let Control::Table(table) = &parent.controls[0] else {
+            unreachable!()
+        };
+        table.cells[0].paragraphs[0].line_segs[0].seg_width
+    }
+
+    fn native_test_height(margins: [u16; 4]) -> i32 {
+        let mut cell = cell_with(&[0]);
+        cell.margins = margins;
+        let mut table = table_with(cell);
+        table.inner_margins = [510, 510, 141, 141];
+        table_height(&table)
+    }
+
+    #[test]
+    fn native_margin_all_sentinel_width_uses_table_inner_sides() {
+        assert_eq!(native_test_width([u16::MAX; 4]), 5000 - 510 - 510);
+    }
+
+    #[test]
+    fn native_margin_all_sentinel_height_has_no_65535_term() {
+        // Vertical fallback to the table is inferred; absence of a sentinel term is observed.
+        assert_eq!(
+            native_test_height([u16::MAX; 4]),
+            141 + 1000 + 141 + TABLE_BLOCK_PADDING
+        );
+    }
+
+    #[test]
+    fn native_margin_single_horizontal_sentinel_keeps_the_other_side_zero() {
+        assert_eq!(native_test_width([u16::MAX, 0, 20, 30]), 5000 - 510);
+    }
+
+    #[test]
+    fn native_margin_single_vertical_sentinel_keeps_the_other_side_zero() {
+        assert_eq!(
+            native_test_height([0, 0, u16::MAX, 0]),
+            141 + 1000 + TABLE_BLOCK_PADDING
+        );
+    }
+
+    #[test]
+    fn native_margin_zero_and_ordinary_values_are_unchanged_controls() {
+        for margins in [[0, 0, 0, 0], [0, 250, 10, 20], [200, 300, 40, 50]] {
+            assert_eq!(
+                native_test_width(margins),
+                5000 - i32::from(margins[0]) - i32::from(margins[1])
+            );
+            assert_eq!(
+                native_test_height(margins),
+                i32::from(margins[2]) + 1000 + i32::from(margins[3]) + TABLE_BLOCK_PADDING
+            );
         }
     }
 
