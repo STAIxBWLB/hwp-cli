@@ -10,7 +10,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 ## [Unreleased]
 
-These changes ship as 2.0.0.
+## [2.0.0]
 
 **Breaking**
 
@@ -49,6 +49,14 @@ These changes ship as 2.0.0.
   binding plans after conversion because the source hash changes. `split` retains its input
   format and form bindings require matching native formats; this does not add cross-format
   output to either command.
+- `cat --segments v2` envelopes now carry `schema_version` `1.2`. Every 1.1 field is unchanged and
+  `controls` is optional; a consumer that accepts only `"1.1"` must also accept `"1.2"`. Run
+  `char_range` values change only where they used to be wrong: sibling pieces that overlapped
+  after a leading-whitespace trim, and visible text published under a preceding trimmed space's
+  run. Markdown text and every other run range are unchanged
+  ([#543](https://github.com/STAIxBWLB/agent-hwp/issues/543),
+  [#557](https://github.com/STAIxBWLB/agent-hwp/issues/557),
+  [#558](https://github.com/STAIxBWLB/agent-hwp/issues/558)).
 
 **Added**
 
@@ -63,7 +71,10 @@ These changes ship as 2.0.0.
 
 **Documentation**
 
-- README and docs restructured for people and agents: a short README front door with a task-keyed "Where to go next" table, reference sections moved unchanged into one-topic `docs/manual/` pages, agent conventions split out of `ai-integrations`, and `docs/README.md` as a map of every page ([#560](https://github.com/STAIxBWLB/agent-hwp/issues/560)).
+- README and docs restructured for people and agents: a short README front door with a
+  task-keyed "Where to go next" table, reference sections moved unchanged into one-topic
+  `docs/manual/` pages, agent conventions split out of `ai-integrations`, and `docs/README.md`
+  as a map of every page ([#560](https://github.com/STAIxBWLB/agent-hwp/issues/560)).
 
 **Fixed**
 
@@ -75,16 +86,14 @@ These changes ship as 2.0.0.
   `.hwpx` remedy; CLI conversion and merge report the loss and refuse under `--strict`
   (MCP `hwp_convert` remains strict by default).
   The font mapping remains tracked under [#540](https://github.com/STAIxBWLB/agent-hwp/issues/540).
-- `cat --segments v2`: sibling run ranges remain ordered and disjoint when emphasis moves
-  leading or trailing whitespace across run boundaries. Surviving projected controls stay on
-  the run that emitted them. This also removes overlapping ranges caused by leading-trim
-  collapse; the Markdown text is unchanged
+- `cat --segments v2`: sibling run pieces no longer overlap when a leading-whitespace trim
+  collapses several shape runs into one position (188 of 9,331 short control-free paragraphs
+  in an exhaustive enumeration). The Markdown text is unchanged
   ([#557](https://github.com/STAIxBWLB/agent-hwp/issues/557)).
 - `cat --segments v2`: visible non-whitespace text retains its owning run when a
   whitespace-only emphasis span collapses. The published run ID, style and source range now
   identify the visible text instead of a preceding trimmed space; Markdown is unchanged
   ([#558](https://github.com/STAIxBWLB/agent-hwp/issues/558)).
-
 
 ## [1.6.3]
 
