@@ -44,8 +44,7 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   Hangul 12.30.0 saved G1 positions (#540, #570). Floating-section anchor synthesis retains the same
   section-start space-before. Section-first paragraphs anchoring floating tables omit
   space-before, confirmed by Hangul 12.30.0 saves (#570). Pictures, GSO and unknown placements
-  remain conservative exclusions; table-relative host-line placement is out of scope. Native HWP5
-  edit/seed arithmetic, nested lists and per-line wrapping rules are unchanged.
+  remain conservative exclusions; table-relative host-line placement is out of scope. Nested lists and per-line wrapping rules are unchanged.
 
 - Native-cache cell margins resolve only `0xffff` per side to the table's inner margins in
   cell widths and table heights, preventing a one-unit width or a 65535-unit margin term.
@@ -53,13 +52,19 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   margin policy are preserved. Horizontal inheritance is evidenced; vertical inheritance is
   inferred, with only absence of a 65535 term observed (#576, part of #540 G2).
 
+- Native HWP5 edit body synthesis and saved-predecessor seeds now use half the serialized
+  paragraph spacing, matching Hangul's G3 position 6312 and post-break top 1200. Plain section
+  starts keep top/2; floating-host section starts still omit it. Stored source caches and nested
+  list geometry remain unchanged. The height-neutral suffix guard stays active for explicit
+  spacing changes that would overlap a source neighbour (#584, part of #540 G1).
+
 **Changed**
 
 - Native HWP5 body edits preserve unchanged suffix paragraph records after height-neutral runs
   (same cached extent, line count, page/column flags and hosted-object/nested-cache geometry).
   The first height-changing, new, moved or forward-unsafe paragraph makes the remaining section
   reflow, even after later neutral edits; the next section starts fresh. A retained source suffix
-  must not overlap the synthesized block on the same page/column. Native spacing units are unchanged. Nested cell, caption and text-box
+  must not overlap the synthesized block on the same page/column. Nested cell, caption and text-box
   lists retain their existing reflow rules. Changed body runs continue from the saved predecessor
   actually retained. This is source representation preservation, not a new Hancom-acceptance
   claim; height-changing native output remains a separate Hancom evidence item (#540 G3).

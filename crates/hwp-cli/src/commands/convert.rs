@@ -1244,7 +1244,8 @@ fn write_hwp_impl(
         let mut warns = hwp_render::RenderIssueAccumulator::new();
         // The first changed body paragraph continues from its kept predecessor. After a neutral
         // edit, unchanged body records remain saved; the first height-changing edit makes the
-        // rest of that section reflow; a source suffix that would overlap also forces reflow. A bare section-top cursor gave the
+        // rest of that section reflow; a source suffix that would overlap also forces reflow.
+        // A bare section-top cursor gave the
         // first changed paragraph a v_pos *above* its kept predecessor, which the renderer reads
         // as a page start and draws the change mid-page (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
@@ -2714,7 +2715,7 @@ mod tests {
                 "neutral run keeps the floating neighbour before the next edit"
             );
             let previous = &original.sections[0].paragraphs[2];
-            let cursor = hwp_render::lineseg::saved_body_cursor(previous, 600).unwrap();
+            let cursor = hwp_render::lineseg::saved_body_cursor(previous, 300).unwrap();
             assert_eq!(
                 after.sections[0].paragraphs[3].line_segs[0].v_pos, cursor,
                 "later changed run measures the source table cache actually kept"
@@ -2752,8 +2753,7 @@ mod tests {
         assert_native_body_run_order(false);
     }
 
-    /// G1's stored post-break top is raw/2 while the existing native synthesizer still adds
-    /// raw top. Equal line extent alone must not place a retained neighbour inside that line.
+    /// G1's post-break half-unit top now fits the stored successor; forward safety remains required.
     #[test]
     fn native_neutral_post_break_spacing_keeps_the_successor_outside_the_changed_line() {
         let dir =
@@ -2801,12 +2801,12 @@ mod tests {
         let changed = current.sections[0].paragraphs[3].line_segs.last().unwrap();
         let following = current.sections[0].paragraphs[4].line_segs.first().unwrap();
         assert_eq!(
-            changed.v_pos, 2400,
-            "native spacing units remain unchanged in this task"
+            changed.v_pos, 1200,
+            "native post-break top uses half the serialized spacing"
         );
         assert_eq!(
-            following.v_pos, 4000,
-            "unsafe neutral candidate must take the existing reflow fallback"
+            following.v_pos, 2800,
+            "the corrected neutral block fits its stored successor"
         );
         assert!(
             following.v_pos >= changed.v_pos + changed.line_height,
@@ -2814,6 +2814,62 @@ mod tests {
             changed.v_pos,
             changed.v_pos + changed.line_height,
             following.v_pos
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Keep the #93 forward-unsafe fallback exercised independently of the native unit bug.
+    #[test]
+    fn native_neutral_spacing_change_reflows_an_unsafe_source_suffix() {
+        let dir = std::env::temp_dir().join(format!(
+            "ahwp-native-spacing-forward-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (source, original) = native_suffix_source(&dir);
+        let output = dir.join("spacing-output.hwp");
+        let mut edited = original.clone();
+        let mut shape = edited.header.para_shapes
+            [edited.sections[0].paragraphs[1].para_shape.0 as usize]
+            .clone();
+        shape.spacing_top = 2000;
+        edited.sections[0].paragraphs[1].para_shape =
+            hwp_model::ParaShapeId(edited.header.para_shapes.len() as u16);
+        edited.header.para_shapes.push(shape);
+        edited.sections[0].paragraphs[1]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[1].line_segs.clear();
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        let changed = &current.sections[0].paragraphs[1].line_segs[0];
+        let following = &current.sections[0].paragraphs[2].line_segs[0];
+        assert_eq!(
+            changed.v_pos, 2900,
+            "1900 source predecessor advance plus changed raw top2000/2"
+        );
+        assert_eq!(
+            changed.line_height + changed.line_spacing,
+            1600,
+            "own-line extent stays neutral"
+        );
+        assert_eq!(original.sections[0].paragraphs[2].line_segs[0].v_pos, 3800);
+        assert_eq!(
+            following.v_pos, 4800,
+            "unsafe source3800 must reflow from4500 plus bottom600/2"
+        );
+        assert_ne!(
+            native_suffix_line_records(&output)[2],
+            native_suffix_line_records(&source)[2]
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2893,8 +2949,8 @@ mod tests {
         assert_eq!(seeds.len(), 1, "one section, one seam");
         assert_eq!(seeds[0].section, 0);
         assert_eq!(seeds[0].paragraph, 1, "the first changed body paragraph");
-        // Saved prefix cache: v_pos 0, line_height 1000, line_spacing 600, then space-after 400.
-        assert_eq!(seeds[0].v_pos_hu, 2000);
+        // Saved prefix cache: v_pos 0, line_height 1000, line_spacing 600, then raw space-after 400/2.
+        assert_eq!(seeds[0].v_pos_hu, 1800);
     }
 
     #[test]

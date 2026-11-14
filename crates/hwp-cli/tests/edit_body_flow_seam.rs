@@ -95,7 +95,7 @@ fn space_bottom(document: &Document, paragraph: &Paragraph) -> i32 {
         .header
         .para_shapes
         .get(paragraph.para_shape.0 as usize)
-        .map_or(0, |shape| shape.spacing_bottom)
+        .map_or(0, |shape| shape.spacing_bottom / 2)
 }
 
 fn space_top(document: &Document, paragraph: &Paragraph) -> i32 {
@@ -103,7 +103,7 @@ fn space_top(document: &Document, paragraph: &Paragraph) -> i32 {
         .header
         .para_shapes
         .get(paragraph.para_shape.0 as usize)
-        .map_or(0, |shape| shape.spacing_top)
+        .map_or(0, |shape| shape.spacing_top / 2)
 }
 
 /// The saved flow never steps back inside one section: a paragraph starts at or below the bottom of
