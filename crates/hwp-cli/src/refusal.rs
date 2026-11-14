@@ -1,4 +1,4 @@
-//! Machine-readable refusal object for `edit-report-v1` 1.1 (plus 1.2's `document_protected` and 1.3's `verify_mismatch`) and the MCP `hwp_edit` error result
+//! Machine-readable refusal object for `edit-report-v1` 1.1 (plus 1.2's `document_protected`, 1.3's `verify_mismatch` and 1.4's `preservation` list) and the MCP `hwp_edit` error result
 //! (#531). A refusal carries a stable snake_case `code`, the structured inputs behind it in
 //! `values` (user-typed strings live here, never spliced into a code or a path string), and the
 //! human sentence in `message`, which is exactly what stderr prints.
@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// Every code `edit-report-v1` 1.3 may carry in `refusal.code`. Keep this list, the schema
+/// Every code `edit-report-v1` 1.4 may carry in `refusal.code`. Keep this list, the schema
 /// enum and the manual tables in step; `refusal_codes_match_schema` pins the first two.
 pub const REFUSAL_CODES: &[&str] = &[
     RANGE_TAG_SHIFT,

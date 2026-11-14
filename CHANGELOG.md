@@ -30,9 +30,25 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   list means only the canonical digest differs. It names counts only, never document content.
   Existing codes and fields are unchanged, so a consumer that accepts `"1.2"` must also accept
   `"1.3"` ([#578](https://github.com/STAIxBWLB/agent-hwp/issues/578)).
+- `edit-report-v1` 1.4: an optional `preservation` list of `{code, resource, disposition, count}`
+  events, the `hwp-preservation-report-v1` shape. An `edit` from an HWP5 input to `.hwpx` now runs
+  the loss accounting `convert` runs for that pair, so its losses are reported in stderr, MCP
+  `preservation` and this list instead of being published silently. Like `convert` without
+  `--strict` it publishes with those events; `paragraph_range_tag_unrepresentable` and
+  `font_type_info_unrepresentable` still refuse it, and edits to `.hwp` keep refusing on any event.
+  A consumer that accepts `"1.3"` must also accept `"1.4"`
+  ([#583](https://github.com/STAIxBWLB/agent-hwp/issues/583)).
 
 **Fixed**
 
+- `edit --verify` from an HWP5 input to `.hwpx` no longer refuses every edit, even `--set-meta`.
+  The comparison now projects the fields HWP5 and HWPX encode differently, each named in
+  `project_hwp5_to_hwpx_representation`, requires the section's note and page-border elements to
+  survive, and accepts re-typed drawing objects only when `control_removed` was reported. Text,
+  structure and every field not on that list are still compared, and any other difference refuses
+  as `verify_mismatch`. The cost is that for the byte-encoded fields on that list the digest cannot
+  see a real loss inside those bytes. The HWP-output `--verify` path is unchanged
+  ([#583](https://github.com/STAIxBWLB/agent-hwp/issues/583)).
 - `edit --verify` no longer refuses a correct `insert_blocks` (or any body edit that re-emits
   paragraphs) on HWP5 documents with raw-backed controls such as text boxes and headers. The
   writer gives each paragraph it re-emits a non-zero PARA_HEADER instance id, including those

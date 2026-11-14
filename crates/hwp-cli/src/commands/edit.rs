@@ -602,6 +602,12 @@ struct EditReportV1<'a> {
     failed_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     refusal: Option<&'a Refusal>,
+    /// 1.4 (#583): the typed preservation events of the run (`{code, resource, disposition,
+    /// count}`), the same ledger `convert --loss-report` writes. Absent when the run lost
+    /// nothing, so a report that never had losses is byte-identical to a 1.3 one but for the
+    /// version.
+    #[serde(skip_serializing_if = "<[hwp_model::PreservationEvent]>::is_empty")]
+    preservation: &'a [hwp_model::PreservationEvent],
 }
 
 impl EditReportV1<'_> {
@@ -613,7 +619,7 @@ impl EditReportV1<'_> {
             .count();
         let failed_count = report.ops.len() - applied_count;
         EditReportV1 {
-            schema_version: "1.3",
+            schema_version: "1.4",
             contract: "hwp-edit-report-v1",
             output: &report.output,
             dry_run: report.dry_run,
@@ -621,8 +627,29 @@ impl EditReportV1<'_> {
             applied_count,
             failed_count,
             refusal: report.refusal.as_ref(),
+            preservation: &report.preservation.events,
         }
     }
+}
+
+/// #583: the events of an HWP5 to HWPX edit that still refuse. Every other event is reported and
+/// the edit publishes, as `ahwp convert` does without `--strict`: edit's same-format policy
+/// refuses on any event, and `metadata_value_removed` (HWPX timestamps are second precision)
+/// fires on every HWP5 to HWPX save, so that policy here would refuse every such edit.
+fn refusing_cross_format_events(
+    report: &hwp_model::PreservationReport,
+) -> hwp_model::PreservationReport {
+    let mut refusing = hwp_model::PreservationReport::new();
+    for event in &report.events {
+        if matches!(
+            event.code,
+            hwp_model::PreservationCode::ParagraphRangeTagUnrepresentable
+                | hwp_model::PreservationCode::FontTypeInfoUnrepresentable
+        ) {
+            refusing.record(event.clone());
+        }
+    }
+    refusing
 }
 
 /// #531: `reject_preservation_loss` for `edit`, with the refusal classified as
@@ -2272,6 +2299,8 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         .iter()
         .map(|request| format!("미적용 편집 요청: {request}"))
         .collect::<Vec<_>>();
+    let cross_format_hwpx =
+        output_format == OutputFormat::Hwpx && original_doc.meta.source_format == "hwp5";
     let write_staged = |source: &Path, staged: &Path| {
         let mut report = write_output(
             &doc,
@@ -2280,7 +2309,23 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
             output_format,
             Some((source, &original_doc)),
         )?;
-        if output_format.supports_verify() {
+        // #583: an HWP5 input written as HWPX gets the accounting `convert` runs for the same
+        // pair, so its losses are reported instead of published silently. Same-format and
+        // HWP-output runs keep the existing same-container inspection below.
+        if cross_format_hwpx {
+            report.preservation.extend(
+                crate::commands::preservation::inspect_cross_format_container(
+                    &original_doc,
+                    crate::format::FileFormat::Hwp5,
+                    crate::format::FileFormat::Hwpx,
+                ),
+            );
+            let output_document = load_document(staged)
+                .with_context(|| format!("편집 문서 재읽기 실패: {}", staged.display()))?;
+            report.preservation.extend(
+                crate::commands::preservation::inspect_conversion_semantics(&doc, &output_document),
+            );
+        } else if output_format.supports_verify() {
             let removed_binary_allowance =
                 crate::commands::preservation::intentional_removed_binary_assets(
                     &original_doc,
@@ -2297,11 +2342,27 @@ pub fn execute(input: &Path, output: &Path, plan: &EditPlan) -> anyhow::Result<E
         Ok(report)
     };
     let verify_staged = |staged: &Path, writer_report: &hwp_model::WriteReport| {
-        if output_format.supports_verify() {
+        if cross_format_hwpx {
+            // Follows non-strict `convert`: the events are reported, not refused. Two stay
+            // refusals because their contracts predate this rule: dropped PARA_RANGE_TAG
+            // records (#529) and font typeInfo with no native mapping.
+            reject_edit_preservation_loss(&refusing_cross_format_events(
+                &writer_report.preservation,
+            ))?;
+        } else if output_format.supports_verify() {
             reject_edit_preservation_loss(&writer_report.preservation)?;
         }
         if plan.verify {
-            verify_output(staged, Some(&doc))?;
+            if cross_format_hwpx {
+                verify_output_projected(
+                    staged,
+                    Some(&doc),
+                    true,
+                    Some(ReportedEvents::of(&writer_report.preservation)),
+                )?;
+            } else {
+                verify_output(staged, Some(&doc))?;
+            }
         }
         Ok(())
     };
@@ -5842,6 +5903,328 @@ fn canonical_document(
     canonical
 }
 
+/// What a run's reported preservation events account for, for the HWP5 to HWPX `--verify`
+/// comparison (#583). A difference is accepted only when it is a named re-representation in
+/// [`project_hwp5_to_hwpx_representation`] or the matching event class was reported.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ReportedEvents {
+    /// `control_removed`: drawing objects the HWPX writer re-types (HWP5 `gso` to `line`,
+    /// `rect`, ...) no longer match by control id, which is what the event counts.
+    controls: bool,
+}
+
+impl ReportedEvents {
+    fn of(report: &hwp_model::PreservationReport) -> Self {
+        Self {
+            controls: report
+                .events
+                .iter()
+                .any(|event| event.code == hwp_model::PreservationCode::ControlRemoved),
+        }
+    }
+}
+
+/// #583: the HWP5 to HWPX re-representation projection, applied to BOTH the expected document
+/// (HWP5 origin) and the HWPX re-read before the digest, in that one direction only.
+///
+/// Every entry names a field the two formats store differently, so the byte-level digest could
+/// never match even for an edit that changes nothing, and says why the information is not lost.
+/// A field that is not on this list is still compared, and a difference there refuses as
+/// `verify_mismatch`. The cost of the list is stated plainly: for the byte-encoded fields below
+/// the digest can no longer see a real loss inside those bytes. That is why each is listed and
+/// commented, and why the two with a checkable meaning are checked separately (section note
+/// elements, picture crop).
+fn project_hwp5_to_hwpx_representation(
+    document: &mut hwp_model::Document,
+    reported: ReportedEvents,
+) {
+    // 1. HWP5-only trailing bytes of header records. HWPX has no field for them: the HWPX
+    //    writer emits the modeled attributes of a ParaShape, CharShape and BorderFill and the
+    //    reader returns an empty tail. Their modeled fields stay compared.
+    for shape in &mut document.header.para_shapes {
+        shape.tail.clear();
+        // `list_level` is how the HWP5 reader exposes the numbering level; HWPX has no field.
+        shape.list_level = None;
+    }
+    for shape in &mut document.header.char_shapes {
+        shape.tail.clear();
+    }
+    for fill in &mut document.header.border_fills {
+        fill.tail.clear();
+        // A border line of type 0 ("none") draws nothing, whatever its color; HWPX writes it
+        // as `NONE` with no color. Its type and width stay compared.
+        for side in fill
+            .sides
+            .iter_mut()
+            .chain(std::iter::once(&mut fill.diagonal))
+        {
+            if side.line_type == 0 {
+                side.color = 0;
+            }
+        }
+    }
+    // 2. HWP5 header-only records and the caret position: HWPX has no DocInfo extras and no
+    //    caret. These are unmodeled DocInfo records and editor state, not document content.
+    //    BinData table rows are rebuilt from the bundled streams, which stay compared.
+    document.header.id_extras.clear();
+    document.header.extras.clear();
+    document.header.properties.caret = (0, 0, 0);
+    document.header.bin_data.clear();
+    // 2b. Raw HWP5 bullet records. HWPX stores a bullet as its character (`hh:bullet@char`),
+    //     which the reader returns in `bullet_chars` and which stays compared; the record bytes
+    //     around it (flags, image id, paragraph-head spacing) are the HWP5 encoding.
+    document.header.bullets.clear();
+    // 3. Timestamps are stored to the second in HWPX. The truncation is what the reported
+    //    `metadata_value_removed` event states; compare at second precision.
+    for time in [
+        &mut document.metadata.create_time,
+        &mut document.metadata.modify_time,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        *time -= *time % 10_000_000;
+    }
+    for section in &mut document.sections {
+        project_hwp5_paragraphs(&mut section.paragraphs, reported);
+    }
+}
+
+fn project_hwp5_paragraphs(paragraphs: &mut [hwp_model::Paragraph], reported: ReportedEvents) {
+    for paragraph in paragraphs {
+        for control in &mut paragraph.controls {
+            match control {
+                hwp_model::Control::SectionDef(def) => {
+                    // 4. Section settings. The HWPX section carries the note numbering/lines and
+                    //    the page borders as `hp:footNotePr`, `hp:endNotePr` and
+                    //    `hp:pageBorderFill` XML, which the reader keeps in `secpr_raw_children`
+                    //    and never turns back into HWP5 records. The numeric records, the raw
+                    //    CTRL_HEADER payload and their record copies in `extras` therefore have
+                    //    no HWPX counterpart to compare. That the elements exist in the output
+                    //    is checked separately (`section_note_elements_missing`).
+                    def.data.clear();
+                    def.extras.clear();
+                    def.footnote_shape_raw = None;
+                    def.endnote_shape_raw = None;
+                    def.page_border_fills_raw.clear();
+                    def.secpr_raw_children.clear();
+                }
+                hwp_model::Control::Table(table) => {
+                    // 5. Table and cell attribute bytes. HWPX stores the same facts in named
+                    //    attributes the reader turns back into a few bits (page break, repeat
+                    //    header, vertical alignment); the rest of the HWP5 attribute words, the
+                    //    object-common payload and the cell header tail are HWP5 encodings.
+                    //    Rows, columns, spans, widths, heights, margins, border fills and the
+                    //    cell text all stay compared.
+                    table.attr = 0;
+                    table.common_data.clear();
+                    table.table_tail.clear();
+                    for cell in &mut table.cells {
+                        cell.list_attr = 0;
+                        cell.header_tail.clear();
+                        project_hwp5_paragraphs(&mut cell.paragraphs, reported);
+                    }
+                }
+                hwp_model::Control::Picture(picture) => {
+                    // 6. Picture object-common bytes are an HWP5 encoding of placement HWPX
+                    //    stores as attributes. Crop: the HWPX reader normalizes a clip equal to
+                    //    the whole image to None, so only that case is skipped; any other crop
+                    //    is still compared.
+                    picture.common_data.clear();
+                    picture.extras.clear();
+                    if picture.crop
+                        == Some([0.0, 0.0, picture.width.0 as f32, picture.height.0 as f32])
+                    {
+                        picture.crop = None;
+                    }
+                }
+                hwp_model::Control::Generic(generic) => {
+                    for list in &mut generic.paragraph_lists {
+                        project_hwp5_paragraphs(&mut list.paragraphs, reported);
+                    }
+                    // 7a. The CTRL_HEADER payload of a column definition. The HWPX writer
+                    //     emits the modeled `column_def` (count, kind, direction, gap, widths),
+                    //     which stays compared; the 12 payload bytes are its HWP5 encoding and
+                    //     the reader leaves them empty.
+                    if generic.ctrl_id == *b"cold" {
+                        generic.data.clear();
+                    }
+                    // 7. An HWP5 control stored as a raw record tree (drawing objects, notes,
+                    //    headers and footers). The HWPX writer emits it from the modeled
+                    //    `paragraph_lists`, so the raw tree, its CTRL_HEADER payload, the list
+                    //    headers and the shape geometry the reader rebuilds are the HWP5
+                    //    encoding, not content. The control id and the text of every paragraph
+                    //    list stay compared.
+                    //    Header and footer keep the first four payload bytes, the page they
+                    //    apply to: that value is content. The HWPX writer appends a
+                    //    document-order id the HWP5 payload does not have.
+                    if generic.ctrl_id == *b"head" || generic.ctrl_id == *b"foot" {
+                        generic.data.truncate(4);
+                    }
+                    if !generic.raw_children.is_empty() {
+                        generic.raw_children.clear();
+                        if generic.ctrl_id != *b"head" && generic.ctrl_id != *b"foot" {
+                            generic.data.clear();
+                        }
+                        generic.extras.clear();
+                        generic.gso_shapes.clear();
+                        for list in &mut generic.paragraph_lists {
+                            list.header_data.clear();
+                        }
+                    }
+                }
+            }
+        }
+        if reported.controls {
+            collapse_retyped_shapes(paragraph);
+        }
+    }
+}
+
+/// Control ids a HWPX re-read gives to the drawing objects HWP5 stores as `gso `.
+fn is_drawing_object_id(id: &[u8; 4]) -> bool {
+    matches!(
+        id,
+        b"gso " | b"line" | b"rect" | b"elli" | b"arc " | b"poly" | b"curv" | b"cont" | b"ole "
+    )
+}
+
+/// 8. Drawing objects re-typed by the HWPX writer. The `control_removed` event reports exactly
+///    this: the HWP5 `gso ` control no longer exists under that id, and the re-read holds the
+///    typed shape (and, for a group, its members as separate controls). Only when that event
+///    was reported are the drawing objects removed from the control list and the text they hold
+///    kept, in order, as one record on the paragraph, so a changed shape text still differs.
+///    The extended-character stubs of the removed objects go with them and the character-shape
+///    run positions are shifted to match.
+fn collapse_retyped_shapes(paragraph: &mut hwp_model::Paragraph) {
+    fn collect_text(paragraphs: &[hwp_model::Paragraph], out: &mut String) {
+        for paragraph in paragraphs {
+            for ch in &paragraph.chars {
+                if let hwp_model::HwpChar::Text(c) = ch {
+                    out.push(*c);
+                }
+            }
+            out.push('\u{1}');
+            for control in &paragraph.controls {
+                match control {
+                    hwp_model::Control::Table(table) => {
+                        for cell in &table.cells {
+                            collect_text(&cell.paragraphs, out);
+                        }
+                    }
+                    hwp_model::Control::Generic(generic) => {
+                        for list in &generic.paragraph_lists {
+                            collect_text(&list.paragraphs, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let is_shape = |control: &hwp_model::Control| matches!(control, hwp_model::Control::Generic(g) if is_drawing_object_id(&g.ctrl_id));
+    if !paragraph.controls.iter().any(is_shape) {
+        return;
+    }
+    let mut text = String::new();
+    for control in &paragraph.controls {
+        if let hwp_model::Control::Generic(generic) = control
+            && is_drawing_object_id(&generic.ctrl_id)
+        {
+            for list in &generic.paragraph_lists {
+                collect_text(&list.paragraphs, &mut text);
+            }
+        }
+    }
+    paragraph.controls.retain(|control| !is_shape(control));
+    // Positions in WCHAR units: drop the removed stubs and shift later runs back by 8 each.
+    let mut position = 0_u32;
+    let mut removed_before = Vec::new();
+    let mut removed = 0_u32;
+    let mut kept = Vec::with_capacity(paragraph.chars.len());
+    for ch in std::mem::take(&mut paragraph.chars) {
+        let width = ch.wchar_width();
+        removed_before.push((position, removed));
+        position += width;
+        if let hwp_model::HwpChar::ExtCtrl { ctrl_id, .. } = &ch
+            && is_drawing_object_id(ctrl_id)
+        {
+            removed += width;
+        } else {
+            kept.push(ch);
+        }
+    }
+    paragraph.chars = kept;
+    for (run_position, _) in &mut paragraph.char_shape_runs {
+        let shift = removed_before
+            .iter()
+            .take_while(|(start, _)| *start < *run_position)
+            .last()
+            .map(|(_, removed)| *removed)
+            .unwrap_or(0);
+        *run_position = run_position.saturating_sub(shift);
+    }
+    // Remaining extended characters point at controls by index; renumber them.
+    let mut next = 0_u32;
+    for ch in &mut paragraph.chars {
+        if let hwp_model::HwpChar::ExtCtrl { ctrl_index, .. } = ch
+            && ctrl_index.is_some()
+        {
+            *ctrl_index = Some(next);
+            next += 1;
+        }
+    }
+    paragraph.extras.push(hwp_model::OpaqueRecord {
+        tag: 0xFFF0,
+        data: text.into_bytes(),
+        children: Vec::new(),
+    });
+}
+
+/// The first section's `SectionDef`, where the notes and the page borders are declared.
+fn section_defs(document: &hwp_model::Document) -> Vec<&hwp_model::SectionDef> {
+    document
+        .sections
+        .iter()
+        .filter_map(hwp_model::Section::section_def)
+        .collect()
+}
+
+/// #583 (i): the projection skips the numeric footnote, endnote and page-border records of a
+/// section because the HWPX output holds them as XML. This checks that the output still holds
+/// them. When the HWP5 source carries a footnote or endnote shape or a page-border record, the
+/// re-read section must carry the matching `hp:footNotePr`, `hp:endNotePr` or `hp:pageBorderFill`
+/// element, and as many page-border elements as the source has records. A dropped element is a
+/// real loss and refuses as `verify_mismatch`. Returns the name of the first missing one.
+fn section_note_elements_missing(
+    expected: &hwp_model::Document,
+    actual: &hwp_model::Document,
+) -> Option<&'static str> {
+    let (wanted, got) = (section_defs(expected), section_defs(actual));
+    if wanted.len() != got.len() {
+        return Some("sections");
+    }
+    for (source, output) in wanted.into_iter().zip(got) {
+        let count = |tag: &str| {
+            output
+                .secpr_raw_children
+                .iter()
+                .filter(|xml| xml.trim_start().starts_with(tag))
+                .count()
+        };
+        if source.footnote_shape_raw.is_some() && count("<hp:footNotePr") == 0 {
+            return Some("footnote_shape");
+        }
+        if source.endnote_shape_raw.is_some() && count("<hp:endNotePr") == 0 {
+            return Some("endnote_shape");
+        }
+        if count("<hp:pageBorderFill") < source.page_border_fills_raw.len() {
+            return Some("page_border_fill");
+        }
+    }
+    None
+}
+
 fn semantic_signature(doc: &hwp_model::Document) -> SemanticSignature {
     semantic_signature_for(doc, None)
 }
@@ -5849,6 +6232,18 @@ fn semantic_signature(doc: &hwp_model::Document) -> SemanticSignature {
 fn semantic_signature_for(
     doc: &hwp_model::Document,
     target: Option<SemanticTarget>,
+) -> SemanticSignature {
+    semantic_signature_projected(doc, target, None)
+}
+
+/// [`semantic_signature_for`], optionally with the HWP5 to HWPX re-representation projection
+/// (#583) applied after the usual canonicalization. `reported` is `Some` only for the expected
+/// and the re-read side of an HWP5 input written as `.hwpx`; every other caller passes `None`,
+/// so the HWP-output and same-format signatures are byte-identical to before.
+fn semantic_signature_projected(
+    doc: &hwp_model::Document,
+    target: Option<SemanticTarget>,
+    reported: Option<ReportedEvents>,
 ) -> SemanticSignature {
     fn visit_paragraph(paragraph: &hwp_model::Paragraph, counts: &mut SemanticCounts) {
         counts.paragraphs += 1;
@@ -5879,7 +6274,12 @@ fn semantic_signature_for(
         }
     }
 
-    let canonical = canonical_document(doc, target);
+    let mut canonical = canonical_document(doc, target);
+    if let Some(reported) = reported
+        && matches!(target, Some(SemanticTarget::Hwpx))
+    {
+        project_hwp5_to_hwpx_representation(&mut canonical, reported);
+    }
     let mut counts = SemanticCounts {
         sections: canonical.sections.len(),
         bin_streams: canonical.bin_streams.len(),
@@ -6137,6 +6537,18 @@ fn verify_output_with_success_log(
     expected: Option<&hwp_model::Document>,
     print_success: bool,
 ) -> anyhow::Result<()> {
+    verify_output_projected(output, expected, print_success, None)
+}
+
+/// [`verify_output_with_success_log`], with `reported` set for an HWP5 input written as `.hwpx`
+/// (#583): the comparison then applies the named HWP5 to HWPX re-representation projection and
+/// accepts a difference only when it is on that list or a reported event covers it.
+fn verify_output_projected(
+    output: &Path,
+    expected: Option<&hwp_model::Document>,
+    print_success: bool,
+    reported: Option<ReportedEvents>,
+) -> anyhow::Result<()> {
     let doc =
         load_document(output).with_context(|| format!("검증 재읽기 실패: {}", output.display()))?;
     if let Some(expected) = expected {
@@ -6153,12 +6565,24 @@ fn verify_output_with_success_log(
         {
             verify_composed_hwp_numbering(expected, &doc)?;
         }
-        let expected = semantic_signature_for(expected, target);
-        let actual = semantic_signature_for(&doc, target);
-        if actual != expected {
+        let projected = reported.filter(|_| matches!(target, Some(SemanticTarget::Hwpx)));
+        let (expected_signature, actual_signature) = match projected {
+            Some(reported) => (
+                semantic_signature_projected(expected, target, Some(reported)),
+                semantic_signature_projected(&doc, target, Some(reported)),
+            ),
+            None => (
+                semantic_signature_for(expected, target),
+                semantic_signature_for(&doc, target),
+            ),
+        };
+        let uncovered = projected
+            .and_then(|_| section_note_elements_missing(expected, &doc))
+            .is_some();
+        if actual_signature != expected_signature || uncovered {
             return Err(SemanticVerificationMismatch {
-                summary: semantic_mismatch_summary(&expected, &actual),
-                counts: semantic_count_differences(&expected, &actual),
+                summary: semantic_mismatch_summary(&expected_signature, &actual_signature),
+                counts: semantic_count_differences(&expected_signature, &actual_signature),
             }
             .into());
         }
@@ -7473,6 +7897,296 @@ mod tests {
         };
         generic.raw_children[0].data[0] ^= 1;
         assert_ne!(source, semantic_signature_for(&tail, target));
+    }
+
+    /// A minimal HWP5-origin document written to `.hwpx` and re-read, which is exactly the pair
+    /// the HWP5 to HWPX `--verify` compares (#583). Returns (expected, re-read).
+    fn hwp5_and_hwpx_reread(
+        change: impl FnOnce(&mut hwp_model::Document),
+    ) -> (hwp_model::Document, hwp_model::Document) {
+        // One directory per call: the tests run in parallel and each removes its own.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "hwp583-unit-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hwp5_path = dir.join("a.hwp");
+        let source = hwp_convert::from_markdown("본문 하나\n\n본문 둘\n");
+        hwp5::write_document(&source, &hwp5_path, &hwp5::WriteOptions::default()).unwrap();
+        let mut expected = hwp5::read_document(&hwp5_path).unwrap().document;
+        change(&mut expected);
+        let hwpx_path = dir.join("a.hwpx");
+        hwpx::write_document_with_report(&expected, &hwpx_path).unwrap();
+        let actual = hwpx::read_document(&hwpx_path).unwrap().document;
+        let _ = std::fs::remove_dir_all(&dir);
+        (expected, actual)
+    }
+
+    fn projected_signatures(
+        expected: &hwp_model::Document,
+        actual: &hwp_model::Document,
+        reported: ReportedEvents,
+    ) -> (SemanticSignature, SemanticSignature) {
+        let target = Some(SemanticTarget::Hwpx);
+        (
+            semantic_signature_projected(expected, target, Some(reported)),
+            semantic_signature_projected(actual, target, Some(reported)),
+        )
+    }
+
+    /// #583: an untouched HWP5 document and its HWPX re-read agree once the named
+    /// re-representation fields are projected, while the unprojected digest still differs, so
+    /// the projection is what makes the difference and the HWP-output path is not involved.
+    #[test]
+    fn hwp5_to_hwpx_projection_makes_an_unchanged_document_agree() {
+        let (expected, actual) = hwp5_and_hwpx_reread(|_| {});
+        let target = Some(SemanticTarget::Hwpx);
+        assert_ne!(
+            semantic_signature_for(&expected, target),
+            semantic_signature_for(&actual, target),
+            "without the projection the format-only fields differ"
+        );
+        let (left, right) = projected_signatures(&expected, &actual, ReportedEvents::default());
+        assert_eq!(left, right);
+        assert!(section_note_elements_missing(&expected, &actual).is_none());
+    }
+
+    /// #583: the projection hides format encodings only. A changed paragraph text and a dropped
+    /// table cell still differ, so `--verify` still refuses them.
+    #[test]
+    fn hwp5_to_hwpx_projection_still_sees_text_and_structure_changes() {
+        let (expected, actual) = hwp5_and_hwpx_reread(|_| {});
+        let (base, _) = projected_signatures(&expected, &actual, ReportedEvents::default());
+
+        let mut text = actual.clone();
+        let paragraph = text.sections[0]
+            .paragraphs
+            .iter_mut()
+            .find(|paragraph| {
+                paragraph
+                    .chars
+                    .iter()
+                    .any(|c| matches!(c, hwp_model::HwpChar::Text(_)))
+            })
+            .unwrap();
+        let slot = paragraph
+            .chars
+            .iter_mut()
+            .find_map(|c| match c {
+                hwp_model::HwpChar::Text(ch) => Some(ch),
+                _ => None,
+            })
+            .unwrap();
+        *slot = '변';
+        let (_, changed_text) = projected_signatures(&expected, &text, ReportedEvents::default());
+        assert_ne!(
+            base, changed_text,
+            "a changed paragraph text must still differ"
+        );
+
+        let (table_expected, table_actual) = hwp5_and_hwpx_reread(|doc| {
+            *doc = hwp_convert::from_markdown("| a | b |\n|---|---|\n| c | d |\n");
+        });
+        let (with_table, _) =
+            projected_signatures(&table_expected, &table_actual, ReportedEvents::default());
+        let mut dropped = table_actual.clone();
+        let table = dropped.sections[0]
+            .paragraphs
+            .iter_mut()
+            .flat_map(|paragraph| &mut paragraph.controls)
+            .find_map(|control| match control {
+                hwp_model::Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("the markdown table is a table control");
+        table.cells.pop();
+        let (_, without_cell) =
+            projected_signatures(&table_expected, &dropped, ReportedEvents::default());
+        assert_ne!(
+            with_table, without_cell,
+            "a dropped table cell must still differ"
+        );
+    }
+
+    /// #583 (iii): only a crop equal to the whole image is skipped, because the HWPX reader
+    /// normalizes exactly that to None. A real crop that differs still differs.
+    #[test]
+    fn hwp5_to_hwpx_projection_skips_only_a_full_extent_crop() {
+        fn with_picture(crop: Option<[f32; 4]>) -> hwp_model::Document {
+            let mut doc = hwp_convert::from_markdown("본문");
+            let mut picture = hwp_model::Picture {
+                common_data: vec![1, 2, 3],
+                width: hwp_model::HwpUnit(8760),
+                height: hwp_model::HwpUnit(1260),
+                ..serde_json::from_value(serde_json::json!({
+                    "common_data": "", "width": 0, "height": 0, "treat_as_char": true,
+                    "z_order": 0, "vert_offset": 0, "horz_offset": 0, "description": null,
+                    "crop": null, "flip": 0, "rotation": null, "brightness": 0, "contrast": 0,
+                    "bin_ref": {"Id": 1}, "extras": [], "caption": null
+                }))
+                .unwrap()
+            };
+            picture.crop = crop;
+            doc.sections[0].paragraphs[0]
+                .controls
+                .push(hwp_model::Control::Picture(picture));
+            doc
+        }
+        let target = Some(SemanticTarget::Hwpx);
+        let reported = Some(ReportedEvents::default());
+        let signature =
+            |doc: &hwp_model::Document| semantic_signature_projected(doc, target, reported);
+        let full = signature(&with_picture(Some([0.0, 0.0, 8760.0, 1260.0])));
+        let none = signature(&with_picture(None));
+        assert_eq!(
+            full, none,
+            "a crop equal to the full image is what the reader drops"
+        );
+        let real = signature(&with_picture(Some([100.0, 0.0, 8760.0, 1260.0])));
+        assert_ne!(real, none, "a real crop that differs must still differ");
+        let other = signature(&with_picture(Some([0.0, 0.0, 8000.0, 1260.0])));
+        assert_ne!(
+            other, none,
+            "a crop that is not the full extent must still differ"
+        );
+    }
+
+    /// #583 (i): the numeric footnote, endnote and page-border records are skipped because the
+    /// HWPX output holds them as XML, so the output must still hold that XML. A dropped element
+    /// is a real loss and is named.
+    #[test]
+    fn hwp5_to_hwpx_section_note_elements_must_survive() {
+        let (mut expected, actual) = hwp5_and_hwpx_reread(|doc| {
+            let def = doc
+                .sections
+                .iter_mut()
+                .flat_map(|section| &mut section.paragraphs)
+                .flat_map(|paragraph| &mut paragraph.controls)
+                .find_map(|control| match control {
+                    hwp_model::Control::SectionDef(def) => Some(def),
+                    _ => None,
+                })
+                .unwrap();
+            def.footnote_shape_raw = Some(vec![0; 28]);
+            def.endnote_shape_raw = Some(vec![0; 28]);
+            def.page_border_fills_raw = vec![vec![0; 14]; 3];
+        });
+        assert!(
+            section_note_elements_missing(&expected, &actual).is_none(),
+            "the writer emits all three elements"
+        );
+        let mut stripped = actual.clone();
+        let strip = |document: &mut hwp_model::Document, tag: &str| {
+            for section in &mut document.sections {
+                for paragraph in &mut section.paragraphs {
+                    for control in &mut paragraph.controls {
+                        if let hwp_model::Control::SectionDef(def) = control {
+                            def.secpr_raw_children
+                                .retain(|xml| !xml.trim_start().starts_with(tag));
+                        }
+                    }
+                }
+            }
+        };
+        strip(&mut stripped, "<hp:footNotePr");
+        assert_eq!(
+            section_note_elements_missing(&expected, &stripped),
+            Some("footnote_shape")
+        );
+        let mut stripped = actual.clone();
+        strip(&mut stripped, "<hp:endNotePr");
+        assert_eq!(
+            section_note_elements_missing(&expected, &stripped),
+            Some("endnote_shape")
+        );
+        let mut stripped = actual.clone();
+        strip(&mut stripped, "<hp:pageBorderFill");
+        assert_eq!(
+            section_note_elements_missing(&expected, &stripped),
+            Some("page_border_fill")
+        );
+        // A source with no such records needs no such elements.
+        for section in &mut expected.sections {
+            for paragraph in &mut section.paragraphs {
+                for control in &mut paragraph.controls {
+                    if let hwp_model::Control::SectionDef(def) = control {
+                        def.footnote_shape_raw = None;
+                        def.endnote_shape_raw = None;
+                        def.page_border_fills_raw.clear();
+                    }
+                }
+            }
+        }
+        assert!(section_note_elements_missing(&expected, &stripped).is_none());
+    }
+
+    /// #583: retyped drawing objects collapse only when the `control_removed` event was reported,
+    /// and the text they hold is kept, so a changed shape text still differs.
+    #[test]
+    fn hwp5_to_hwpx_shape_retyping_needs_a_reported_control_event() {
+        fn with_shape(text: &str, id: [u8; 4]) -> hwp_model::Document {
+            let mut doc = hwp_convert::from_markdown("본문");
+            let mut inner = hwp_convert::from_markdown(text)
+                .sections
+                .remove(0)
+                .paragraphs;
+            let paragraph = &mut doc.sections[0].paragraphs[0];
+            paragraph.chars.push(hwp_model::HwpChar::ExtCtrl {
+                code: 11,
+                ctrl_id: id,
+                payload: id.to_vec(),
+                ctrl_index: Some(paragraph.controls.len() as u32),
+            });
+            paragraph
+                .controls
+                .push(hwp_model::Control::Generic(hwp_model::GenericControl {
+                    ctrl_id: id,
+                    data: vec![9; 4],
+                    paragraph_lists: vec![hwp_model::ParagraphList {
+                        header_data: Vec::new(),
+                        paragraphs: std::mem::take(&mut inner),
+                    }],
+                    extras: Vec::new(),
+                    raw_children: vec![hwp_model::OpaqueRecord {
+                        tag: 0x4C,
+                        data: vec![1],
+                        children: Vec::new(),
+                    }],
+                    gso_shapes: Vec::new(),
+                    equation: None,
+                    column_def: None,
+                    caption: None,
+                    hwpx_raw_xml: None,
+                    container_box: None,
+                }));
+            doc
+        }
+        let target = Some(SemanticTarget::Hwpx);
+        let covered = Some(ReportedEvents { controls: true });
+        let uncovered = Some(ReportedEvents::default());
+        let sig = |doc: &hwp_model::Document, reported| {
+            semantic_signature_projected(doc, target, reported)
+        };
+        let source = with_shape("상자 글", *b"gso ");
+        let reread = with_shape("상자 글", *b"rect");
+        assert_ne!(
+            sig(&source, uncovered),
+            sig(&reread, uncovered),
+            "without a reported control event a retyped control is a difference"
+        );
+        assert_eq!(
+            sig(&source, covered),
+            sig(&reread, covered),
+            "with the event reported, the retyping alone is covered"
+        );
+        let changed = with_shape("상자 글X", *b"rect");
+        assert_ne!(
+            sig(&source, covered),
+            sig(&changed, covered),
+            "a changed text inside the retyped shape still differs"
+        );
     }
 
     /// #578 AC2: a mismatch that does remain possible is classified `verify_mismatch` with the
