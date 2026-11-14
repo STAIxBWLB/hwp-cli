@@ -1220,11 +1220,12 @@ fn write_hwp_impl(
     let mut report = hwp_model::WriteReport::new();
     let owned;
     let doc = if source_has_edits {
-        // Native HWP edits keep every unchanged paragraph as an immutable source
-        // subtree. Missing line layout therefore identifies changed/new paragraphs;
-        // synthesize them before stream materialization. The source-aware writer
-        // replaces the renderer's output for every unchanged paragraph with the
-        // original record tree, so originally cache-less paragraphs stay untouched.
+        // Native HWP edits retain source body records through height-neutral runs. After the
+        // first height-changing/new/moved body paragraph or unsafe forward boundary, the rest
+        // of that section reflows.
+        // Nested lists retain their own seam and local-context validity rules. The writer
+        // restores complete source records only for the body indices the walk reports kept;
+        // that includes cache-less source paragraphs in retained regions.
         let mut d = doc.clone();
         let mut store = if isolated_font_files.is_some() {
             hwp_render::FontStore::new_isolated()
@@ -1241,20 +1242,54 @@ fn write_hwp_impl(
             store.load_dir(&font_dir);
         }
         let mut warns = hwp_render::RenderIssueAccumulator::new();
-        // The paragraphs before the first edit keep their saved caches, so the re-synthesized
-        // suffix has to continue from where that prefix ends: a bare section-top cursor gave the
+        // The first changed body paragraph continues from its kept predecessor. After a neutral
+        // edit, unchanged body records remain saved; the first height-changing edit makes the
+        // rest of that section reflow; a source suffix that would overlap also forces reflow. A bare section-top cursor gave the
         // first changed paragraph a v_pos *above* its kept predecessor, which the renderer reads
         // as a page start and draws the change mid-page (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
-        // Put the caches the output will keep in place first, and drop the saved ones behind the
-        // seam: a cache that is present is then one the writer keeps, so the walk measures it
-        // instead of its own ephemeral synthesis of it. Otherwise a kept table whose saved cell
-        // caches are taller grows again after the paragraphs below it were already placed, and a
-        // retained sibling behind a moved paragraph is measured where it no longer sits (#509).
+        // Stage valid saved nested records and clear their moved suffixes before measuring.
+        // A kept table must be measured from its saved cells rather than ephemeral synthesis
+        // (#509). Body source records are supplied separately to the native walk below, which
+        // keeps neutral body runs only where they fit the next source boundary; the first
+        // height-changing or unsafe run makes the remaining section reflow.
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Drop);
         }
-        hwp_render::lineseg::synthesize_linesegs_seeded(
+        let source_body = source.map_or_else(Vec::new, |(_, original)| {
+            doc.sections
+                .iter()
+                .enumerate()
+                .map(|(si, section)| {
+                    let saved = original
+                        .sections
+                        .get(si)
+                        .map_or(&[][..], |s| s.paragraphs.as_slice());
+                    let matches = match_unchanged_paragraphs(saved, &section.paragraphs);
+                    section
+                        .paragraphs
+                        .iter()
+                        .enumerate()
+                        .map(|(pi, paragraph)| {
+                            // Insertion/deletion/movement changes the flow even when a shifted paragraph's
+                            // own content matches. There is no same-position stored extent to retain.
+                            let original = matches[pi]
+                                .filter(|index| *index == pi)
+                                .filter(|index| {
+                                    saved[*index].header.instance_id == paragraph.header.instance_id
+                                })
+                                .map(|index| &saved[index]);
+                            hwp_render::lineseg::NativeBodyCache {
+                                original,
+                                unchanged: original
+                                    .is_some_and(|old| unchanged_content(old, paragraph)),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        });
+        let kept_body = hwp_render::lineseg::synthesize_native_linesegs_seeded(
             &mut d,
             &mut store,
             &mut warns,
@@ -1262,11 +1297,21 @@ fn write_hwp_impl(
                 seeds: &seeds,
                 preserve_nested: source.is_some(),
             },
+            &source_body,
         );
-        // The walk re-synthesized every body cache; hand the kept prefix its saved records back and
-        // keep what it synthesized behind the seam.
+        // Nested lists retain their existing reflow and local-context validity rules. Body records
+        // are retained only until this section's first height-changing/unsafe run; a new section resets.
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Keep);
+            for (si, pi) in kept_body {
+                if let Some(saved) = source_body
+                    .get(si)
+                    .and_then(|s| s.get(pi))
+                    .and_then(|s| s.original)
+                {
+                    d.sections[si].paragraphs[pi] = saved.clone();
+                }
+            }
         }
         warns.absorb(store.issues.finish());
         report
@@ -1358,19 +1403,21 @@ fn write_hwp_impl(
     Ok(report)
 }
 
-/// What the restore leaves in a paragraph at or after the edit's seam (#509).
+/// Working-cache policy for prefix preparation and nested lists (#509). The native body walk
+/// separately decides which height-neutral body suffix records to retain (#540 G3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SuffixCache {
-    /// Before the walk runs. A saved line cache behind the seam is measured against a flow the edit
-    /// moved (a taller neighbour, a shifted index), so it is dropped and the walk re-synthesizes it.
+    /// Clear working suffix caches before the walk, retaining only valid nested prefixes.
+    /// The native body policy receives immutable originals separately.
     Drop,
-    /// After the walk. The cache the renderer synthesized is the flow the output keeps.
+    /// After the walk, retain synthesized nested/height-changing-body caches. The separate
+    /// native body policy may restore height-neutral body records returned by the walk.
     Keep,
 }
 
-/// Put the saved records the output keeps back into the document, before and after the renderer's
-/// synthesis. This limits new PARA_LINE_SEG records to what the edit moved, including paragraphs
-/// nested in table cells and generic controls.
+/// Stage/restore the existing body prefix and valid nested records around synthesis. The native
+/// body walk additionally identifies retained height-neutral body suffix records; nested lists
+/// keep their seam policy and local parent-layout checks.
 fn restore_unchanged_native_paragraphs(
     original: &hwp_model::Document,
     edited: &hwp_model::Document,
@@ -1393,12 +1440,9 @@ fn restore_unchanged_native_paragraphs(
     }
 }
 
-/// Restore one section's body list. Paragraphs before the edit keep their saved records; from the
-/// first moved body paragraph on, the body cache belongs to the re-synthesized flow, because a
-/// saved `v_pos` there measures the flow the edit invalidated: kept after a taller table it sits
-/// above the table's drawn bottom and the renderer reads the step back as a new page (#462). The
-/// nested lists this pass recurses into (table cells and generic paragraph lists, captions included
-/// only where a whole unchanged paragraph brings them) apply the same rule at their own seam.
+/// Prepare or restore the immutable body prefix and nested lists. The default body suffix is
+/// synthesized flow (#462); the native walk separately returns eligible neutral suffix records.
+/// Nested lists keep their own seam and parent-layout validity policy (#509).
 fn restore_unchanged_body_paragraphs(
     original: &[hwp_model::Paragraph],
     edited: &[hwp_model::Paragraph],
@@ -1623,9 +1667,9 @@ fn cell_layout_matches(original: &hwp_model::Cell, edited: &hwp_model::Cell) -> 
         && original.header_tail == edited.header_tail
 }
 
-/// Handle a paragraph at or after the edit's seam: its own line cache is not the saved one any
-/// more. Before the walk the saved cache is dropped so it cannot be measured; after the walk the
-/// synthesized cache is the answer and stays. Its unchanged controls are still restored below.
+/// Working suffix behavior for nested lists and height-changing body flow: drop saved caches
+/// before measurement and retain generated caches afterward. The native body result can replace
+/// an eligible body suffix with its immutable source record; nested suffixes still reflow.
 fn restore_after_the_seam(
     original: &hwp_model::Paragraph,
     edited: &hwp_model::Paragraph,
@@ -2327,6 +2371,331 @@ mod tests {
             seg_width: 5000,
             flags: 0x60000,
         }
+    }
+
+    fn native_suffix_line_records(file: &std::path::Path) -> Vec<Vec<Vec<u8>>> {
+        use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
+        fn collect(node: &RecordNode, lines: &mut Vec<Vec<u8>>) {
+            if node.tag == tag::PARA_LINE_SEG {
+                lines.push(node.data.clone());
+            }
+            for child in &node.children {
+                collect(child, lines);
+            }
+        }
+        let mut container = hwp5::container::Hwp5Container::open(file).unwrap();
+        let stream = container.read_record_stream("/BodyText/Section0").unwrap();
+        scan_stream(&stream, ScanMode::Strict)
+            .unwrap()
+            .roots
+            .iter()
+            .filter(|node| node.tag == tag::PARA_HEADER)
+            .map(|node| {
+                let mut lines = Vec::new();
+                collect(node, &mut lines);
+                lines
+            })
+            .collect()
+    }
+
+    fn native_suffix_source(dir: &std::path::Path) -> (std::path::PathBuf, hwp_model::Document) {
+        use hwp_model::{Control, GsoPlacement};
+        let source = dir.join("source.hwp");
+        let mut document = hwp_convert::from_markdown(
+            "Prefix\n\nEdit here\n\n| A | B |\n|---|---|\n| C | D |\n\nTail one\n\nTail two\n",
+        );
+        assert_eq!(
+            document.sections[0].paragraphs.len(),
+            5,
+            "five body paragraphs"
+        );
+        for shape in &mut document.header.char_shapes {
+            shape.base_size = 1000;
+        }
+        for shape in &mut document.header.para_shapes {
+            shape.spacing_top = 0;
+            shape.spacing_bottom = 600;
+            shape.line_spacing_type = 0;
+            shape.line_spacing = 160;
+            shape.line_spacing_old = 160;
+        }
+        for (index, (para, position)) in document.sections[0]
+            .paragraphs
+            .iter_mut()
+            .zip([0, 1900, 3800, 14000, 15900])
+            .enumerate()
+        {
+            para.header.instance_id = index as u32 + 1;
+            para.line_segs = vec![cached_segment(position)];
+        }
+        let table = document.sections[0].paragraphs[2]
+            .controls
+            .iter_mut()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        table.placement = Some(GsoPlacement {
+            treat_as_char: false,
+            vert_rel_to: 2,
+            horz_rel_to: 3,
+            ..Default::default()
+        });
+        for cell in &mut table.cells {
+            for para in &mut cell.paragraphs {
+                para.line_segs = vec![cached_segment(0)];
+            }
+        }
+        table.cells[0].paragraphs[0].line_segs[0].line_height = 5000;
+        document.meta.source_format = "hwp5".to_owned();
+        hwp5::write_document(
+            &document,
+            &source,
+            &hwp5::WriteOptions {
+                preserve_linesegs: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = hwp5::read_document(&source).unwrap().document;
+        assert!(
+            !original.sections[0].paragraphs[1].line_segs.is_empty(),
+            "fixture must store the edited paragraph cache"
+        );
+        (source, original)
+    }
+
+    /// #540 G3: a height-neutral body edit must not replace later stored line records.
+    /// The suffix includes a floating table with a deliberately taller saved cell cache.
+    #[test]
+    fn native_height_neutral_body_suffix_records_stay_verbatim() {
+        use hwp_model::Control;
+        let dir = std::env::temp_dir().join(format!("ahwp-g3-suffix-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (source, original) = native_suffix_source(&dir);
+        let output = dir.join("edited.hwp");
+        let mut edited = original.clone();
+        edited.sections[0].paragraphs[1]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[1].line_segs.clear();
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let result = hwp5::read_document(&output).unwrap().document;
+        assert_eq!(
+            result.sections[0].paragraphs[1].plain_text(),
+            format!("X{}", original.sections[0].paragraphs[1].plain_text()),
+            "the native text edit must be published"
+        );
+        let before = &original.sections[0].paragraphs[1].line_segs;
+        let changed = &result.sections[0].paragraphs[1].line_segs;
+        let extent = |lines: &[hwp_model::LineSeg]| {
+            let first = lines.first().unwrap();
+            let last = lines.last().unwrap();
+            i64::from(last.v_pos) + i64::from(last.line_height) + i64::from(last.line_spacing)
+                - i64::from(first.v_pos)
+        };
+        assert_eq!(extent(before), 1600, "source extent premise");
+        assert_eq!(extent(changed), 1600, "height-neutral edit premise");
+        assert_eq!(before.len(), changed.len(), "line-count premise");
+        assert_eq!(
+            before.iter().map(|s| s.flags & 3).collect::<Vec<_>>(),
+            changed.iter().map(|s| s.flags & 3).collect::<Vec<_>>(),
+            "page/column flags premise"
+        );
+        let stored = native_suffix_line_records(&source);
+        let written = native_suffix_line_records(&output);
+        assert_eq!(stored.len(), 5);
+        assert_eq!(written.len(), 5);
+        assert_eq!(written[0], stored[0], "kept prefix line records");
+        assert_ne!(
+            written[1], stored[1],
+            "changed paragraph has its own synthesized cache"
+        );
+        let source_table = original.sections[0].paragraphs[2]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        let result_table = result.sections[0].paragraphs[2]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        for (old, new) in source_table.cells.iter().zip(&result_table.cells) {
+            assert_eq!(
+                new.paragraphs, old.paragraphs,
+                "unchanged saved cell caches must not regrow"
+            );
+        }
+        for index in 2..stored.len() {
+            assert_eq!(
+                written[index], stored[index],
+                "height-neutral edit must keep suffix body/cell PARA_LINE_SEG bytes at paragraph {index}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn assert_native_body_run_order(neutral_first: bool) {
+        let dir = std::env::temp_dir().join(format!(
+            "ahwp-g3-order-{}-{neutral_first}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (source, original) = native_suffix_source(&dir);
+        let output = dir.join("order.hwp");
+        let mut edited = original.clone();
+        let (neutral, growing) = if neutral_first { (1, 3) } else { (3, 1) };
+        edited.sections[0].paragraphs[neutral]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[neutral].line_segs.clear();
+        let text = edited.sections[0].paragraphs[growing].plain_text();
+        assert_eq!(
+            hwp_convert::replace_text(&mut edited, &text, "A\nB\nC", false).unwrap(),
+            1
+        );
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let after = hwp5::read_document(&output).unwrap().document;
+        assert!(
+            after.sections[0].paragraphs[growing].line_segs.len() >= 3,
+            "explicit-line growth premise"
+        );
+        let before = native_suffix_line_records(&source);
+        let written = native_suffix_line_records(&output);
+        if neutral_first {
+            assert_eq!(
+                written[2], before[2],
+                "neutral run keeps the floating neighbour before the next edit"
+            );
+            let previous = &original.sections[0].paragraphs[2];
+            let cursor = hwp_render::lineseg::saved_body_cursor(previous, 600).unwrap();
+            assert_eq!(
+                after.sections[0].paragraphs[3].line_segs[0].v_pos, cursor,
+                "later changed run measures the source table cache actually kept"
+            );
+        } else {
+            assert_ne!(
+                written[2], before[2],
+                "height-changing run reflows its floating neighbour"
+            );
+        }
+        assert_ne!(
+            written[4], before[4],
+            "a later neutral run cannot re-enable source suffix caches"
+        );
+        for pair in after.sections[0].paragraphs[growing..].windows(2) {
+            let bottom = pair[0].line_segs.last().unwrap();
+            let next = &pair[1].line_segs[0];
+            assert!(
+                next.v_pos >= bottom.v_pos + bottom.line_height
+                    || next.v_pos == 0
+                    || next.flags & 1 != 0,
+                "height-changing flow stays forward"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn native_body_neutral_then_growing_run_keeps_only_the_intermediate_suffix() {
+        assert_native_body_run_order(true);
+    }
+
+    #[test]
+    fn native_body_growing_then_neutral_run_never_reenables_preservation() {
+        assert_native_body_run_order(false);
+    }
+
+    /// G1's stored post-break top is raw/2 while the existing native synthesizer still adds
+    /// raw top. Equal line extent alone must not place a retained neighbour inside that line.
+    #[test]
+    fn native_neutral_post_break_spacing_keeps_the_successor_outside_the_changed_line() {
+        let dir =
+            std::env::temp_dir().join(format!("ahwp-g3-break-overlap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_, mut seed) = native_suffix_source(&dir);
+        let source = dir.join("break-source.hwp");
+        let output = dir.join("break-output.hwp");
+        let mut shape =
+            seed.header.para_shapes[seed.sections[0].paragraphs[3].para_shape.0 as usize].clone();
+        shape.spacing_top = 2400;
+        shape.spacing_bottom = 0;
+        seed.sections[0].paragraphs[3].para_shape =
+            hwp_model::ParaShapeId(seed.header.para_shapes.len() as u16);
+        seed.header.para_shapes.push(shape);
+        seed.sections[0].paragraphs[3].header.break_type |= 4;
+        seed.sections[0].paragraphs[3].line_segs[0].v_pos = 1200;
+        seed.sections[0].paragraphs[4].line_segs[0].v_pos = 2800;
+        hwp5::write_document(
+            &seed,
+            &source,
+            &hwp5::WriteOptions {
+                preserve_linesegs: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = hwp5::read_document(&source).unwrap().document;
+        let mut edited = original.clone();
+        edited.sections[0].paragraphs[3]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[3].line_segs.clear();
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        let changed = current.sections[0].paragraphs[3].line_segs.last().unwrap();
+        let following = current.sections[0].paragraphs[4].line_segs.first().unwrap();
+        assert_eq!(
+            changed.v_pos, 2400,
+            "native spacing units remain unchanged in this task"
+        );
+        assert_eq!(
+            following.v_pos, 4000,
+            "unsafe neutral candidate must take the existing reflow fallback"
+        );
+        assert!(
+            following.v_pos >= changed.v_pos + changed.line_height,
+            "G1 native top mismatch must not overlap retained suffix: changed top={}, bottom={}, following={}",
+            changed.v_pos,
+            changed.v_pos + changed.line_height,
+            following.v_pos
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Snapshot with three saved caches, an edit in the middle paragraph, and a fully synthesized

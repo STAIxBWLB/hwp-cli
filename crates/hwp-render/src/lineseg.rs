@@ -80,7 +80,7 @@ pub fn synthesize_linesegs(
     store: &mut FontStore,
     warnings: &mut RenderIssueAccumulator,
 ) {
-    synthesize_linesegs_inner(doc, store, warnings, None, &BodyFlow::default());
+    synthesize_linesegs_inner(doc, store, warnings, None, &BodyFlow::default(), None);
 }
 
 /// One section's body flow continues at a caller-supplied cursor instead of restarting at the
@@ -158,7 +158,171 @@ pub fn synthesize_linesegs_seeded(
     warnings: &mut RenderIssueAccumulator,
     flow: &BodyFlow<'_>,
 ) {
-    synthesize_linesegs_inner(doc, store, warnings, None, flow);
+    synthesize_linesegs_inner(doc, store, warnings, None, flow, None);
+}
+
+/// Immutable source match for one edited body paragraph. Moved/new paragraphs have no
+/// same-position source cache and must establish a new flow (#540 G3).
+#[derive(Clone, Copy, Debug)]
+pub struct NativeBodyCache<'a> {
+    pub original: Option<&'a Paragraph>,
+    pub unchanged: bool,
+}
+
+struct NativeBodyWalk<'a, 'b> {
+    source: &'a [Vec<NativeBodyCache<'b>>],
+    kept: Vec<(usize, usize)>,
+}
+
+/// Native edit synthesis with source-aware body preservation. Source metadata is in
+/// section/paragraph order. Return the body indices whose complete source records the writer
+/// should retain. Nested lists keep the existing seam policy, and authored synthesis is unchanged.
+pub fn synthesize_native_linesegs_seeded(
+    doc: &mut Document,
+    store: &mut FontStore,
+    warnings: &mut RenderIssueAccumulator,
+    flow: &BodyFlow<'_>,
+    source: &[Vec<NativeBodyCache<'_>>],
+) -> Vec<(usize, usize)> {
+    let mut native = NativeBodyWalk {
+        source,
+        kept: Vec::new(),
+    };
+    synthesize_linesegs_inner(doc, store, warnings, None, flow, Some(&mut native));
+    native.kept
+}
+
+fn body_cache_extent(lines: &[LineSeg]) -> Option<i64> {
+    let first = lines.first()?;
+    let last = lines.last()?;
+    Some(
+        i64::from(last.v_pos) + i64::from(last.line_height) + i64::from(last.line_spacing)
+            - i64::from(first.v_pos),
+    )
+}
+
+fn same_native_list_caches(original: &[Paragraph], current: &[Paragraph]) -> bool {
+    original.len() == current.len()
+        && original.iter().zip(current).all(|(a, b)| {
+            a.line_segs == b.line_segs && same_native_control_extents(&a.controls, &b.controls)
+        })
+}
+
+fn same_native_caption(a: Option<&hwp_model::Caption>, b: Option<&hwp_model::Caption>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.side == b.side
+                && a.direction == b.direction
+                && a.gap == b.gap
+                && a.width == b.width
+                && a.last_width == b.last_width
+                && same_native_list_caches(&a.paragraphs, &b.paragraphs)
+        }
+        _ => false,
+    }
+}
+
+// Unknown raw object/context changes cannot establish equal extent. Keep the prior reflow
+// in those cases rather than interpreting opaque headers or a new geometry rule (#509).
+fn same_native_control_extents(original: &[Control], current: &[Control]) -> bool {
+    original.len() == current.len()
+        && original.iter().zip(current).all(|(a, b)| match (a, b) {
+            (Control::SectionDef(a), Control::SectionDef(b)) => a == b,
+            (Control::Table(a), Control::Table(b)) => {
+                a.common_data == b.common_data
+                    && a.placement == b.placement
+                    && a.table_tail == b.table_tail
+                    && a.extras == b.extras
+                    && a.attr == b.attr
+                    && a.cell_spacing == b.cell_spacing
+                    && table_height(a) == table_height(b)
+                    && a.cells.len() == b.cells.len()
+                    && a.cells.iter().zip(&b.cells).all(|(a, b)| {
+                        a.width == b.width
+                            && a.height == b.height
+                            && a.margins == b.margins
+                            && a.list_attr == b.list_attr
+                            && a.header_tail == b.header_tail
+                            && same_native_list_caches(&a.paragraphs, &b.paragraphs)
+                    })
+                    && same_native_caption(a.caption.as_ref(), b.caption.as_ref())
+            }
+            (Control::Picture(a), Control::Picture(b)) => {
+                a.common_data == b.common_data
+                    && a.extras == b.extras
+                    && a.effects_raw == b.effects_raw
+                    && a.width == b.width
+                    && a.height == b.height
+                    && a.treat_as_char == b.treat_as_char
+                    && a.vert_offset == b.vert_offset
+                    && a.horz_offset == b.horz_offset
+                    && same_native_caption(a.caption.as_ref(), b.caption.as_ref())
+            }
+            (Control::Generic(a), Control::Generic(b)) => {
+                a.ctrl_id == b.ctrl_id
+                    && a.data == b.data
+                    && a.raw_children == b.raw_children
+                    && a.extras == b.extras
+                    && a.equation == b.equation
+                    && a.container_box == b.container_box
+                    && a.gso_shapes.len() == b.gso_shapes.len()
+                    && a.gso_shapes
+                        .iter()
+                        .zip(&b.gso_shapes)
+                        .all(|(a, b)| a.w == b.w && a.h == b.h)
+                    && a.paragraph_lists.len() == b.paragraph_lists.len()
+                    && a.paragraph_lists
+                        .iter()
+                        .zip(&b.paragraph_lists)
+                        .all(|(a, b)| {
+                            a.header_data == b.header_data
+                                && same_native_list_caches(&a.paragraphs, &b.paragraphs)
+                        })
+                    && same_native_caption(a.caption.as_ref(), b.caption.as_ref())
+            }
+            _ => false,
+        })
+}
+
+// Match the existing page/column-aware forward relation, not absolute position equality.
+// Source backsteps represent an existing implicit boundary; a new shifted line must not
+// place the next same-page source cache inside its synthesized block (#540 G3).
+fn native_body_suffix_fits(
+    original: &Paragraph,
+    next: Option<NativeBodyCache<'_>>,
+    synthesized_bottom: i64,
+) -> bool {
+    let Some(next) = next else {
+        return true;
+    };
+    if !next.unchanged {
+        return true;
+    }
+    let Some(saved) = next.original else {
+        return false;
+    };
+    let Some(first) = saved.line_segs.first() else {
+        return false;
+    };
+    let source_boundary = saved.header.break_type & 0x0c != 0
+        || first.flags & 3 != 0
+        || first.v_pos == 0
+        || original
+            .line_segs
+            .last()
+            .is_some_and(|last| first.v_pos < last.v_pos);
+    source_boundary || synthesized_bottom <= i64::from(first.v_pos)
+}
+
+fn native_body_height_neutral(original: &Paragraph, current: &Paragraph) -> bool {
+    !original.line_segs.is_empty()
+        && (original.header.break_type & 0x0c) == (current.header.break_type & 0x0c)
+        && original.line_segs.len() == current.line_segs.len()
+        && body_cache_extent(&original.line_segs) == body_cache_extent(&current.line_segs)
+        // PARA_LINE_SEG page/column-start bits, as used by layout.rs (#540 G3).
+        && original.line_segs.iter().zip(&current.line_segs).all(|(a,b)| a.flags & 3 == b.flags & 3)
+        && same_native_control_extents(&original.controls, &current.controls)
 }
 
 /// How an edited document's body flow is synthesized (#462, #509).
@@ -184,7 +348,14 @@ fn synthesize_linesegs_with_prepass_page_limit(
     warnings: &mut RenderIssueAccumulator,
     page_limit: usize,
 ) -> Option<crate::layout::BodyAnchors> {
-    synthesize_linesegs_inner(doc, store, warnings, Some(page_limit), &BodyFlow::default())
+    synthesize_linesegs_inner(
+        doc,
+        store,
+        warnings,
+        Some(page_limit),
+        &BodyFlow::default(),
+        None,
+    )
 }
 
 fn synthesize_linesegs_inner(
@@ -193,6 +364,7 @@ fn synthesize_linesegs_inner(
     warnings: &mut RenderIssueAccumulator,
     prepass_page_limit: Option<usize>,
     flow: &BodyFlow<'_>,
+    mut native: Option<&mut NativeBodyWalk<'_, '_>>,
 ) -> Option<crate::layout::BodyAnchors> {
     let snap = doc.clone();
     let seeds = flow.seeds;
@@ -275,6 +447,8 @@ fn synthesize_linesegs_inner(
             .map_or(75686, |pg| body_box(pg, pg.height.0).height_hu)
             .max(1);
         let mut v_pos = 0i32;
+        let native_mode = native.is_some() && !use_fragment_flow;
+        let mut keep_body_suffix = native_mode;
         for pi in 0..doc.sections[si].paragraphs.len() {
             // #540 G1 / #570: Hangul 12.30.0 body caches use half the serialized
             // ParaShape spacing, keeping space-before at section and explicit-break starts.
@@ -291,6 +465,26 @@ fn synthesize_linesegs_inner(
                         (ps.spacing_top, ps.spacing_bottom)
                     }
                 });
+            let source = native
+                .as_ref()
+                .and_then(|n| n.source.get(si))
+                .and_then(|section| section.get(pi))
+                .copied();
+            let unchanged = source.is_some_and(|s| s.unchanged && s.original.is_some());
+            if keep_body_suffix && unchanged {
+                let original = source
+                    .and_then(|s| s.original)
+                    .expect("matched source body paragraph");
+                if !original.line_segs.is_empty() {
+                    doc.sections[si].paragraphs[pi].line_segs = original.line_segs.clone();
+                    v_pos = saved_body_cursor(&doc.sections[si].paragraphs[pi], sp_bottom)
+                        .expect("nonempty source cache");
+                    native.as_mut().expect("native mode").kept.push((si, pi));
+                    continue;
+                }
+                // A cache-less source record still stays cache-less in the output. Measure its
+                // ephemeral flow below, exactly as the existing cache-less-prefix fallback did.
+            }
             let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
             // A seeded paragraph continues the flow a caller measured before it, so an edited
             // document's re-synthesized suffix begins where its kept prefix ends (#462) instead
@@ -368,6 +562,35 @@ fn synthesize_linesegs_inner(
             // readings, so measuring a kept prefix from its saved record cannot drift from this.
             v_pos = body_cursor(anchor_v, line_cursor, table_total, sp_bottom);
             doc.sections[si].paragraphs[pi].line_segs = segs;
+            if keep_body_suffix {
+                if unchanged {
+                    native.as_mut().expect("native mode").kept.push((si, pi));
+                } else {
+                    let next = native
+                        .as_ref()
+                        .and_then(|n| n.source.get(si))
+                        .and_then(|section| section.get(pi + 1))
+                        .copied();
+                    let current = &doc.sections[si].paragraphs[pi];
+                    let cache_bottom = current.line_segs.last().map_or(i64::MAX, |line| {
+                        i64::from(line.v_pos)
+                            + i64::from(line.line_height)
+                            + i64::from(line.line_spacing)
+                    });
+                    // Exclude paragraph space-after: the source cache already owns that gap.
+                    // Include a hosted table's full measured block, not only its anchor line.
+                    let bottom = cache_bottom.max(i64::from(body_cursor(
+                        anchor_v,
+                        line_cursor,
+                        table_total,
+                        0,
+                    )));
+                    keep_body_suffix = source.and_then(|s| s.original).is_some_and(|original| {
+                        native_body_height_neutral(original, current)
+                            && native_body_suffix_fits(original, next, bottom)
+                    });
+                }
+            }
         }
     }
     flow_anchors
@@ -1001,6 +1224,171 @@ mod tests {
     }
 
     #[test]
+    fn native_body_neutrality_uses_extent_count_and_every_boundary_flag() {
+        let mut original = Paragraph {
+            line_segs: vec![seg(0, 1000)],
+            ..Default::default()
+        };
+        original.line_segs[0].line_spacing = 600;
+        let mut shifted = original.clone();
+        shifted.line_segs[0].v_pos = 700;
+        shifted.line_segs[0].baseline_gap += 5;
+        assert!(
+            native_body_height_neutral(&original, &shifted),
+            "position/baseline changes do not change extent"
+        );
+        for bit in [1, 2] {
+            let mut boundary = shifted.clone();
+            boundary.line_segs[0].flags ^= bit;
+            assert!(
+                !native_body_height_neutral(&original, &boundary),
+                "page/column boundary changes disqualify"
+            );
+        }
+        for bit in [0x04, 0x08] {
+            let mut boundary = shifted.clone();
+            boundary.header.break_type ^= bit;
+            assert!(
+                !native_body_height_neutral(&original, &boundary),
+                "header page/column boundary changes disqualify"
+            );
+        }
+        let mut taller = shifted.clone();
+        taller.line_segs[0].line_height += 1;
+        assert!(!native_body_height_neutral(&original, &taller));
+        let mut count = shifted.clone();
+        count.line_segs.push(count.line_segs[0]);
+        assert!(
+            !native_body_height_neutral(&original, &count),
+            "same overall extent cannot hide changed line count"
+        );
+        let mut host = original.clone();
+        host.controls
+            .push(Control::Table(table_with(cell_with(&[0]))));
+        let mut changed = host.clone();
+        let Control::Table(table) = &mut changed.controls[0] else {
+            unreachable!()
+        };
+        table.cells[0].paragraphs[0].line_segs[0].baseline_gap += 1;
+        assert!(
+            !native_body_height_neutral(&host, &changed),
+            "changed nested cache disqualifies even equal table height"
+        );
+        let mut opaque = host.clone();
+        let Control::Table(table) = &mut opaque.controls[0] else {
+            unreachable!()
+        };
+        table.table_tail.push(1);
+        assert!(
+            !native_body_height_neutral(&host, &opaque),
+            "opaque object changes cannot establish equal layout context"
+        );
+    }
+
+    #[test]
+    fn native_body_forward_guard_uses_source_boundaries_and_rejects_overlap() {
+        let original = Paragraph {
+            line_segs: vec![seg(1000, 1000)],
+            ..Default::default()
+        };
+        let mut following = Paragraph {
+            line_segs: vec![seg(3000, 1000)],
+            ..Default::default()
+        };
+        fn entry(p: &Paragraph) -> Option<NativeBodyCache<'_>> {
+            Some(NativeBodyCache {
+                original: Some(p),
+                unchanged: true,
+            })
+        }
+        assert!(native_body_suffix_fits(&original, entry(&following), 3000));
+        assert!(!native_body_suffix_fits(&original, entry(&following), 3001));
+        following.header.break_type = 4;
+        assert!(native_body_suffix_fits(&original, entry(&following), 9000));
+        following.header.break_type = 0;
+        following.line_segs[0].flags = 2;
+        assert!(native_body_suffix_fits(&original, entry(&following), 9000));
+        following.line_segs[0].flags = 0;
+        following.line_segs[0].v_pos = 500;
+        assert!(
+            native_body_suffix_fits(&original, entry(&following), 9000),
+            "existing source backstep is a boundary"
+        );
+        following.line_segs.clear();
+        assert!(
+            !native_body_suffix_fits(&original, entry(&following), 1600),
+            "no stored boundary cannot prove a safe keep"
+        );
+    }
+
+    #[test]
+    fn native_body_preservation_resets_at_the_next_section() {
+        let mut original = hwp_convert::from_markdown("One\n\nTwo\n");
+        original.meta.source_format = "hwp5".to_owned();
+        for shape in &mut original.header.char_shapes {
+            shape.base_size = 1000;
+        }
+        for shape in &mut original.header.para_shapes {
+            shape.spacing_top = 0;
+            shape.spacing_bottom = 0;
+            shape.line_spacing_type = 0;
+            shape.line_spacing = 160;
+        }
+        for (i, p) in original.sections[0].paragraphs.iter_mut().enumerate() {
+            p.line_segs = vec![seg(i as i32 * 1600, 1000)];
+            p.line_segs[0].line_spacing = 600;
+        }
+        original.sections.push(original.sections[0].clone());
+        original.sections[1].paragraphs[0].line_segs[0].v_pos = 777;
+        original.sections[1].paragraphs[1].line_segs[0].v_pos = 2377;
+        let mut current = original.clone();
+        let mut large = current.header.char_shapes[0].clone();
+        large.base_size = 2000;
+        current.header.char_shapes.push(large);
+        current.sections[0].paragraphs[0].char_shape_runs = vec![(
+            0,
+            hwp_model::CharShapeId((current.header.char_shapes.len() - 1) as u16),
+        )];
+        current.sections[0].paragraphs[0].line_segs.clear();
+        let source = original
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(si, section)| {
+                section
+                    .paragraphs
+                    .iter()
+                    .enumerate()
+                    .map(|(pi, p)| NativeBodyCache {
+                        original: Some(p),
+                        unchanged: !(si == 0 && pi == 0),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let mut fonts = FontStore::new_isolated();
+        let mut warnings = RenderIssueAccumulator::new();
+        let kept = synthesize_native_linesegs_seeded(
+            &mut current,
+            &mut fonts,
+            &mut warnings,
+            &BodyFlow::default(),
+            &source,
+        );
+        assert!(
+            !kept.contains(&(0, 1)),
+            "first section stays in reflow after height change"
+        );
+        for pi in 0..2 {
+            assert!(kept.contains(&(1, pi)), "next section starts fresh");
+            assert_eq!(
+                current.sections[1].paragraphs[pi].line_segs,
+                original.sections[1].paragraphs[pi].line_segs
+            );
+        }
+    }
+
+    #[test]
     fn table_height_multi_paragraph_cell_is_not_double_counted() {
         // Four paragraphs at v_pos 0/1600/3200/4800 give cell line block 4800 + 1000.
         let h = table_height(&table_with(cell_with(&[0, 1600, 3200, 4800])));
@@ -1132,9 +1520,15 @@ mod anchor_prepass_tests {
     ) -> (crate::layout::BodyAnchors, crate::issues::RenderIssueReport) {
         let mut store = FontStore::new_isolated();
         let mut warnings = RenderIssueAccumulator::new();
-        let anchors =
-            synthesize_linesegs_inner(doc, &mut store, &mut warnings, None, &BodyFlow::default())
-                .expect("a floating-table section runs the prepass");
+        let anchors = synthesize_linesegs_inner(
+            doc,
+            &mut store,
+            &mut warnings,
+            None,
+            &BodyFlow::default(),
+            None,
+        )
+        .expect("a floating-table section runs the prepass");
         (anchors, warnings.finish())
     }
 
