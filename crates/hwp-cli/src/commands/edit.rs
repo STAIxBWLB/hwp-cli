@@ -717,37 +717,41 @@ fn raw_backed_kind(ctrl_id: &[u8; 4]) -> &'static str {
 /// #577: the raw-backed controls whose mirrored paragraphs the edit changed, or `None`.
 ///
 /// A raw-backed control (`raw_children` non-empty) is written from its source records, never
-/// from `paragraph_lists`, which only mirror it for reading and for text edits. An edit does
-/// not add or remove controls inside one, so the original and edited documents are walked in
-/// step and a control is reported when its mirror differs. Every other change is untouched.
+/// from `paragraph_lists`, which only mirror it for reading and for text edits.
+///
+/// Controls are matched by identity, not by position. An edit plan can add, remove and move
+/// body paragraphs (`insert_blocks`, `add_table`, `delete_para`, `move_para`, ...), so the
+/// paragraph that held a note before the plan is not at the same index after it, and pairing by
+/// position either compared a changed note with a paragraph that holds none (the edit was
+/// dropped silently) or compared two different notes (a body-only edit was refused). No edit
+/// rewrites `raw_children`: the only places that clear them (`canonicalize_hwp_generic`,
+/// `project_hwp5_paragraphs`) run later, on copies, to build the `--verify` signature. So the
+/// records are the control's identity: every control of the edited document is matched to the
+/// first still-unmatched control of the original with equal records, and one whose
+/// `paragraph_lists` then differs is reported.
 fn raw_backed_edit_refusal(
     original: &hwp_model::Document,
     edited: &hwp_model::Document,
 ) -> Option<RawBackedEditRefusal> {
-    fn walk(
-        original: &[hwp_model::Paragraph],
-        edited: &[hwp_model::Paragraph],
-        counts: &mut std::collections::BTreeMap<&'static str, usize>,
-    ) {
-        for (before, after) in original.iter().zip(edited) {
-            for (a, b) in before.controls.iter().zip(&after.controls) {
-                match (a, b) {
-                    (hwp_model::Control::Generic(ga), hwp_model::Control::Generic(gb)) => {
-                        if !ga.raw_children.is_empty() {
-                            if ga.paragraph_lists != gb.paragraph_lists {
-                                *counts.entry(raw_backed_kind(&ga.ctrl_id)).or_default() += 1;
-                            }
-                            // A raw-backed control is written verbatim as a whole, so what it
-                            // holds is covered by the comparison above.
-                            continue;
-                        }
-                        for (la, lb) in ga.paragraph_lists.iter().zip(&gb.paragraph_lists) {
-                            walk(&la.paragraphs, &lb.paragraphs, counts);
+    type Control<'a> = &'a hwp_model::GenericControl;
+    /// Every raw-backed control in document order, recursing into tables and into the lists of
+    /// controls the writer emits from their paragraphs. A raw-backed control is written as a
+    /// whole, so what it holds is covered by comparing its own lists and is not walked.
+    fn collect<'a>(paragraphs: &'a [hwp_model::Paragraph], out: &mut Vec<Control<'a>>) {
+        for paragraph in paragraphs {
+            for control in &paragraph.controls {
+                match control {
+                    hwp_model::Control::Generic(generic) if !generic.raw_children.is_empty() => {
+                        out.push(generic);
+                    }
+                    hwp_model::Control::Generic(generic) => {
+                        for list in &generic.paragraph_lists {
+                            collect(&list.paragraphs, out);
                         }
                     }
-                    (hwp_model::Control::Table(ta), hwp_model::Control::Table(tb)) => {
-                        for (ca, cb) in ta.cells.iter().zip(&tb.cells) {
-                            walk(&ca.paragraphs, &cb.paragraphs, counts);
+                    hwp_model::Control::Table(table) => {
+                        for cell in &table.cells {
+                            collect(&cell.paragraphs, out);
                         }
                     }
                     _ => {}
@@ -755,9 +759,31 @@ fn raw_backed_edit_refusal(
             }
         }
     }
+    fn gather(document: &hwp_model::Document) -> Vec<Control<'_>> {
+        let mut controls = Vec::new();
+        for section in &document.sections {
+            collect(&section.paragraphs, &mut controls);
+        }
+        controls
+    }
+    let before = gather(original);
+    let mut used = vec![false; before.len()];
     let mut counts = std::collections::BTreeMap::new();
-    for (a, b) in original.sections.iter().zip(&edited.sections) {
-        walk(&a.paragraphs, &b.paragraphs, &mut counts);
+    for control in gather(edited) {
+        let matched = before.iter().enumerate().find(|(index, candidate)| {
+            !used[*index]
+                && candidate.ctrl_id == control.ctrl_id
+                && candidate.raw_children == control.raw_children
+        });
+        let Some((index, candidate)) = matched else {
+            // A control with no counterpart was added by the edit; there is no source record
+            // to lose, and the writer emits what it holds.
+            continue;
+        };
+        used[index] = true;
+        if candidate.paragraph_lists != control.paragraph_lists {
+            *counts.entry(raw_backed_kind(&control.ctrl_id)).or_default() += 1;
+        }
     }
     (!counts.is_empty()).then(|| RawBackedEditRefusal {
         controls: counts.into_iter().collect(),
@@ -8489,6 +8515,105 @@ mod tests {
         assert!(
             raw_backed_edit_refusal(&modeled, &edited).is_none(),
             "a text box the writer emits from its paragraphs keeps the edit"
+        );
+    }
+
+    /// A body paragraph holding one raw-backed note whose records and text are given.
+    fn paragraph_with_raw_note(text: &str, records: u8) -> hwp_model::Paragraph {
+        let inner = hwp_convert::from_markdown(text)
+            .sections
+            .remove(0)
+            .paragraphs
+            .remove(0);
+        // The first markdown paragraph carries the section definition. Start from a plain
+        // paragraph and drop every control so the note is addressed as `controls[0]`.
+        let mut paragraph = hwp_convert::from_markdown("본문\n\n둘째")
+            .sections
+            .remove(0)
+            .paragraphs
+            .remove(1);
+        paragraph.controls.clear();
+        let mut note = raw_backed_box_around(inner, true);
+        note.ctrl_id = *b"fn  ";
+        note.raw_children[0].data = vec![records];
+        paragraph.controls.push(hwp_model::Control::Generic(note));
+        paragraph
+    }
+
+    fn document_of(paragraphs: Vec<hwp_model::Paragraph>) -> hwp_model::Document {
+        let mut doc = hwp_convert::from_markdown("본문");
+        doc.sections[0].paragraphs = paragraphs;
+        doc
+    }
+
+    /// #577 review: raw-backed controls are matched by identity, so the detector survives every
+    /// structural change a plan can make to the paragraphs around them.
+    #[test]
+    fn raw_backed_controls_are_matched_by_identity_not_position() {
+        let (a, b) = (
+            paragraph_with_raw_note("가", 1),
+            paragraph_with_raw_note("나", 2),
+        );
+        let filler = |text: &str| {
+            hwp_convert::from_markdown(text)
+                .sections
+                .remove(0)
+                .paragraphs
+                .remove(0)
+        };
+        let original = document_of(vec![filler("x"), a.clone(), b.clone()]);
+
+        // (1) A paragraph inserted in front moves both notes by one: no change, no refusal.
+        let inserted = document_of(vec![filler("x"), filler("new"), a.clone(), b.clone()]);
+        assert!(raw_backed_edit_refusal(&original, &inserted).is_none());
+        // (2) One deleted in front.
+        let deleted = document_of(vec![a.clone(), b.clone()]);
+        assert!(raw_backed_edit_refusal(&original, &deleted).is_none());
+        // (3) The two note paragraphs swapped: still the same two notes.
+        let swapped = document_of(vec![filler("x"), b.clone(), a.clone()]);
+        assert!(raw_backed_edit_refusal(&original, &swapped).is_none());
+
+        // (4) The first note's text changes AND a paragraph is inserted in front of it.
+        let mut changed = paragraph_with_raw_note("가가", 1);
+        changed.controls[0] = match (&changed.controls[0], &a.controls[0]) {
+            (hwp_model::Control::Generic(edited), hwp_model::Control::Generic(source)) => {
+                let mut note = source.clone();
+                note.paragraph_lists = edited.paragraph_lists.clone();
+                hwp_model::Control::Generic(note)
+            }
+            _ => unreachable!(),
+        };
+        let both = document_of(vec![filler("x"), filler("new"), changed.clone(), b.clone()]);
+        let refusal = raw_backed_edit_refusal(&original, &both).expect("the changed note is found");
+        assert_eq!(refusal.controls, vec![("footnote", 1)]);
+        // (5) The same change after the notes were moved.
+        let moved = document_of(vec![b.clone(), filler("x"), changed]);
+        assert_eq!(
+            raw_backed_edit_refusal(&original, &moved).unwrap().controls,
+            vec![("footnote", 1)]
+        );
+    }
+
+    /// Two notes whose saved records are byte-identical cannot be told apart by identity. The
+    /// match then goes in document order, which is exact when nothing was reordered, and an
+    /// unchanged pair is never refused.
+    #[test]
+    fn identical_raw_records_match_in_document_order() {
+        let same = |text: &str| paragraph_with_raw_note(text, 7);
+        let original = document_of(vec![same("가"), same("나")]);
+        assert!(raw_backed_edit_refusal(&original, &original.clone()).is_none());
+        let mut edited = original.clone();
+        let hwp_model::Control::Generic(second) = &mut edited.sections[0].paragraphs[1].controls[0]
+        else {
+            unreachable!()
+        };
+        second.paragraph_lists[0].paragraphs[0].chars.clear();
+        assert_eq!(
+            raw_backed_edit_refusal(&original, &edited)
+                .unwrap()
+                .controls,
+            vec![("footnote", 1)],
+            "a change to either of two identical-record notes is found"
         );
     }
 

@@ -457,7 +457,7 @@ changes. Before 1.5 an `--replace`, `--set-cell` or typed op whose target lay in
 written, as `raw_backed_edit` with `values.controls` naming the kinds and counts, and publishes
 nothing. Write the output as `.hwpx`, which is written from the edited paragraphs and keeps the
 edit, or edit that control in Hangul. The check is for an HWP5 input written as `.hwp` only, it
-applies to every op, and edits elsewhere in the same document are not refused. Writing the
+applies to every op, and edits elsewhere in the same document are not refused. It finds the changed control wherever the plan left it: controls are matched by their saved records, not by position, so inserting, deleting or moving paragraphs in the same plan neither hides an edit to a note nor causes a refusal of an edit that never touched one. Writing the
 edited text back into the saved records is not done: there is no saved-file evidence for it.
 
 ### Losses of a cross-format edit
