@@ -612,23 +612,20 @@ fn keep_together_sets_and_clears_only_the_supplied_bit_in_both_formats() {
                     loop {
                         use quick_xml::events::Event;
                         match reader.read_event().unwrap() {
-                            Event::Start(e) if e.local_name().as_ref() == b"paraPr" => {
+                            Event::Start(e) if e.local_name().as_ref() == "paraPr" => {
                                 selected = e.attributes().flatten().any(|a| {
-                                    a.key.as_ref() == b"id"
-                                        && a.value.as_ref() == p.para_shape.0.to_string().as_bytes()
+                                    a.key.as_ref() == "id"
+                                        && a.value.as_ref() == p.para_shape.0.to_string()
                                 });
                             }
                             Event::Empty(e)
-                                if selected && e.local_name().as_ref() == b"breakSetting" =>
+                                if selected && e.local_name().as_ref() == "breakSetting" =>
                             {
                                 let attrs: std::collections::BTreeMap<String, String> = e
                                     .attributes()
                                     .map(|a| {
                                         let a = a.unwrap();
-                                        (
-                                            String::from_utf8(a.key.as_ref().to_vec()).unwrap(),
-                                            String::from_utf8(a.value.into_owned()).unwrap(),
-                                        )
+                                        (a.key.as_ref().to_string(), a.value.into_owned())
                                     })
                                     .collect();
                                 assert_eq!(attrs[attribute], if on { "1" } else { "0" });
