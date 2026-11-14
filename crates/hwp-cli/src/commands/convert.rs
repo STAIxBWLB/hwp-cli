@@ -1273,6 +1273,9 @@ fn write_hwp_impl(
                             // own content matches. There is no same-position stored extent to retain.
                             let original = matches[pi]
                                 .filter(|index| *index == pi)
+                                .filter(|index| {
+                                    saved[*index].header.instance_id == paragraph.header.instance_id
+                                })
                                 .map(|index| &saved[index]);
                             hwp_render::lineseg::NativeBodyCache {
                                 original,
