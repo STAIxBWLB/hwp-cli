@@ -1,4 +1,4 @@
-//! Machine-readable refusal object for `edit-report-v1` 1.1 (plus 1.2's `document_protected`, 1.3's `verify_mismatch` and 1.4's `preservation` list) and the MCP `hwp_edit` error result
+//! Machine-readable refusal object for `edit-report-v1` 1.1 (plus 1.2's `document_protected`, 1.3's `verify_mismatch` and 1.4's `preservation` list and 1.5's `raw_backed_edit`) and the MCP `hwp_edit` error result
 //! (#531). A refusal carries a stable snake_case `code`, the structured inputs behind it in
 //! `values` (user-typed strings live here, never spliced into a code or a path string), and the
 //! human sentence in `message`, which is exactly what stderr prints.
@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-/// Every code `edit-report-v1` 1.4 may carry in `refusal.code`. Keep this list, the schema
+/// Every code `edit-report-v1` 1.5 may carry in `refusal.code`. Keep this list, the schema
 /// enum and the manual tables in step; `refusal_codes_match_schema` pins the first two.
 pub const REFUSAL_CODES: &[&str] = &[
     RANGE_TAG_SHIFT,
@@ -30,6 +30,7 @@ pub const REFUSAL_CODES: &[&str] = &[
     NO_APPLICABLE_EDITS,
     DOCUMENT_PROTECTED,
     VERIFY_MISMATCH,
+    RAW_BACKED_EDIT,
     UNCLASSIFIED,
 ];
 
@@ -50,6 +51,7 @@ pub const UNAPPLIED_REQUESTS: &str = "unapplied_requests";
 pub const NO_APPLICABLE_EDITS: &str = "no_applicable_edits";
 pub const DOCUMENT_PROTECTED: &str = "document_protected";
 pub const VERIFY_MISMATCH: &str = "verify_mismatch";
+pub const RAW_BACKED_EDIT: &str = "raw_backed_edit";
 pub const UNCLASSIFIED: &str = "unclassified";
 
 /// Every `values.protection` class `document_protected` may carry (`edit-report-v1` 1.2, #571).
@@ -94,6 +96,9 @@ pub fn fixed_message(code: &str) -> &'static str {
         UNAPPLIED_REQUESTS => "적용되지 않은 편집 요청이 있습니다",
         NO_APPLICABLE_EDITS => "문서를 바꾼 편집 요청이 없습니다",
         DOCUMENT_PROTECTED => "보호된 문서라 열 수 없어 거부했습니다",
+        RAW_BACKED_EDIT => {
+            "HWP5 출력은 글상자·도형·각주·미주·머리말·꼬리말처럼 원본 레코드로 보존되는 영역 안의 편집을 기록하지 못해 거부했습니다. 출력을 .hwpx로 바꾸거나, 한글에서 해당 영역을 직접 편집하세요"
+        }
         VERIFY_MISMATCH => {
             "저장한 결과를 다시 읽은 문서가 편집 결과와 달라 거부했습니다. 편집 대상이 글상자·머리말·꼬리말처럼 HWP5 출력에 기록되지 않는 영역에 있는지 확인하고, 있다면 본문으로 옮겨 다시 시도하거나 values.counts와 함께 보고하세요"
         }
@@ -154,6 +159,20 @@ impl Refusal {
             Some(element) => refusal.with("missing_element", element),
             None => refusal,
         }
+    }
+
+    /// An edit changed paragraphs mirrored from raw-backed controls, which the HWP5 writer emits
+    /// from its source records, so the edit would be dropped (#577). `controls` are
+    /// `(kind, count)` pairs with a fixed kind vocabulary; no document content.
+    pub fn raw_backed_edit(
+        controls: impl IntoIterator<Item = (&'static str, usize)>,
+        prose: impl Into<String>,
+    ) -> Self {
+        let controls = controls
+            .into_iter()
+            .map(|(kind, count)| serde_json::json!({"kind": kind, "count": count}))
+            .collect::<Vec<_>>();
+        Self::new(RAW_BACKED_EDIT, prose).with("controls", Value::Array(controls))
     }
 
     pub fn unclassified(message: impl Into<String>) -> Self {

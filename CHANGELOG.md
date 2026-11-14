@@ -37,6 +37,13 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 
 **Added**
 
+- `edit-report-v1` 1.5: an edit that would be dropped by the HWP5 writer now refuses as
+  `raw_backed_edit`, with `values.controls` listing `{kind, count}` for the controls whose text it
+  changed. A text box or other shape, a footnote, an endnote, a header and a footer read from a
+  saved HWP5 file are written from their saved records, so an `--replace`, `--set-cell` or typed
+  op inside one used to exit 0 and leave the old text, with or without `--verify`. Existing codes
+  and fields are unchanged, so a consumer that accepts `"1.4"` must also accept `"1.5"`
+  ([#577](https://github.com/STAIxBWLB/agent-hwp/issues/577)).
 - `keep_together` now applies supplied `keep_with_next`, `keep_lines` and
   `break_before_shape` paragraph-shape flags through CLI edit-ops and MCP `hwp_edit`,
   preserving other bits and independent header breaks. Encoding follows Hangul 12.30.0
