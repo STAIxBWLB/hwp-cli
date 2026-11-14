@@ -16,7 +16,14 @@ impl Alias {
             std::env::temp_dir().join(format!("ahwp-bridge-{}-{label}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let executable = directory.join(if cfg!(windows) { "hwp.exe" } else { "hwp" });
-        std::fs::copy(primary(), &executable).unwrap();
+        // A hard link writes no data, so no write descriptor to the new executable ever exists.
+        // A copy does: this test binary runs its tests on parallel threads, and a sibling
+        // thread's fork inherits the copy's write descriptor until it execs, which makes
+        // exec of the copy fail with ETXTBSY on Linux (#592). Copy only where linking is not
+        // possible (a temp directory on another device, a file system without hard links).
+        if std::fs::hard_link(primary(), &executable).is_err() {
+            std::fs::copy(primary(), &executable).unwrap();
+        }
         Self(executable)
     }
 }
