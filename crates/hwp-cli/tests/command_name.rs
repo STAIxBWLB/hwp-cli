@@ -12,11 +12,20 @@ struct Alias(PathBuf);
 
 impl Alias {
     fn new(label: &str) -> Self {
-        let directory =
-            std::env::temp_dir().join(format!("ahwp-bridge-{}-{label}", std::process::id()));
+        // Cargo sets CARGO_TARGET_TMPDIR for integration tests. It lives under target/, so it is
+        // on the same file system as the built binary and the hard link below can succeed.
+        let directory = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("ahwp-bridge-{}-{label}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let executable = directory.join(if cfg!(windows) { "hwp.exe" } else { "hwp" });
-        std::fs::copy(primary(), &executable).unwrap();
+        // A hard link writes no data, so no write descriptor to the new executable ever exists.
+        // A copy does: this test binary runs its tests on parallel threads, and a sibling
+        // thread's fork inherits the copy's write descriptor until it execs, which makes
+        // exec of the copy fail with ETXTBSY on Linux (#592). Copy only where linking is not
+        // possible (a file system without hard links).
+        if std::fs::hard_link(primary(), &executable).is_err() {
+            std::fs::copy(primary(), &executable).unwrap();
+        }
         Self(executable)
     }
 }
