@@ -1245,8 +1245,8 @@ fn write_hwp_impl(
         // The first changed body paragraph continues from its kept predecessor. After a neutral
         // edit, unchanged body records remain saved; the first height-changing edit makes the
         // rest of that section reflow; a source suffix that would overlap also forces reflow.
-        // A bare section-top cursor gave the
-        // first changed paragraph a v_pos *above* its kept predecessor, which the renderer reads
+        // A bare section-top cursor gave the first changed paragraph a v_pos *above* its kept
+        // predecessor, which the renderer reads
         // as a page start and draws the change mid-page (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
         // Stage valid saved nested records and clear their moved suffixes before measuring.

@@ -1172,6 +1172,9 @@ fn native_floating_edit(grow: bool, successor: u8) -> (Document, Document) {
             flags: 0x0006_0000,
         }];
     }
+    if successor == 3 {
+        source.sections[0].paragraphs.truncate(3);
+    }
     let mut edited = source.clone();
     assert_eq!(
         hwp_convert::replace_text(
@@ -1190,6 +1193,8 @@ fn native_floating_edit(grow: bool, successor: u8) -> (Document, Document) {
         );
     } else if successor == 2 {
         edited.sections[0].paragraphs.insert(3, paragraph(&source));
+    } else if successor == 3 {
+        edited.sections[0].paragraphs.push(paragraph(&source));
     }
     let matching = vec![
         edited.sections[0]
@@ -1300,4 +1305,14 @@ fn native_new_successor_starts_at_the_source_floating_host_offset() {
     assert_eq!(edited.sections[0].paragraphs[2].line_segs[0].v_pos, 5400);
     assert_eq!(edited.sections[0].paragraphs[3].line_segs[0].v_pos, 6012);
     assert_eq!(edited.sections[0].paragraphs[4].line_segs[0].v_pos, 7912);
+}
+
+#[test]
+fn native_new_successor_without_a_source_offset_uses_the_host_line_advance() {
+    let (_, edited) = native_floating_edit(true, 3);
+    assert_eq!(edited.sections[0].paragraphs[2].line_segs[0].v_pos, 5400);
+    assert_eq!(
+        edited.sections[0].paragraphs[3].line_segs[0].v_pos, 7300,
+        "host5400 plus stored line advance1600 and raw bottom600/2"
+    );
 }
