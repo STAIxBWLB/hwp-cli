@@ -1,9 +1,9 @@
-//! #420: typed break-before, an idempotent indentation recipe and the keep-together refusal.
+//! Typed break-before, idempotent indentation and evidence-backed keep-together flags.
 //!
 //! Break-before writes the paragraph-header `break_type` page bit (0x04) of a BODY paragraph,
 //! the one placement genuine Hangul-saved files show in both formats (HWP5 `break_type`, HWPX
-//! `pageBreak`). Keep-together has no genuine saved evidence for the paragraph-shape bits and
-//! must refuse before writing. Tests assert structure, never font-dependent page counts.
+//! `pageBreak`). Keep-together writes the independent paragraph-shape bits from #540 G4.
+//! Tests assert structure, never font-dependent page counts.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -532,23 +532,71 @@ fn indent_level_never_touches_inner_spaces_labels_or_a_paragraph_without_leading
 
 // ---- keep_together -------------------------------------------------------------------------
 
+/// Inspect the persisted state even on refusal: the pre-fix CLI publishes no output, so
+/// the original remains the observed document. The red assertion is the requested bit,
+/// not an early unwrap of the refusal or a missing output file.
 #[test]
-fn keep_together_refuses_before_writing_and_names_the_missing_evidence() {
+fn keep_together_sets_and_clears_only_the_supplied_bit_in_both_formats() {
+    use std::io::Read;
     for extension in ["hwp", "hwpx"] {
-        let fixture = Fixture::new("keep", extension);
-        let before = read(&fixture.base);
-        for field in ["keep_with_next", "keep_lines", "break_before_shape"] {
-            let message = fixture.refuse(
-                &fixture.base.clone(),
-                &format!("keep-{field}"),
-                json!([{"op":"keep_together","address":at(&before, TARGET),field:true}]),
-            );
-            assert!(
-                message.contains("keep_together")
-                    && message.contains("Hangul")
-                    && message.contains("set_break_before"),
-                "{extension} {field}: the refusal names the cause and the supported alternative: {message}"
-            );
+        let fixture = Fixture::new("keep-bits", extension);
+        for (field, bit, attribute) in [
+            ("keep_with_next", 17, "keepWithNext"),
+            ("keep_lines", 18, "keepLines"),
+            ("break_before_shape", 19, "pageBreakBefore"),
+        ] {
+            // Include widow/orphan and the other two keep bits in the preservation premise.
+            for on in [true, false] {
+                let mut seeded = read(&fixture.base);
+                let pi = index(&seeded, TARGET);
+                let si = seeded.sections[0].paragraphs[pi].para_shape.0 as usize;
+                seeded.header.para_shapes[si].attr1 |= 0xf << 16;
+                if on { seeded.header.para_shapes[si].attr1 &= !(1 << bit); }
+                let input = fixture.path(&format!("seed-{field}-{on}"));
+                if extension == "hwp" {
+                    hwp5::write_document(&seeded, &input, &hwp5::WriteOptions::default()).unwrap();
+                } else { hwpx::write_document(&seeded, &input).unwrap(); }
+                let before = read(&input);
+                let p = paragraph(&before, TARGET);
+                let prior = before.header.para_shapes[p.para_shape.0 as usize].attr1;
+                let header_break = p.header.break_type;
+                let (output, run) = fixture.edit(&input, &format!("keep-{field}-{on}"),
+                    json!([{"op":"keep_together","address":at(&before, TARGET),field:on}]));
+                let after = read(if output.exists() { &output } else { &input });
+                let p = paragraph(&after, TARGET);
+                let actual = after.header.para_shapes[p.para_shape.0 as usize].attr1;
+                let expected = if on { prior | (1 << bit) } else { prior & !(1 << bit) };
+                assert_eq!(actual, expected,
+                    "{extension} {field}={on}: exact attr1 including all untouched bits; CLI: {}",
+                    String::from_utf8_lossy(&run.stderr));
+                success(run, "keep_together");
+                assert_eq!(p.header.break_type, header_break, "shape flag is not header break_type");
+                for original in &before.sections[0].paragraphs {
+                    let other = paragraph(&after, &original.plain_text());
+                    if original.plain_text() != TARGET {
+                        assert_eq!(after.header.para_shapes[other.para_shape.0 as usize].attr1,
+                            before.header.para_shapes[original.para_shape.0 as usize].attr1,
+                            "shared source shape must not mutate other paragraphs");
+                    }
+                }
+                if extension == "hwpx" {
+                    let mut zip = zip::ZipArchive::new(std::fs::File::open(&output).unwrap()).unwrap();
+                    let mut xml = String::new();
+                    zip.by_name("Contents/header.xml").unwrap().read_to_string(&mut xml).unwrap();
+                    let tree = roxmltree::Document::parse(&xml).unwrap();
+                    let shape_id = p.para_shape.0.to_string();
+                    let shape = tree.descendants().find(|n| n.has_tag_name("paraPr") && n.attribute("id") == Some(shape_id.as_str())).unwrap();
+                    let settings = shape.descendants().find(|n| n.has_tag_name("breakSetting")).unwrap();
+                    assert_eq!(settings.attribute(attribute), Some(if on { "1" } else { "0" }));
+                    for (name, shift) in [("widowOrphan",16),("keepWithNext",17),("keepLines",18),("pageBreakBefore",19)] {
+                        assert_eq!(settings.attribute(name), Some(if expected & (1 << shift) != 0 { "1" } else { "0" }));
+                    }
+                }
+                let (repeat, run) = fixture.edit(&output, &format!("repeat-{field}-{on}"),
+                    json!([{"op":"keep_together","address":at(&after, TARGET),field:on}]));
+                success(run, "keep_together repeated");
+                assert_eq!(std::fs::read(output).unwrap(), std::fs::read(repeat).unwrap());
+            }
         }
     }
 }
