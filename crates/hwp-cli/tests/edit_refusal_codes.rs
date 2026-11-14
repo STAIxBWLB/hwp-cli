@@ -1,4 +1,4 @@
-//! #531: a refused `hwp edit` run still writes edit-report-v1 (1.3), and the refusal carries a
+//! #531: a refused `hwp edit` run still writes edit-report-v1 (1.4), and the refusal carries a
 //! stable code, structured values and the human message. One test per code family; the
 //! range-tag and preservation families live beside their fixtures in `range_tag_edits.rs` and
 //! `edit_surgical.rs`.
@@ -94,7 +94,7 @@ fn read_report(path: &Path) -> Value {
         validator.is_valid(&report),
         "refused report must validate: {report}"
     );
-    assert_eq!(report["schema_version"], "1.3");
+    assert_eq!(report["schema_version"], "1.4");
     report
 }
 
@@ -539,7 +539,7 @@ fn schema_requires_a_known_protection_class() {
         .build(&schema)
         .unwrap();
     let report = |values: Value| {
-        json!({"schema_version":"1.3","contract":"hwp-edit-report-v1","output":"o","dry_run":false,
+        json!({"schema_version":"1.4","contract":"hwp-edit-report-v1","output":"o","dry_run":false,
             "ops":[],"applied_count":0,"failed_count":0,
             "refusal":{"code":"document_protected","values":values,"message":"m"}})
     };

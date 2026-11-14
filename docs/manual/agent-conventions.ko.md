@@ -392,7 +392,7 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 ### 거부된 편집 분류
 
 `ahwp edit`가 거부되어도 `--report`로 지정한 `edit-report-v1` 파일은 기록되고, `--dry-run`도
-보고서를 출력한다. 보고서(스키마 버전 1.3)는 최상위 `refusal` 객체를 담고, 연산 하나가
+보고서를 출력한다. 보고서(스키마 버전 1.4)는 최상위 `refusal` 객체를 담고, 연산 하나가
 거부했으면 그 연산 항목도 `status: "failed"`와 함께 같은 객체를 담는다. MCP `hwp_edit`는 오류
 결과의 `structuredContent.refusal`로 같은 객체를 돌려준다. stderr는 사람이 읽는 한국어 문장을
 그대로 유지하고, MCP 오류 텍스트도 같은 문장을 담는다. `refusal.message`는 코드마다 정해진 고정
@@ -427,6 +427,28 @@ MCP에서는 `hwp_slots`에 `path`, `forms: true`, `occurrences: true`를 주면
 `document_protected`(1.2)는 문서를 여는 단계의 거부다. 입력이 보호되어 있으므로 `ops`가 비어 있다. `password`는 암호가 없는 경우와 틀린 경우를 모두 가리키며(HWP5와 HWPX), 엔진은 둘을 구분하지 않는다. 배포용 문서는 읽을 수 있으므로 거부하지 않는다. 1.1만 받는 소비자는 1.2도 받아야 한다. 1.1의 모든 필드와 코드는 그대로다.
 
 `verify_mismatch`(1.3)는 `--verify`가 다시 읽은 출력이 편집 결과와 다를 때 보고하는 코드다. 아무것도 게시하지 않는다. `counts`는 개수 불변식 이름(`sections`, `paragraphs`, `tables`, `pictures`, `generic_controls`, `fields`, `bookmarks`, `hyperlinks`, `bin_streams`, `char_shapes`, `para_shapes`, `styles`, `text_chars`)만 담고 문서 내용은 담지 않는다. 1.3 이전에는 이 거부가 `unclassified`였다.
+
+### 교차 형식 편집의 손실
+
+HWP5 입력을 `.hwpx`로 내보내는 `ahwp edit`는 `--verify` 여부와 관계없이 `ahwp convert`가 같은 형식
+쌍에 대해 수행하는 손실 계산을 똑같이 수행한다. 이벤트(`{code, resource, disposition, count}`,
+`hwp-preservation-report-v1` 모양)는 stderr, MCP `preservation` 필드, 그리고 스키마 1.4부터 `--report`
+파일의 `preservation` 목록에 담긴다. 손실이 없으면 목록은 없다. `--strict` 없는 `convert`와 마찬가지로
+이 편집은 손실 계산이 추가한 이벤트를 보고하고 게시한다. HWPX는 타임스탬프를 초 단위로만 저장하므로
+`metadata_value_removed` 하나는 HWP5에서 HWPX로 저장할 때마다 발생한다. HWPX 작성기가 직접 보고한
+이벤트는 이전과 같이 모두 편집을 거부한다(불투명·이미지 채움 컨트롤, 표현할 수 없는 도형, 제거된
+바이너리, 제거된 구간 표시). 추가된 이벤트 중 `paragraph_range_tag_unrepresentable`,
+`font_type_info_unrepresentable`도 거부한다. `.hwp` 출력 편집은 이벤트가 하나라도 있으면 거부하는
+기존 정책을 유지한다.
+
+이 방향의 `--verify`는 두 형식이 다르게 인코딩하는 필드(헤더 레코드의 꼬리 바이트, 각주·미주·쪽
+테두리의 숫자 레코드, 표·셀 속성 워드, 원본 그리기 개체 트리 등)를 투영한 뒤 HWPX 재읽기와 편집한 문서를
+비교한다. 각 필드는 `project_hwp5_to_hwpx_representation`에 이름과 이유가 적혀 있다. 텍스트, 구조,
+기하, 그리고 그 목록에 없는 모든 필드는 계속 비교한다. 원본에 해당 레코드가 있었다면 출력 구역에도
+`hp:footNotePr`, `hp:endNotePr`, `hp:pageBorderFill` 요소가 있어야 하고, 형식이 바뀐 그리기 개체는
+`control_removed`가 보고된 경우에만 받아들인다. 그 밖의 차이는 `verify_mismatch`로 거부하며, 구역 요소만 사라진 경우 `values.missing_element`가 그 이름
+(`footnote_shape`, `endnote_shape`, `page_border_fill`)을 담고 `counts`는 비어 있다. 대가:
+목록에 있는 바이트 인코딩 필드는 그 바이트 안의 실제 손실을 해시로 볼 수 없다.
 
 ### 보존 손실 원장
 

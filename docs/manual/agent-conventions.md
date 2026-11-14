@@ -409,7 +409,7 @@ Evidence and limits are recorded in `docs/design/07-hangul-compat-rules.md` (J1 
 ### Classify a refused edit
 
 A refused `ahwp edit` still writes the `edit-report-v1` file that `--report` names, and
-`--dry-run` still prints it. The report (schema version 1.3) carries a top-level `refusal`
+`--dry-run` still prints it. The report (schema version 1.4) carries a top-level `refusal`
 object, and when one op refused, that op's entry carries the same object with `status:
 "failed"`. MCP `hwp_edit` returns the same object as `structuredContent.refusal` of its error
 result, and writes the same report to its `report` argument for any refusal raised after the
@@ -446,6 +446,31 @@ Branch on `code`, never on `message`. Values the user typed (anchors, style name
 `document_protected` (1.2) is an open-time refusal: the input is protected, so the run has no `ops`. `password` covers an absent and a wrong password alike, for HWP5 and HWPX; the engine does not tell them apart. A distribution document is readable, so it is not refused. Consumers that accept only 1.1 must also accept 1.2; every 1.1 field and code is unchanged.
 
 `verify_mismatch` (1.3) is what `--verify` reports when the re-read output differs from the edited document. Nothing is published. `counts` names only count invariants (`sections`, `paragraphs`, `tables`, `pictures`, `generic_controls`, `fields`, `bookmarks`, `hyperlinks`, `bin_streams`, `char_shapes`, `para_shapes`, `styles`, `text_chars`) and never document content. Before 1.3 this refusal was `unclassified`.
+
+### Losses of a cross-format edit
+
+An `ahwp edit` from an HWP5 input to a `.hwpx` output runs the same loss accounting as `ahwp
+convert` for that pair, with or without `--verify`. The events (`{code, resource, disposition,
+count}`, the `hwp-preservation-report-v1` shape) go to stderr, to the MCP `preservation` field,
+and, since schema 1.4, to the `preservation` list of the `--report` file. The list is absent when
+nothing was lost. Like `convert` without `--strict`, such an edit publishes with the events
+the accounting adds reported: `metadata_value_removed` alone fires on every HWP5 to HWPX save, because HWPX stores
+timestamps to the second. Every event the HWPX writer itself reports still refuses the edit, as
+before (an opaque or image-filled control, an unrepresentable shape, a dropped binary, a dropped
+range tag), and of the added events `paragraph_range_tag_unrepresentable` and
+`font_type_info_unrepresentable` refuse too. An edit to a `.hwp` output keeps its
+refuse-on-any-event policy.
+
+`--verify` in this direction compares the HWPX re-read with the edited document after projecting
+the fields the two formats encode differently (trailing bytes of header records, the numeric note
+and page-border records, table and cell attribute words, raw drawing-object trees and similar), each
+named and commented in `project_hwp5_to_hwpx_representation`. Text, structure, geometry and
+every field not on that list are still compared, the output must still carry the section's
+`hp:footNotePr`, `hp:endNotePr` and `hp:pageBorderFill` elements when the source had those records,
+and re-typed drawing objects are accepted only when `control_removed` was reported. Any other
+difference refuses as `verify_mismatch`; when only a section element was lost, `values.missing_element`
+names it (`footnote_shape`, `endnote_shape` or `page_border_fill`) and `counts` is empty. The cost: for the byte-encoded fields on that list the
+digest cannot see a real loss inside those bytes.
 
 ### The preservation ledger
 
