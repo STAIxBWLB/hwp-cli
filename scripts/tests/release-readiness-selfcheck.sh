@@ -658,6 +658,12 @@ archive_case "a copy of ahwp.exe to hwp.exe fails" fail \
     'base.replace(upload, "      - run: copy ahwp.exe hwp.exe\n" + upload, 1)'
 archive_case "a symlink named hwp fails" fail \
     'base.replace(upload, "      - run: ln -s ahwp hwp\n" + upload, 1)'
+archive_case "an inline run: echo and printf on a named step stay prose" pass \
+    'base.replace(upload, "      - name: Explain compatibility\n        run: echo \"hwp\"\n      - name: Explain more\n        run: printf \"%s\" \"$dir/hwp\"\n" + upload, 1)'
+archive_case "a copy to hwp ended by a semicolon fails" fail \
+    'base.replace(upload, "      - run: cp ahwp hwp; tar -czf \"$archive\" ahwp\n" + upload, 1)'
+archive_case "an action input bin: hwp fails" fail \
+    'base.replace(upload, "      - uses: taiki-e/upload-rust-binary-action@v1\n        with:\n          bin: hwp\n" + upload, 1)'
 archive_case "a literal hwp-v<N> asset fails" fail \
     'base.replace(deny, "\n  x:\n    steps:\n      - run: gh release upload v2 hwp-v2.0.0-x86_64.tar.gz" + deny, 1)'
 
