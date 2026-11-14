@@ -285,6 +285,36 @@ fn same_native_control_extents(original: &[Control], current: &[Control]) -> boo
         })
 }
 
+// Match the existing page/column-aware forward relation, not absolute position equality.
+// Source backsteps represent an existing implicit boundary; a new shifted line must not
+// place the next same-page source cache inside its synthesized block (#540 G3).
+fn native_body_suffix_fits(
+    original: &Paragraph,
+    next: Option<NativeBodyCache<'_>>,
+    synthesized_bottom: i64,
+) -> bool {
+    let Some(next) = next else {
+        return true;
+    };
+    if !next.unchanged {
+        return true;
+    }
+    let Some(saved) = next.original else {
+        return false;
+    };
+    let Some(first) = saved.line_segs.first() else {
+        return false;
+    };
+    let source_boundary = saved.header.break_type & 0x0c != 0
+        || first.flags & 3 != 0
+        || first.v_pos == 0
+        || original
+            .line_segs
+            .last()
+            .is_some_and(|last| first.v_pos < last.v_pos);
+    source_boundary || synthesized_bottom <= i64::from(first.v_pos)
+}
+
 fn native_body_height_neutral(original: &Paragraph, current: &Paragraph) -> bool {
     !original.line_segs.is_empty()
         && (original.header.break_type & 0x0c) == (current.header.break_type & 0x0c)
@@ -536,8 +566,28 @@ fn synthesize_linesegs_inner(
                 if unchanged {
                     native.as_mut().expect("native mode").kept.push((si, pi));
                 } else {
+                    let next = native
+                        .as_ref()
+                        .and_then(|n| n.source.get(si))
+                        .and_then(|section| section.get(pi + 1))
+                        .copied();
+                    let current = &doc.sections[si].paragraphs[pi];
+                    let cache_bottom = current.line_segs.last().map_or(i64::MAX, |line| {
+                        i64::from(line.v_pos)
+                            + i64::from(line.line_height)
+                            + i64::from(line.line_spacing)
+                    });
+                    // Exclude paragraph space-after: the source cache already owns that gap.
+                    // Include a hosted table's full measured block, not only its anchor line.
+                    let bottom = cache_bottom.max(i64::from(body_cursor(
+                        anchor_v,
+                        line_cursor,
+                        table_total,
+                        0,
+                    )));
                     keep_body_suffix = source.and_then(|s| s.original).is_some_and(|original| {
-                        native_body_height_neutral(original, &doc.sections[si].paragraphs[pi])
+                        native_body_height_neutral(original, current)
+                            && native_body_suffix_fits(original, next, bottom)
                     });
                 }
             }
@@ -1232,6 +1282,42 @@ mod tests {
         assert!(
             !native_body_height_neutral(&host, &opaque),
             "opaque object changes cannot establish equal layout context"
+        );
+    }
+
+    #[test]
+    fn native_body_forward_guard_uses_source_boundaries_and_rejects_overlap() {
+        let original = Paragraph {
+            line_segs: vec![seg(1000, 1000)],
+            ..Default::default()
+        };
+        let mut following = Paragraph {
+            line_segs: vec![seg(3000, 1000)],
+            ..Default::default()
+        };
+        let entry = |p| {
+            Some(NativeBodyCache {
+                original: Some(p),
+                unchanged: true,
+            })
+        };
+        assert!(native_body_suffix_fits(&original, entry(&following), 3000));
+        assert!(!native_body_suffix_fits(&original, entry(&following), 3001));
+        following.header.break_type = 4;
+        assert!(native_body_suffix_fits(&original, entry(&following), 9000));
+        following.header.break_type = 0;
+        following.line_segs[0].flags = 2;
+        assert!(native_body_suffix_fits(&original, entry(&following), 9000));
+        following.line_segs[0].flags = 0;
+        following.line_segs[0].v_pos = 500;
+        assert!(
+            native_body_suffix_fits(&original, entry(&following), 9000),
+            "existing source backstep is a boundary"
+        );
+        following.line_segs.clear();
+        assert!(
+            !native_body_suffix_fits(&original, entry(&following), 1600),
+            "no stored boundary cannot prove a safe keep"
         );
     }
 

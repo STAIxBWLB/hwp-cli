@@ -1221,7 +1221,8 @@ fn write_hwp_impl(
     let owned;
     let doc = if source_has_edits {
         // Native HWP edits retain source body records through height-neutral runs. After the
-        // first height-changing/new/moved body paragraph, the rest of that section reflows.
+        // first height-changing/new/moved body paragraph or unsafe forward boundary, the rest
+        // of that section reflows.
         // Nested lists retain their own seam and local-context validity rules. The writer
         // restores complete source records only for the body indices the walk reports kept;
         // that includes cache-less source paragraphs in retained regions.
@@ -1243,14 +1244,15 @@ fn write_hwp_impl(
         let mut warns = hwp_render::RenderIssueAccumulator::new();
         // The first changed body paragraph continues from its kept predecessor. After a neutral
         // edit, unchanged body records remain saved; the first height-changing edit makes the
-        // rest of that section reflow. A bare section-top cursor gave the
+        // rest of that section reflow; a source suffix that would overlap also forces reflow. A bare section-top cursor gave the
         // first changed paragraph a v_pos *above* its kept predecessor, which the renderer reads
         // as a page start and draws the change mid-page (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
         // Stage valid saved nested records and clear their moved suffixes before measuring.
         // A kept table must be measured from its saved cells rather than ephemeral synthesis
         // (#509). Body source records are supplied separately to the native walk below, which
-        // keeps neutral body runs but reflows the section after its first height-changing run.
+        // keeps neutral body runs only where they fit the next source boundary; the first
+        // height-changing or unsafe run makes the remaining section reflow.
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Drop);
         }
@@ -1298,7 +1300,7 @@ fn write_hwp_impl(
             &source_body,
         );
         // Nested lists retain their existing reflow and local-context validity rules. Body records
-        // are retained only until this section's first height-changing edit; a new section resets.
+        // are retained only until this section's first height-changing/unsafe run; a new section resets.
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Keep);
             for (si, pi) in kept_body {
@@ -2678,6 +2680,14 @@ mod tests {
         let current = hwp5::read_document(&output).unwrap().document;
         let changed = current.sections[0].paragraphs[3].line_segs.last().unwrap();
         let following = current.sections[0].paragraphs[4].line_segs.first().unwrap();
+        assert_eq!(
+            changed.v_pos, 2400,
+            "native spacing units remain unchanged in this task"
+        );
+        assert_eq!(
+            following.v_pos, 4000,
+            "unsafe neutral candidate must take the existing reflow fallback"
+        );
         assert!(
             following.v_pos >= changed.v_pos + changed.line_height,
             "G1 native top mismatch must not overlap retained suffix: changed top={}, bottom={}, following={}",
