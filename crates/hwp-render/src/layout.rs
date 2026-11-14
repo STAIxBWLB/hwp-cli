@@ -1261,9 +1261,16 @@ fn layout_document_pages(
                 page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
             }
             let tabs = crate::tab::tab_stops(doc, para);
-            // #540 G1: section-start space-before is retained. `para_geometry` already
-            // halves serialized spacing to HWPUNIT for body anchors.
-            let geom = para_geometry(doc, para);
+            // #540 G1 establishes section-start spacing only without a floating host.
+            // `para_geometry` already halves serialized spacing to HWPUNIT for body anchors.
+            let mut geom = para_geometry(doc, para);
+            if anchors.is_some()
+                && para_index == 0
+                && crate::lineseg::hosts_floating_body_object(para)
+            {
+                // Preserve this unmeasured host context pending Hangul-saved evidence (#570).
+                geom.spacing_top = 0.0;
+            }
             let links = crate::shape::hyperlink_ranges(para);
             // Do not consume a list counter for a paragraph that has no visible line at all.
             let marker = if para.line_segs.is_empty() && para.chars.is_empty() {

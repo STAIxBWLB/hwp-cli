@@ -15,6 +15,19 @@ use crate::issues::RenderIssueAccumulator;
 use crate::layout::TAB_INTERVAL_PT;
 use crate::shape::{InlineItem, glyph_source_sequences, shape_range, source_has_no_break_space};
 
+/// Section-start spacing has no measured rule for a paragraph hosting a floating object.
+/// Unknown placement retains that unresolved context rather than treating it as plain text.
+pub(crate) fn hosts_floating_body_object(para: &Paragraph) -> bool {
+    para.controls.iter().any(|control| match control {
+        Control::Table(table) => table.placement.as_ref().is_none_or(|p| !p.treat_as_char),
+        Control::Picture(picture) => !picture.treat_as_char,
+        Control::Generic(generic) if generic.ctrl_id == *b"gso " => {
+            crate::gso::parse_gso_box(&generic.data).is_none_or(|b| !b.treat_as_char())
+        }
+        _ => false,
+    })
+}
+
 /// Fixed vertical table-block padding in HWPUNIT, added by genuine Hangul to the whole table.
 ///
 /// Measurements of the genuine first-paragraph sample (5.1.1.0) and work_report.hwp (5.0.2.4)
@@ -294,7 +307,10 @@ fn synthesize_linesegs_inner(
             if explicit_break {
                 v_pos = 0;
             }
-            if pi > 0 || use_fragment_flow {
+            if pi > 0
+                || (use_fragment_flow
+                    && !hosts_floating_body_object(&snap.sections[si].paragraphs[pi]))
+            {
                 v_pos = v_pos.saturating_add(sp_top);
             }
             // Floating-table measurement already populated nested caches.
