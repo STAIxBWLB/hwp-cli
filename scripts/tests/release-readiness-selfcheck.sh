@@ -615,6 +615,52 @@ entry="$(out_value "$output" entry)"
 same "present script with runner outcome success records pass" \
     "$(printf '%s' "$entry" | cut -f1-2)" "$(printf 'macos-signing-dry-run\tpass')"
 
+# --- 6. release-archive-fonts: the hwp-bridge tripwire ---------------------------------------
+# The gate reads release.yml as text. Prose that names the removed bridge (comments, step names,
+# echo/printf lines such as the 2.x guard's ::error:: message) must not trip it, and every shape
+# a bridge would take must, at any indentation and under any job or step name.
+echo "-- release-archive-fonts"
+archive_case() { # <description> <expected pass|fail> <python expression over `base`>
+    local dir="$tmp/archive-$RANDOM$RANDOM" out
+    mkdir -p "$dir/.github/workflows" "$dir/skills/hwp/claude-web"
+    cp "$ROOT/skills/hwp/claude-web/bootstrap.sh" "$dir/skills/hwp/claude-web/"
+    python3 - "$ROOT/.github/workflows/release.yml" "$dir/.github/workflows/release.yml" "$3" <<'PY' ||
+import sys
+src, dst, expr = sys.argv[1:4]
+base = open(src, encoding="utf-8").read()
+upload = "      - name: Assemble and upload hwp-skill-claude-web.zip\n"
+deny = "\n  deny:\n"
+assert upload in base and deny in base, "release.yml anchors moved; update the self-check"
+text = eval(expr, {"base": base, "upload": upload, "deny": deny})
+assert expr == "base" or text != base, "mutation did not apply"
+open(dst, "w", encoding="utf-8").write(text)
+PY
+        { check "$1 (fixture)" 1; return; }
+    out="$dir/output"
+    : >"$out"
+    (cd "$dir" && GITHUB_OUTPUT="$out" bash "$steps/gate-release-archive-fonts.sh") >/dev/null 2>&1
+    same "$1" "$(out_value "$out" entry | cut -f1-2)" "$(printf 'release-archive-fonts\t%s' "$2")"
+}
+archive_case "the current release.yml passes" pass 'base'
+archive_case "a step name and an echo that name hwp stay prose" pass \
+    'base.replace(upload, "      - name: Verify hwp is absent\n        run: echo \"The hwp alias was removed in 2.0\"\n" + upload, 1)'
+archive_case "an alias-assets job at two-space indent fails" fail \
+    'base.replace(deny, "\n  alias-assets:\n    runs-on: ubuntu-latest" + deny, 1)'
+archive_case "an alias-assets job at four-space indent fails" fail \
+    'base.replace("jobs:\n", "jobs:\n    alias-assets:\n      runs-on: ubuntu-latest\n", 1)'
+archive_case "an inline copy to hwp fails" fail \
+    'base.replace(upload, "      - run: cp \"$work/ahwp\" \"$work/hwp\"\n" + upload, 1)'
+archive_case "a copy to hwp with an ::error:: fallback fails" fail \
+    'base.replace(upload, "      - run: cp \"$dir/ahwp\" \"$dir/hwp\" || { echo \"::error::alias copy failed\"; exit 1; }\n" + upload, 1)'
+archive_case "a renamed job packing hwp-\${GITHUB_REF_NAME} fails" fail \
+    'base.replace(deny, "\n  legacy-assets:\n    steps:\n      - run: tar -czf hwp-${GITHUB_REF_NAME}-x86_64.tar.gz -C d ahwp" + deny, 1)'
+archive_case "a copy of ahwp.exe to hwp.exe fails" fail \
+    'base.replace(upload, "      - run: copy ahwp.exe hwp.exe\n" + upload, 1)'
+archive_case "a symlink named hwp fails" fail \
+    'base.replace(upload, "      - run: ln -s ahwp hwp\n" + upload, 1)'
+archive_case "a literal hwp-v<N> asset fails" fail \
+    'base.replace(deny, "\n  x:\n    steps:\n      - run: gh release upload v2 hwp-v2.0.0-x86_64.tar.gz" + deny, 1)'
+
 if [ "$fail" -ne 0 ]; then
     echo "== release-readiness self-check: FAILED" >&2
     exit 1
