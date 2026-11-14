@@ -22,12 +22,12 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
 **Fixed**
 
 - Authored-document body line-cache synthesis reads paragraph spacing at half the serialized
-  value and retains space-before at plain-body section starts and explicit breaks, matching six Hangul
-  12.30.0 saved G1 positions (#540, #570). Floating-section anchor synthesis retains the same
+  value and retains space-before at plain-body section starts and explicit breaks, matching six
+  Hangul 12.30.0 saved G1 positions (#540, #570). Floating-section anchor synthesis retains the same
   section-start space-before. Section-first paragraphs anchoring floating tables omit
   space-before, confirmed by Hangul 12.30.0 saves (#570). Pictures, GSO and unknown placements
-  remain conservative exclusions; table-relative host-line placement is out of scope. Native HWP5 edit/seed arithmetic, nested lists and per-line
-  wrapping rules are unchanged.
+  remain conservative exclusions; table-relative host-line placement is out of scope. Native HWP5
+  edit/seed arithmetic, nested lists and per-line wrapping rules are unchanged.
 
 **Documentation**
 
@@ -35,7 +35,6 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   (not person-run) Hancom Office Hangul 12.30.0 open/export receipt for a released ahwp 2.0.0 rerun,
   bound to that rerun's artifact and PDF hashes. The recorded reference run stays `not_run`; the
   editing recipes say so in both languages. Part of #540.
-
 
 ## [2.0.0]
 
