@@ -409,7 +409,7 @@ Evidence and limits are recorded in `docs/design/07-hangul-compat-rules.md` (J1 
 ### Classify a refused edit
 
 A refused `ahwp edit` still writes the `edit-report-v1` file that `--report` names, and
-`--dry-run` still prints it. The report (schema version 1.2) carries a top-level `refusal`
+`--dry-run` still prints it. The report (schema version 1.3) carries a top-level `refusal`
 object, and when one op refused, that op's entry carries the same object with `status:
 "failed"`. MCP `hwp_edit` returns the same object as `structuredContent.refusal` of its error
 result, and writes the same report to its `report` argument for any refusal raised after the
@@ -440,9 +440,12 @@ Branch on `code`, never on `message`. Values the user typed (anchors, style name
 | `preservation_loss` | `events` (`code`, `resource`, `disposition`, `count`) |
 | `unapplied_requests`, `no_applicable_edits` | none; failed `ops` entries name the misses |
 | `document_protected` | `protection`: `password`, `certificate_encryption`, `certificate_drm`, `drm` or `signature` |
+| `verify_mismatch` | `counts`: the differing count invariants, each `{name, expected, actual}`; an empty list means only the canonical digest differs |
 | `unclassified` | none; any refusal not listed above |
 
 `document_protected` (1.2) is an open-time refusal: the input is protected, so the run has no `ops`. `password` covers an absent and a wrong password alike, for HWP5 and HWPX; the engine does not tell them apart. A distribution document is readable, so it is not refused. Consumers that accept only 1.1 must also accept 1.2; every 1.1 field and code is unchanged.
+
+`verify_mismatch` (1.3) is what `--verify` reports when the re-read output differs from the edited document. Nothing is published. `counts` names only count invariants (`sections`, `paragraphs`, `tables`, `pictures`, `generic_controls`, `fields`, `bookmarks`, `hyperlinks`, `bin_streams`, `char_shapes`, `para_shapes`, `styles`, `text_chars`) and never document content. Before 1.3 this refusal was `unclassified`.
 
 ### The preservation ledger
 
