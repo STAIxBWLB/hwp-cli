@@ -515,9 +515,14 @@ jobs:
           elif ! grep -q 'archive: $bin-$tag-$target' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml no longer names its archive $bin-$tag-$target, so the published asset name is not the command name plus the target'
-          # Match the alias-assets job key, not prose: release.yml's 2.x guard names
-          # alias-assets in a comment and in its refusal message.
-          elif grep -nE '^  alias-assets:|(^|[^a])hwp-"?\$tag|"\$dir/hwp' .github/workflows/release.yml; then
+          # Look for what an hwp bridge would have to do, at any indentation and under any
+          # job or step name: an alias-assets key, a standalone hwp or hwp.exe file (copy,
+          # link, archive member), or a legacy hwp-<tag> / hwp-v<N> asset name. Comment lines
+          # and ::error:: messages are prose (release.yml's 2.x guard names the bridge in
+          # both), so they are skipped; hwp-skill-claude-web and other hwp-<word> names do
+          # not match.
+          elif grep -nE "^[[:space:]]*alias-assets[[:space:]]*:|(^|[/[:space:]\"'=])hwp(\.exe)?([[:space:]\"';)]|\$)|(^|[^[:alnum:]_])hwp-(\"?\\\$|v[0-9])" \
+            .github/workflows/release.yml | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v '::error::'; then
             status=fail
             evidence='.github/workflows/release.yml publishes an hwp alias or a legacy hwp-<tag>-<target> asset again; 2.0 removed both (#510 Phase 4)'
           elif ! grep -q 'checksum: sha256' .github/workflows/release.yml; then
