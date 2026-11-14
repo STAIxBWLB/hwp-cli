@@ -1088,7 +1088,7 @@ fn g1_floating_anchor_prepass_matches_the_same_body_spacing_rule() {
 }
 
 #[test]
-fn g1_native_edit_synthesis_keeps_its_existing_spacing_arithmetic() {
+fn g1_native_edit_synthesis_matches_hangul_half_unit_spacing() {
     let mut doc = g1_spacing_document(false);
     doc.meta.source_format = "hwp5".into();
     synthesize(&mut doc);
@@ -1100,8 +1100,8 @@ fn g1_native_edit_synthesis_keeps_its_existing_spacing_arithmetic() {
         .collect();
     assert_eq!(
         actual,
-        [0, 2600, 8200, 15800, 2400, 4000],
-        "#570 changes authored-document synthesis; the native edit/seed path stays unchanged"
+        [1000, 3100, 6700, 11300, 1200, 2800],
+        "#584 applies the measured G1 half-unit rule to native body synthesis"
     );
 }
 

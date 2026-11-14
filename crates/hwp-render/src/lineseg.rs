@@ -450,21 +450,13 @@ fn synthesize_linesegs_inner(
         let native_mode = native.is_some() && !use_fragment_flow;
         let mut keep_body_suffix = native_mode;
         for pi in 0..doc.sections[si].paragraphs.len() {
-            // #540 G1 / #570: Hangul 12.30.0 body caches use half the serialized
-            // ParaShape spacing, keeping space-before at section and explicit-break starts.
-            // Preserve the native edit/seed path's prior arithmetic; only authored-document
-            // synthesis changes. Nested caches and per-line wrapping use their existing rules.
+            // #540 G1 / #584: serialized body spacing is twice its HWPUNIT value on every
+            // source path. Nested cache/list rules are independent and stay unchanged.
             let (sp_top, sp_bottom) = snap
                 .header
                 .para_shapes
                 .get(snap.sections[si].paragraphs[pi].para_shape.0 as usize)
-                .map_or((0, 0), |ps| {
-                    if use_fragment_flow {
-                        (ps.spacing_top / 2, ps.spacing_bottom / 2)
-                    } else {
-                        (ps.spacing_top, ps.spacing_bottom)
-                    }
-                });
+                .map_or((0, 0), |ps| (ps.spacing_top / 2, ps.spacing_bottom / 2));
             let source = native
                 .as_ref()
                 .and_then(|n| n.source.get(si))
@@ -502,10 +494,7 @@ fn synthesize_linesegs_inner(
             if explicit_break {
                 v_pos = 0;
             }
-            if pi > 0
-                || (use_fragment_flow
-                    && !hosts_floating_body_object(&snap.sections[si].paragraphs[pi]))
-            {
+            if pi > 0 || !hosts_floating_body_object(&snap.sections[si].paragraphs[pi]) {
                 v_pos = v_pos.saturating_add(sp_top);
             }
             // Floating-table measurement already populated nested caches.

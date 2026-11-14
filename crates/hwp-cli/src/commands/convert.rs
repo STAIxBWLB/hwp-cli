@@ -1244,7 +1244,8 @@ fn write_hwp_impl(
         let mut warns = hwp_render::RenderIssueAccumulator::new();
         // The first changed body paragraph continues from its kept predecessor. After a neutral
         // edit, unchanged body records remain saved; the first height-changing edit makes the
-        // rest of that section reflow; a source suffix that would overlap also forces reflow. A bare section-top cursor gave the
+        // rest of that section reflow; a source suffix that would overlap also forces reflow.
+        // A bare section-top cursor gave the
         // first changed paragraph a v_pos *above* its kept predecessor, which the renderer reads
         // as a page start and draws the change mid-page (#462).
         let seeds = source.map_or_else(Vec::new, |(_, original)| body_flow_seeds(original, doc));
@@ -1591,11 +1592,12 @@ fn body_flow_seeds(
             continue;
         };
         let previous = &section.paragraphs[previous_index];
+        // ParaShape stores twice HWPUNIT; saved_body_cursor accepts HWPUNIT.
         let space_after = original
             .header
             .para_shapes
             .get(previous.para_shape.0 as usize)
-            .map_or(0, |shape| shape.spacing_bottom);
+            .map_or(0, |shape| shape.spacing_bottom / 2);
         // The synthesizer's own vertical rule measures the prefix, and a genuinely cache-less
         // prefix has no bottom to continue from.
         let Some(v_pos_hu) = hwp_render::lineseg::saved_body_cursor(previous, space_after) else {
@@ -2552,6 +2554,126 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // G1/G3 positions copied from the issue's measured body values, not a host font.
+    fn assert_native_half_unit_spacing(after_break: bool) {
+        use hwp_model::{Control, GsoPlacement};
+        let dir = std::env::temp_dir().join(format!(
+            "ahwp-native-half-{}-{after_break}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.hwp");
+        let output = dir.join("output.hwp");
+        let mut seed = hwp_convert::from_markdown(
+            "F1\n\n| A | B |\n|---|---|\n| C | D |\n\nHost\n\nEdit\n\nTail\n",
+        );
+        assert_eq!(seed.sections[0].paragraphs.len(), 5);
+        for shape in &mut seed.header.char_shapes {
+            shape.base_size = 1000;
+        }
+        for shape in &mut seed.header.para_shapes {
+            shape.spacing_top = 0;
+            shape.spacing_bottom = 600;
+            shape.line_spacing_type = 0;
+            shape.line_spacing = 160;
+            shape.line_spacing_old = 160;
+        }
+        for (index, (para, y)) in seed.sections[0]
+            .paragraphs
+            .iter_mut()
+            .zip([0, 3800, 4412, 6312, 8212])
+            .enumerate()
+        {
+            para.header.instance_id = index as u32 + 1;
+            para.line_segs = vec![cached_segment(y)];
+        }
+        let table = seed.sections[0].paragraphs[1]
+            .controls
+            .iter_mut()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        table.placement = Some(GsoPlacement {
+            treat_as_char: false,
+            vert_rel_to: 2,
+            horz_rel_to: 3,
+            ..Default::default()
+        });
+        for cell in &mut table.cells {
+            for para in &mut cell.paragraphs {
+                para.line_segs = vec![cached_segment(0)];
+            }
+        }
+        if after_break {
+            let mut shape = seed.header.para_shapes
+                [seed.sections[0].paragraphs[3].para_shape.0 as usize]
+                .clone();
+            shape.spacing_top = 2400;
+            shape.spacing_bottom = 0;
+            seed.sections[0].paragraphs[3].para_shape =
+                hwp_model::ParaShapeId(seed.header.para_shapes.len() as u16);
+            seed.header.para_shapes.push(shape);
+            seed.sections[0].paragraphs[3].header.break_type |= 4;
+            seed.sections[0].paragraphs[3].line_segs[0].v_pos = 1200;
+            seed.sections[0].paragraphs[4].line_segs[0].v_pos = 2800;
+        }
+        seed.meta.source_format = "hwp5".to_owned();
+        hwp5::write_document(
+            &seed,
+            &source,
+            &hwp5::WriteOptions {
+                preserve_linesegs: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = hwp5::read_document(&source).unwrap().document;
+        let expected = if after_break { 1200 } else { 6312 };
+        assert_eq!(
+            original.sections[0].paragraphs[3].line_segs[0].v_pos, expected,
+            "stored position premise"
+        );
+        let mut edited = original.clone();
+        edited.sections[0].paragraphs[3]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[3].line_segs.clear();
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        assert_eq!(current.sections[0].paragraphs[3].plain_text(), "XEdit");
+        assert_eq!(
+            current.sections[0].paragraphs[3].line_segs[0].v_pos, expected,
+            "native half-unit body position after_break={after_break}"
+        );
+        assert_eq!(
+            current.sections[0].paragraphs[4].line_segs,
+            original.sections[0].paragraphs[4].line_segs,
+            "height-neutral suffix remains stored"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn native_half_unit_spacing_g3_edit_starts_at_6312() {
+        assert_native_half_unit_spacing(false);
+    }
+
+    #[test]
+    fn native_half_unit_spacing_after_explicit_break_starts_at_1200() {
+        assert_native_half_unit_spacing(true);
+    }
+
     fn assert_native_body_run_order(neutral_first: bool) {
         let dir = std::env::temp_dir().join(format!(
             "ahwp-g3-order-{}-{neutral_first}",
@@ -2594,7 +2716,7 @@ mod tests {
                 "neutral run keeps the floating neighbour before the next edit"
             );
             let previous = &original.sections[0].paragraphs[2];
-            let cursor = hwp_render::lineseg::saved_body_cursor(previous, 600).unwrap();
+            let cursor = hwp_render::lineseg::saved_body_cursor(previous, 300).unwrap();
             assert_eq!(
                 after.sections[0].paragraphs[3].line_segs[0].v_pos, cursor,
                 "later changed run measures the source table cache actually kept"
@@ -2632,8 +2754,7 @@ mod tests {
         assert_native_body_run_order(false);
     }
 
-    /// G1's stored post-break top is raw/2 while the existing native synthesizer still adds
-    /// raw top. Equal line extent alone must not place a retained neighbour inside that line.
+    /// G1's post-break half-unit top now fits the stored successor; forward safety remains required.
     #[test]
     fn native_neutral_post_break_spacing_keeps_the_successor_outside_the_changed_line() {
         let dir =
@@ -2681,19 +2802,75 @@ mod tests {
         let changed = current.sections[0].paragraphs[3].line_segs.last().unwrap();
         let following = current.sections[0].paragraphs[4].line_segs.first().unwrap();
         assert_eq!(
-            changed.v_pos, 2400,
-            "native spacing units remain unchanged in this task"
+            changed.v_pos, 1200,
+            "native post-break top uses half the serialized spacing"
         );
         assert_eq!(
-            following.v_pos, 4000,
-            "unsafe neutral candidate must take the existing reflow fallback"
+            following.v_pos, 2800,
+            "the corrected neutral block fits its stored successor"
         );
         assert!(
             following.v_pos >= changed.v_pos + changed.line_height,
-            "G1 native top mismatch must not overlap retained suffix: changed top={}, bottom={}, following={}",
+            "corrected native post-break spacing must not overlap retained suffix: changed top={}, bottom={}, following={}",
             changed.v_pos,
             changed.v_pos + changed.line_height,
             following.v_pos
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Keep the #93 forward-unsafe fallback exercised independently of the native unit bug.
+    #[test]
+    fn native_neutral_spacing_change_reflows_an_unsafe_source_suffix() {
+        let dir = std::env::temp_dir().join(format!(
+            "ahwp-native-spacing-forward-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (source, original) = native_suffix_source(&dir);
+        let output = dir.join("spacing-output.hwp");
+        let mut edited = original.clone();
+        let mut shape = edited.header.para_shapes
+            [edited.sections[0].paragraphs[1].para_shape.0 as usize]
+            .clone();
+        shape.spacing_top = 2000;
+        edited.sections[0].paragraphs[1].para_shape =
+            hwp_model::ParaShapeId(edited.header.para_shapes.len() as u16);
+        edited.header.para_shapes.push(shape);
+        edited.sections[0].paragraphs[1]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[1].line_segs.clear();
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        let changed = &current.sections[0].paragraphs[1].line_segs[0];
+        let following = &current.sections[0].paragraphs[2].line_segs[0];
+        assert_eq!(
+            changed.v_pos, 2900,
+            "1900 source predecessor advance plus changed raw top2000/2"
+        );
+        assert_eq!(
+            changed.line_height + changed.line_spacing,
+            1600,
+            "own-line extent stays neutral"
+        );
+        assert_eq!(original.sections[0].paragraphs[2].line_segs[0].v_pos, 3800);
+        assert_eq!(
+            following.v_pos, 4800,
+            "unsafe source3800 must reflow from4500 plus bottom600/2"
+        );
+        assert_ne!(
+            native_suffix_line_records(&output)[2],
+            native_suffix_line_records(&source)[2]
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2773,8 +2950,8 @@ mod tests {
         assert_eq!(seeds.len(), 1, "one section, one seam");
         assert_eq!(seeds[0].section, 0);
         assert_eq!(seeds[0].paragraph, 1, "the first changed body paragraph");
-        // Saved prefix cache: v_pos 0, line_height 1000, line_spacing 600, then space-after 400.
-        assert_eq!(seeds[0].v_pos_hu, 2000);
+        // Saved prefix cache: v_pos 0, line_height 1000, line_spacing 600, then raw space-after 400/2.
+        assert_eq!(seeds[0].v_pos_hu, 1800);
     }
 
     #[test]
