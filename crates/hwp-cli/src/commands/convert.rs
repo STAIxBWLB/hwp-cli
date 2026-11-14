@@ -2329,6 +2329,162 @@ mod tests {
         }
     }
 
+    fn native_suffix_line_records(file: &std::path::Path) -> Vec<Vec<Vec<u8>>> {
+        use hwp5::record::{RecordNode, ScanMode, scan_stream, tag};
+        fn collect(node: &RecordNode, lines: &mut Vec<Vec<u8>>) {
+            if node.tag == tag::PARA_LINE_SEG {
+                lines.push(node.data.clone());
+            }
+            for child in &node.children {
+                collect(child, lines);
+            }
+        }
+        let mut container = hwp5::container::Hwp5Container::open(file).unwrap();
+        let stream = container.read_record_stream("/BodyText/Section0").unwrap();
+        scan_stream(&stream, ScanMode::Strict)
+            .unwrap()
+            .roots
+            .iter()
+            .filter(|node| node.tag == tag::PARA_HEADER)
+            .map(|node| {
+                let mut lines = Vec::new();
+                collect(node, &mut lines);
+                lines
+            })
+            .collect()
+    }
+
+    /// #540 G3: a height-neutral body edit must not replace later stored line records.
+    /// The suffix includes a floating table with a deliberately taller saved cell cache.
+    #[test]
+    fn native_height_neutral_body_suffix_records_stay_verbatim() {
+        use hwp_model::{Control, GsoPlacement};
+        let dir = std::env::temp_dir().join(format!("ahwp-g3-suffix-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.hwp");
+        let output = dir.join("edited.hwp");
+        let mut document = hwp_convert::from_markdown(
+            "Prefix\n\nEdit here\n\n| A | B |\n|---|---|\n| C | D |\n\nTail one\n\nTail two\n",
+        );
+        assert_eq!(
+            document.sections[0].paragraphs.len(),
+            5,
+            "five body paragraphs"
+        );
+        for shape in &mut document.header.char_shapes {
+            shape.base_size = 1000;
+        }
+        for shape in &mut document.header.para_shapes {
+            shape.spacing_top = 0;
+            shape.spacing_bottom = 600;
+            shape.line_spacing_type = 0;
+            shape.line_spacing = 160;
+            shape.line_spacing_old = 160;
+        }
+        for (index, (para, position)) in document.sections[0]
+            .paragraphs
+            .iter_mut()
+            .zip([0, 1900, 3800, 14000, 15900])
+            .enumerate()
+        {
+            para.header.instance_id = index as u32 + 1;
+            para.line_segs = vec![cached_segment(position)];
+        }
+        let table = document.sections[0].paragraphs[2]
+            .controls
+            .iter_mut()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        table.placement = Some(GsoPlacement {
+            treat_as_char: false,
+            vert_rel_to: 2,
+            horz_rel_to: 3,
+            ..Default::default()
+        });
+        for cell in &mut table.cells {
+            for para in &mut cell.paragraphs {
+                para.line_segs = vec![cached_segment(0)];
+            }
+        }
+        table.cells[0].paragraphs[0].line_segs[0].line_height = 5000;
+        document.meta.source_format = "hwp5".to_owned();
+        hwp5::write_document(&document, &source, &hwp5::WriteOptions::default()).unwrap();
+        let original = hwp5::read_document(&source).unwrap().document;
+        let mut edited = original.clone();
+        edited.sections[0].paragraphs[1]
+            .chars
+            .insert(0, hwp_model::HwpChar::Text('X'));
+        edited.sections[0].paragraphs[1].line_segs.clear();
+        write_hwp_impl(
+            &edited,
+            &output,
+            false,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let result = hwp5::read_document(&output).unwrap().document;
+        let before = &original.sections[0].paragraphs[1].line_segs;
+        let changed = &result.sections[0].paragraphs[1].line_segs;
+        let extent = |lines: &[hwp_model::LineSeg]| {
+            let first = lines.first().unwrap();
+            let last = lines.last().unwrap();
+            i64::from(last.v_pos) + i64::from(last.line_height) + i64::from(last.line_spacing)
+                - i64::from(first.v_pos)
+        };
+        assert_eq!(extent(before), 1600, "source extent premise");
+        assert_eq!(extent(changed), 1600, "height-neutral edit premise");
+        assert_eq!(before.len(), changed.len(), "line-count premise");
+        assert_eq!(
+            before.iter().map(|s| s.flags & 3).collect::<Vec<_>>(),
+            changed.iter().map(|s| s.flags & 3).collect::<Vec<_>>(),
+            "page/column flags premise"
+        );
+        let stored = native_suffix_line_records(&source);
+        let written = native_suffix_line_records(&output);
+        assert_eq!(stored.len(), 5);
+        assert_eq!(written.len(), 5);
+        assert_eq!(written[0], stored[0], "kept prefix line records");
+        assert_ne!(
+            written[1], stored[1],
+            "changed paragraph has its own synthesized cache"
+        );
+        let source_table = original.sections[0].paragraphs[2]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        let result_table = result.sections[0].paragraphs[2]
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        for (old, new) in source_table.cells.iter().zip(&result_table.cells) {
+            assert_eq!(
+                new.paragraphs, old.paragraphs,
+                "unchanged saved cell caches must not regrow"
+            );
+        }
+        for index in 2..stored.len() {
+            assert_eq!(
+                written[index], stored[index],
+                "height-neutral edit must keep suffix body/cell PARA_LINE_SEG bytes at paragraph {index}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// Snapshot with three saved caches, an edit in the middle paragraph, and a fully synthesized
     /// copy whose every cache is the placeholder 999.
     fn restore_fixture() -> (
