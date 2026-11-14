@@ -1087,3 +1087,21 @@ fn g1_floating_anchor_prepass_matches_the_same_body_spacing_rule() {
         "G1 body anchors must agree with inline synthesis"
     );
 }
+
+#[test]
+fn g1_native_edit_synthesis_keeps_its_existing_spacing_arithmetic() {
+    let mut doc = g1_spacing_document(false);
+    doc.meta.source_format = "hwp5".into();
+    synthesize(&mut doc);
+    let actual: Vec<_> = doc.sections[0]
+        .paragraphs
+        .iter()
+        .take(6)
+        .map(|p| p.line_segs[0].v_pos)
+        .collect();
+    assert_eq!(
+        actual,
+        [0, 2600, 8200, 15800, 2400, 4000],
+        "#570 changes authored-document synthesis; the native edit/seed path stays unchanged"
+    );
+}

@@ -1261,13 +1261,9 @@ fn layout_document_pages(
                 page_notes.extend(para_foot_notes.drain(..).map(|(_, note)| note));
             }
             let tabs = crate::tab::tab_stops(doc, para);
-            let mut geom = para_geometry(doc, para);
-            if anchors.is_some() && para_index == 0 {
-                // B5: the section's first paragraph starts at zero. Apply this
-                // to the anchor prepass flow; later explicit breaks and page
-                // overflow retain their existing space-before placement.
-                geom.spacing_top = 0.0;
-            }
+            // #540 G1: section-start space-before is retained. `para_geometry` already
+            // converts serialized spacing at two HWPUNIT per stored unit for body anchors.
+            let geom = para_geometry(doc, para);
             let links = crate::shape::hyperlink_ranges(para);
             // Do not consume a list counter for a paragraph that has no visible line at all.
             let marker = if para.line_segs.is_empty() && para.chars.is_empty() {

@@ -98,13 +98,34 @@ code, resource class, disposition은 닫힌 enum이며 개수만 집계한다. �
 | B2 | 5.1.x 본문이 **0높이로 그려져 빈 내용/검은 바** | 본문 문단에 **PARA_LINE_SEG 부재**. 5.1.x 정품은 본문 문단 lineseg 100% 보유(work_report 5.0.2.4는 없이 재계산). bit31 SET인데 lineseg 0개 = 모순 | `synthesize_linesegs`로 합성 경로 문단당 줄 배치 합성. 정품 공식: `line_height=글자크기, baseline_gap=base×0.85, line_spacing=base×0.6(160%), flags=0x00060000` | 정품 가나다 PARA_LINE_SEG 바이트 완전 동일. 표 셀 문단도 재귀 처리 | `hwp5/src/write.rs`, `hwp-render/lineseg.rs:synthesize_linesegs` (a7abdfc) |
 | B3 | nchars **bit31** 다루기 (revert saga) | bit31(0x80000000) = "PARA_LINE_SEG 캐시가 내용과 정합" 선언(bit31=1 ⟺ 그 문단에 lineseg 존재). "정합한다고 선언 + 캐시 0개"면 검은바/손상 | lineseg를 실제 방출할 때만 bit31 SET → **이후 폐기(e41b440 revert)**: 부정확 lineseg가 '변조' 재유발, 다문단 v_pos 모순. 최종은 lineseg 합성 + 마지막 문단만 bit31 | work_report 73/73, 가나다 1/1 bit31=1. **한 번 revert된 규칙** — 정적으로는 못 잡음 | `hwp5/src/write.rs` (e32a2a8→e41b440→a7abdfc) |
 | B4 | **다문단 둘째부터 안 보임** | nchars **bit31을 모든 문단에 SET**. bit31은 사실 **'리스트(섹션/셀)의 마지막 문단' 표식**. 첫 문단에 SET하면 한글이 그것을 마지막으로 보고 뒤 문단 무시 | `set_last_para_flag`: 각 리스트(섹션·표셀·글상자)의 **마지막 문단만** `chars_flags\|0x80`, 나머지 클리어 | 정품 다문단.hwp(5.1.1.0): 섹션 4문단 중 문단4만 SET. 단일 문단(가나다)이 정상이었던 건 1문단=마지막이라 **우연히** 맞았던 것 | `hwp5/src/write.rs:252 set_last_para_flag` (ae73e3c) |
-| B5 | 문단 사이 여백 뭉개짐(제목 위 여백 사라짐) | 합성 줄 배치 v_pos에 문단 위/아래 간격(spacing_top/bottom) 미반영 → 압축 표시 | v_pos에 `문단 사이 간격 = 앞 아래간격 + 이 위간격` 가산(섹션 첫 문단 위간격 제외, v_pos=0) | 세로 위치 어긋남 실측 | `hwp-render/lineseg.rs:50-62` (7686444) |
+| B5 | 본문 문단 간격에 저장값을 그대로 더하고 구역 첫 문단의 위 간격 누락 | Hangul 12.30.0 build 6544 G1에서 저장 단위당 2 HWPUNIT 확인. 종전 구역 첫 문단 0 관찰은 위 간격이 0인 표본 기준 | 비 HWP5 본문 합성에서 앞 문단 아래 간격/2와 현재 위 간격/2 합산. 구역 시작·명시적 쪽 나눔 뒤에도 위 간격/2 유지, 위 간격 0이면 위치 0 유지. floating anchor prepass에도 동일 규칙 적용. native HWP5 편집·seed 계산, 중첩 목록·줄별 배치 규칙은 유지 | #540 G1, 2026-11-14, 한 줄 ASCII 본문 6개. 아래 표·전체 표본 해시 참조. 중첩 목록·다중 줄 문단의 기하 규칙 추론 없음 | `hwp-render/lineseg.rs:synthesize_linesegs_inner`, `layout.rs:layout_document_inner` (#570) |
 | B6 | **멀티페이지 문서만 "손상"** | 합성 v_pos가 페이지 리셋 없이 섹션 단조 누적(최대 354408) → 페이지 본문 높이(75686) 초과 → 손상 | md 출처는 `content_h` 초과 시 v_pos=0 리셋(다음 페이지), 표는 잔여 부족 시 통째로 다음 페이지. hwpx 출처는 원본 linesegarray 보존(덮어쓰지 않음) | 정품 한라대 hwpx: 본문 vertpos 페이지마다 0 리셋, 최댓값 59668<본문높이, flags 리셋 시도 0x60000 유지 | `hwp-render/lineseg.rs:38-48`, `convert.rs` (78d478b) |
 | B7 | **hwp5 글머리 마커만 미표시**(열림·각주·번호는 정상) | 합성 BULLET 레코드를 스펙 표 42대로 20B·문자@8로 만듦. 실전 레이아웃은 **25B** — 오프셋 [8..12]에 번호 글자모양 id(0xFFFFFFFF, NUMBERING과 동형) 4B가 먼저 오고 **글머리표 문자는 @12**. 한글이 @12에서 널을 읽어 마커를 안 그림(스펙 표 42는 총길이 자기모순 이력이 있는 오기) | `make_bullet_data`를 정품 25B 레이아웃으로. **리더도 @8→@12 교정** — 기존엔 정품 파일의 글머리 문자를 글자모양 id 하위워드(0xFFFF)로 오독 중이었음 | 실기(H2 마커 누락) → 정품 제주한라대 사업계획서.hwp BULLET 5개 전수 바이트 대조(구조 동일·문자만 상이) | `hwp5/src/write.rs:make_bullet_data`, `doc_info.rs`(리더 교정) |
 | B8 | (규칙 확립) hwp5 취소선은 **쓰기 전용 bit18** | CHAR_SHAPE attr bit18(§4.2.7 표35 취소선 여부)은 **읽기로 믿으면 안 됨** — 코퍼스 실측: 변경추적 삭제표시 템플릿(고정값 0x3c0400f8)이 bit18을 세워 한 파일의 92%가 가짜 취소선. 리더는 strike:false 유지 | 합성(md 출신 등 취소선임이 확실한 경우)만 attr\|=1<<18 기록 — **실기 확정(2026-07-19 H2): bit18 단독으로 한글이 취소선을 렌더**(모양 bit26~29 불요). 최악의 경우도 미표시일 뿐 손상 없음 | 코퍼스 attr 전수 실측(평문 표본 bit18=0, 오염 패턴 격리) + H2 실기 | `hwp5/src/write.rs:emit_char_shape`(쓰기), `doc_info.rs`(읽기 불신 유지) |
 
 | B9 | 단어 폭은 맞는데 **줄을 따라 어긋남** — 표 셀을 넘치고 줄바꿈 위치가 밀림 | 셰이핑 규칙 세 개가 동시에 틀렸고 셋 다 전각 한글에서는 드러나지 않음: (a) 자간을 글자 자신의 advance에 곱하지 않고 글꼴 크기의 고정 비율로 더함, (b) `글꼴에 어울리는 빈칸`(CHAR_SHAPE bit25)을 무시해, 비트가 꺼졌을 때 한글이 쓰는 고정 1/2 em 대신 글꼴의 space 글리프를 씀, (c) `useKerning`(bit30)을 무시한 채 rustybuzz 기본값으로 `kern`이 켜져 있었음 | 글자마다 `advance × (100 + pct) / 100`; bit25가 꺼져 있으면 빈칸은 `0.5 em × 장평`; bit30이 꺼져 있으면 rustybuzz에 `kern=0` 전달 | 한컴 오라클과 `pdftotext -bbox` 단어 단위 대조. 20pt·자간 -10%: 한글 4글자 단어 74.00 vs 74.04pt(두 해석이 같음), 빈칸 간격 2.66 → 6.96pt, 제목 줄 전체 430.62 → 461.04pt. 해석을 가르는 건 11pt 라틴 `Career` — 곱셈 31.99, 덧셈 29.52, 실측 32.07. 11pt·자간0 줄이 빈칸을 5.49pt(0.499 em)로 고정. 공개 1쪽 오라클 게이트가 bad_pixel 0.0179/MAE 2.87에서 **0.0057/0.75**로 개선 | `hwp-render/shape.rs:letter_spacing_ratio, fixed_space_pt, shape_with_font` |
 | B10 | **hwpx** 번호 목록에 **번호가 보이지 않음** — 파일은 열리고 글머리표는 정상 | 텍스트 없는 `hh:paraHead`(자기 닫힘 요소)는 한글이 번호를 그리지 않는다. markdown·HTML 가져오기는 번호 목록 정의를 템플릿이 빈 `NumLevel::default()`로 만들었고, #182 이후 writer는 빈 템플릿을 그대로 쓴다(정품의 빈 수준을 왕복해야 하므로) | 작성된 번호 목록의 모든 수준에 한글 기본 단계를 준다(`authored_ordered_levels`): `^1.` DIGIT, `^2.` HANGUL_SYLLABLE, `^3)` DIGIT, `^4)` HANGUL_SYLLABLE, `(^5)` DIGIT, `(^6)` HANGUL_SYLLABLE, `^7` CIRCLED_DIGIT, `^8` DIGIT(공식 프로필의 원문자 한글이 아니다. 그러면 공식 번호 계약과 같아진다). writer는 빈 템플릿을 계속 그대로 쓴다 | 이 단계는 HWP5 기본 NUMBERING 레코드의 수준 selector(0x0c, 0x010c, 0x2c, 형식 대응은 `hwp5::numbering::OFFICIAL_SLOTS`)와 정품 HWPX 표본 `fixtures/hwpx/*.hwpx`(로컬 전용, `fixtures/README.md` 목록)의 기본 번호 정의(id 1)가 가리키는 값이다(수준별 DIGIT `^1.`, HANGUL_SYLLABLE `^2.`, DIGIT `^3)`, HANGUL_SYLLABLE `^4)`, DIGIT `(^5)`, HANGUL_SYLLABLE `(^6)`, CIRCLED_DIGIT `^7`). `.hwp` 출력은 HWP5 writer가 템플릿과 무관하게 그 레코드를 쓰므로 영향이 없었다(HWP5 reader는 selector를 버리고 모든 수준을 숫자로 보고한다). 한글 실기(Mac, 2026-09-27): 빈 paraHead는 v1.2.0에서 번호가 없고, 템플릿을 넣으면 번호가 보인다. 자체 렌더러는 빈 템플릿을 `1.1.`/`1.1.1.`로, docx는 `%1.`로 대신 그려 자체 렌더링으로는 드러나지 않았다 | `hwp-convert/from_markdown.rs:authored_ordered_levels` (#382) |
+
+**G1 본문 간격 근거(#540, 2026-11-14):** Hancom Office Hangul 12.30.0 build 6544,
+macOS 27.2.1. 소유자 지시에 따른 에이전트 데스크톱 조작이며 사람의 직접 실행은 아님.
+소유자 작성 ASCII class D `hancom-spacing.hwp`는 로컬 보관, SHA-256
+`402bf4896b36655b9de83fa5ce23d030c2a5c2b99f2ca1c57979b81b274efd6b`.
+10 pt 입력 시 2000 저장, 저장값 600은 3 pt로 표시. 모든 관찰 문단은 한 줄이며
+`line_height=1000`, `line_spacing=600`, `flags=0x60000` 확인.
+
+| 문단 | 저장 위/아래 간격 | Hancom v_pos | ahwp 2.0.0 v_pos |
+|---|---|---|---|
+| S1 구역 시작 | 2000/1000 | 1000 | 0 |
+| S2 | 0/0 | 3100 | 2600 |
+| S3 | 4000/2000 | 6700 | 8200 |
+| S4 | 4000/2000 | 11300 | 15800 |
+| S5 명시적 쪽 나눔 뒤 | 2400/0 | 1200 | 2400 |
+| S6 | 0/600 | 2800 | 4000 |
+
+첫 줄 위치는 `top_raw/2`, 다음 문단 위치는
+`prev_v_pos + line_height + line_spacing + prev_bottom_raw/2 + top_raw/2`.
+외부 표본·호스트 글꼴 없이 이 본문 규칙과 floating anchor 경로를 재현하는 테스트 추가.
+golden 재고정·새 편집 결과의 Hancom 열기 확인을 뜻하지 않음.
 
 **B 계층 교훈:**
 - 검은 바(B1)의 진짜 원인은 **한 개 UINT32 필드의 기본값**이었다. 렌더러·pyhwp는 shade_color=0을 "음영 없음"으로 관대하게 해석하지만, 한글만 "불투명 검정 하이라이트"로 그린다. 스펙에 "0=불투명"이라는 경고가 없어 정적으로는 무해해 보인다.

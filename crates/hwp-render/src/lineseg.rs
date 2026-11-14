@@ -262,21 +262,21 @@ fn synthesize_linesegs_inner(
             .max(1);
         let mut v_pos = 0i32;
         for pi in 0..doc.sections[si].paragraphs.len() {
-            // Include paragraph space-before/after (spacing_top/bottom) in v_pos. Hangul uses
-            // cached v_pos for vertical placement; omitting spacing compresses paragraphs
-            // together and loses heading space-before, causing vertical displacement.
-            // Paragraph gaps add the preceding space-after and current space-before. Omit
-            // space-before at a section's first paragraph (genuine v_pos=0).
-            // An explicit page break restarts the page-relative cursor on every path. Genuine
-            // Hangul-saved files agree for HWP5 as well as HWPX (#420, 07-hangul-compat-rules
-            // J1): a body paragraph with the break bit starts at v_pos 0, or at its own
-            // space-before, with no page-start flag. Space-before keeps the raw-vs-half-unit
-            // discrepancy tracked by #415.
+            // #540 G1 / #570: Hangul 12.30.0 body caches use half the serialized
+            // ParaShape spacing, keeping space-before at section and explicit-break starts.
+            // Preserve the native edit/seed path's prior arithmetic; only authored-document
+            // synthesis changes. Nested caches and per-line wrapping use their existing rules.
             let (sp_top, sp_bottom) = snap
                 .header
                 .para_shapes
                 .get(snap.sections[si].paragraphs[pi].para_shape.0 as usize)
-                .map_or((0, 0), |ps| (ps.spacing_top, ps.spacing_bottom));
+                .map_or((0, 0), |ps| {
+                    if use_fragment_flow {
+                        (ps.spacing_top / 2, ps.spacing_bottom / 2)
+                    } else {
+                        (ps.spacing_top, ps.spacing_bottom)
+                    }
+                });
             let explicit_break = snap.sections[si].paragraphs[pi].header.break_type & 0x04 != 0;
             // A seeded paragraph continues the flow a caller measured before it, so an edited
             // document's re-synthesized suffix begins where its kept prefix ends (#462) instead
@@ -294,7 +294,7 @@ fn synthesize_linesegs_inner(
             if explicit_break {
                 v_pos = 0;
             }
-            if pi > 0 {
+            if pi > 0 || use_fragment_flow {
                 v_pos = v_pos.saturating_add(sp_top);
             }
             // Floating-table measurement already populated nested caches.

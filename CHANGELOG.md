@@ -19,6 +19,14 @@ The workspace `Cargo.toml` `[workspace.package] version` is the single source fo
   unsupported refusal code is removed; missing fields still refuse. No renderer pagination
   behavior or edited-output Hancom-open guarantee is added (#568).
 
+**Fixed**
+
+- Authored-document body line-cache synthesis reads paragraph spacing at half the serialized
+  value and retains space-before at section starts and explicit breaks, matching six Hangul
+  12.30.0 saved G1 positions (#540, #570). Floating-section anchor synthesis retains the same
+  section-start space-before. Native HWP5 edit/seed arithmetic, nested lists and per-line
+  wrapping rules are unchanged.
+
 **Documentation**
 
 - The original-form capability record gains `hancom_open_export_receipts` with one agent-performed
