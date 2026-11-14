@@ -1120,8 +1120,7 @@ fn g1_zero_space_before_still_starts_at_zero_in_both_paths() {
 }
 
 /// #590 measured body positions, with an explicit line break replacing font-dependent wrapping.
-#[test]
-fn native_growing_edit_keeps_floating_table_host_at_the_body_cursor() {
+fn native_floating_edit(grow: bool, successor: u8) -> (Document, Document) {
     use hwp_model::LineSeg;
     use hwp_render::lineseg::{BodyFlow, NativeBodyCache, synthesize_native_linesegs_seeded};
 
@@ -1175,17 +1174,43 @@ fn native_growing_edit_keeps_floating_table_host_at_the_body_cursor() {
     }
     let mut edited = source.clone();
     assert_eq!(
-        hwp_convert::replace_text(&mut edited, "Edited", "Edited\nAdded", false).unwrap(),
+        hwp_convert::replace_text(
+            &mut edited,
+            "Edited",
+            if grow { "Edited\nAdded" } else { "Changed" },
+            false
+        )
+        .unwrap(),
         1
     );
+    if successor == 1 {
+        assert_eq!(
+            hwp_convert::replace_text(&mut edited, "After", "After\nAdded", false).unwrap(),
+            1
+        );
+    } else if successor == 2 {
+        edited.sections[0].paragraphs.insert(3, paragraph(&source));
+    }
     let matching = vec![
-        source.sections[0]
+        edited.sections[0]
             .paragraphs
             .iter()
             .enumerate()
-            .map(|(i, para)| NativeBodyCache {
-                original: Some(para),
-                unchanged: i != 0,
+            .map(|(i, _)| {
+                let original = if successor == 2 && i >= 3 {
+                    None
+                } else {
+                    source.sections[0].paragraphs.get(i)
+                };
+                NativeBodyCache {
+                    original,
+                    unchanged: original.is_some() && i != 0 && !(successor == 1 && i == 3),
+                    successor_v_pos: source.sections[0]
+                        .paragraphs
+                        .get(i + 1)
+                        .and_then(|p| p.line_segs.first())
+                        .map(|line| line.v_pos),
+                }
             })
             .collect(),
     ];
@@ -1198,6 +1223,12 @@ fn native_growing_edit_keeps_floating_table_host_at_the_body_cursor() {
         &BodyFlow::default(),
         &matching,
     );
+    (source, edited)
+}
+
+#[test]
+fn native_growing_edit_keeps_floating_table_host_at_the_body_cursor() {
+    let (source, edited) = native_floating_edit(true, 0);
     let paras = &edited.sections[0].paragraphs;
     assert_eq!(paras[0].line_segs.len(), 2, "height-changing premise");
     assert_eq!(
@@ -1212,4 +1243,61 @@ fn native_growing_edit_keeps_floating_table_host_at_the_body_cursor() {
         paras[2].line_segs[0].seg_width, 0,
         "saved floating host remains a zero-width anchor"
     );
+    assert_eq!(
+        paras
+            .iter()
+            .map(|p| p.line_segs[0].v_pos)
+            .collect::<Vec<_>>(),
+        [0, 3500, 5400, 6012, 7912, 9812]
+    );
+    for (before, after) in source.sections[0].paragraphs.iter().zip(paras).skip(2) {
+        let mut translated = before.line_segs.clone();
+        for line in &mut translated {
+            line.v_pos += 1600;
+        }
+        assert_eq!(
+            translated, after.line_segs,
+            "source cache changes only by the host delta"
+        );
+    }
+}
+
+#[test]
+fn native_neutral_edit_keeps_floating_host_and_successor_caches_verbatim() {
+    let (source, edited) = native_floating_edit(false, 0);
+    for (before, after) in source.sections[0]
+        .paragraphs
+        .iter()
+        .zip(&edited.sections[0].paragraphs)
+        .skip(1)
+    {
+        assert_eq!(before.line_segs, after.line_segs);
+    }
+}
+
+#[test]
+fn native_changed_successor_starts_at_the_source_floating_host_offset() {
+    let (_, edited) = native_floating_edit(true, 1);
+    let paras = &edited.sections[0].paragraphs;
+    assert_eq!(paras[2].line_segs[0].v_pos, 5400);
+    assert_eq!(
+        paras[3]
+            .line_segs
+            .iter()
+            .map(|s| s.v_pos)
+            .collect::<Vec<_>>(),
+        [6012, 7612]
+    );
+    assert_eq!(
+        paras[4].line_segs[0].v_pos, 9512,
+        "changed successor resumes ordinary flow"
+    );
+}
+
+#[test]
+fn native_new_successor_starts_at_the_source_floating_host_offset() {
+    let (_, edited) = native_floating_edit(true, 2);
+    assert_eq!(edited.sections[0].paragraphs[2].line_segs[0].v_pos, 5400);
+    assert_eq!(edited.sections[0].paragraphs[3].line_segs[0].v_pos, 6012);
+    assert_eq!(edited.sections[0].paragraphs[4].line_segs[0].v_pos, 7912);
 }

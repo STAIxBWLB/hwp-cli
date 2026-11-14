@@ -1253,7 +1253,8 @@ fn write_hwp_impl(
         // A kept table must be measured from its saved cells rather than ephemeral synthesis
         // (#509). Body source records are supplied separately to the native walk below, which
         // keeps neutral body runs only where they fit the next source boundary; the first
-        // height-changing or unsafe run makes the remaining section reflow.
+        // height-changing or unsafe run makes the remaining section reflow, except for the
+        // source-offset translation after an unchanged zero-width floating host (#590).
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Drop);
         }
@@ -1284,6 +1285,10 @@ fn write_hwp_impl(
                                 original,
                                 unchanged: original
                                     .is_some_and(|old| unchanged_content(old, paragraph)),
+                                successor_v_pos: saved
+                                    .get(pi + 1)
+                                    .and_then(|p| p.line_segs.first())
+                                    .map(|line| line.v_pos),
                             }
                         })
                         .collect::<Vec<_>>()
@@ -1301,7 +1306,8 @@ fn write_hwp_impl(
             &source_body,
         );
         // Nested lists retain their existing reflow and local-context validity rules. Body records
-        // are retained only until this section's first height-changing/unsafe run; a new section resets.
+        // are retained verbatim only until this section's first height-changing/unsafe run.
+        // Translated floating-host suffix caches stay generated here; a new section resets.
         if let Some((_, original)) = source {
             restore_unchanged_native_paragraphs(original, doc, &mut d, SuffixCache::Keep);
             for (si, pi) in kept_body {
@@ -2672,6 +2678,82 @@ mod tests {
     #[test]
     fn native_half_unit_spacing_after_explicit_break_starts_at_1200() {
         assert_native_half_unit_spacing(true);
+    }
+
+    /// #590 exercises the native writer as well as its renderer metadata handoff.
+    #[test]
+    fn native_growing_edit_writes_translated_floating_host_and_successors() {
+        let dir = std::env::temp_dir().join(format!("ahwp-floating-reflow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_, mut seed) = native_suffix_source(&dir);
+        seed.sections[0].paragraphs[2].line_segs[0].seg_width = 0;
+        let table = seed.sections[0].paragraphs[2]
+            .controls
+            .iter_mut()
+            .find_map(|c| match c {
+                hwp_model::Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        table.rows = 150;
+        table.cols = 1;
+        table.row_cell_counts = vec![1; 150];
+        let template = table.cells[0].clone();
+        table.cells = (0..150)
+            .map(|row| {
+                let mut cell = template.clone();
+                cell.row = row;
+                cell.col = 0;
+                cell
+            })
+            .collect();
+        let source = dir.join("floating-source.hwp");
+        hwp5::write_document(
+            &seed,
+            &source,
+            &hwp5::WriteOptions {
+                preserve_linesegs: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let original = hwp5::read_document(&source).unwrap().document;
+        let identity = dir.join("identity.hwp");
+        hwp5::write_document(&original, &identity, &Default::default()).unwrap();
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            std::fs::read(&identity).unwrap(),
+            "untouched native identity"
+        );
+        let mut edited = original.clone();
+        assert_eq!(
+            hwp_convert::replace_text(&mut edited, "Prefix", "Prefix\nAdded", false).unwrap(),
+            1
+        );
+        let output = dir.join("output.hwp");
+        write_hwp_impl(
+            &edited,
+            &output,
+            true,
+            false,
+            false,
+            Some(&[]),
+            Some((&source, &original)),
+        )
+        .unwrap();
+        let current = hwp5::read_document(&output).unwrap().document;
+        assert_eq!(current.sections[0].paragraphs[0].line_segs.len(), 2);
+        let host = &current.sections[0].paragraphs[2];
+        assert_eq!(host.line_segs[0].v_pos, 5400);
+        assert_eq!(host.line_segs[0].seg_width, 0);
+        for i in 2..original.sections[0].paragraphs.len() {
+            let mut expected = original.sections[0].paragraphs[i].line_segs.clone();
+            for line in &mut expected {
+                line.v_pos += 1600;
+            }
+            assert_eq!(current.sections[0].paragraphs[i].line_segs, expected);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn assert_native_body_run_order(neutral_first: bool) {
