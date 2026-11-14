@@ -515,7 +515,19 @@ jobs:
           elif ! grep -q 'archive: $bin-$tag-$target' .github/workflows/release.yml; then
             status=fail
             evidence='.github/workflows/release.yml no longer names its archive $bin-$tag-$target, so the published asset name is not the command name plus the target'
-          elif grep -nE 'alias-assets|(^|[^a])hwp-"?\$tag|"\$dir/hwp' .github/workflows/release.yml; then
+          # Look for what an hwp bridge would have to do, at any indentation and under any
+          # job or step name: an alias-assets key, an hwp or hwp.exe file named as a path or
+          # quoted argument, a copy/link/archive command with an hwp operand, or a legacy
+          # hwp-<tag> / hwp-v<N> asset name. Prose is skipped: comment lines, step names and
+          # lines whose command is echo/printf (release.yml's 2.x guard names the bridge in a
+          # comment and an ::error:: message). A command that only reports its own failure
+          # through `|| { echo ...; }` still counts. ahwp-<tag>, hwp-skill-claude-web and
+          # hwp_* tool names do not match. This is a tripwire for the shapes the 1.x bridge
+          # used and their obvious variants, pinned in scripts/tests/release-readiness-selfcheck.sh
+          # section 6, not a parser: add a case there when release.yml grows a new shape.
+          elif grep -nE "^[[:space:]]*alias-assets[[:space:]]*:|(^|[/\"'=])hwp(\.exe)?([[:space:]\"';)]|\$)|(^|[[:space:]])(cp|ln|mv|install|copy|tar|zip)[[:space:]].*[[:space:]]hwp(\.exe)?([[:space:];&|]|\$)|:[[:space:]]+hwp(\.exe)?[[:space:]]*\$|(^|[^[:alnum:]_])hwp-(\"?\\\$|v[0-9])" \
+            .github/workflows/release.yml \
+            | grep -vE '^[0-9]+:[[:space:]]*(#|-?[[:space:]]*name:|(-?[[:space:]]*run:[[:space:]]*)?(echo|printf)[[:space:]])'; then
             status=fail
             evidence='.github/workflows/release.yml publishes an hwp alias or a legacy hwp-<tag>-<target> asset again; 2.0 removed both (#510 Phase 4)'
           elif ! grep -q 'checksum: sha256' .github/workflows/release.yml; then
