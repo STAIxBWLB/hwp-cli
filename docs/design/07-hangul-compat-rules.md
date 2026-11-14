@@ -195,6 +195,37 @@ from coincidence; cross-measurement is the only way to fix such a constant. (Lim
 base 1000 with 160% line spacing, so a different cell font size may make it inaccurate. The current
 writer always uses body 1000, so it is safe.)
 
+### Native-cache cell-margin sentinel rule (#540 G2, #576)
+
+Native line-cache synthesis resolves only `0xffff` to the table's `inner_margins` on the same
+side. Every other cell value, including explicit zero and an all-zero array, is used as stored.
+`fill_nested` subtracts resolved left/right margins from cell width; `table_height` uses the
+resolved top/bottom margins. Raw IR margins remain unchanged for identity serialization.
+This is separate from the render rule `Table::cell_margins`, whose all-zero fallback is not
+used here. `layout.rs` and `Table::cell_margins` are unchanged.
+
+**Evidence and limits:** horizontal inheritance is evidenced. Vertical inheritance uses the
+same per-side rule by inference: only the absence of a 65535 term is evidenced by saved table
+heights. Those heights do not distinguish table-default vertical margins from zero. No
+single-side sentinel was observed; synthetic cases check the per-side implementation contract,
+not additional Hangul behavior. No new Hancom-acceptance claim is made.
+
+**Class D default table:** owner-authored ASCII, agent-performed desktop interaction at the
+owner's instruction, not person-run; Hangul 12.30.0 build 6544, macOS 27.2.1 (#540 G2).
+The table and every cell store `[510, 510, 141, 141]`, copied values rather than sentinels.
+The native cache width is `13984 - 510 - 510 = 12964`, with `col_start=0`. All nine HWPX cells
+have `hasMargin="0"` but still store those copied margins. No sentinel was seen in these saves.
+
+- HWP5 SHA-256: `accc245aaa341ed9a3d557a50ce41cd84ad55dba999692327a01e58ebae79dcb`
+- HWPX SHA-256: `a2ab8896a10173b635c46e78e3504e27fabd69745e9c6f581e9d30c479a49f5f`
+
+**Class C public-corpus aggregates only:** 25 documents (18 HWP, 7 HWPX). Sentinels occur in
+2 of 5009 HWP cells, in one table with all four sides set; 0 of 321 HWPX cells have them.
+Both measurable sentinel cells support the table-default horizontal reading. The one table's
+stored height has no 65535 term, but does not establish its vertical margin value. All-zero
+arrays occur in 147 HWP cells; 4 of 4 measurable zero-margin cells support explicit zero despite
+nonzero table defaults. No public-document names, sources or hashes are recorded here.
+
 ---
 
 ## D. Drawing objects: the ring diagram on page 6 of annual_report

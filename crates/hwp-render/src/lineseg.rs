@@ -412,6 +412,19 @@ impl ListCaches {
     }
 }
 
+/// Native-cache rule (#540 G2, #576): only 0xffff inherits the same table margin side.
+/// Explicit zero stays zero. Horizontal inheritance is observed; vertical inheritance is
+/// inferred. Work on copied arrays so raw IR margins remain available for identity writes.
+fn native_cache_cell_margins(margins: [u16; 4], inner_margins: [u16; 4]) -> [u16; 4] {
+    std::array::from_fn(|side| {
+        if margins[side] == u16::MAX {
+            inner_margins[side]
+        } else {
+            margins[side]
+        }
+    })
+}
+
 /// Synthesize every nested paragraph list: table captions/cells, controls within cells
 /// (including nested tables), picture captions, object paragraph lists and object captions.
 /// This matches the lists where hwp-convert walk_para_lists can insert paragraphs.
@@ -444,12 +457,8 @@ fn fill_nested(
                     );
                 }
                 for cell in &mut t.cells {
-                    // Retain base native-cache arithmetic, including raw sentinels.
-                    // Width/height sentinel interpretation requires genuine-byte
-                    // evidence before changing written geometry (#425).
-                    let w =
-                        (cell.width.0 - i32::from(cell.margins[0]) - i32::from(cell.margins[1]))
-                            .max(1);
+                    let margins = native_cache_cell_margins(cell.margins, t.inner_margins);
+                    let w = (cell.width.0 - i32::from(margins[0]) - i32::from(margins[1])).max(1);
                     fill_list(
                         &mut cell.paragraphs,
                         w,
@@ -598,9 +607,10 @@ fn table_height(table: &Table) -> i32 {
         // v_pos + line_height is already the whole cell height. Summing paragraph heights
         // would count earlier paragraphs twice because their heights are included in later v_pos.
         let block = cell.paragraphs.last().map_or(0, para_line_block);
-        let cell_h = i32::from(cell.margins[2])
+        let margins = native_cache_cell_margins(cell.margins, table.inner_margins);
+        let cell_h = i32::from(margins[2])
             .saturating_add(block)
-            .saturating_add(i32::from(cell.margins[3]));
+            .saturating_add(i32::from(margins[3]));
         if cell_h > row_heights[r] {
             row_heights[r] = cell_h;
         }
